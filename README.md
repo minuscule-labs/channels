@@ -17,7 +17,7 @@ Channels does not run agents or decide workflows. MinuRuntime executes agents, w
 POST /channels
 GET  /channels/:id
 POST /channels/:id/messages
-POST /channels/:id/relay-responses
+POST /channels/:id/responses
 GET  /channels/:id/messages
 GET  /channels/:id/events
 ```
@@ -34,7 +34,7 @@ The default server uses Drizzle ORM and libSQL at:
 
 The same adapter accepts a deployed Turso URL and token. In-memory mode remains available for tests and disposable demonstrations.
 
-Relay responses use a dedicated idempotent commit operation. A single database transaction allocates the response sequence, inserts the message, records the `(channel, participant, trigger)` delivery, and advances the processed cursor. Repeating a commit returns the original response without emitting another event. This closes the crash window between response posting and cursor persistence.
+Automated responses use a dedicated idempotent commit operation. A single database transaction allocates the response sequence, inserts the message, records the `(channel, participant, trigger)` delivery, and advances the processed cursor. Repeating a commit returns the original response without emitting another event. This closes the crash window between response posting and cursor persistence.
 
 ## Relay
 

@@ -9,7 +9,7 @@ import type {
   ChannelEvent,
   CreateChannelInput,
   CreateMessageInput,
-  CreateRelayResponseInput,
+  CreateResponseInput,
 } from "./types.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -89,11 +89,11 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const relayResponseMatch = url.pathname.match(/^\/channels\/([^/]+)\/relay-responses$/);
-      if (relayResponseMatch && request.method === "POST") {
-        const result = await service.createRelayResponse(
-          relayResponseMatch[1]!,
-          (await readJson(request)) as CreateRelayResponseInput,
+      const responseMatch = url.pathname.match(/^\/channels\/([^/]+)\/responses$/);
+      if (responseMatch && request.method === "POST") {
+        const result = await service.createResponse(
+          responseMatch[1]!,
+          (await readJson(request)) as CreateResponseInput,
         );
         json(response, result.created ? 201 : 200, result);
         return;

@@ -1,4 +1,4 @@
-CREATE TABLE `relay_deliveries` (
+CREATE TABLE `response_deliveries` (
 	`channel_id` text NOT NULL,
 	`participant_id` text NOT NULL,
 	`trigger_message_id` text NOT NULL,
@@ -11,4 +11,4 @@ CREATE TABLE `relay_deliveries` (
 	FOREIGN KEY (`response_message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `relay_deliveries_response_unique` ON `relay_deliveries` (`response_message_id`);
+CREATE UNIQUE INDEX `response_deliveries_response_unique` ON `response_deliveries` (`response_message_id`);

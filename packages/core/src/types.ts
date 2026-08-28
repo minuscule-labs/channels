@@ -52,14 +52,14 @@ export interface CreateMessageInput {
   replyTo?: string;
 }
 
-export interface CreateRelayResponseInput {
+export interface CreateResponseInput {
   participantId: string;
   body: string;
   triggerMessageId: string;
   triggerSequence: number;
 }
 
-export interface RelayResponseResult {
+export interface ResponseResult {
   message: ChannelMessage;
   created: boolean;
 }

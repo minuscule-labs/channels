@@ -3,21 +3,21 @@ import type {
   ChannelCursorStore,
   ChannelMessage,
   ChannelMetadata,
-  RelayResponseResult,
+  ResponseResult,
 } from "./types.js";
 
 export type NewChannelMessage = Omit<ChannelMessage, "sequence">;
-export type NewRelayResponseMessage = NewChannelMessage & { replyTo: string };
+export type NewResponseMessage = NewChannelMessage & { replyTo: string };
 
 export interface ChannelStorage extends ChannelCursorStore {
   createChannel(channel: Channel): Promise<Channel>;
   getChannel(channelId: string): Promise<Channel | undefined>;
   getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
   appendMessage(message: NewChannelMessage): Promise<ChannelMessage>;
-  commitRelayResponse(
-    message: NewRelayResponseMessage,
+  commitResponse(
+    message: NewResponseMessage,
     triggerSequence: number,
-  ): Promise<RelayResponseResult>;
+  ): Promise<ResponseResult>;
   close?(): Promise<void> | void;
 }
 
@@ -32,7 +32,7 @@ function copyChannel(channel: Channel): Channel {
 export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStore {
   private readonly channels = new Map<string, Channel>();
   private readonly cursors = new Map<string, number>();
-  private readonly relayResponses = new Map<string, ChannelMessage>();
+  private readonly responses = new Map<string, ChannelMessage>();
 
   async createChannel(channel: Channel): Promise<Channel> {
     this.channels.set(channel.id, copyChannel(channel));
@@ -62,15 +62,15 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     return { ...stored, to: [...stored.to] };
   }
 
-  async commitRelayResponse(
-    message: NewRelayResponseMessage,
+  async commitResponse(
+    message: NewResponseMessage,
     triggerSequence: number,
-  ): Promise<RelayResponseResult> {
+  ): Promise<ResponseResult> {
     const deliveryKey = `${message.channelId}:${message.participantId}:${message.replyTo}`;
-    const existing = this.relayResponses.get(deliveryKey);
+    const existing = this.responses.get(deliveryKey);
     if (existing) return { message: { ...existing, to: [...existing.to] }, created: false };
     const stored = await this.appendMessage(message);
-    this.relayResponses.set(deliveryKey, stored);
+    this.responses.set(deliveryKey, stored);
     const cursorKey = `${message.channelId}:${message.participantId}`;
     this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, triggerSequence));
     return { message: stored, created: true };

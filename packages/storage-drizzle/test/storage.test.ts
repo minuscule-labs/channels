@@ -33,7 +33,7 @@ test("initial migration adopts the previous raw SQLite schema", async () => {
   }
 });
 
-test("Drizzle/libSQL keeps relay response commits idempotent across reopen", async () => {
+test("Drizzle/libSQL keeps response commits idempotent across reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-delivery-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
   try {
@@ -55,13 +55,13 @@ test("Drizzle/libSQL keeps relay response commits idempotent across reopen", asy
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     };
-    const committed = await first.createRelayResponse(channel.id, input);
+    const committed = await first.createResponse(channel.id, input);
     assert.equal(committed.created, true);
     await first.close();
 
     const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
     const second = new ChannelService(secondStorage);
-    const duplicate = await second.createRelayResponse(channel.id, input);
+    const duplicate = await second.createResponse(channel.id, input);
     assert.equal(duplicate.created, false);
     assert.equal(duplicate.message.id, committed.message.id);
     assert.equal((await second.listMessages(channel.id)).length, 2);

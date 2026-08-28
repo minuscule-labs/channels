@@ -5,8 +5,8 @@ import {
   ChannelService,
   createChannelHttpServer,
   InMemoryChannelStorage,
-  type CreateRelayResponseInput,
-  type RelayResponseResult,
+  type CreateResponseInput,
+  type ResponseResult,
 } from "@minu/channels-core";
 import {
   ChannelRuntimeRelay,
@@ -158,11 +158,11 @@ test("relay restart does not duplicate a committed response after its acknowledg
   class LostAcknowledgementClient extends ChannelClient {
     private loseNextAcknowledgement = true;
 
-    override async postRelayResponse(
+    override async postResponse(
       channelId: string,
-      input: CreateRelayResponseInput,
-    ): Promise<RelayResponseResult> {
-      const committed = await super.postRelayResponse(channelId, input);
+      input: CreateResponseInput,
+    ): Promise<ResponseResult> {
+      const committed = await super.postResponse(channelId, input);
       if (this.loseNextAcknowledgement) {
         this.loseNextAcknowledgement = false;
         throw new Error("connection dropped after commit");

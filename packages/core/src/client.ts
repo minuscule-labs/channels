@@ -5,8 +5,8 @@ import type {
   ChannelMetadata,
   CreateChannelInput,
   CreateMessageInput,
-  CreateRelayResponseInput,
-  RelayResponseResult,
+  CreateResponseInput,
+  ResponseResult,
 } from "./types.js";
 
 export interface ChannelEventOptions {
@@ -40,16 +40,16 @@ export class ChannelClient {
     return ((await response.json()) as { message: ChannelMessage }).message;
   }
 
-  async postRelayResponse(
+  async postResponse(
     channelId: string,
-    input: CreateRelayResponseInput,
-  ): Promise<RelayResponseResult> {
-    const response = await this.request(`/channels/${channelId}/relay-responses`, {
+    input: CreateResponseInput,
+  ): Promise<ResponseResult> {
+    const response = await this.request(`/channels/${channelId}/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
-    return (await response.json()) as RelayResponseResult;
+    return (await response.json()) as ResponseResult;
   }
 
   async listMessages(channelId: string): Promise<ChannelMessage[]> {

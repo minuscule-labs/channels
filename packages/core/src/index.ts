@@ -8,7 +8,7 @@ export {
   InMemoryChannelStorage,
   type ChannelStorage,
   type NewChannelMessage,
-  type NewRelayResponseMessage,
+  type NewResponseMessage,
 } from "./storage.js";
 export {
   createChannelHttpServer,
@@ -23,9 +23,9 @@ export type {
   ChannelMetadata,
   CreateChannelInput,
   CreateMessageInput,
-  CreateRelayResponseInput,
+  CreateResponseInput,
   MessageCreatedEvent,
-  RelayResponseResult,
+  ResponseResult,
   Participant,
   ParticipantType,
 } from "./types.js";

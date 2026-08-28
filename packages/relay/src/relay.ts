@@ -303,7 +303,7 @@ export class ChannelRuntimeRelay {
     const response = latestAssistant(after, before.length);
     if (!response) throw new Error(`Agent ${binding.participantId} produced no assistant response`);
 
-    const committed = await this.options.client.postRelayResponse(this.options.channelId, {
+    const committed = await this.options.client.postResponse(this.options.channelId, {
       participantId: binding.participantId,
       body: response.content,
       triggerMessageId: trigger.id,

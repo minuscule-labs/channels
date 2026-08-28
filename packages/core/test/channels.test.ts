@@ -107,7 +107,7 @@ test("assigns per-channel sequences and resolves channel mentions", async () => 
   }
 });
 
-test("commits one idempotent relay response and advances its cursor atomically", async () => {
+test("commits one idempotent response and advances its cursor atomically", async () => {
   const server = await createChannelHttpServer();
   try {
     const channel = await createTestChannel(server.endpoint);
@@ -117,18 +117,22 @@ test("commits one idempotent relay response and advances its cursor atomically",
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b review this" }),
     });
     const trigger = triggerResult.body.message as { id: string; sequence: number };
+    let responseEvents = 0;
+    const unsubscribe = await server.service.subscribe(channel.id, () => {
+      responseEvents += 1;
+    });
     const input = {
       participantId: "agent-b",
       body: "Review complete",
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     };
-    const first = await jsonRequest(server.endpoint, `/channels/${channel.id}/relay-responses`, {
+    const first = await jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
-    const duplicate = await jsonRequest(server.endpoint, `/channels/${channel.id}/relay-responses`, {
+    const duplicate = await jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -142,7 +146,9 @@ test("commits one idempotent relay response and advances its cursor atomically",
       (duplicate.body.message as { id: string }).id,
     );
     assert.equal((await server.service.listMessages(channel.id)).length, 2);
+    assert.equal(responseEvents, 1);
     assert.equal(await server.service.storage.getCursor(channel.id, "agent-b"), trigger.sequence);
+    unsubscribe();
   } finally {
     await server.close();
   }

@@ -6,8 +6,8 @@ import type {
   ChannelMetadata,
   ChannelStorage,
   NewChannelMessage,
-  NewRelayResponseMessage,
-  RelayResponseResult,
+  NewResponseMessage,
+  ResponseResult,
 } from "@minu/channels-core";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
@@ -162,19 +162,19 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     });
   }
 
-  async commitRelayResponse(
-    message: NewRelayResponseMessage,
+  async commitResponse(
+    message: NewResponseMessage,
     triggerSequence: number,
-  ): Promise<RelayResponseResult> {
+  ): Promise<ResponseResult> {
     return await this.database.transaction(async (transaction) => {
       const [existingDelivery] = await transaction
-        .select({ responseMessageId: schema.relayDeliveries.responseMessageId })
-        .from(schema.relayDeliveries)
+        .select({ responseMessageId: schema.responseDeliveries.responseMessageId })
+        .from(schema.responseDeliveries)
         .where(
           and(
-            eq(schema.relayDeliveries.channelId, message.channelId),
-            eq(schema.relayDeliveries.participantId, message.participantId),
-            eq(schema.relayDeliveries.triggerMessageId, message.replyTo),
+            eq(schema.responseDeliveries.channelId, message.channelId),
+            eq(schema.responseDeliveries.participantId, message.participantId),
+            eq(schema.responseDeliveries.triggerMessageId, message.replyTo),
           ),
         )
         .limit(1);
@@ -232,7 +232,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
             updatedAt,
           },
         });
-      await transaction.insert(schema.relayDeliveries).values({
+      await transaction.insert(schema.responseDeliveries).values({
         channelId: message.channelId,
         participantId: message.participantId,
         triggerMessageId: message.replyTo,

@@ -7,9 +7,9 @@ import type {
   ChannelMetadata,
   CreateChannelInput,
   CreateMessageInput,
-  CreateRelayResponseInput,
+  CreateResponseInput,
   Participant,
-  RelayResponseResult,
+  ResponseResult,
 } from "./types.js";
 
 export class ChannelNotFoundError extends Error {}
@@ -153,10 +153,10 @@ export class ChannelService {
     return { ...message, to: [...message.to] };
   }
 
-  async createRelayResponse(
+  async createResponse(
     channelId: string,
-    input: CreateRelayResponseInput,
-  ): Promise<RelayResponseResult> {
+    input: CreateResponseInput,
+  ): Promise<ResponseResult> {
     const channel = await this.storage.getChannel(channelId);
     if (!channel) throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
     if (!input || typeof input.participantId !== "string" || !input.participantId.trim()) {
@@ -167,7 +167,7 @@ export class ChannelService {
       throw new ChannelValidationError(`Participant is not in channel: ${input.participantId}`);
     }
     if (participant.type !== "agent" && participant.type !== "service") {
-      throw new ChannelValidationError("relay responses must be authored by an agent or service");
+      throw new ChannelValidationError("responses must be authored by an agent or service");
     }
     if (typeof input.body !== "string" || !input.body.trim()) {
       throw new ChannelValidationError("body must be a non-empty string");
@@ -186,7 +186,7 @@ export class ChannelService {
       throw new ChannelValidationError("trigger message and sequence do not match this channel");
     }
 
-    const result = await this.storage.commitRelayResponse(
+    const result = await this.storage.commitResponse(
       {
         id: randomUUID(),
         channelId,

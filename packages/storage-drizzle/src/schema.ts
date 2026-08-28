@@ -42,8 +42,8 @@ export const messages = sqliteTable(
   ],
 );
 
-export const relayDeliveries = sqliteTable(
-  "relay_deliveries",
+export const responseDeliveries = sqliteTable(
+  "response_deliveries",
   {
     channelId: text("channel_id")
       .notNull()
@@ -60,7 +60,7 @@ export const relayDeliveries = sqliteTable(
   },
   (table) => [
     primaryKey({ columns: [table.channelId, table.participantId, table.triggerMessageId] }),
-    uniqueIndex("relay_deliveries_response_unique").on(table.responseMessageId),
+    uniqueIndex("response_deliveries_response_unique").on(table.responseMessageId),
   ],
 );
 
