@@ -33,6 +33,72 @@ test("initial migration adopts the previous raw SQLite schema", async () => {
   }
 });
 
+test("Drizzle/libSQL keeps message idempotency atomic and durable across reopen", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-message-idempotency-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  try {
+    const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
+    const first = new ChannelService(firstStorage);
+    const channel = await first.createChannel({
+      participants: [
+        { id: "user", type: "human" },
+        { id: "agent-a", type: "agent" },
+      ],
+    });
+    // Use an equivalent URL with a distinct storage key so this exercises the
+    // database transaction race rather than the in-process pending map.
+    const competingStorage = await DrizzleLibSqlChannelStorage.open({
+      url: url.replace("file:", "file://"),
+    });
+    const competing = new ChannelService(competingStorage);
+    const input = { participantId: "user", body: "@agent-a once" };
+    const [left, right] = await Promise.all([
+      first.createMessage(channel.id, input, "durable-key"),
+      competing.createMessage(channel.id, input, "durable-key"),
+    ]);
+    assert.equal(left.id, right.id);
+    assert.equal((await first.listMessages(channel.id)).length, 1);
+    await competing.close();
+    await first.close();
+
+    const reopenedStorage = await DrizzleLibSqlChannelStorage.open({ url });
+    const reopened = new ChannelService(reopenedStorage);
+    const replay = await reopened.createMessage(channel.id, input, "durable-key");
+    assert.equal(replay.id, left.id);
+    const [conflictingPending, matchingPending] = await Promise.allSettled([
+      reopened.createMessage(
+        channel.id,
+        { participantId: "user", body: "@agent-a changed" },
+        "durable-key",
+      ),
+      reopened.createMessage(channel.id, input, "durable-key"),
+    ]);
+    assert.equal(conflictingPending.status, "rejected");
+    assert.match(String((conflictingPending as PromiseRejectedResult).reason), /different payload/);
+    assert.equal(matchingPending.status, "fulfilled");
+    assert.equal(
+      (matchingPending as PromiseFulfilledResult<{ id: string }>).value.id,
+      left.id,
+    );
+    await assert.rejects(
+      reopened.createMessage(
+        channel.id,
+        { participantId: "user", body: "@agent-a changed" },
+        "durable-key",
+      ),
+      /different payload/,
+    );
+    assert.equal((await reopened.listMessages(channel.id)).length, 1);
+    assert.equal(
+      (await reopened.createMessage(channel.id, { participantId: "user", body: "next" })).sequence,
+      2,
+    );
+    await reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Drizzle/libSQL keeps response commits idempotent across reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-delivery-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));

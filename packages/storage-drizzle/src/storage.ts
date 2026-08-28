@@ -5,6 +5,7 @@ import type {
   ChannelMessage,
   ChannelMetadata,
   ChannelStorage,
+  MessageCommitResult,
   NewChannelMessage,
   NewResponseMessage,
   ResponseResult,
@@ -34,6 +35,10 @@ export function localLibSqlUrl(path: string): string {
   return path.startsWith("file:") ? path : `file:${resolve(path)}`;
 }
 
+const pendingMessageCommits = new Map<
+  string,
+  { requestFingerprint: string; commit: Promise<MessageCommitResult> }
+>();
 const pendingResponseCommits = new Map<string, Promise<ResponseResult>>();
 
 export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCursorStore {
@@ -45,6 +50,10 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
 
   static async open(options: DrizzleLibSqlStorageOptions): Promise<DrizzleLibSqlChannelStorage> {
     const client = createClient({ url: options.url, authToken: options.authToken });
+    if (options.url.startsWith("file:")) {
+      await client.execute("PRAGMA journal_mode = WAL");
+      await client.execute("PRAGMA busy_timeout = 5000");
+    }
     const database = drizzle(client, { schema });
     await migrate(database, {
       migrationsFolder: options.migrationsFolder ?? defaultMigrationsFolder(),
@@ -163,6 +172,152 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       });
       return { ...message, sequence: allocated.sequence, to: [...message.to] };
     });
+  }
+
+  async commitMessage(
+    message: NewChannelMessage,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<MessageCommitResult> {
+    const requestKey = JSON.stringify([
+      this.storageKey,
+      message.channelId,
+      message.participantId,
+      idempotencyKey,
+    ]);
+    const pending = pendingMessageCommits.get(requestKey);
+    if (pending) {
+      const result = await pending.commit;
+      if (result.outcome === "conflict" && pending.requestFingerprint !== requestFingerprint) {
+        return await this.commitMessageWithRetry(message, idempotencyKey, requestFingerprint);
+      }
+      return {
+        message: { ...result.message, to: [...result.message.to] },
+        outcome: result.outcome === "conflict"
+          ? "conflict"
+          : pending.requestFingerprint === requestFingerprint
+            ? "replayed"
+            : "conflict",
+      };
+    }
+    const commit = this.commitMessageWithRetry(message, idempotencyKey, requestFingerprint);
+    pendingMessageCommits.set(requestKey, { requestFingerprint, commit });
+    try {
+      return await commit;
+    } finally {
+      pendingMessageCommits.delete(requestKey);
+    }
+  }
+
+  private async commitMessageWithRetry(
+    message: NewChannelMessage,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<MessageCommitResult> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        return await this.commitMessageOnce(message, idempotencyKey, requestFingerprint);
+      } catch (error) {
+        lastError = error;
+        const code = (error as { code?: string }).code;
+        if (code !== "SQLITE_BUSY" && code !== "SQLITE_CONSTRAINT") throw error;
+        await new Promise((resolve) => setTimeout(resolve, 5 * 2 ** attempt + Math.random() * 5));
+      }
+    }
+    throw lastError;
+  }
+
+  private async commitMessageOnce(
+    message: NewChannelMessage,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<MessageCommitResult> {
+    // A write transaction acquires the lock before the first read. Drizzle's libSQL
+    // transaction wrapper currently always starts deferred transactions, which can
+    // deadlock when two processes both read and then attempt this commit.
+    const transaction = await this.client.transaction("write");
+    try {
+      const existingResult = await transaction.execute({
+        sql: `
+          SELECT i.request_fingerprint, m.id, m.channel_id, m.sequence,
+                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at
+          FROM message_idempotency i
+          JOIN messages m ON m.id = i.message_id
+          WHERE i.channel_id = ? AND i.participant_id = ? AND i.idempotency_key = ?
+          LIMIT 1
+        `,
+        args: [message.channelId, message.participantId, idempotencyKey],
+      });
+      const existing = existingResult.rows[0] as Record<string, unknown> | undefined;
+      if (existing) {
+        await transaction.commit();
+        return {
+          outcome: existing.request_fingerprint === requestFingerprint ? "replayed" : "conflict",
+          message: {
+            id: String(existing.id),
+            channelId: String(existing.channel_id),
+            sequence: Number(existing.sequence),
+            participantId: String(existing.participant_id),
+            to: JSON.parse(String(existing.targets_json)) as string[],
+            body: String(existing.body),
+            replyTo: existing.reply_to === null ? undefined : String(existing.reply_to),
+            createdAt: String(existing.created_at),
+          },
+        };
+      }
+
+      const allocatedResult = await transaction.execute({
+        sql: `
+          UPDATE channels SET next_sequence = next_sequence + 1
+          WHERE id = ? RETURNING next_sequence - 1 AS sequence
+        `,
+        args: [message.channelId],
+      });
+      const allocated = allocatedResult.rows[0] as Record<string, unknown> | undefined;
+      if (!allocated) throw new Error(`Channel not found: ${message.channelId}`);
+      const sequence = Number(allocated.sequence);
+      await transaction.execute({
+        sql: `
+          INSERT INTO messages
+            (id, channel_id, sequence, participant_id, targets_json, body, reply_to, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        args: [
+          message.id,
+          message.channelId,
+          sequence,
+          message.participantId,
+          JSON.stringify(message.to),
+          message.body,
+          message.replyTo ?? null,
+          message.createdAt,
+        ],
+      });
+      await transaction.execute({
+        sql: `
+          INSERT INTO message_idempotency
+            (channel_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        args: [
+          message.channelId,
+          message.participantId,
+          idempotencyKey,
+          requestFingerprint,
+          message.id,
+          message.createdAt,
+        ],
+      });
+      await transaction.commit();
+      return {
+        outcome: "created",
+        message: { ...message, sequence, to: [...message.to] },
+      };
+    } catch (error) {
+      await transaction.rollback().catch(() => undefined);
+      throw error;
+    }
   }
 
   async commitResponse(

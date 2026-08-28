@@ -248,6 +248,54 @@ test("overlapping relay recovery reuses active turns and preserves queued messag
   }
 });
 
+test("relay validates and enforces configurable turn polling timeouts", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new RecoverableRuntime();
+  const channel = await client.createChannel({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  const baseOptions = {
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  };
+  assert.throws(
+    () => new ChannelRuntimeRelay({ ...baseOptions, turnPollIntervalMs: 0 }),
+    /turnPollIntervalMs must be a positive integer/,
+  );
+  assert.throws(
+    () => new ChannelRuntimeRelay({ ...baseOptions, turnTimeoutMs: 1.5 }),
+    /turnTimeoutMs must be a positive integer/,
+  );
+  const errors: Error[] = [];
+  const relay = new ChannelRuntimeRelay({
+    ...baseOptions,
+    turnPollIntervalMs: 5,
+    turnTimeoutMs: 30,
+    onError(_binding, error) {
+      errors.push(error);
+    },
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a deliberately never complete",
+    });
+    await waitUntil(async () => errors.length === 1);
+    assert.match(errors[0]!.message, /Timed out waiting for agent turn/);
+    assert.equal(runtime.startCount, 1);
+    assert.equal((await client.listMessages(channel.id)).length, 1);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("relay restart does not duplicate a committed response after its acknowledgement is lost", async () => {
   const storage = new InMemoryChannelStorage();
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });

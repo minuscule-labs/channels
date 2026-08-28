@@ -44,6 +44,8 @@ export interface ChannelRuntimeRelayOptions {
   channelId: string;
   bindings: AgentChannelBinding[];
   cursorStore?: ChannelCursorStore;
+  turnPollIntervalMs?: number;
+  turnTimeoutMs?: number;
   onAgentResponse?(binding: AgentChannelBinding, message: ChannelMessage): void;
   onError?(binding: AgentChannelBinding | undefined, error: Error): void;
 }
@@ -141,12 +143,20 @@ async function delay(milliseconds: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function validatePositiveMilliseconds(name: string, value: number | undefined): void {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+    throw new RangeError(`${name} must be a positive integer`);
+  }
+}
+
 export class ChannelRuntimeRelay {
   private readonly states: BindingState[];
   private controller: AbortController | undefined;
   private task: Promise<void> | undefined;
 
   constructor(private readonly options: ChannelRuntimeRelayOptions) {
+    validatePositiveMilliseconds("turnPollIntervalMs", options.turnPollIntervalMs);
+    validatePositiveMilliseconds("turnTimeoutMs", options.turnTimeoutMs);
     this.states = options.bindings.map((binding) => ({
       binding,
       lastProcessedSequence: 0,
@@ -357,9 +367,10 @@ export class ChannelRuntimeRelay {
     initial: RuntimePortTurn,
   ): Promise<RuntimePortTurn> {
     let turn = initial;
-    for (let attempt = 0; attempt < 240; attempt++) {
+    const deadline = Date.now() + (this.options.turnTimeoutMs ?? 30 * 60_000);
+    while (Date.now() < deadline) {
       if (turn.status !== "running") return turn;
-      await delay(250);
+      await delay(this.options.turnPollIntervalMs ?? 250);
       const recovered = await binding.runtime.turn?.(binding.sessionId, turnId);
       if (!recovered) throw new Error(`Runtime lost accepted turn: ${turnId}`);
       turn = recovered;
@@ -368,11 +379,12 @@ export class ChannelRuntimeRelay {
   }
 
   private async waitUntilIdle(binding: AgentChannelBinding): Promise<void> {
-    for (let attempt = 0; attempt < 240; attempt++) {
+    const deadline = Date.now() + (this.options.turnTimeoutMs ?? 30 * 60_000);
+    while (Date.now() < deadline) {
       const status = await binding.runtime.status(binding.sessionId);
       if (status === "idle") return;
       if (status === "offline") throw new Error(`Agent session is offline: ${binding.sessionId}`);
-      await delay(250);
+      await delay(this.options.turnPollIntervalMs ?? 250);
     }
     throw new Error(`Timed out waiting for agent to become idle: ${binding.participantId}`);
   }

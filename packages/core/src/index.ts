@@ -1,5 +1,6 @@
-export { ChannelClient, type ChannelEventOptions } from "./client.js";
+export { ChannelClient, type ChannelEventOptions, type PostMessageOptions } from "./client.js";
 export {
+  ChannelConflictError,
   ChannelNotFoundError,
   ChannelService,
   ChannelValidationError,
@@ -7,6 +8,7 @@ export {
 export {
   InMemoryChannelStorage,
   type ChannelStorage,
+  type MessageCommitResult,
   type NewChannelMessage,
   type NewResponseMessage,
 } from "./storage.js";

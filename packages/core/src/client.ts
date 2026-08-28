@@ -14,6 +14,10 @@ export interface ChannelEventOptions {
   onReady?(): void;
 }
 
+export interface PostMessageOptions {
+  idempotencyKey?: string;
+}
+
 export class ChannelClient {
   constructor(readonly endpoint: string) {}
 
@@ -31,10 +35,18 @@ export class ChannelClient {
     return ((await response.json()) as { channel: ChannelMetadata }).channel;
   }
 
-  async postMessage(channelId: string, input: CreateMessageInput): Promise<ChannelMessage> {
+  async postMessage(
+    channelId: string,
+    input: CreateMessageInput,
+    options: PostMessageOptions = {},
+  ): Promise<ChannelMessage> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (options.idempotencyKey !== undefined) {
+      headers["idempotency-key"] = options.idempotencyKey;
+    }
     const response = await this.request(`/channels/${channelId}/messages`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(input),
     });
     return ((await response.json()) as { message: ChannelMessage }).message;

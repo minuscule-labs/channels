@@ -22,7 +22,14 @@ GET  /channels/:id/messages
 GET  /channels/:id/events
 ```
 
-Participants expose an id, type, optional display name, short public role, and public delegation profile. The profile is routing metadata—not the agent's private system prompt. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications.
+Participants expose an id, type, optional display name, short public role, and public delegation profile. The profile is routing metadata—not the agent's private system prompt. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:
+
+```http
+POST /channels/:id/messages
+Idempotency-Key: <client-generated-key>
+```
+
+The TypeScript client exposes this as `postMessage(channelId, input, { idempotencyKey })`.
 
 ## Storage
 
@@ -36,13 +43,13 @@ The same adapter accepts a deployed Turso URL and token. In-memory mode remains 
 
 Automated responses use a dedicated idempotent commit operation. A single database transaction allocates the response sequence, inserts the message, records the `(channel, participant, trigger)` delivery, and advances the processed cursor. Repeating a commit returns the original response without emitting another event. This closes the crash window between response posting and cursor persistence.
 
-Ordinary `POST /channels/:id/messages` calls are not yet idempotent. Two identical human or client sends create two messages because they currently represent distinct inputs. Before adding the web client, this endpoint should accept a client-generated idempotency key to protect against network retries and accidental double submission.
+Ordinary message creation supports optional, durable idempotency scoped by Channel, author participant, and key. Reusing a key with the same effective payload returns the original message without allocating a sequence or emitting another event; changing that payload returns `409 Conflict`. Distinct keys—and all calls without a key—continue to create distinct intentional messages. Keys must be non-empty and at most 255 UTF-8 bytes. Automated response idempotency remains a separate, unchanged operation.
 
 ## Relay
 
 The relay wakes agents according to membership policy, fetches the current Channel metadata, and supplies every awakened agent with a complete public participant roster plus bounded unseen message context. The roster includes exact mention ids, participant types, display names, roles, delegation profiles, and whether an agent is Runtime-connected. This lets agents select collaborators naturally without hardcoded peer ids. The relay then waits for Runtime work to settle, posts responses, and persists processed cursors. It is an integration layer: Channels core has no dependency on Runtime.
 
-The structural Runtime port optionally supports stable `startTurn` and `turn` operations. When available, the relay derives a turn id from the Channel, participant, and trigger message, then recovers the same running or completed work after a relay restart instead of repeating agent side effects. Recovery requires the same Runtime session to remain alive.
+The structural Runtime port optionally supports stable `startTurn` and `turn` operations. When available, the relay derives a turn id from the Channel, participant, and trigger message, then recovers the same running or completed work after a relay restart instead of repeating agent side effects. Recovery requires the same Runtime session to remain alive. Relay polling and turn timeouts are configurable; the default turn wait is 30 minutes so implementation work is not mistaken for a stalled agent.
 
 ### Future roster caching
 

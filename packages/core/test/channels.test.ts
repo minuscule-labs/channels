@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ChannelClient } from "../src/client.js";
 import { createChannelHttpServer } from "../src/http-server.js";
 
 async function jsonRequest(endpoint: string, path: string, init?: RequestInit) {
@@ -102,6 +103,157 @@ test("assigns per-channel sequences and resolves channel mentions", async () => 
     const second = await clientMessage("@channel please inspect");
     assert.equal(second.sequence, 2);
     assert.deepEqual(second.to, ["@channel"]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("replays sequential and concurrent message retries without another sequence or event", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const channel = await createTestChannel(server.endpoint);
+    let events = 0;
+    const unsubscribe = await server.service.subscribe(channel.id, () => {
+      events += 1;
+    });
+    const post = (key: string) => jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": key },
+      body: JSON.stringify({ participantId: "agent-a", body: "@agent-b review" }),
+    });
+
+    const first = await post("sequential-key");
+    const replay = await post("sequential-key");
+    assert.equal(first.response.status, 201);
+    assert.equal(replay.response.status, 201);
+    assert.equal(
+      (first.body.message as { id: string }).id,
+      (replay.body.message as { id: string }).id,
+    );
+
+    const [concurrentFirst, concurrentReplay] = await Promise.all([
+      post("concurrent-key"),
+      post("concurrent-key"),
+    ]);
+    assert.equal(
+      (concurrentFirst.body.message as { id: string }).id,
+      (concurrentReplay.body.message as { id: string }).id,
+    );
+    assert.deepEqual(
+      (await server.service.listMessages(channel.id)).map((message) => message.sequence),
+      [1, 2],
+    );
+    assert.equal(events, 2);
+    unsubscribe();
+  } finally {
+    await server.close();
+  }
+});
+
+test("rejects reuse with a changed effective payload and accepts intentional duplicates", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const channel = await createTestChannel(server.endpoint);
+    const reply = await server.service.createMessage(channel.id, {
+      participantId: "agent-b",
+      body: "reply anchor",
+    });
+    const post = (key: string | undefined, input: Record<string, unknown>) =>
+      jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(key === undefined ? {} : { "idempotency-key": key }),
+        },
+        body: JSON.stringify(input),
+      });
+    const base = { participantId: "agent-a", body: "same body", to: ["agent-b"] };
+
+    for (const [key, changed] of [
+      ["changed-body", { ...base, body: "changed" }],
+      ["changed-target", { ...base, to: [] }],
+      ["changed-reply", { ...base, replyTo: reply.id }],
+    ] as const) {
+      assert.equal((await post(key, base)).response.status, 201);
+      const conflict = await post(key, changed);
+      assert.equal(conflict.response.status, 409);
+      assert.match(String(conflict.body.error), /different payload/);
+    }
+
+    const competingPayloads = await Promise.all([
+      post("concurrent-conflict", base),
+      post("concurrent-conflict", { ...base, body: "competing body" }),
+    ]);
+    assert.deepEqual(
+      competingPayloads.map((result) => result.response.status).sort(),
+      [201, 409],
+    );
+
+    const normalized = await post("normalized-author", { ...base, participantId: " agent-a " });
+    const normalizedReplay = await post("normalized-author", base);
+    assert.equal(
+      (normalized.body.message as { id: string }).id,
+      (normalizedReplay.body.message as { id: string }).id,
+    );
+
+    const keyedFirst = await post("intentional-1", base);
+    const keyedSecond = await post("intentional-2", base);
+    assert.notEqual(
+      (keyedFirst.body.message as { id: string }).id,
+      (keyedSecond.body.message as { id: string }).id,
+    );
+    const unkeyedFirst = await post(undefined, base);
+    const unkeyedSecond = await post(undefined, base);
+    assert.notEqual(
+      (unkeyedFirst.body.message as { id: string }).id,
+      (unkeyedSecond.body.message as { id: string }).id,
+    );
+
+    const otherAuthor = await post("intentional-1", {
+      participantId: "agent-b",
+      body: "same body",
+      to: ["agent-a"],
+    });
+    assert.equal(otherAuthor.response.status, 201);
+  } finally {
+    await server.close();
+  }
+});
+
+test("ChannelClient forwards its optional idempotency key", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const channel = await createTestChannel(server.endpoint);
+    const client = new ChannelClient(server.endpoint);
+    const input = { participantId: "agent-a", body: "sent through client" };
+    const first = await client.postMessage(channel.id, input, { idempotencyKey: "client-key" });
+    const replay = await client.postMessage(channel.id, input, { idempotencyKey: "client-key" });
+    assert.equal(first.id, replay.id);
+  } finally {
+    await server.close();
+  }
+});
+
+test("validates idempotency keys by UTF-8 byte length", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const channel = await createTestChannel(server.endpoint);
+    for (const key of [" ", "é".repeat(128)]) {
+      await assert.rejects(
+        server.service.createMessage(
+          channel.id,
+          { participantId: "agent-a", body: "hello" },
+          key,
+        ),
+        /idempotency key/,
+      );
+    }
+    const accepted = await server.service.createMessage(
+      channel.id,
+      { participantId: "agent-a", body: "hello" },
+      "é".repeat(127) + "a",
+    );
+    assert.equal(accepted.sequence, 1);
   } finally {
     await server.close();
   }
@@ -215,6 +367,27 @@ test("rejects messages from participants outside the channel", async () => {
     assert.equal(result.response.status, 400);
     assert.match(String(result.body.error), /not in channel/);
   } finally {
+    await server.close();
+  }
+});
+
+test("SSE connections receive validated heartbeats while a Channel is quiet", async () => {
+  await assert.rejects(
+    createChannelHttpServer({ heartbeatIntervalMs: 0 }),
+    /heartbeatIntervalMs must be a positive integer/,
+  );
+  const server = await createChannelHttpServer({ heartbeatIntervalMs: 10 });
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const channel = await createTestChannel(server.endpoint);
+    const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`);
+    assert.ok(response.body);
+    reader = response.body!.getReader();
+    const stream = { buffer: "" };
+    assert.match(await readSseFrame(reader, stream), /event: ready/);
+    assert.equal(await readSseFrame(reader, stream), ": keepalive");
+  } finally {
+    await reader?.cancel();
     await server.close();
   }
 });

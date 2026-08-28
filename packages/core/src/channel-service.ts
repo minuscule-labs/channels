@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { InMemoryChannelStorage, type ChannelStorage, type NewChannelMessage } from "./storage.js";
 import type {
   Channel,
@@ -14,6 +14,7 @@ import type {
 
 export class ChannelNotFoundError extends Error {}
 export class ChannelValidationError extends Error {}
+export class ChannelConflictError extends Error {}
 
 type EventListener = (event: ChannelEvent) => void;
 
@@ -55,6 +56,32 @@ function validateParticipant(participant: Participant): Participant {
     role,
     profile,
   };
+}
+
+function validateIdempotencyKey(idempotencyKey: string | undefined): string | undefined {
+  if (idempotencyKey === undefined) return undefined;
+  if (typeof idempotencyKey !== "string" || !idempotencyKey.trim()) {
+    throw new ChannelValidationError("idempotency key must be a non-empty string");
+  }
+  if (Buffer.byteLength(idempotencyKey, "utf8") > 255) {
+    throw new ChannelValidationError("idempotency key exceeds 255 UTF-8 bytes");
+  }
+  return idempotencyKey;
+}
+
+function requestFingerprint(input: {
+  participantId: string;
+  body: string;
+  to: string[];
+  replyTo?: string;
+}): string {
+  const canonicalPayload = JSON.stringify({
+    participantId: input.participantId,
+    body: input.body,
+    to: [...input.to].sort(),
+    replyTo: input.replyTo ?? null,
+  });
+  return createHash("sha256").update(canonicalPayload).digest("hex");
 }
 
 function messageTargets(channel: Channel, input: CreateMessageInput): string[] {
@@ -113,14 +140,20 @@ export class ChannelService {
     return (await this.getChannel(channelId)).messages;
   }
 
-  async createMessage(channelId: string, input: CreateMessageInput): Promise<ChannelMessage> {
+  async createMessage(
+    channelId: string,
+    input: CreateMessageInput,
+    idempotencyKey?: string,
+  ): Promise<ChannelMessage> {
+    const validatedKey = validateIdempotencyKey(idempotencyKey);
     const channel = await this.storage.getChannel(channelId);
     if (!channel) throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
     if (!input || typeof input.participantId !== "string" || !input.participantId.trim()) {
       throw new ChannelValidationError("participantId must be a non-empty string");
     }
-    if (!channel.participants.some((participant) => participant.id === input.participantId)) {
-      throw new ChannelValidationError(`Participant is not in channel: ${input.participantId}`);
+    const participantId = input.participantId.trim();
+    if (!channel.participants.some((participant) => participant.id === participantId)) {
+      throw new ChannelValidationError(`Participant is not in channel: ${participantId}`);
     }
     if (typeof input.body !== "string" || !input.body.trim()) {
       throw new ChannelValidationError("body must be a non-empty string");
@@ -132,24 +165,37 @@ export class ChannelService {
       throw new ChannelValidationError(`Reply message is not in channel: ${input.replyTo}`);
     }
 
+    const to = messageTargets(channel, input);
     const pendingMessage: NewChannelMessage = {
       id: randomUUID(),
       channelId,
-      participantId: input.participantId,
-      to: messageTargets(channel, input),
+      participantId,
+      to,
       body: input.body,
       replyTo: input.replyTo,
       createdAt: new Date().toISOString(),
     };
-    const message = await this.storage.appendMessage(pendingMessage);
-    const event: ChannelEvent = {
-      id: randomUUID(),
-      type: "message.created",
-      channelId,
-      message: { ...message, to: [...message.to] },
-      createdAt: new Date().toISOString(),
-    };
-    for (const listener of this.listeners.get(channelId) ?? []) listener(event);
+    const result = validatedKey === undefined
+      ? { message: await this.storage.appendMessage(pendingMessage), outcome: "created" as const }
+      : await this.storage.commitMessage(
+          pendingMessage,
+          validatedKey,
+          requestFingerprint({ participantId, body: input.body, to, replyTo: input.replyTo }),
+        );
+    if (result.outcome === "conflict") {
+      throw new ChannelConflictError("idempotency key was already used with a different payload");
+    }
+    const message = result.message;
+    if (result.outcome === "created") {
+      const event: ChannelEvent = {
+        id: randomUUID(),
+        type: "message.created",
+        channelId,
+        message: { ...message, to: [...message.to] },
+        createdAt: new Date().toISOString(),
+      };
+      for (const listener of this.listeners.get(channelId) ?? []) listener(event);
+    }
     return { ...message, to: [...message.to] };
   }
 

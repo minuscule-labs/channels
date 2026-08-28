@@ -9,11 +9,21 @@ import type {
 export type NewChannelMessage = Omit<ChannelMessage, "sequence">;
 export type NewResponseMessage = NewChannelMessage & { replyTo: string };
 
+export interface MessageCommitResult {
+  message: ChannelMessage;
+  outcome: "created" | "replayed" | "conflict";
+}
+
 export interface ChannelStorage extends ChannelCursorStore {
   createChannel(channel: Channel): Promise<Channel>;
   getChannel(channelId: string): Promise<Channel | undefined>;
   getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
   appendMessage(message: NewChannelMessage): Promise<ChannelMessage>;
+  commitMessage(
+    message: NewChannelMessage,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<MessageCommitResult>;
   commitResponse(
     message: NewResponseMessage,
     triggerSequence: number,
@@ -33,6 +43,11 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   private readonly channels = new Map<string, Channel>();
   private readonly cursors = new Map<string, number>();
   private readonly responses = new Map<string, ChannelMessage>();
+  private readonly messageRequests = new Map<
+    string,
+    { requestFingerprint: string; message: ChannelMessage }
+  >();
+  private readonly pendingMessages = new Map<string, Promise<MessageCommitResult>>();
   private readonly pendingResponses = new Map<string, Promise<ResponseResult>>();
 
   async createChannel(channel: Channel): Promise<Channel> {
@@ -61,6 +76,51 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     const stored = { ...message, sequence: channel.messages.length + 1, to: [...message.to] };
     channel.messages.push(stored);
     return { ...stored, to: [...stored.to] };
+  }
+
+  async commitMessage(
+    message: NewChannelMessage,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<MessageCommitResult> {
+    const requestKey = JSON.stringify([message.channelId, message.participantId, idempotencyKey]);
+    const pending = this.pendingMessages.get(requestKey);
+    if (pending) {
+      await pending;
+      return this.resolveMessageRequest(requestKey, requestFingerprint);
+    }
+    const commit = this.commitMessageOnce(requestKey, message, requestFingerprint);
+    this.pendingMessages.set(requestKey, commit);
+    try {
+      return await commit;
+    } finally {
+      this.pendingMessages.delete(requestKey);
+    }
+  }
+
+  private resolveMessageRequest(
+    requestKey: string,
+    requestFingerprint: string,
+  ): MessageCommitResult {
+    const existing = this.messageRequests.get(requestKey);
+    if (!existing) throw new Error("Idempotency record is missing its message");
+    return {
+      message: { ...existing.message, to: [...existing.message.to] },
+      outcome: existing.requestFingerprint === requestFingerprint ? "replayed" : "conflict",
+    };
+  }
+
+  private async commitMessageOnce(
+    requestKey: string,
+    message: NewChannelMessage,
+    requestFingerprint: string,
+  ): Promise<MessageCommitResult> {
+    if (this.messageRequests.has(requestKey)) {
+      return this.resolveMessageRequest(requestKey, requestFingerprint);
+    }
+    const stored = await this.appendMessage(message);
+    this.messageRequests.set(requestKey, { requestFingerprint, message: stored });
+    return { message: stored, outcome: "created" };
   }
 
   async commitResponse(

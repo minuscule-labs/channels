@@ -42,6 +42,26 @@ export const messages = sqliteTable(
   ],
 );
 
+export const messageIdempotency = sqliteTable(
+  "message_idempotency",
+  {
+    channelId: text("channel_id")
+      .notNull()
+      .references(() => channels.id, { onDelete: "cascade" }),
+    participantId: text("participant_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.channelId, table.participantId, table.idempotencyKey] }),
+    uniqueIndex("message_idempotency_message_unique").on(table.messageId),
+  ],
+);
+
 export const responseDeliveries = sqliteTable(
   "response_deliveries",
   {

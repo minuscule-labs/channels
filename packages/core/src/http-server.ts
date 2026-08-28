@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  ChannelConflictError,
   ChannelNotFoundError,
   ChannelService,
   ChannelValidationError,
@@ -18,6 +19,7 @@ export interface ChannelHttpServerOptions {
   service?: ChannelService;
   host?: string;
   port?: number;
+  heartbeatIntervalMs?: number;
 }
 
 export interface ChannelHttpServer {
@@ -56,6 +58,10 @@ function sendEvent(response: ServerResponse, event: ChannelEvent): void {
 export async function createChannelHttpServer(
   options: ChannelHttpServerOptions = {},
 ): Promise<ChannelHttpServer> {
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
+  if (!Number.isSafeInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 1) {
+    throw new RangeError("heartbeatIntervalMs must be a positive integer");
+  }
   const service = options.service ?? new ChannelService();
   const streams = new Set<ServerResponse>();
 
@@ -81,9 +87,14 @@ export async function createChannelHttpServer(
         return;
       }
       if (messagesMatch && request.method === "POST") {
+        const idempotencyKey = request.headers["idempotency-key"];
+        if (Array.isArray(idempotencyKey)) {
+          throw new ChannelValidationError("idempotency key must be a single header value");
+        }
         const message = await service.createMessage(
           messagesMatch[1]!,
           (await readJson(request)) as CreateMessageInput,
+          idempotencyKey,
         );
         json(response, 201, { message });
         return;
@@ -110,7 +121,13 @@ export async function createChannelHttpServer(
         });
         streams.add(response);
         response.write(`event: ready\ndata: ${JSON.stringify({ channelId })}\n\n`);
+        const heartbeat = setInterval(
+          () => response.write(": keepalive\n\n"),
+          heartbeatIntervalMs,
+        );
+        heartbeat.unref();
         request.on("close", () => {
+          clearInterval(heartbeat);
           streams.delete(response);
           unsubscribe();
         });
@@ -126,9 +143,11 @@ export async function createChannelHttpServer(
       const status =
         error instanceof ChannelNotFoundError
           ? 404
-          : error instanceof ChannelValidationError
-            ? 400
-            : 500;
+          : error instanceof ChannelConflictError
+            ? 409
+            : error instanceof ChannelValidationError
+              ? 400
+              : 500;
       json(response, status, { error: error instanceof Error ? error.message : String(error) });
     }
   });
