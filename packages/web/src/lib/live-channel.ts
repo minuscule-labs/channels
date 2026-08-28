@@ -1,24 +1,25 @@
-import type { ChannelEvent, ChannelMessage, ChannelMetadata } from "@minu/channels-core";
+import type { ChannelEvent, ChannelMessage, ChannelMetadata } from "@minu/channels-core/types";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { channels } from "./api";
+import { channelCacheAction } from "./channel-events";
 import { mergeMessages } from "./messages";
+import { queryKeys } from "./query-keys";
 
 export type ConnectionState = "connecting" | "live" | "disconnected";
 
-export const channelKeys = {
-  metadata: (channelId: string) => ["channel", channelId] as const,
-  messages: (channelId: string) => ["channel-messages", channelId] as const,
-};
+const MAX_RECONNECT_DELAY_MS = 10_000;
 
 export function useLiveChannel(channelId: string) {
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [attempt, setAttempt] = useState(0);
+  const reconnectStreak = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
-    let settled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let highestRosterRevisionSeen = 0;
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => {
@@ -27,35 +28,33 @@ export function useLiveChannel(channelId: string) {
     });
 
     const apply = (event: ChannelEvent) => {
-      if (event.type === "message.created") {
+      const current = queryClient.getQueryData<ChannelMetadata>(queryKeys.channel(channelId));
+      const action = channelCacheAction(event, current?.rosterRevision);
+      if (action.type === "merge-message") {
         queryClient.setQueryData<ChannelMessage[]>(
-          channelKeys.messages(channelId),
-          (current) => mergeMessages(current, [event.message]),
+          queryKeys.channelMessages(channelId),
+          (messages) => mergeMessages(messages, [action.message]),
         );
-      } else {
-        const current = queryClient.getQueryData<ChannelMetadata>(channelKeys.metadata(channelId));
-        if (!current || event.rosterRevision > current.rosterRevision) {
-          void queryClient.invalidateQueries({ queryKey: channelKeys.metadata(channelId) });
-        }
+      } else if (action.type === "refresh-metadata") {
+        highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.channel(channelId), exact: true });
       }
     };
 
     const stream = (async () => {
-      try {
-        for await (const event of channels.events(channelId, {
-          signal: controller.signal,
-          onReady: resolveReady,
-        })) {
-          apply(event);
-        }
-        if (!controller.signal.aborted) throw new Error("Channel event stream closed");
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        const normalized = error instanceof Error ? error : new Error(String(error));
-        rejectReady(normalized);
+      for await (const event of channels.events(channelId, {
+        signal: controller.signal,
+        onReady: resolveReady,
+      })) {
+        apply(event);
       }
+      if (!controller.signal.aborted) throw new Error("Channel event stream closed");
     })();
+    void stream.catch((error) => {
+      if (!controller.signal.aborted) rejectReady(error instanceof Error ? error : new Error(String(error)));
+    });
 
+    setConnection("connecting");
     void (async () => {
       try {
         await ready;
@@ -64,30 +63,39 @@ export function useLiveChannel(channelId: string) {
           channels.listMessages(channelId),
         ]);
         if (controller.signal.aborted) return;
-        queryClient.setQueryData(channelKeys.metadata(channelId), metadata);
+        queryClient.setQueryData(queryKeys.channel(channelId), metadata);
         queryClient.setQueryData<ChannelMessage[]>(
-          channelKeys.messages(channelId),
+          queryKeys.channelMessages(channelId),
           (current) => mergeMessages(current, messages),
         );
-        settled = true;
+        if (highestRosterRevisionSeen > metadata.rosterRevision) {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.channel(channelId), exact: true });
+        }
+        reconnectStreak.current = 0;
         setConnection("live");
         await stream;
-        if (!controller.signal.aborted) setConnection("disconnected");
       } catch {
-        if (!controller.signal.aborted) setConnection("disconnected");
+        if (controller.signal.aborted) return;
+        setConnection("disconnected");
+        const delay = Math.min(1_000 * (2 ** reconnectStreak.current), MAX_RECONNECT_DELAY_MS);
+        reconnectStreak.current += 1;
+        retryTimer = setTimeout(() => setAttempt((current) => current + 1), delay);
       }
     })();
 
-    setConnection("connecting");
     return () => {
       controller.abort();
-      if (!settled) rejectReady(new Error("Channel changed"));
+      if (retryTimer) clearTimeout(retryTimer);
+      rejectReady(new Error("Channel changed"));
       void stream.catch(() => undefined);
     };
   }, [attempt, channelId, queryClient]);
 
   return {
     connection,
-    retry: () => setAttempt((current) => current + 1),
+    retry: () => {
+      reconnectStreak.current = 0;
+      setAttempt((current) => current + 1);
+    },
   };
 }

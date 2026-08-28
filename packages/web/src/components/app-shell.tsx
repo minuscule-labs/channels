@@ -3,15 +3,17 @@ import { Outlet, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { channels } from "../lib/api";
+import { queryKeys } from "../lib/query-keys";
+import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const workspaces = useQuery({ queryKey: ["workspaces"], queryFn: () => channels.listWorkspaces() });
+  const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => channels.listWorkspaces() });
   const channelQueries = useQueries({
     queries: (workspaces.data ?? []).map((workspace) => ({
-      queryKey: ["workspace-channels", workspace.id],
+      queryKey: queryKeys.workspaceChannels(workspace.id),
       queryFn: () => channels.listWorkspaceChannels(workspace.id),
       staleTime: 5_000,
     })),
@@ -51,33 +53,30 @@ export function AppShell() {
       <div className="hidden md:block">
         <NavigationSidebar items={navigationItems} activeChannelId={activeChannelId} />
       </div>
-      {navigationOpen ? (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/50"
-            aria-label="Dismiss navigation"
-            onClick={() => setNavigationOpen(false)}
-          />
-          <div className="relative h-full w-[min(20rem,88vw)]">
-            <NavigationSidebar
-              items={navigationItems}
-              activeChannelId={activeChannelId}
-              onNavigate={() => setNavigationOpen(false)}
-              onClose={() => setNavigationOpen(false)}
-            />
-          </div>
-        </div>
-      ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <button
-          type="button"
-          className="icon-button fixed top-2.5 left-3 z-40 inline-flex md:hidden"
-          aria-label="Open navigation"
-          onClick={() => setNavigationOpen(true)}
+        <Drawer
+          open={navigationOpen}
+          onOpenChange={setNavigationOpen}
+          side="left"
+          title="Navigation"
+          description="Choose a Workspace and Channel."
+          trigger={(
+            <button
+              type="button"
+              className="icon-button fixed top-2.5 left-3 z-40 inline-flex md:hidden"
+              aria-label="Open navigation"
+            >
+              <Menu className="h-4 w-4" />
+            </button>
+          )}
         >
-          <Menu className="h-4 w-4" />
-        </button>
+          <NavigationSidebar
+            items={navigationItems}
+            activeChannelId={activeChannelId}
+            onNavigate={() => setNavigationOpen(false)}
+            onClose={() => setNavigationOpen(false)}
+          />
+        </Drawer>
         <Outlet />
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChannelMessage, Participant } from "@minu/channels-core";
+import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 import { mergeMessages, structuredTargets } from "../src/lib/messages";
 
 const participants: Participant[] = [

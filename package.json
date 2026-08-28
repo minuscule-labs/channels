@@ -14,6 +14,7 @@
     "web:dev": "pnpm --filter @minu/channels-web dev",
     "web:check": "pnpm --filter @minu/channels-web check",
     "web:test": "pnpm --filter @minu/channels-web test",
+    "web:test:browser": "pnpm build && pnpm --filter @minu/channels-web test:browser",
     "web:build": "pnpm --filter @minu/channels-web build",
     "serve": "node packages/storage-drizzle/dist/src/cli.js"
   },

@@ -1,4 +1,4 @@
-import type { ChannelMessage, Participant } from "@minu/channels-core";
+import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 
 export function mergeMessages(
   current: ChannelMessage[] | undefined,

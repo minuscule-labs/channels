@@ -26,6 +26,7 @@ The browser must never open `relay.db`, receive Runtime credentials, or import R
 ## Foundation slice
 
 - React, TanStack Router, TanStack Query, Tailwind, and Vite.
+- Radix Dialog for accessible mobile drawers, matching the proven MinuNotes primitive approach.
 - MinuNotes-inspired responsive sidebar shell and flat technical visual language.
 - Workspace and Channel navigation.
 - Channel timeline ordered by monotonic sequence.
@@ -63,9 +64,21 @@ PATCH /local/workspaces/:id/config
 
 ## Deferred
 
-- Authentication and hosted deployment.
+- Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
 - Private Runtime controls until the local control API exists.
 - Channel creation and participant selection.
 - Membership administration.
 - Threads, reactions, attachments, search, unread state, and notifications.
 - TUI parity.
+
+## Collaboration hardening
+
+The implemented hardening slice builds OpenCode-style client/service seams with T3 Code-style React interaction patterns without changing the Channel domain model:
+
+- Central query keys and pure SSE event-to-cache reduction.
+- Client-generated message idempotency keys retained across retries.
+- Draft persistence isolated by Workspace, Channel, and human author.
+- Cursor-aware, keyboard-accessible mention suggestions with IME-safe submission.
+- Deterministic timeline projection with day boundaries and compatible-message grouping.
+- Automatic bounded SSE reconnect with authoritative ready/refetch/merge recovery.
+- Playwright coverage against a real seeded Channels server for message send, roster revision, disconnect catch-up, stable retry keys, and accessible mobile drawers.

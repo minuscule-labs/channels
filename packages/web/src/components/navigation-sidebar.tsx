@@ -1,4 +1,4 @@
-import type { ChannelMetadata, Workspace } from "@minu/channels-core";
+import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
 import { Hash, MessageSquare, X } from "lucide-react";
 import { shortId } from "../lib/messages";

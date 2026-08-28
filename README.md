@@ -103,14 +103,19 @@ pnpm serve \
   --auth-token "$TURSO_AUTH_TOKEN"
 ```
 
-Run the web client during local development with:
+Run the loopback-only web client during local development with:
 
 ```bash
 pnpm web:dev
 # Override the default API proxy when Channels is not on port 4310:
 VITE_CHANNELS_PROXY_TARGET=http://127.0.0.1:4400 pnpm web:dev
+
+pnpm web:check
+pnpm web:test
+pnpm --filter @minu/channels-web exec playwright install chromium # once per machine
+pnpm web:test:browser
 ```
 
-The browser uses the public Channels HTTP/SSE API directly. Private Runtime bindings, local roots, status, steering, and interruption will use a separate localhost control API before those controls are added to the UI; the browser must never read the private Relay database or Runtime credentials directly.
+The browser uses the public Channels HTTP/SSE API directly. Private Runtime bindings, local roots, status, steering, and interruption will use a separate localhost control API before those controls are added to the UI; the browser must never read the private Relay database or Runtime credentials directly. Authentication is intentionally absent until Channels can authenticate requests server-side; when introduced, the planned baseline is MinuNotes' Better Auth email-OTP/session pattern rather than a client-only login screen.
 
 An optional separately installed Minu CLI may expose the same server as `minu channels serve`. The Pi collaboration demo lives under `examples/pi-demo` because it composes Channels with MinuRuntime and is not required to build or deploy Channels.
