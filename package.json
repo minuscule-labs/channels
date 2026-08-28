@@ -10,6 +10,7 @@
     "check": "tsc -b --pretty false",
     "test": "pnpm build && node --test packages/*/dist/test/*.test.js",
     "db:generate": "drizzle-kit generate --config packages/storage-drizzle/drizzle.config.ts",
+    "relay-db:generate": "drizzle-kit generate --config packages/relay-storage-drizzle/drizzle.config.ts",
     "serve": "node packages/storage-drizzle/dist/src/cli.js"
   },
   "devDependencies": {

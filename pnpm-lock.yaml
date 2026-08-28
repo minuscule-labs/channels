@@ -26,6 +26,18 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/relay-storage-drizzle:
+    dependencies:
+      '@libsql/client':
+        specifier: ^0.17.4
+        version: 0.17.4
+      '@minu/channels-relay':
+        specifier: workspace:*
+        version: link:../relay
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@libsql/client@0.17.4)
+
   packages/storage-drizzle:
     dependencies:
       '@libsql/client':

@@ -15,6 +15,7 @@
   "dependencies": {
     "@minu/channels-core": "link:../../packages/core",
     "@minu/channels-relay": "link:../../packages/relay",
+    "@minu/channels-relay-storage-drizzle": "link:../../packages/relay-storage-drizzle",
     "@minu/channels-storage-drizzle": "link:../../packages/storage-drizzle",
     "@minu/runtime-core": "link:../../../runtime/packages/core",
     "@minu/runtime-pi": "link:../../../runtime/packages/pi",

@@ -14,6 +14,9 @@ importers:
       '@minu/channels-relay':
         specifier: link:../../packages/relay
         version: link:../../packages/relay
+      '@minu/channels-relay-storage-drizzle':
+        specifier: link:../../packages/relay-storage-drizzle
+        version: link:../../packages/relay-storage-drizzle
       '@minu/channels-storage-drizzle':
         specifier: link:../../packages/storage-drizzle
         version: link:../../packages/storage-drizzle

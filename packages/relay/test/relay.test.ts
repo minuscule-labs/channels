@@ -9,6 +9,11 @@ import {
   type ResponseResult,
 } from "@minu/channels-core";
 import {
+  InMemoryRelayBindingStore,
+  LocalRelayDirectory,
+  restoreChannelBindings,
+} from "../src/binding-store.js";
+import {
   ChannelRuntimeRelay,
   type AgentRuntimePort,
   type RuntimePortMessage,
@@ -193,6 +198,167 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
   }
 });
 
+test("private bindings isolate Channel sessions and restore them under generation-safe leases", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new FakeRuntime();
+  const store = new InMemoryRelayBindingStore();
+  const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
+  const reviewer = await client.createIdentity({ type: "agent", displayName: "Reviewer" });
+  const human = await client.createIdentity({ type: "human", displayName: "David" });
+  const workspace = await client.createWorkspace({ slug: "private-bindings", name: "Bindings" });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: human.id,
+    mentionHandle: "david",
+    accessRole: "owner",
+  });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: agent.id,
+    mentionHandle: "builder",
+  });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: reviewer.id,
+    mentionHandle: "reviewer",
+  });
+  const channelParticipants = [human.id, agent.id, reviewer.id];
+  const [channelA, channelB] = await Promise.all([
+    client.createChannel({ workspaceId: workspace.id, participantIds: channelParticipants }),
+    client.createChannel({ workspaceId: workspace.id, participantIds: channelParticipants }),
+  ]);
+  const directory = new LocalRelayDirectory(client, store);
+  await directory.configureWorkspace({
+    workspaceId: workspace.id,
+    rootUri: "file:///workspace",
+  });
+  await Promise.all([
+    directory.configureAgent({
+      workspaceId: workspace.id,
+      agentIdentityId: agent.id,
+    }),
+    directory.configureAgent({
+      workspaceId: workspace.id,
+      agentIdentityId: reviewer.id,
+    }),
+  ]);
+  const bindingA = await directory.bindAgent({
+    channelId: channelA.id,
+    agentIdentityId: agent.id,
+    runtimeAdapter: "fake",
+    runtimeSessionId: "session-channel-a",
+  });
+  await Promise.all([
+    directory.bindAgent({
+      channelId: channelB.id,
+      agentIdentityId: agent.id,
+      runtimeAdapter: "fake",
+      runtimeSessionId: "session-channel-b",
+    }),
+    directory.bindAgent({
+      channelId: channelA.id,
+      agentIdentityId: reviewer.id,
+      runtimeAdapter: "fake",
+      runtimeSessionId: "reviewer-channel-a",
+    }),
+    directory.bindAgent({
+      channelId: channelB.id,
+      agentIdentityId: reviewer.id,
+      runtimeAdapter: "fake",
+      runtimeSessionId: "reviewer-channel-b",
+    }),
+  ]);
+  const publicMetadata = JSON.stringify(await client.getChannel(channelA.id));
+  assert.doesNotMatch(publicMetadata, /session-channel-a|file:\/\/\/workspace/);
+
+  const first = await restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    leaseOwner: "relay-one",
+    runtimes: { fake: runtime },
+    leaseDurationMs: 30,
+  });
+  const competitor = await restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    leaseOwner: "relay-two",
+    runtimes: { fake: runtime },
+  });
+  const otherChannel = await restoreChannelBindings({
+    client,
+    store,
+    channelId: channelB.id,
+    leaseOwner: "relay-two",
+    runtimes: { fake: runtime },
+  });
+  try {
+    assert.deepEqual(
+      first.bindings.map(({ sessionId }) => sessionId).sort(),
+      ["reviewer-channel-a", "session-channel-a"],
+    );
+    assert.equal(competitor.bindings.length, 0);
+    assert.deepEqual(
+      otherChannel.bindings.map(({ sessionId }) => sessionId).sort(),
+      ["reviewer-channel-b", "session-channel-b"],
+    );
+    assert.equal(await first.renew(), true);
+    let leaseLost = false;
+    first.startAutoRenew(() => {
+      leaseLost = true;
+    });
+    const replaced = await directory.replaceSession({
+      bindingId: bindingA.id,
+      expectedGeneration: 1,
+      runtimeAdapter: "fake",
+      runtimeSessionId: "replacement-channel-a",
+    });
+    assert.equal(replaced.generation, 2);
+    const staleBinding = first.bindings.find(({ sessionId }) => sessionId === "session-channel-a");
+    assert.equal(await staleBinding?.verifyLease?.(), false);
+    await waitUntil(async () => leaseLost);
+  } finally {
+    await Promise.all([first.close(), competitor.close(), otherChannel.close()]);
+  }
+  assert.equal(
+    await store.replaceBindingSession(
+      bindingA.id,
+      1,
+      "fake",
+      "stale-overwrite",
+      new Date().toISOString(),
+    ),
+    undefined,
+  );
+  const restarted = await restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    leaseOwner: "relay-after-restart",
+    runtimes: { fake: runtime },
+  });
+  assert.deepEqual(
+    restarted.bindings.map(({ sessionId }) => sessionId).sort(),
+    ["replacement-channel-a", "reviewer-channel-a"],
+  );
+  await restarted.close();
+
+  runtime.setStatus("replacement-channel-a", "offline");
+  const offline = await restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    leaseOwner: "relay-offline",
+    runtimes: { fake: runtime },
+  });
+  assert.deepEqual(
+    offline.bindings.map(({ sessionId }) => sessionId),
+    ["reviewer-channel-a"],
+  );
+  assert.equal((await store.getBinding(bindingA.id))?.state, "offline");
+  await offline.close();
+  await server.close();
+});
+
 test("relay catches up on addressed messages using a persisted cursor", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint);
@@ -228,6 +394,48 @@ test("relay catches up on addressed messages using a persisted cursor", async ()
       (await cursors.getCursor(channel.id, "agent-a")) === 3,
     );
     assert.equal(runtime.prompts.get("session-a")?.length, 2);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("relay suppresses an active result after its private binding lease is lost", async () => {
+  const storage = new InMemoryChannelStorage();
+  const server = await createChannelHttpServer({ service: new ChannelService(storage) });
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new RecoverableRuntime();
+  const channel = await client.createChannel({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  let leaseHeld = true;
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{
+      participantId: "agent-a",
+      sessionId: "leased-session",
+      runtime,
+      verifyLease: async () => leaseHeld,
+    }],
+    cursorStore: storage,
+    turnPollIntervalMs: 5,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a do not publish after fencing",
+    });
+    await waitUntil(async () => runtime.startCount === 1);
+    leaseHeld = false;
+    runtime.complete("STALE_RESPONSE");
+    await relay.waitForIdle();
+    assert.equal((await client.listMessages(channel.id)).length, 1);
+    assert.equal(await storage.getCursor(channel.id, "agent-a"), 0);
   } finally {
     await relay.stop();
     await server.close();

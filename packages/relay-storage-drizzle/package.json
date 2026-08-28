@@ -1,0 +1,16 @@
+{
+  "name": "@minu/channels-relay-storage-drizzle",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./schema": "./dist/src/schema.js"
+  },
+  "types": "./dist/src/index.d.ts",
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "@minu/channels-relay": "workspace:*",
+    "drizzle-orm": "^0.45.2"
+  }
+}

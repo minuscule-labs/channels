@@ -37,6 +37,8 @@ export interface AgentChannelBinding {
   wakePolicy?: WakePolicy;
   maxMessages?: number;
   maxTokens?: number;
+  /** Private fencing check used to suppress work and responses after lease loss. */
+  verifyLease?(): Promise<boolean>;
 }
 
 export interface ChannelRuntimeRelayOptions {
@@ -220,6 +222,9 @@ export class ChannelRuntimeRelay {
 
   async steer(participantId: string, actorId: string, input: string): Promise<void> {
     const state = this.stateFor(participantId);
+    if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
+      throw new Error(`Agent binding lease was lost: ${participantId}`);
+    }
     if (!state.binding.runtime.steer) {
       throw new Error(`Agent Runtime does not support steering: ${participantId}`);
     }
@@ -239,6 +244,9 @@ export class ChannelRuntimeRelay {
     replacement: string,
   ): Promise<void> {
     const state = this.stateFor(participantId);
+    if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
+      throw new Error(`Agent binding lease was lost: ${participantId}`);
+    }
     if (!state.binding.runtime.interrupt) {
       throw new Error(`Agent Runtime does not support interruption: ${participantId}`);
     }
@@ -300,6 +308,9 @@ export class ChannelRuntimeRelay {
 
   private async handle(state: BindingState, trigger: ChannelMessage): Promise<void> {
     const { binding } = state;
+    if (binding.verifyLease && !(await binding.verifyLease())) {
+      throw new Error(`Agent binding lease was lost: ${binding.participantId}`);
+    }
     state.activeTrigger = trigger;
     const channelMessages = (await this.options.client.listMessages(this.options.channelId)).filter(
       (message) => message.sequence > state.lastProcessedSequence,
@@ -338,6 +349,11 @@ export class ChannelRuntimeRelay {
       }
       const after = await binding.runtime.messages(binding.sessionId);
       response = latestAssistant(after, before.length);
+    }
+    if (binding.verifyLease && !(await binding.verifyLease())) {
+      state.activeTrigger = undefined;
+      state.interruptedTriggerId = undefined;
+      return;
     }
     if (state.interruptedTriggerId === trigger.id) {
       await this.markProcessed(state, trigger.sequence);

@@ -2,7 +2,9 @@
 import { Command, Option } from "commander";
 import { homedir } from "node:os";
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   ChannelClient,
   ChannelService,
@@ -16,7 +18,16 @@ import {
   localLibSqlUrl,
 } from "@minu/channels-storage-drizzle";
 import { PiAgentRuntime } from "@minu/runtime-pi";
-import { ChannelRuntimeRelay } from "@minu/channels-relay";
+import {
+  ChannelRuntimeRelay,
+  InMemoryRelayBindingStore,
+  LocalRelayDirectory,
+  restoreChannelBindings,
+} from "@minu/channels-relay";
+import {
+  DrizzleLibSqlRelayStorage,
+  localRelayLibSqlUrl,
+} from "@minu/channels-relay-storage-drizzle";
 
 const BUILDER_PERSONA = `You are Agent A, the builder in a shared MinuChannel.
 Implement or investigate the work you are explicitly addressed with. Inspect the actual project, use tools, and report concrete results rather than speculation. When another review is useful, use the Channel roster to identify the reviewer and mention that participant's exact id with a focused handoff. Do not speak for other participants.`;
@@ -29,6 +40,7 @@ interface DemoOptions {
   db?: string;
   dbUrl?: string;
   authToken?: string;
+  relayDb?: string;
   memory?: boolean;
 }
 
@@ -71,11 +83,13 @@ async function main(): Promise<void> {
     .addOption(new Option("--db <path>", "local libSQL database path").conflicts("dbUrl"))
     .addOption(new Option("--db-url <url>", "libSQL or Turso database URL").conflicts("db"))
     .option("--auth-token <token>", "Turso authentication token")
+    .option("--relay-db <path>", "private local Relay configuration database")
     .addOption(
       new Option("--memory", "use disposable in-memory storage").conflicts([
         "db",
         "dbUrl",
         "authToken",
+        "relayDb",
       ]),
     )
     .showHelpAfterError();
@@ -84,6 +98,7 @@ async function main(): Promise<void> {
 
   const cwd = resolve(options.cwd ?? process.cwd());
   const defaultDatabasePath = join(homedir(), ".minu", "channels", "channels.db");
+  const defaultRelayDatabasePath = join(homedir(), ".minu", "channels", "relay.db");
   const databaseUrl = options.dbUrl
     ?? (options.db ? localLibSqlUrl(options.db) : process.env.TURSO_DATABASE_URL)
     ?? localLibSqlUrl(defaultDatabasePath);
@@ -91,6 +106,11 @@ async function main(): Promise<void> {
   const storage = options.memory
     ? new InMemoryChannelStorage()
     : await DrizzleLibSqlChannelStorage.open({ url: databaseUrl, authToken });
+  const relayStorage = options.memory
+    ? new InMemoryRelayBindingStore()
+    : await DrizzleLibSqlRelayStorage.open({
+      url: localRelayLibSqlUrl(options.relayDb ?? defaultRelayDatabasePath),
+    });
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
   const client = new ChannelClient(server.endpoint);
   const runtime = new PiAgentRuntime();
@@ -135,19 +155,55 @@ async function main(): Promise<void> {
     workspaceId: workspace.id,
     participantIds: [human!.id, agentA!.id, agentB!.id],
   });
+  const relayDirectory = new LocalRelayDirectory(client, relayStorage);
+  await relayDirectory.configureWorkspace({
+    workspaceId: workspace.id,
+    rootUri: pathToFileURL(cwd).href,
+  });
+  await Promise.all([
+    relayDirectory.configureAgent({
+      workspaceId: workspace.id,
+      agentIdentityId: agentA!.id,
+      personaRef: "pi-demo:builder:v1",
+    }),
+    relayDirectory.configureAgent({
+      workspaceId: workspace.id,
+      agentIdentityId: agentB!.id,
+      personaRef: "pi-demo:reviewer:v1",
+    }),
+  ]);
+  await Promise.all([
+    relayDirectory.bindAgent({
+      channelId: channel.id,
+      agentIdentityId: agentA!.id,
+      runtimeAdapter: "pi",
+      runtimeSessionId: sessions[0]!.id,
+    }),
+    relayDirectory.bindAgent({
+      channelId: channel.id,
+      agentIdentityId: agentB!.id,
+      runtimeAdapter: "pi",
+      runtimeSessionId: sessions[1]!.id,
+    }),
+  ]);
+  const restoredBindings = await restoreChannelBindings({
+    client,
+    store: relayStorage,
+    channelId: channel.id,
+    leaseOwner: `pi-demo:${randomUUID()}`,
+    runtimes: { pi: runtime },
+  });
 
   const relay = new ChannelRuntimeRelay({
     client,
     channelId: channel.id,
-    bindings: [
-      { participantId: agentA!.id, sessionId: sessions[0]!.id, runtime },
-      { participantId: agentB!.id, sessionId: sessions[1]!.id, runtime },
-    ],
+    bindings: restoredBindings.bindings,
     cursorStore: storage,
     onError(binding, error) {
       console.error(`\n[relay${binding ? `:${binding.participantId}` : ""}] ${error.message}`);
     },
   });
+  restoredBindings.startAutoRenew(() => relay.stop());
   await relay.start();
 
   const viewerController = new AbortController();
@@ -171,7 +227,10 @@ async function main(): Promise<void> {
 
   console.log(`Local MinuChannel: ${channel.id}`);
   console.log(`Endpoint: ${server.endpoint}`);
-  console.log(options.memory ? "Storage: memory" : `Storage: ${databaseUrl}`);
+  console.log(options.memory ? "Storage: memory" : `Channel storage: ${databaseUrl}`);
+  if (!options.memory) {
+    console.log(`Private Relay storage: ${localRelayLibSqlUrl(options.relayDb ?? defaultRelayDatabasePath)}`);
+  }
   console.log(`agent-a (builder): ${sessions[0]!.id}`);
   console.log(`agent-b (reviewer): ${sessions[1]!.id}`);
   console.log("\nMention @agent-a, @agent-b, or @channel to wake agents.");
@@ -240,9 +299,11 @@ async function main(): Promise<void> {
     console.log("\nWaiting for active agent turns to settle...");
     await relay.waitForIdle();
     await relay.stop();
+    await restoredBindings.close();
     viewerController.abort();
     await viewer.catch(() => {});
     await Promise.all(sessions.map((session) => runtime.stop(session.id).catch(() => {})));
+    await relayStorage.close?.();
     await server.close();
   }
 }

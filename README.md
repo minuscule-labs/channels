@@ -8,7 +8,8 @@ Channels does not run agents or decide workflows. MinuRuntime executes agents, w
 
 - `core` — Channel model, in-memory adapter, HTTP/SSE service, and TypeScript client.
 - `storage-drizzle` — durable Drizzle/libSQL storage for local files or Turso, plus the standalone server CLI.
-- `relay` — mention-driven integration against a small structural `AgentRuntimePort`; it has no Runtime package dependency.
+- `relay` — mention-driven integration, private binding contracts, lease recovery, and a small structural `AgentRuntimePort`; it has no Runtime package dependency.
+- `relay-storage-drizzle` — separate local-only Drizzle/libSQL storage for Workspace roots, private agent configuration, and Channel-specific Runtime bindings.
 - `examples/pi-demo` — optional composition example requiring separately installed MinuRuntime packages.
 
 ## Current API
@@ -54,6 +55,16 @@ The same adapter accepts a deployed Turso URL and token. In-memory mode remains 
 Automated responses use a dedicated idempotent commit operation. A single database transaction allocates the response sequence, inserts the message, records the `(channel, participant, trigger)` delivery, and advances the processed cursor. Repeating a commit returns the original response without emitting another event. This closes the crash window between response posting and cursor persistence.
 
 Ordinary message creation supports optional, durable idempotency scoped by Channel, author participant, and key. Reusing a key with the same effective payload returns the original message without allocating a sequence or emitting another event; changing that payload returns `409 Conflict`. Distinct keys—and all calls without a key—continue to create distinct intentional messages. Keys must be non-empty and at most 255 UTF-8 bytes. Automated response idempotency remains a separate, unchanged operation.
+
+### Private Relay storage
+
+Machine-local execution configuration is deliberately stored separately at:
+
+```text
+~/.minu/channels/relay.db
+```
+
+`LocalRelayDirectory` validates shared Workspace, membership, and Channel records before writing private Workspace roots, agent/persona references, or Runtime session bindings. One reusable Workspace agent configuration can have one binding per Channel, and every binding has its own Runtime session id and transcript. `restoreChannelBindings` verifies Runtime reachability without silently replacing an offline session, acquires a short ownership lease, and returns only the bindings owned by that Relay. Callers renew leases with `startAutoRenew`; generation compare-and-swap prevents stale session replacement. Relay fencing checks run before work and before response delivery, so a process that loses ownership cannot publish stale output or advance the cursor. Already-running tool or filesystem side effects cannot be undone. Runtime ids, roots, personas, and leases are not exposed by Channels HTTP or metadata APIs.
 
 ## Relay
 

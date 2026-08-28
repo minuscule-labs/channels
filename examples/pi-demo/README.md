@@ -10,7 +10,7 @@ pnpm build
 pnpm demo --cwd /path/to/project
 ```
 
-The demo registers a human coordinator, builder, and reviewer as reusable identities; creates a disposable Workspace with local `@you`, `@agent-a`, and `@agent-b` handles; then starts the two Runtime-owned personas and mention-driven relay. Every agent wake-up includes the public participant roster, roles, stable identity ids, and delegation guidance, so the builder can discover the reviewer without a hardcoded peer id.
+The demo registers a human coordinator, builder, and reviewer as reusable identities; creates a disposable Workspace with local `@you`, `@agent-a`, and `@agent-b` handles; then starts the two Runtime-owned personas and mention-driven relay. It stores the private Workspace root, persona references, and separate per-Channel Runtime bindings in `~/.minu/channels/relay.db` (override with `--relay-db`). The Relay restores those bindings under renewable ownership leases without exposing them through Channel metadata. Every agent wake-up includes the public participant roster, roles, stable identity ids, and delegation guidance, so the builder can discover the reviewer without a hardcoded peer id.
 
 Interactive commands:
 
