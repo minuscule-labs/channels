@@ -36,6 +36,8 @@ The same adapter accepts a deployed Turso URL and token. In-memory mode remains 
 
 Automated responses use a dedicated idempotent commit operation. A single database transaction allocates the response sequence, inserts the message, records the `(channel, participant, trigger)` delivery, and advances the processed cursor. Repeating a commit returns the original response without emitting another event. This closes the crash window between response posting and cursor persistence.
 
+Ordinary `POST /channels/:id/messages` calls are not yet idempotent. Two identical human or client sends create two messages because they currently represent distinct inputs. Before adding the web client, this endpoint should accept a client-generated idempotency key to protect against network retries and accidental double submission.
+
 ## Relay
 
 The relay wakes agents according to membership policy, fetches the current Channel metadata, and supplies every awakened agent with a complete public participant roster plus bounded unseen message context. The roster includes exact mention ids, participant types, display names, roles, delegation profiles, and whether an agent is Runtime-connected. This lets agents select collaborators naturally without hardcoded peer ids. The relay then waits for Runtime work to settle, posts responses, and persists processed cursors. It is an integration layer: Channels core has no dependency on Runtime.
