@@ -1,0 +1,21 @@
+{
+  "name": "@minu/channels-storage-drizzle",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./cli": "./dist/src/cli.js",
+    "./schema": "./dist/src/schema.js"
+  },
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "minu-channels": "./dist/src/cli.js"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "@minu/channels-core": "workspace:*",
+    "commander": "^15.0.0",
+    "drizzle-orm": "^0.45.2"
+  }
+}

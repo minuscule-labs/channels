@@ -1,0 +1,27 @@
+{
+  "name": "@minu/channels-pi-demo",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@8.15.5",
+  "bin": {
+    "minu-channel-demo": "./dist/demo-cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "demo": "node dist/demo-cli.js"
+  },
+  "dependencies": {
+    "@minu/channels-core": "link:../../packages/core",
+    "@minu/channels-relay": "link:../../packages/relay",
+    "@minu/channels-storage-drizzle": "link:../../packages/storage-drizzle",
+    "@minu/runtime-core": "link:../../../runtime/packages/core",
+    "@minu/runtime-pi": "link:../../../runtime/packages/pi",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
