@@ -7,9 +7,21 @@ export interface RuntimePortMessage {
   toolName?: string;
 }
 
+export interface RuntimePortTurn {
+  id: string;
+  status: "running" | "completed" | "failed" | "interrupted";
+  input: string;
+  response?: RuntimePortMessage;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Minimal structural contract required to wake a bound agent session. */
 export interface AgentRuntimePort {
   send(sessionId: string, input: string): Promise<void>;
+  startTurn?(sessionId: string, turnId: string, input: string): Promise<RuntimePortTurn>;
+  turn?(sessionId: string, turnId: string): Promise<RuntimePortTurn | undefined>;
   steer?(sessionId: string, input: string): Promise<void>;
   interrupt?(sessionId: string): Promise<void>;
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
@@ -272,7 +284,6 @@ export class ChannelRuntimeRelay {
 
   private async handle(state: BindingState, trigger: ChannelMessage): Promise<void> {
     const { binding } = state;
-    await this.waitUntilIdle(binding);
     state.activeTrigger = trigger;
     const channelMessages = (await this.options.client.listMessages(this.options.channelId)).filter(
       (message) => message.sequence > state.lastProcessedSequence,
@@ -287,11 +298,30 @@ export class ChannelRuntimeRelay {
       binding.maxMessages ?? 20,
       binding.maxTokens ?? 4_000,
     );
-    const before = await binding.runtime.messages(binding.sessionId);
-    try {
-      await binding.runtime.send(binding.sessionId, prompt);
-    } catch (error) {
-      if (state.interruptedTriggerId !== trigger.id) throw error;
+    let response: RuntimePortMessage | undefined;
+    if (binding.runtime.startTurn && binding.runtime.turn) {
+      const turnId = `channel:${this.options.channelId}:${binding.participantId}:${trigger.id}`;
+      let turn = await binding.runtime.turn(binding.sessionId, turnId);
+      if (!turn) {
+        await this.waitUntilIdle(binding);
+        turn = await binding.runtime.startTurn(binding.sessionId, turnId, prompt);
+      }
+      turn = await this.waitForTurn(binding, turnId, turn);
+      if (turn.status === "failed") {
+        throw new Error(`Agent ${binding.participantId} turn failed: ${turn.error ?? "unknown error"}`);
+      }
+      if (turn.status === "interrupted") state.interruptedTriggerId = trigger.id;
+      response = turn.response;
+    } else {
+      await this.waitUntilIdle(binding);
+      const before = await binding.runtime.messages(binding.sessionId);
+      try {
+        await binding.runtime.send(binding.sessionId, prompt);
+      } catch (error) {
+        if (state.interruptedTriggerId !== trigger.id) throw error;
+      }
+      const after = await binding.runtime.messages(binding.sessionId);
+      response = latestAssistant(after, before.length);
     }
     if (state.interruptedTriggerId === trigger.id) {
       await this.markProcessed(state, trigger.sequence);
@@ -299,8 +329,6 @@ export class ChannelRuntimeRelay {
       state.activeTrigger = undefined;
       return;
     }
-    const after = await binding.runtime.messages(binding.sessionId);
-    const response = latestAssistant(after, before.length);
     if (!response) throw new Error(`Agent ${binding.participantId} produced no assistant response`);
 
     const committed = await this.options.client.postResponse(this.options.channelId, {
@@ -321,6 +349,22 @@ export class ChannelRuntimeRelay {
       sequence,
     );
     state.lastProcessedSequence = sequence;
+  }
+
+  private async waitForTurn(
+    binding: AgentChannelBinding,
+    turnId: string,
+    initial: RuntimePortTurn,
+  ): Promise<RuntimePortTurn> {
+    let turn = initial;
+    for (let attempt = 0; attempt < 240; attempt++) {
+      if (turn.status !== "running") return turn;
+      await delay(250);
+      const recovered = await binding.runtime.turn?.(binding.sessionId, turnId);
+      if (!recovered) throw new Error(`Runtime lost accepted turn: ${turnId}`);
+      turn = recovered;
+    }
+    throw new Error(`Timed out waiting for agent turn: ${binding.participantId}`);
   }
 
   private async waitUntilIdle(binding: AgentChannelBinding): Promise<void> {

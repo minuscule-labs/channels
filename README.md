@@ -42,6 +42,8 @@ Ordinary `POST /channels/:id/messages` calls are not yet idempotent. Two identic
 
 The relay wakes agents according to membership policy, fetches the current Channel metadata, and supplies every awakened agent with a complete public participant roster plus bounded unseen message context. The roster includes exact mention ids, participant types, display names, roles, delegation profiles, and whether an agent is Runtime-connected. This lets agents select collaborators naturally without hardcoded peer ids. The relay then waits for Runtime work to settle, posts responses, and persists processed cursors. It is an integration layer: Channels core has no dependency on Runtime.
 
+The structural Runtime port optionally supports stable `startTurn` and `turn` operations. When available, the relay derives a turn id from the Channel, participant, and trigger message, then recovers the same running or completed work after a relay restart instead of repeating agent side effects. Recovery requires the same Runtime session to remain alive.
+
 ### Future roster caching
 
 The correctness-first MVP currently fetches Channel metadata for each wake-up. Once membership becomes mutable, the relay should instead load the roster at startup/reconnect, cache it with a revision, and update it from `participant.added`, `participant.updated`, and `participant.removed` events. A reconnect or revision gap triggers one metadata refetch. Until membership mutation exists, this optimization is intentionally deferred.

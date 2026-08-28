@@ -12,6 +12,7 @@ import {
   ChannelRuntimeRelay,
   type AgentRuntimePort,
   type RuntimePortMessage,
+  type RuntimePortTurn,
 } from "../src/relay.js";
 
 class FakeRuntime implements AgentRuntimePort {
@@ -57,6 +58,52 @@ class FakeRuntime implements AgentRuntimePort {
 
   async messages(sessionId: string): Promise<RuntimePortMessage[]> {
     return [...(this.transcripts.get(sessionId) ?? [])];
+  }
+}
+
+class RecoverableRuntime implements AgentRuntimePort {
+  private readonly turns = new Map<string, RuntimePortTurn>();
+  startCount = 0;
+
+  async send(): Promise<void> {
+    throw new Error("legacy send must not be used when recoverable turns are available");
+  }
+
+  async startTurn(_sessionId: string, turnId: string, input: string): Promise<RuntimePortTurn> {
+    const existing = this.turns.get(turnId);
+    if (existing) return { ...existing, response: existing.response && { ...existing.response } };
+    this.startCount += 1;
+    const timestamp = new Date().toISOString();
+    const turn: RuntimePortTurn = {
+      id: turnId,
+      status: "running",
+      input,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    this.turns.set(turnId, turn);
+    return { ...turn };
+  }
+
+  async turn(_sessionId: string, turnId: string): Promise<RuntimePortTurn | undefined> {
+    const turn = this.turns.get(turnId);
+    return turn ? { ...turn, response: turn.response && { ...turn.response } } : undefined;
+  }
+
+  complete(content: string): void {
+    const turn = [...this.turns.values()].find((candidate) => candidate.status === "running");
+    if (!turn) throw new Error("No running turn");
+    turn.status = "completed";
+    turn.response = { role: "assistant", content };
+    turn.updatedAt = new Date().toISOString();
+  }
+
+  async status(): Promise<"idle" | "working"> {
+    return [...this.turns.values()].some((turn) => turn.status === "running") ? "working" : "idle";
+  }
+
+  async messages(): Promise<RuntimePortMessage[]> {
+    return [];
   }
 }
 
@@ -140,6 +187,63 @@ test("relay catches up on addressed messages using a persisted cursor", async ()
     assert.equal(runtime.prompts.get("session-a")?.length, 2);
   } finally {
     await relay.stop();
+    await server.close();
+  }
+});
+
+test("overlapping relay recovery reuses active turns and preserves queued messages", async () => {
+  const storage = new InMemoryChannelStorage();
+  const server = await createChannelHttpServer({ service: new ChannelService(storage) });
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new RecoverableRuntime();
+  const channel = await client.createChannel({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  const createRelay = () => new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: storage,
+  });
+  const firstRelay = createRelay();
+  const recoveredRelay = createRelay();
+  try {
+    await firstRelay.start();
+    await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a perform side effects once",
+    });
+    await waitUntil(async () => runtime.startCount === 1);
+    await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a queued follow-up",
+    });
+    await recoveredRelay.start();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(runtime.startCount, 1);
+
+    runtime.complete("Completed first exactly once");
+    await waitUntil(async () => runtime.startCount === 2);
+    runtime.complete("Completed follow-up exactly once");
+    await waitUntil(async () =>
+      (await client.listMessages(channel.id)).length === 4
+      && (await storage.getCursor(channel.id, "agent-a")) === 2,
+    );
+    assert.equal(runtime.startCount, 2);
+    assert.deepEqual(
+      (await client.listMessages(channel.id)).map((message) => message.body),
+      [
+        "@agent-a perform side effects once",
+        "@agent-a queued follow-up",
+        "Completed first exactly once",
+        "Completed follow-up exactly once",
+      ],
+    );
+  } finally {
+    await Promise.all([firstRelay.stop(), recoveredRelay.stop()]);
     await server.close();
   }
 });
