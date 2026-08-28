@@ -10,6 +10,7 @@ Channels does not run agents or decide workflows. MinuRuntime executes agents, w
 - `storage-drizzle` — durable Drizzle/libSQL storage for local files or Turso, plus the standalone server CLI.
 - `relay` — mention-driven integration, private binding contracts, lease recovery, and a small structural `AgentRuntimePort`; it has no Runtime package dependency.
 - `relay-storage-drizzle` — separate local-only Drizzle/libSQL storage for Workspace roots, private agent configuration, and Channel-specific Runtime bindings.
+- `web` — responsive React/TanStack/Tailwind collaboration client for Workspace navigation, live Channel messages, mentions, and rosters.
 - `examples/pi-demo` — optional composition example requiring separately installed MinuRuntime packages.
 
 ## Current API
@@ -101,5 +102,15 @@ pnpm serve \
   --db-url "$TURSO_DATABASE_URL" \
   --auth-token "$TURSO_AUTH_TOKEN"
 ```
+
+Run the web client during local development with:
+
+```bash
+pnpm web:dev
+# Override the default API proxy when Channels is not on port 4310:
+VITE_CHANNELS_PROXY_TARGET=http://127.0.0.1:4400 pnpm web:dev
+```
+
+The browser uses the public Channels HTTP/SSE API directly. Private Runtime bindings, local roots, status, steering, and interruption will use a separate localhost control API before those controls are added to the UI; the browser must never read the private Relay database or Runtime credentials directly.
 
 An optional separately installed Minu CLI may expose the same server as `minu channels serve`. The Pi collaboration demo lives under `examples/pi-demo` because it composes Channels with MinuRuntime and is not required to build or deploy Channels.
