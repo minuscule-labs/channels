@@ -70,6 +70,7 @@ test("creates a channel and starts with no messages", async () => {
     assert.equal("messages" in fetchedChannel, false);
     assert.deepEqual(fetchedChannel.participants[0], {
       id: "agent-a",
+      handle: "agent-a",
       type: "agent",
       displayName: "Builder",
       role: "implementation",
@@ -79,6 +80,82 @@ test("creates a channel and starts with no messages", async () => {
     const listed = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`);
     assert.equal(listed.response.status, 200);
     assert.deepEqual(listed.body.messages, []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("registers reusable identities and Workspace-local handles for Channel routing", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const client = new ChannelClient(server.endpoint);
+    const human = await client.createIdentity({ type: "human", displayName: "David" });
+    const builder = await client.createIdentity({
+      type: "agent",
+      displayName: "Builder",
+      publicProfile: "Implements changes",
+    });
+    const outsider = await client.createIdentity({ type: "agent", displayName: "Outsider" });
+    const workspace = await client.createWorkspace({ slug: "runtime", name: "Runtime" });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: human.id,
+      mentionHandle: "David",
+      accessRole: "owner",
+    });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: builder.id,
+      mentionHandle: "builder",
+      roleLabel: "builder",
+    });
+    await assert.rejects(
+      client.addWorkspaceMember(workspace.id, {
+        identityId: outsider.id,
+        mentionHandle: "BUILDER",
+      }),
+      /already exists/,
+    );
+    await assert.rejects(
+      client.addWorkspaceMember(workspace.id, {
+        identityId: outsider.id,
+        mentionHandle: "outsider",
+        accessRole: "admin",
+      }),
+      /must use member access/,
+    );
+
+    const secondWorkspace = await client.createWorkspace({ slug: "website", name: "Website" });
+    await client.addWorkspaceMember(secondWorkspace.id, {
+      identityId: builder.id,
+      mentionHandle: "security-reviewer",
+      roleLabel: "reviewer",
+    });
+    assert.equal(
+      (await client.listWorkspaceMembers(secondWorkspace.id))[0]?.identityId,
+      builder.id,
+    );
+
+    const channel = await client.createChannel({
+      workspaceId: workspace.id,
+      participantIds: [human.id, builder.id],
+    });
+    assert.equal(channel.workspaceId, workspace.id);
+    assert.deepEqual(
+      channel.participants.map((participant) => [participant.id, participant.handle]),
+      [[human.id, "david"], [builder.id, "builder"]],
+    );
+    const message = await client.postMessage(channel.id, {
+      participantId: human.id,
+      body: "Background. @builder please implement this",
+    });
+    assert.deepEqual(message.to, [builder.id]);
+    assert.equal((await client.listWorkspaces()).length, 2);
+    assert.equal((await client.listIdentities()).length, 3);
+    assert.equal((await client.listWorkspaceMembers(workspace.id)).length, 2);
+    assert.equal((await client.listWorkspaceChannels(workspace.id))[0]?.id, channel.id);
+    await assert.rejects(
+      client.createChannel({ workspaceId: workspace.id, participantIds: [outsider.id] }),
+      /not an active Workspace member/,
+    );
   } finally {
     await server.close();
   }

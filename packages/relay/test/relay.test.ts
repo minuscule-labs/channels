@@ -150,6 +150,49 @@ async function waitUntil(assertion: () => Promise<boolean>, timeoutMs = 2_000): 
   throw new Error("Condition was not met before timeout");
 }
 
+test("relay routes Workspace-local handles to stable agent identity ids", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new FakeRuntime();
+  const human = await client.createIdentity({ type: "human", displayName: "David" });
+  const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
+  const workspace = await client.createWorkspace({ slug: "workspace-routing", name: "Routing" });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: human.id,
+    mentionHandle: "david",
+    accessRole: "owner",
+  });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: agent.id,
+    mentionHandle: "builder",
+    roleLabel: "implementation",
+  });
+  const channel = await client.createChannel({
+    workspaceId: workspace.id,
+    participantIds: [human.id, agent.id],
+  });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: agent.id, sessionId: "session-builder", runtime }],
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, {
+      participantId: human.id,
+      body: "Background context. @builder implement this",
+    });
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    const prompt = runtime.prompts.get("session-builder")?.[0] ?? "";
+    assert.match(prompt, new RegExp(`You are @builder \\(identity ${agent.id}\\)`));
+    assert.match(prompt, /@david → @builder: Background context\. @builder implement this/);
+    assert.equal((await client.listMessages(channel.id))[1]?.participantId, agent.id);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("relay catches up on addressed messages using a persisted cursor", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint);
@@ -551,11 +594,11 @@ test("relay wakes only addressed agents and posts responses without reply loops"
     assert.match(runtime.prompts.get("session-a")![0]!, /Background context/);
     assert.match(
       runtime.prompts.get("session-a")![0]!,
-      /@user — human — name: David — role: coordinator/,
+      /@user — human — identity: user — name: David — role: coordinator/,
     );
     assert.match(
       runtime.prompts.get("session-a")![0]!,
-      /@agent-b — agent — name: Reviewer — role: review — runtime-connected/,
+      /@agent-b — agent — identity: agent-b — name: Reviewer — role: review — runtime-connected/,
     );
     assert.match(
       runtime.prompts.get("session-a")![0]!,

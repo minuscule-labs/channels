@@ -4,12 +4,18 @@ import type {
   Channel,
   ChannelEvent,
   ChannelMessage,
+  AddWorkspaceMemberInput,
   ChannelMetadata,
   CreateChannelInput,
+  CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
+  CreateWorkspaceInput,
+  Identity,
   Participant,
   ResponseResult,
+  Workspace,
+  WorkspaceMember,
 } from "./types.js";
 
 export class ChannelNotFoundError extends Error {}
@@ -17,6 +23,8 @@ export class ChannelValidationError extends Error {}
 export class ChannelConflictError extends Error {}
 
 type EventListener = (event: ChannelEvent) => void;
+
+const LEGACY_WORKSPACE_ID = "legacy-default-workspace";
 
 function validateParticipant(participant: Participant): Participant {
   if (!participant || typeof participant !== "object") {
@@ -88,19 +96,24 @@ function messageTargets(channel: Channel, input: CreateMessageInput): string[] {
   if (input.to !== undefined && !Array.isArray(input.to)) {
     throw new ChannelValidationError("to must be an array of participant ids");
   }
-  const mentioned = [...input.body.matchAll(/(?:^|\s)@([a-zA-Z0-9_-]+)\b/g)].map((match) =>
-    match[1] === "channel" ? "@channel" : match[1]!,
+  const resolveTarget = (target: string): string => {
+    if (target === "@channel" || target === "channel") return "@channel";
+    const participant = channel.participants.find(
+      (candidate) => candidate.id === target || candidate.handle?.toLowerCase() === target.toLowerCase(),
+    );
+    if (!participant) throw new ChannelValidationError(`Target participant is not in channel: ${target}`);
+    return participant.id;
+  };
+  const mentioned = [...input.body.matchAll(/(?:^|\s)@([a-zA-Z0-9_-]+)\b/g)].map(
+    (match) => resolveTarget(match[1]!),
   );
-  const targets = [...new Set([...(input.to ?? []), ...mentioned])];
-  for (const target of targets) {
+  const structured = (input.to ?? []).map((target) => {
     if (typeof target !== "string" || !target.trim()) {
       throw new ChannelValidationError("to must contain non-empty participant ids");
     }
-    if (target !== "@channel" && !channel.participants.some((participant) => participant.id === target)) {
-      throw new ChannelValidationError(`Target participant is not in channel: ${target}`);
-    }
-  }
-  return targets;
+    return resolveTarget(target.trim());
+  });
+  return [...new Set([...structured, ...mentioned])];
 }
 
 export class ChannelService {
@@ -108,16 +121,225 @@ export class ChannelService {
 
   constructor(readonly storage: ChannelStorage = new InMemoryChannelStorage()) {}
 
-  async createChannel(input: CreateChannelInput): Promise<Channel> {
-    if (!input || !Array.isArray(input.participants)) {
-      throw new ChannelValidationError("participants must be an array");
+  async createIdentity(input: CreateIdentityInput): Promise<Identity> {
+    if (!input || !["human", "agent", "service"].includes(input.type)) {
+      throw new ChannelValidationError("identity type must be human, agent, or service");
     }
-    const participants = input.participants.map(validateParticipant);
-    if (new Set(participants.map((participant) => participant.id)).size !== participants.length) {
-      throw new ChannelValidationError("participant ids must be unique within a channel");
+    const displayName = input.displayName?.trim() || undefined;
+    const publicProfile = input.publicProfile?.trim() || undefined;
+    if (displayName && displayName.length > 200) {
+      throw new ChannelValidationError("identity displayName must be at most 200 characters");
+    }
+    if (publicProfile && publicProfile.length > 1_000) {
+      throw new ChannelValidationError("identity publicProfile must be at most 1000 characters");
+    }
+    const timestamp = new Date().toISOString();
+    return await this.storage.createIdentity({
+      id: randomUUID(),
+      type: input.type,
+      displayName,
+      publicProfile,
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+  }
+
+  async getIdentity(identityId: string): Promise<Identity> {
+    const identity = await this.storage.getIdentity(identityId);
+    if (!identity) throw new ChannelNotFoundError(`Identity not found: ${identityId}`);
+    return identity;
+  }
+
+  async listIdentities(): Promise<Identity[]> {
+    return await this.storage.listIdentities();
+  }
+
+  async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
+    if (!input || typeof input.slug !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.slug)) {
+      throw new ChannelValidationError("workspace slug must use lowercase letters, digits, and hyphens");
+    }
+    if (typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 200) {
+      throw new ChannelValidationError("workspace name must be a non-empty string up to 200 characters");
+    }
+    if ((await this.storage.listWorkspaces()).some((workspace) => workspace.slug === input.slug)) {
+      throw new ChannelConflictError(`Workspace slug already exists: ${input.slug}`);
+    }
+    const description = input.description?.trim() || undefined;
+    if (description && description.length > 1_000) {
+      throw new ChannelValidationError("workspace description must be at most 1000 characters");
+    }
+    const timestamp = new Date().toISOString();
+    return await this.storage.createWorkspace({
+      id: randomUUID(),
+      slug: input.slug,
+      name: input.name.trim(),
+      description,
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+  }
+
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
+    const workspace = await this.storage.getWorkspace(workspaceId);
+    if (!workspace) throw new ChannelNotFoundError(`Workspace not found: ${workspaceId}`);
+    return workspace;
+  }
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    return await this.storage.listWorkspaces();
+  }
+
+  async addWorkspaceMember(
+    workspaceId: string,
+    input: AddWorkspaceMemberInput,
+  ): Promise<WorkspaceMember> {
+    const workspace = await this.getWorkspace(workspaceId);
+    if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
+    const identity = await this.getIdentity(input.identityId);
+    if (identity.status !== "active") throw new ChannelValidationError("Identity is disabled");
+    if (typeof input.mentionHandle !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(input.mentionHandle)) {
+      throw new ChannelValidationError("mentionHandle must be mention-safe and at most 63 characters");
+    }
+    if ((await this.storage.getWorkspaceMember(workspaceId, identity.id))) {
+      throw new ChannelConflictError("Identity is already a Workspace member");
+    }
+    if ((await this.storage.listWorkspaceMembers(workspaceId)).some(
+      (member) => member.mentionHandle.toLowerCase() === input.mentionHandle.toLowerCase(),
+    )) {
+      throw new ChannelConflictError(`Workspace mention handle already exists: ${input.mentionHandle}`);
+    }
+    const accessRole = input.accessRole ?? "member";
+    if (!["owner", "admin", "member"].includes(accessRole)) {
+      throw new ChannelValidationError("accessRole must be owner, admin, or member");
+    }
+    if (identity.type !== "human" && accessRole !== "member") {
+      throw new ChannelValidationError("Agents and services must use member access");
+    }
+    const roleLabel = input.roleLabel?.trim() || undefined;
+    const profileOverride = input.profileOverride?.trim() || undefined;
+    if (roleLabel && roleLabel.length > 100) throw new ChannelValidationError("roleLabel is too long");
+    if (profileOverride && profileOverride.length > 1_000) {
+      throw new ChannelValidationError("profileOverride is too long");
+    }
+    const timestamp = new Date().toISOString();
+    return await this.storage.addWorkspaceMember({
+      workspaceId,
+      identityId: identity.id,
+      mentionHandle: input.mentionHandle.toLowerCase(),
+      accessRole,
+      roleLabel,
+      profileOverride,
+      status: "active",
+      joinedAt: timestamp,
+      updatedAt: timestamp,
+    });
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    await this.getWorkspace(workspaceId);
+    return await this.storage.listWorkspaceMembers(workspaceId);
+  }
+
+  async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
+    await this.getWorkspace(workspaceId);
+    return await this.storage.listWorkspaceChannels(workspaceId);
+  }
+
+  async createChannel(input: CreateChannelInput): Promise<Channel> {
+    if (!input || (input.participantIds === undefined && input.participants === undefined)) {
+      throw new ChannelValidationError("participantIds must be an array");
+    }
+    if (input.participantIds !== undefined && input.participants !== undefined) {
+      throw new ChannelValidationError("participantIds and legacy participants are mutually exclusive");
+    }
+    let workspaceId = input.workspaceId;
+    let participants: Participant[];
+    if (input.participantIds !== undefined) {
+      if (!Array.isArray(input.participantIds) || !workspaceId) {
+        throw new ChannelValidationError("workspaceId and participantIds are required");
+      }
+      const workspace = await this.getWorkspace(workspaceId);
+      if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
+      if (new Set(input.participantIds).size !== input.participantIds.length) {
+        throw new ChannelValidationError("participantIds must be unique within a Channel");
+      }
+      participants = await Promise.all(input.participantIds.map(async (identityId) => {
+        const [identity, member] = await Promise.all([
+          this.getIdentity(identityId),
+          this.storage.getWorkspaceMember(workspaceId!, identityId),
+        ]);
+        if (identity.status !== "active" || !member || member.status !== "active") {
+          throw new ChannelValidationError(`Identity is not an active Workspace member: ${identityId}`);
+        }
+        return {
+          id: identity.id,
+          handle: member.mentionHandle,
+          type: identity.type,
+          displayName: identity.displayName,
+          role: member.roleLabel,
+          profile: member.profileOverride ?? identity.publicProfile,
+        };
+      }));
+    } else {
+      if (input.workspaceId && input.workspaceId !== LEGACY_WORKSPACE_ID) {
+        throw new ChannelValidationError("legacy participants cannot be used with an explicit Workspace");
+      }
+      const legacy = input.participants!.map(validateParticipant);
+      if (new Set(legacy.map((participant) => participant.id)).size !== legacy.length) {
+        throw new ChannelValidationError("participant ids must be unique within a channel");
+      }
+      workspaceId = workspaceId ?? LEGACY_WORKSPACE_ID;
+      if (!(await this.storage.getWorkspace(workspaceId))) {
+        const timestamp = new Date().toISOString();
+        await this.storage.createWorkspace({
+          id: workspaceId,
+          slug: "legacy-default",
+          name: "Legacy Default Workspace",
+          status: "active",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      }
+      participants = [];
+      for (const participant of legacy) {
+        let identity = await this.storage.getIdentity(participant.id);
+        if (!identity) {
+          const timestamp = new Date().toISOString();
+          identity = await this.storage.createIdentity({
+            id: participant.id,
+            type: participant.type,
+            displayName: participant.displayName,
+            publicProfile: participant.profile,
+            status: "active",
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          });
+        } else if (identity.type !== participant.type) {
+          throw new ChannelConflictError(`Legacy participant id has another identity type: ${participant.id}`);
+        }
+        const mentionHandle = (participant.handle ?? participant.id).toLowerCase();
+        if (!(await this.storage.getWorkspaceMember(workspaceId, identity.id))) {
+          const timestamp = new Date().toISOString();
+          await this.storage.addWorkspaceMember({
+            workspaceId,
+            identityId: identity.id,
+            mentionHandle,
+            accessRole: "member",
+            roleLabel: participant.role,
+            profileOverride: participant.profile,
+            status: "active",
+            joinedAt: timestamp,
+            updatedAt: timestamp,
+          });
+        }
+        participants.push({ ...participant, handle: mentionHandle });
+      }
     }
     return await this.storage.createChannel({
       id: randomUUID(),
+      workspaceId: workspaceId!,
       participants,
       messages: [],
       createdAt: new Date().toISOString(),
@@ -140,6 +362,16 @@ export class ChannelService {
     return (await this.getChannel(channelId)).messages;
   }
 
+  private async assertActiveWorkspaceIdentity(channel: Channel, identityId: string): Promise<void> {
+    const [identity, member] = await Promise.all([
+      this.storage.getIdentity(identityId),
+      this.storage.getWorkspaceMember(channel.workspaceId, identityId),
+    ]);
+    if (!identity || identity.status !== "active" || !member || member.status !== "active") {
+      throw new ChannelValidationError(`Identity is not active in the Channel Workspace: ${identityId}`);
+    }
+  }
+
   async createMessage(
     channelId: string,
     input: CreateMessageInput,
@@ -155,6 +387,7 @@ export class ChannelService {
     if (!channel.participants.some((participant) => participant.id === participantId)) {
       throw new ChannelValidationError(`Participant is not in channel: ${participantId}`);
     }
+    await this.assertActiveWorkspaceIdentity(channel, participantId);
     if (typeof input.body !== "string" || !input.body.trim()) {
       throw new ChannelValidationError("body must be a non-empty string");
     }
@@ -166,6 +399,9 @@ export class ChannelService {
     }
 
     const to = messageTargets(channel, input);
+    await Promise.all(to.filter((target) => target !== "@channel").map(
+      (target) => this.assertActiveWorkspaceIdentity(channel, target),
+    ));
     const pendingMessage: NewChannelMessage = {
       id: randomUUID(),
       channelId,
@@ -212,6 +448,7 @@ export class ChannelService {
     if (!participant) {
       throw new ChannelValidationError(`Participant is not in channel: ${input.participantId}`);
     }
+    await this.assertActiveWorkspaceIdentity(channel, participant.id);
     if (participant.type !== "agent" && participant.type !== "service") {
       throw new ChannelValidationError("responses must be authored by an agent or service");
     }
@@ -232,12 +469,16 @@ export class ChannelService {
       throw new ChannelValidationError("trigger message and sequence do not match this channel");
     }
 
+    const to = messageTargets(channel, { participantId: input.participantId, body: input.body });
+    await Promise.all(to.filter((target) => target !== "@channel").map(
+      (target) => this.assertActiveWorkspaceIdentity(channel, target),
+    ));
     const result = await this.storage.commitResponse(
       {
         id: randomUUID(),
         channelId,
         participantId: input.participantId,
-        to: messageTargets(channel, { participantId: input.participantId, body: input.body }),
+        to,
         body: input.body,
         replyTo: trigger.id,
         createdAt: new Date().toISOString(),

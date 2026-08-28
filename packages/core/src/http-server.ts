@@ -7,10 +7,13 @@ import {
   ChannelValidationError,
 } from "./channel-service.js";
 import type {
+  AddWorkspaceMemberInput,
   ChannelEvent,
   CreateChannelInput,
+  CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
+  CreateWorkspaceInput,
 } from "./types.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -68,6 +71,60 @@ export async function createChannelHttpServer(
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://channels.local");
+
+      if (url.pathname === "/identities" && request.method === "POST") {
+        const identity = await service.createIdentity((await readJson(request)) as CreateIdentityInput);
+        json(response, 201, { identity });
+        return;
+      }
+      if (url.pathname === "/identities" && request.method === "GET") {
+        json(response, 200, { identities: await service.listIdentities() });
+        return;
+      }
+      const identityMatch = url.pathname.match(/^\/identities\/([^/]+)$/);
+      if (identityMatch && request.method === "GET") {
+        json(response, 200, { identity: await service.getIdentity(identityMatch[1]!) });
+        return;
+      }
+
+      if (url.pathname === "/workspaces" && request.method === "POST") {
+        const workspace = await service.createWorkspace((await readJson(request)) as CreateWorkspaceInput);
+        json(response, 201, { workspace });
+        return;
+      }
+      if (url.pathname === "/workspaces" && request.method === "GET") {
+        json(response, 200, { workspaces: await service.listWorkspaces() });
+        return;
+      }
+      const workspaceMatch = url.pathname.match(/^\/workspaces\/([^/]+)$/);
+      if (workspaceMatch && request.method === "GET") {
+        json(response, 200, { workspace: await service.getWorkspace(workspaceMatch[1]!) });
+        return;
+      }
+      const workspaceMembersMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/members$/);
+      if (workspaceMembersMatch && request.method === "POST") {
+        const member = await service.addWorkspaceMember(
+          workspaceMembersMatch[1]!,
+          (await readJson(request)) as AddWorkspaceMemberInput,
+        );
+        json(response, 201, { member });
+        return;
+      }
+      if (workspaceMembersMatch && request.method === "GET") {
+        json(response, 200, { members: await service.listWorkspaceMembers(workspaceMembersMatch[1]!) });
+        return;
+      }
+      const workspaceChannelsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/channels$/);
+      if (workspaceChannelsMatch && request.method === "POST") {
+        const input = (await readJson(request)) as CreateChannelInput;
+        const channel = await service.createChannel({ ...input, workspaceId: workspaceChannelsMatch[1]! });
+        json(response, 201, { channel });
+        return;
+      }
+      if (workspaceChannelsMatch && request.method === "GET") {
+        json(response, 200, { channels: await service.listWorkspaceChannels(workspaceChannelsMatch[1]!) });
+        return;
+      }
 
       if (request.method === "POST" && url.pathname === "/channels") {
         const channel = await service.createChannel((await readJson(request)) as CreateChannelInput);

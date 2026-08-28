@@ -20,14 +20,76 @@ test("initial migration adopts the previous raw SQLite schema", async () => {
       );
       INSERT INTO channels (id, created_at, next_sequence)
       VALUES ('legacy-channel', '2026-01-01T00:00:00.000Z', 1);
+      CREATE TABLE participants (
+        channel_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        display_name TEXT,
+        position INTEGER NOT NULL,
+        PRIMARY KEY(channel_id, id)
+      );
+      INSERT INTO participants (channel_id, id, type, display_name, position)
+      VALUES ('legacy-channel', 'legacy-agent', 'agent', 'Legacy Agent', 0);
     `);
     legacy.close();
 
     const storage = await DrizzleLibSqlChannelStorage.open({ url });
     const channel = await storage.getChannel("legacy-channel");
     assert.equal(channel?.id, "legacy-channel");
-    assert.deepEqual(channel?.participants, []);
+    assert.equal(channel?.workspaceId, "legacy-default-workspace");
+    assert.equal(channel?.participants[0]?.id, "legacy-agent");
+    assert.equal(channel?.participants[0]?.handle, "legacy-agent");
+    assert.equal((await storage.listWorkspaces())[0]?.id, "legacy-default-workspace");
+    assert.equal((await storage.listIdentities())[0]?.id, "legacy-agent");
+    assert.equal(
+      (await storage.listWorkspaceMembers("legacy-default-workspace"))[0]?.identityId,
+      "legacy-agent",
+    );
     await storage.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and Channels", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-workspaces-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  try {
+    const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
+    const first = new ChannelService(firstStorage);
+    const human = await first.createIdentity({ type: "human", displayName: "David" });
+    const agent = await first.createIdentity({ type: "agent", displayName: "Builder" });
+    const workspace = await first.createWorkspace({ slug: "channels", name: "Channels" });
+    await first.addWorkspaceMember(workspace.id, {
+      identityId: human.id,
+      mentionHandle: "david",
+      accessRole: "owner",
+    });
+    await first.addWorkspaceMember(workspace.id, {
+      identityId: agent.id,
+      mentionHandle: "builder",
+      roleLabel: "implementation",
+    });
+    const channel = await first.createChannel({
+      workspaceId: workspace.id,
+      participantIds: [human.id, agent.id],
+    });
+    await first.createMessage(channel.id, {
+      participantId: human.id,
+      body: "@builder implement this",
+    });
+    await first.close();
+
+    const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
+    const second = new ChannelService(secondStorage);
+    assert.equal((await second.listIdentities()).length, 2);
+    assert.equal((await second.listWorkspaceMembers(workspace.id))[1]?.mentionHandle, "builder");
+    const restored = await second.getChannel(channel.id);
+    assert.equal(restored.workspaceId, workspace.id);
+    assert.equal(restored.participants[1]?.id, agent.id);
+    assert.equal(restored.participants[1]?.handle, "builder");
+    assert.deepEqual(restored.messages[0]?.to, [agent.id]);
+    await second.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -186,6 +248,7 @@ test("Drizzle/libSQL preserves channels, sequences, messages, and cursors", asyn
     const second = new ChannelService(secondStorage);
     assert.deepEqual((await second.getChannel(channelId)).participants[1], {
       id: "agent-a",
+      handle: "agent-a",
       type: "agent",
       displayName: "Builder",
       role: "implementation",

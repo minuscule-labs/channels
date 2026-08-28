@@ -14,6 +14,14 @@ Channels does not run agents or decide workflows. MinuRuntime executes agents, w
 ## Current API
 
 ```text
+POST /identities
+GET  /identities
+POST /workspaces
+GET  /workspaces
+POST /workspaces/:id/members
+GET  /workspaces/:id/members
+POST /workspaces/:id/channels
+GET  /workspaces/:id/channels
 POST /channels
 GET  /channels/:id
 POST /channels/:id/messages
@@ -22,7 +30,7 @@ GET  /channels/:id/messages
 GET  /channels/:id/events
 ```
 
-Participants expose an id, type, optional display name, short public role, and public delegation profile. The profile is routing metadata—not the agent's private system prompt. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:
+Identities are reusable humans, agents, or services with stable opaque ids. Workspaces assign each identity a case-insensitive local mention handle, simple `owner` / `admin` / `member` access, optional public role label, and delegation profile override. Channels belong to one Workspace and select active Workspace members as participants. Structured message authors and targets store stable identity ids, while body `@handles` resolve through Workspace membership. Profiles remain routing metadata—not private system prompts. Access roles are modeled for the directory but are not authorization claims until authentication and permission enforcement are added. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:
 
 ```http
 POST /channels/:id/messages
@@ -39,6 +47,8 @@ The default server uses Drizzle ORM and libSQL at:
 ~/.minu/channels/channels.db
 ```
 
+Migration `0004_workspace_directory.sql` adds identities, Workspaces, memberships, Channel ownership, and local handles. It conservatively places existing pre-Workspace Channels and participants into a default legacy Workspace while preserving their messages and routing ids.
+
 The same adapter accepts a deployed Turso URL and token. In-memory mode remains available for tests and disposable demonstrations.
 
 Automated responses use a dedicated idempotent commit operation. A single database transaction allocates the response sequence, inserts the message, records the `(channel, participant, trigger)` delivery, and advances the processed cursor. Repeating a commit returns the original response without emitting another event. This closes the crash window between response posting and cursor persistence.
@@ -53,7 +63,7 @@ The structural Runtime port optionally supports stable `startTurn` and `turn` op
 
 ### Future roster caching
 
-The correctness-first MVP currently fetches Channel metadata for each wake-up. Once membership becomes mutable, the relay should instead load the roster at startup/reconnect, cache it with a revision, and update it from `participant.added`, `participant.updated`, and `participant.removed` events. A reconnect or revision gap triggers one metadata refetch. Until membership mutation exists, this optimization is intentionally deferred.
+The correctness-first MVP currently fetches Channel metadata for each wake-up. Relay prompts display Workspace-local `@handles` while retaining stable identity ids for routing. Once membership becomes mutable, the relay should instead load the roster at startup/reconnect, cache it with a revision, and update it from `participant.added`, `participant.updated`, and `participant.removed` events. A reconnect or revision gap triggers one metadata refetch. Until membership mutation exists, this optimization is intentionally deferred.
 
 ### Explicit controls
 

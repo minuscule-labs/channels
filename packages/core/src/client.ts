@@ -4,9 +4,15 @@ import type {
   ChannelMessage,
   ChannelMetadata,
   CreateChannelInput,
+  CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
+  CreateWorkspaceInput,
+  AddWorkspaceMemberInput,
+  Identity,
   ResponseResult,
+  Workspace,
+  WorkspaceMember,
 } from "./types.js";
 
 export interface ChannelEventOptions {
@@ -20,6 +26,66 @@ export interface PostMessageOptions {
 
 export class ChannelClient {
   constructor(readonly endpoint: string) {}
+
+  async createIdentity(input: CreateIdentityInput): Promise<Identity> {
+    const response = await this.request("/identities", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { identity: Identity }).identity;
+  }
+
+  async getIdentity(identityId: string): Promise<Identity> {
+    const response = await this.request(`/identities/${identityId}`);
+    return ((await response.json()) as { identity: Identity }).identity;
+  }
+
+  async listIdentities(): Promise<Identity[]> {
+    const response = await this.request("/identities");
+    return ((await response.json()) as { identities: Identity[] }).identities;
+  }
+
+  async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
+    const response = await this.request("/workspaces", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { workspace: Workspace }).workspace;
+  }
+
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
+    const response = await this.request(`/workspaces/${workspaceId}`);
+    return ((await response.json()) as { workspace: Workspace }).workspace;
+  }
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    const response = await this.request("/workspaces");
+    return ((await response.json()) as { workspaces: Workspace[] }).workspaces;
+  }
+
+  async addWorkspaceMember(
+    workspaceId: string,
+    input: AddWorkspaceMemberInput,
+  ): Promise<WorkspaceMember> {
+    const response = await this.request(`/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { member: WorkspaceMember }).member;
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    const response = await this.request(`/workspaces/${workspaceId}/members`);
+    return ((await response.json()) as { members: WorkspaceMember[] }).members;
+  }
+
+  async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
+    const response = await this.request(`/workspaces/${workspaceId}/channels`);
+    return ((await response.json()) as { channels: ChannelMetadata[] }).channels;
+  }
 
   async createChannel(input: CreateChannelInput): Promise<Channel> {
     const response = await this.request("/channels", {

@@ -1,7 +1,67 @@
-export type ParticipantType = "human" | "agent" | "service";
+export type IdentityType = "human" | "agent" | "service";
+export type ParticipantType = IdentityType;
+export type IdentityStatus = "active" | "disabled";
+export type WorkspaceStatus = "active" | "archived";
+export type WorkspaceAccessRole = "owner" | "admin" | "member";
+export type WorkspaceMemberStatus = "active" | "disabled";
+
+export interface Identity {
+  id: string;
+  type: IdentityType;
+  displayName?: string;
+  publicProfile?: string;
+  status: IdentityStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateIdentityInput {
+  type: IdentityType;
+  displayName?: string;
+  publicProfile?: string;
+}
+
+export interface Workspace {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string;
+  status: WorkspaceStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateWorkspaceInput {
+  slug: string;
+  name: string;
+  description?: string;
+}
+
+export interface WorkspaceMember {
+  workspaceId: string;
+  identityId: string;
+  mentionHandle: string;
+  accessRole: WorkspaceAccessRole;
+  roleLabel?: string;
+  profileOverride?: string;
+  status: WorkspaceMemberStatus;
+  joinedAt: string;
+  updatedAt: string;
+}
+
+export interface AddWorkspaceMemberInput {
+  identityId: string;
+  mentionHandle: string;
+  accessRole?: WorkspaceAccessRole;
+  roleLabel?: string;
+  profileOverride?: string;
+}
 
 export interface Participant {
+  /** Stable identity id used for authorship and structured routing. */
   id: string;
+  /** Workspace-local mention alias. */
+  handle?: string;
   type: ParticipantType;
   displayName?: string;
   /** Short public responsibility label used for routing and delegation. */
@@ -23,6 +83,7 @@ export interface ChannelMessage {
 
 export interface ChannelMetadata {
   id: string;
+  workspaceId: string;
   participants: Participant[];
   createdAt: string;
 }
@@ -42,7 +103,10 @@ export interface MessageCreatedEvent {
 export type ChannelEvent = MessageCreatedEvent;
 
 export interface CreateChannelInput {
-  participants: Participant[];
+  workspaceId?: string;
+  participantIds?: string[];
+  /** @deprecated Compatibility path for pre-Workspace callers. */
+  participants?: Participant[];
 }
 
 export interface CreateMessageInput {

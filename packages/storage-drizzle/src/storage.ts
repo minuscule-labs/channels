@@ -5,10 +5,13 @@ import type {
   ChannelMessage,
   ChannelMetadata,
   ChannelStorage,
+  Identity,
   MessageCommitResult,
   NewChannelMessage,
   NewResponseMessage,
   ResponseResult,
+  Workspace,
+  WorkspaceMember,
 } from "@minu/channels-core";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
@@ -61,10 +64,86 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     return new DrizzleLibSqlChannelStorage(client, database, options.url);
   }
 
+  async createIdentity(identity: Identity): Promise<Identity> {
+    await this.database.insert(schema.identities).values(identity);
+    return { ...identity };
+  }
+
+  async getIdentity(identityId: string): Promise<Identity | undefined> {
+    const identity = await this.database.query.identities.findFirst({
+      where: eq(schema.identities.id, identityId),
+    });
+    return identity ? { ...identity, displayName: identity.displayName ?? undefined, publicProfile: identity.publicProfile ?? undefined } : undefined;
+  }
+
+  async listIdentities(): Promise<Identity[]> {
+    const identities = await this.database.select().from(schema.identities).orderBy(asc(schema.identities.createdAt));
+    return identities.map((identity) => ({
+      ...identity,
+      displayName: identity.displayName ?? undefined,
+      publicProfile: identity.publicProfile ?? undefined,
+    }));
+  }
+
+  async createWorkspace(workspace: Workspace): Promise<Workspace> {
+    await this.database.insert(schema.workspaces).values(workspace);
+    return { ...workspace };
+  }
+
+  async getWorkspace(workspaceId: string): Promise<Workspace | undefined> {
+    const workspace = await this.database.query.workspaces.findFirst({
+      where: eq(schema.workspaces.id, workspaceId),
+    });
+    return workspace ? { ...workspace, description: workspace.description ?? undefined } : undefined;
+  }
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    const workspaces = await this.database.select().from(schema.workspaces).orderBy(asc(schema.workspaces.createdAt));
+    return workspaces.map((workspace) => ({ ...workspace, description: workspace.description ?? undefined }));
+  }
+
+  async addWorkspaceMember(member: WorkspaceMember): Promise<WorkspaceMember> {
+    await this.database.insert(schema.workspaceMembers).values(member);
+    return { ...member };
+  }
+
+  async getWorkspaceMember(
+    workspaceId: string,
+    identityId: string,
+  ): Promise<WorkspaceMember | undefined> {
+    const [member] = await this.database
+      .select()
+      .from(schema.workspaceMembers)
+      .where(and(
+        eq(schema.workspaceMembers.workspaceId, workspaceId),
+        eq(schema.workspaceMembers.identityId, identityId),
+      ))
+      .limit(1);
+    return member ? {
+      ...member,
+      roleLabel: member.roleLabel ?? undefined,
+      profileOverride: member.profileOverride ?? undefined,
+    } : undefined;
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    const members = await this.database
+      .select()
+      .from(schema.workspaceMembers)
+      .where(eq(schema.workspaceMembers.workspaceId, workspaceId))
+      .orderBy(asc(schema.workspaceMembers.joinedAt));
+    return members.map((member) => ({
+      ...member,
+      roleLabel: member.roleLabel ?? undefined,
+      profileOverride: member.profileOverride ?? undefined,
+    }));
+  }
+
   async createChannel(channel: Channel): Promise<Channel> {
     await this.database.transaction(async (transaction) => {
       await transaction.insert(schema.channels).values({
         id: channel.id,
+        workspaceId: channel.workspaceId,
         createdAt: channel.createdAt,
         nextSequence: 1,
       });
@@ -73,6 +152,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
           channel.participants.map((participant, position) => ({
             channelId: channel.id,
             id: participant.id,
+            handle: participant.handle,
             type: participant.type,
             displayName: participant.displayName,
             role: participant.role,
@@ -89,6 +169,16 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     };
   }
 
+  async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
+    const channels = await this.database
+      .select({ id: schema.channels.id })
+      .from(schema.channels)
+      .where(eq(schema.channels.workspaceId, workspaceId))
+      .orderBy(asc(schema.channels.createdAt));
+    const metadata = await Promise.all(channels.map((channel) => this.getChannelMetadata(channel.id)));
+    return metadata.filter((channel): channel is ChannelMetadata => channel !== undefined);
+  }
+
   async getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined> {
     const channel = await this.database.query.channels.findFirst({
       where: eq(schema.channels.id, channelId),
@@ -101,9 +191,11 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       .orderBy(asc(schema.participants.position));
     return {
       id: channel.id,
+      workspaceId: channel.workspaceId ?? "legacy-default-workspace",
       createdAt: channel.createdAt,
       participants: participants.map((participant) => ({
         id: participant.id,
+        handle: participant.handle ?? participant.id,
         type: participant.type,
         displayName: participant.displayName ?? undefined,
         role: participant.role ?? undefined,
@@ -131,9 +223,11 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     ]);
     return {
       id: channel.id,
+      workspaceId: channel.workspaceId ?? "legacy-default-workspace",
       createdAt: channel.createdAt,
       participants: participants.map((participant) => ({
         id: participant.id,
+        handle: participant.handle ?? participant.id,
         type: participant.type,
         displayName: participant.displayName ?? undefined,
         role: participant.role ?? undefined,

@@ -48,14 +48,19 @@ function formatParticipant(participant: Participant): string {
   const details: string[] = [participant.type];
   if (participant.displayName) details.push(participant.displayName);
   if (participant.role) details.push(`role: ${participant.role}`);
-  return `@${participant.id} — ${details.join(" — ")}${
+  return `@${participant.handle ?? participant.id} — ${details.join(" — ")}${
     participant.profile ? `\n    ${participant.profile}` : ""
   }`;
 }
 
-function formatEvent(event: ChannelEvent): string {
-  const target = event.message.to.length ? ` → ${event.message.to.join(", ")}` : "";
-  return `[${event.message.sequence}] ${event.message.participantId}${target}: ${event.message.body.replaceAll("\n", "\n    ")}`;
+function formatEvent(event: ChannelEvent, participants: Participant[]): string {
+  const label = (identityId: string) => {
+    if (identityId === "@channel") return identityId;
+    const participant = participants.find((candidate) => candidate.id === identityId);
+    return participant ? `@${participant.handle ?? participant.id}` : identityId;
+  };
+  const target = event.message.to.length ? ` → ${event.message.to.map(label).join(", ")}` : "";
+  return `[${event.message.sequence}] ${label(event.message.participantId)}${target}: ${event.message.body.replaceAll("\n", "\n    ")}`;
 }
 
 async function main(): Promise<void> {
@@ -89,42 +94,54 @@ async function main(): Promise<void> {
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
   const client = new ChannelClient(server.endpoint);
   const runtime = new PiAgentRuntime();
-  const sessions = await Promise.all([
-    runtime.start({ cwd, appendSystemPrompt: BUILDER_PERSONA }),
-    runtime.start({ cwd, appendSystemPrompt: REVIEWER_PERSONA }),
+  const [sessions, identities] = await Promise.all([
+    Promise.all([
+      runtime.start({ cwd, appendSystemPrompt: BUILDER_PERSONA }),
+      runtime.start({ cwd, appendSystemPrompt: REVIEWER_PERSONA }),
+    ]),
+    Promise.all([
+      client.createIdentity({ type: "human", displayName: "You" }),
+      client.createIdentity({ type: "agent", displayName: "Agent A" }),
+      client.createIdentity({ type: "agent", displayName: "Agent B" }),
+    ]),
+  ]);
+  const [human, agentA, agentB] = identities;
+  const workspace = await client.createWorkspace({
+    slug: `pi-demo-${Date.now().toString(36)}`,
+    name: "Pi Collaboration Demo",
+  });
+  await Promise.all([
+    client.addWorkspaceMember(workspace.id, {
+      identityId: human!.id,
+      mentionHandle: "you",
+      accessRole: "owner",
+      roleLabel: "coordinator",
+      profileOverride: "Sets priorities, provides clarification, and approves consequential decisions.",
+    }),
+    client.addWorkspaceMember(workspace.id, {
+      identityId: agentA!.id,
+      mentionHandle: "agent-a",
+      roleLabel: "builder",
+      profileOverride: "Implements features, investigates the project, and hands completed work to reviewers.",
+    }),
+    client.addWorkspaceMember(workspace.id, {
+      identityId: agentB!.id,
+      mentionHandle: "agent-b",
+      roleLabel: "reviewer",
+      profileOverride: "Independently reviews correctness, security, regressions, and missing tests.",
+    }),
   ]);
   const channel = await client.createChannel({
-    participants: [
-      {
-        id: "user",
-        type: "human",
-        displayName: "You",
-        role: "coordinator",
-        profile: "Sets priorities, provides clarification, and approves consequential decisions.",
-      },
-      {
-        id: "agent-a",
-        type: "agent",
-        displayName: "Agent A",
-        role: "builder",
-        profile: "Implements features, investigates the project, and hands completed work to reviewers.",
-      },
-      {
-        id: "agent-b",
-        type: "agent",
-        displayName: "Agent B",
-        role: "reviewer",
-        profile: "Independently reviews correctness, security, regressions, and missing tests.",
-      },
-    ],
+    workspaceId: workspace.id,
+    participantIds: [human!.id, agentA!.id, agentB!.id],
   });
 
   const relay = new ChannelRuntimeRelay({
     client,
     channelId: channel.id,
     bindings: [
-      { participantId: "agent-a", sessionId: sessions[0]!.id, runtime },
-      { participantId: "agent-b", sessionId: sessions[1]!.id, runtime },
+      { participantId: agentA!.id, sessionId: sessions[0]!.id, runtime },
+      { participantId: agentB!.id, sessionId: sessions[1]!.id, runtime },
     ],
     cursorStore: storage,
     onError(binding, error) {
@@ -143,7 +160,7 @@ async function main(): Promise<void> {
         signal: viewerController.signal,
         onReady: viewerReady,
       })) {
-        console.log(`\n${formatEvent(event)}`);
+        console.log(`\n${formatEvent(event, channel.participants)}`);
         input?.prompt(true);
       }
     } catch (error) {
@@ -179,11 +196,15 @@ async function main(): Promise<void> {
       const control = controlCommand(line);
       if (control) {
         try {
+          const target = channel.participants.find(
+            (participant) => (participant.handle ?? participant.id) === control.participantId,
+          );
+          if (!target) throw new Error(`Unknown participant: @${control.participantId}`);
           if (control.type === "steer") {
-            await relay.steer(control.participantId, "user", control.input);
+            await relay.steer(target.id, human!.id, control.input);
             console.log(`Steering message accepted by @${control.participantId}.`);
           } else {
-            await relay.interrupt(control.participantId, "user", control.input);
+            await relay.interrupt(target.id, human!.id, control.input);
             console.log(`@${control.participantId} interrupted; replacement queued.`);
           }
         } catch (error) {
@@ -203,13 +224,13 @@ async function main(): Promise<void> {
             channelId: channel.id,
             message,
             createdAt: message.createdAt,
-          }));
+          }, channel.participants));
         }
       } else if (line === "/status") {
         console.log(`agent-a: ${await runtime.status(sessions[0]!.id)}`);
         console.log(`agent-b: ${await runtime.status(sessions[1]!.id)}`);
       } else {
-        await client.postMessage(channel.id, { participantId: "user", body: line });
+        await client.postMessage(channel.id, { participantId: human!.id, body: line });
       }
       input.prompt();
     }

@@ -3,7 +3,10 @@ import type {
   ChannelCursorStore,
   ChannelMessage,
   ChannelMetadata,
+  Identity,
   ResponseResult,
+  Workspace,
+  WorkspaceMember,
 } from "./types.js";
 
 export type NewChannelMessage = Omit<ChannelMessage, "sequence">;
@@ -15,7 +18,17 @@ export interface MessageCommitResult {
 }
 
 export interface ChannelStorage extends ChannelCursorStore {
+  createIdentity(identity: Identity): Promise<Identity>;
+  getIdentity(identityId: string): Promise<Identity | undefined>;
+  listIdentities(): Promise<Identity[]>;
+  createWorkspace(workspace: Workspace): Promise<Workspace>;
+  getWorkspace(workspaceId: string): Promise<Workspace | undefined>;
+  listWorkspaces(): Promise<Workspace[]>;
+  addWorkspaceMember(member: WorkspaceMember): Promise<WorkspaceMember>;
+  getWorkspaceMember(workspaceId: string, identityId: string): Promise<WorkspaceMember | undefined>;
+  listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
   createChannel(channel: Channel): Promise<Channel>;
+  listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]>;
   getChannel(channelId: string): Promise<Channel | undefined>;
   getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
   appendMessage(message: NewChannelMessage): Promise<ChannelMessage>;
@@ -40,6 +53,9 @@ function copyChannel(channel: Channel): Channel {
 }
 
 export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStore {
+  private readonly identities = new Map<string, Identity>();
+  private readonly workspaces = new Map<string, Workspace>();
+  private readonly workspaceMembers = new Map<string, WorkspaceMember>();
   private readonly channels = new Map<string, Channel>();
   private readonly cursors = new Map<string, number>();
   private readonly responses = new Map<string, ChannelMessage>();
@@ -50,9 +66,67 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   private readonly pendingMessages = new Map<string, Promise<MessageCommitResult>>();
   private readonly pendingResponses = new Map<string, Promise<ResponseResult>>();
 
+  async createIdentity(identity: Identity): Promise<Identity> {
+    this.identities.set(identity.id, { ...identity });
+    return { ...identity };
+  }
+
+  async getIdentity(identityId: string): Promise<Identity | undefined> {
+    const identity = this.identities.get(identityId);
+    return identity ? { ...identity } : undefined;
+  }
+
+  async listIdentities(): Promise<Identity[]> {
+    return [...this.identities.values()].map((identity) => ({ ...identity }));
+  }
+
+  async createWorkspace(workspace: Workspace): Promise<Workspace> {
+    this.workspaces.set(workspace.id, { ...workspace });
+    return { ...workspace };
+  }
+
+  async getWorkspace(workspaceId: string): Promise<Workspace | undefined> {
+    const workspace = this.workspaces.get(workspaceId);
+    return workspace ? { ...workspace } : undefined;
+  }
+
+  async listWorkspaces(): Promise<Workspace[]> {
+    return [...this.workspaces.values()].map((workspace) => ({ ...workspace }));
+  }
+
+  async addWorkspaceMember(member: WorkspaceMember): Promise<WorkspaceMember> {
+    this.workspaceMembers.set(`${member.workspaceId}:${member.identityId}`, { ...member });
+    return { ...member };
+  }
+
+  async getWorkspaceMember(
+    workspaceId: string,
+    identityId: string,
+  ): Promise<WorkspaceMember | undefined> {
+    const member = this.workspaceMembers.get(`${workspaceId}:${identityId}`);
+    return member ? { ...member } : undefined;
+  }
+
+  async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
+    return [...this.workspaceMembers.values()]
+      .filter((member) => member.workspaceId === workspaceId)
+      .map((member) => ({ ...member }));
+  }
+
   async createChannel(channel: Channel): Promise<Channel> {
     this.channels.set(channel.id, copyChannel(channel));
     return copyChannel(channel);
+  }
+
+  async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
+    return [...this.channels.values()]
+      .filter((channel) => channel.workspaceId === workspaceId)
+      .map((channel) => ({
+        id: channel.id,
+        workspaceId: channel.workspaceId,
+        createdAt: channel.createdAt,
+        participants: channel.participants.map((participant) => ({ ...participant })),
+      }));
   }
 
   async getChannel(channelId: string): Promise<Channel | undefined> {
@@ -65,6 +139,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     if (!channel) return undefined;
     return {
       id: channel.id,
+      workspaceId: channel.workspaceId,
       createdAt: channel.createdAt,
       participants: channel.participants.map((participant) => ({ ...participant })),
     };
