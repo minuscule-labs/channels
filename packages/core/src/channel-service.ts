@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { InMemoryChannelStorage, type ChannelStorage, type NewChannelMessage } from "./storage.js";
+import {
+  InMemoryChannelStorage,
+  type ChannelStorage,
+  type NewChannelMessage,
+  type WorkspaceMemberUpdateResult,
+} from "./storage.js";
 import type {
   Channel,
   ChannelEvent,
@@ -16,6 +21,7 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  UpdateWorkspaceMemberInput,
 } from "./types.js";
 
 export class ChannelNotFoundError extends Error {}
@@ -63,6 +69,7 @@ function validateParticipant(participant: Participant): Participant {
     displayName,
     role,
     profile,
+    status: participant.status ?? "active",
   };
 }
 
@@ -102,6 +109,9 @@ function messageTargets(channel: Channel, input: CreateMessageInput): string[] {
       (candidate) => candidate.id === target || candidate.handle?.toLowerCase() === target.toLowerCase(),
     );
     if (!participant) throw new ChannelValidationError(`Target participant is not in channel: ${target}`);
+    if (participant.status === "disabled") {
+      throw new ChannelValidationError(`Target participant is disabled: ${target}`);
+    }
     return participant.id;
   };
   const mentioned = [...input.body.matchAll(/(?:^|\s)@([a-zA-Z0-9_-]+)\b/g)].map(
@@ -242,6 +252,124 @@ export class ChannelService {
     return await this.storage.listWorkspaceMembers(workspaceId);
   }
 
+  async updateWorkspaceMember(
+    workspaceId: string,
+    identityId: string,
+    input: UpdateWorkspaceMemberInput,
+  ): Promise<WorkspaceMember> {
+    const workspace = await this.getWorkspace(workspaceId);
+    if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
+    if (!input || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+      throw new ChannelValidationError("actorIdentityId is required");
+    }
+    if (input.mentionHandle === undefined && input.accessRole === undefined
+      && input.roleLabel === undefined && input.profileOverride === undefined
+      && input.status === undefined) {
+      throw new ChannelValidationError("At least one membership field must be updated");
+    }
+    const [identity, target, actor, members] = await Promise.all([
+      this.getIdentity(identityId),
+      this.storage.getWorkspaceMember(workspaceId, identityId),
+      this.storage.getWorkspaceMember(workspaceId, input.actorIdentityId),
+      this.storage.listWorkspaceMembers(workspaceId),
+    ]);
+    if (!target) throw new ChannelNotFoundError(`Workspace member not found: ${identityId}`);
+    if (!actor || actor.status !== "active" || !["owner", "admin"].includes(actor.accessRole)) {
+      throw new ChannelValidationError("An active Workspace owner or admin is required");
+    }
+    if (target.accessRole === "owner" && actor.accessRole !== "owner") {
+      throw new ChannelValidationError("Only an owner may update another owner");
+    }
+    if (input.mentionHandle !== undefined && typeof input.mentionHandle !== "string") {
+      throw new ChannelValidationError("mentionHandle must be a string");
+    }
+    if (input.roleLabel !== undefined && input.roleLabel !== null
+      && typeof input.roleLabel !== "string") {
+      throw new ChannelValidationError("roleLabel must be a string or null");
+    }
+    if (input.profileOverride !== undefined && input.profileOverride !== null
+      && typeof input.profileOverride !== "string") {
+      throw new ChannelValidationError("profileOverride must be a string or null");
+    }
+    const mentionHandle = input.mentionHandle === undefined
+      ? target.mentionHandle
+      : input.mentionHandle.toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(mentionHandle)) {
+      throw new ChannelValidationError("mentionHandle must be mention-safe and at most 63 characters");
+    }
+    if (members.some((member) => member.identityId !== identityId
+      && member.mentionHandle.toLowerCase() === mentionHandle)) {
+      throw new ChannelConflictError(`Workspace mention handle already exists: ${mentionHandle}`);
+    }
+    const accessRole = input.accessRole ?? target.accessRole;
+    if (!["owner", "admin", "member"].includes(accessRole)) {
+      throw new ChannelValidationError("accessRole must be owner, admin, or member");
+    }
+    if (accessRole !== target.accessRole && actor.accessRole !== "owner") {
+      throw new ChannelValidationError("Only an owner may change access roles");
+    }
+    if (identity.type !== "human" && accessRole !== "member") {
+      throw new ChannelValidationError("Agents and services must use member access");
+    }
+    const status = input.status ?? target.status;
+    if (!["active", "disabled"].includes(status)) {
+      throw new ChannelValidationError("status must be active or disabled");
+    }
+    if (target.accessRole === "owner" && (status === "disabled" || accessRole !== "owner")
+      && members.filter((member) => member.status === "active" && member.accessRole === "owner").length <= 1) {
+      throw new ChannelValidationError("A Workspace must retain an active owner");
+    }
+    const roleLabel = input.roleLabel === undefined
+      ? target.roleLabel
+      : input.roleLabel?.trim() || undefined;
+    const profileOverride = input.profileOverride === undefined
+      ? target.profileOverride
+      : input.profileOverride?.trim() || undefined;
+    if (roleLabel && roleLabel.length > 100) throw new ChannelValidationError("roleLabel is too long");
+    if (profileOverride && profileOverride.length > 1_000) {
+      throw new ChannelValidationError("profileOverride is too long");
+    }
+    const updatedAt = new Date(Math.max(Date.now(), Date.parse(target.updatedAt) + 1)).toISOString();
+    const member: WorkspaceMember = {
+      ...target,
+      mentionHandle,
+      accessRole,
+      roleLabel,
+      profileOverride,
+      status,
+      updatedAt,
+    };
+    let result: WorkspaceMemberUpdateResult | undefined;
+    try {
+      result = await this.storage.updateWorkspaceMember(member, {
+        id: identity.id,
+        handle: member.mentionHandle,
+        type: identity.type,
+        displayName: identity.displayName,
+        role: member.roleLabel,
+        profile: member.profileOverride ?? identity.publicProfile,
+        status: member.status,
+      }, target.updatedAt);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("retain an active owner")) {
+        throw new ChannelValidationError("A Workspace must retain an active owner");
+      }
+      throw error;
+    }
+    if (!result) throw new ChannelConflictError("Workspace membership changed; reload and retry");
+    for (const roster of result.rosters) {
+      const event: ChannelEvent = {
+        id: randomUUID(),
+        type: "roster.updated",
+        channelId: roster.channelId,
+        rosterRevision: roster.rosterRevision,
+        createdAt: updatedAt,
+      };
+      for (const listener of this.listeners.get(roster.channelId) ?? []) listener(event);
+    }
+    return result.member;
+  }
+
   async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
     await this.getWorkspace(workspaceId);
     return await this.storage.listWorkspaceChannels(workspaceId);
@@ -280,6 +408,7 @@ export class ChannelService {
           displayName: identity.displayName,
           role: member.roleLabel,
           profile: member.profileOverride ?? identity.publicProfile,
+          status: "active",
         };
       }));
     } else {
@@ -342,6 +471,7 @@ export class ChannelService {
       workspaceId: workspaceId!,
       participants,
       messages: [],
+      rosterRevision: 1,
       createdAt: new Date().toISOString(),
     });
   }

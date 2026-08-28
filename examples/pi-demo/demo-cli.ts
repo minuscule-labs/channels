@@ -60,12 +60,16 @@ function formatParticipant(participant: Participant): string {
   const details: string[] = [participant.type];
   if (participant.displayName) details.push(participant.displayName);
   if (participant.role) details.push(`role: ${participant.role}`);
+  if (participant.status === "disabled") details.push("disabled");
   return `@${participant.handle ?? participant.id} — ${details.join(" — ")}${
     participant.profile ? `\n    ${participant.profile}` : ""
   }`;
 }
 
 function formatEvent(event: ChannelEvent, participants: Participant[]): string {
+  if (event.type === "roster.updated") {
+    return `[roster revision ${event.rosterRevision}] Workspace membership metadata changed`;
+  }
   const label = (identityId: string) => {
     if (identityId === "@channel") return identityId;
     const participant = participants.find((candidate) => candidate.id === identityId);

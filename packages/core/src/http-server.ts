@@ -14,6 +14,7 @@ import type {
   CreateMessageInput,
   CreateResponseInput,
   CreateWorkspaceInput,
+  UpdateWorkspaceMemberInput,
 } from "./types.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -112,6 +113,16 @@ export async function createChannelHttpServer(
       }
       if (workspaceMembersMatch && request.method === "GET") {
         json(response, 200, { members: await service.listWorkspaceMembers(workspaceMembersMatch[1]!) });
+        return;
+      }
+      const workspaceMemberMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/members\/([^/]+)$/);
+      if (workspaceMemberMatch && request.method === "PATCH") {
+        const member = await service.updateWorkspaceMember(
+          workspaceMemberMatch[1]!,
+          workspaceMemberMatch[2]!,
+          (await readJson(request)) as UpdateWorkspaceMemberInput,
+        );
+        json(response, 200, { member });
         return;
       }
       const workspaceChannelsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/channels$/);

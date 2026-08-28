@@ -57,6 +57,16 @@ export interface AddWorkspaceMemberInput {
   profileOverride?: string;
 }
 
+export interface UpdateWorkspaceMemberInput {
+  /** Advisory until requests are authenticated. */
+  actorIdentityId: string;
+  mentionHandle?: string;
+  accessRole?: WorkspaceAccessRole;
+  roleLabel?: string | null;
+  profileOverride?: string | null;
+  status?: WorkspaceMemberStatus;
+}
+
 export interface Participant {
   /** Stable identity id used for authorship and structured routing. */
   id: string;
@@ -68,6 +78,7 @@ export interface Participant {
   role?: string;
   /** Public delegation guidance. This is not the agent's private system prompt. */
   profile?: string;
+  status?: WorkspaceMemberStatus;
 }
 
 export interface ChannelMessage {
@@ -85,6 +96,7 @@ export interface ChannelMetadata {
   id: string;
   workspaceId: string;
   participants: Participant[];
+  rosterRevision: number;
   createdAt: string;
 }
 
@@ -100,7 +112,15 @@ export interface MessageCreatedEvent {
   createdAt: string;
 }
 
-export type ChannelEvent = MessageCreatedEvent;
+export interface RosterUpdatedEvent {
+  id: string;
+  type: "roster.updated";
+  channelId: string;
+  rosterRevision: number;
+  createdAt: string;
+}
+
+export type ChannelEvent = MessageCreatedEvent | RosterUpdatedEvent;
 
 export interface CreateChannelInput {
   workspaceId?: string;

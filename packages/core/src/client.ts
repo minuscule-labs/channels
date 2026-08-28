@@ -13,6 +13,7 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  UpdateWorkspaceMemberInput,
 } from "./types.js";
 
 export interface ChannelEventOptions {
@@ -71,6 +72,19 @@ export class ChannelClient {
   ): Promise<WorkspaceMember> {
     const response = await this.request(`/workspaces/${workspaceId}/members`, {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { member: WorkspaceMember }).member;
+  }
+
+  async updateWorkspaceMember(
+    workspaceId: string,
+    identityId: string,
+    input: UpdateWorkspaceMemberInput,
+  ): Promise<WorkspaceMember> {
+    const response = await this.request(`/workspaces/${workspaceId}/members/${identityId}`, {
+      method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
@@ -159,7 +173,9 @@ export class ChannelClient {
           .split("\n")
           .find((line) => line.startsWith("data: "))
           ?.slice(6);
-        if (eventName === "message.created" && data) yield JSON.parse(data) as ChannelEvent;
+        if ((eventName === "message.created" || eventName === "roster.updated") && data) {
+          yield JSON.parse(data) as ChannelEvent;
+        }
       }
     }
   }

@@ -11,6 +11,7 @@ export {
   type MessageCommitResult,
   type NewChannelMessage,
   type NewResponseMessage,
+  type WorkspaceMemberUpdateResult,
 } from "./storage.js";
 export {
   createChannelHttpServer,
@@ -33,6 +34,7 @@ export type {
   IdentityStatus,
   IdentityType,
   MessageCreatedEvent,
+  RosterUpdatedEvent,
   ResponseResult,
   Participant,
   ParticipantType,
@@ -41,4 +43,5 @@ export type {
   WorkspaceMember,
   WorkspaceMemberStatus,
   WorkspaceStatus,
+  UpdateWorkspaceMemberInput,
 } from "./types.js";

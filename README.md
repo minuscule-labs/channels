@@ -19,8 +19,9 @@ POST /identities
 GET  /identities
 POST /workspaces
 GET  /workspaces
-POST /workspaces/:id/members
-GET  /workspaces/:id/members
+POST  /workspaces/:id/members
+GET   /workspaces/:id/members
+PATCH /workspaces/:id/members/:identityId
 POST /workspaces/:id/channels
 GET  /workspaces/:id/channels
 POST /channels
@@ -31,7 +32,7 @@ GET  /channels/:id/messages
 GET  /channels/:id/events
 ```
 
-Identities are reusable humans, agents, or services with stable opaque ids. Workspaces assign each identity a case-insensitive local mention handle, simple `owner` / `admin` / `member` access, optional public role label, and delegation profile override. Channels belong to one Workspace and select active Workspace members as participants. Structured message authors and targets store stable identity ids, while body `@handles` resolve through Workspace membership. Profiles remain routing metadata—not private system prompts. Access roles are modeled for the directory but are not authorization claims until authentication and permission enforcement are added. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:
+Identities are reusable humans, agents, or services with stable opaque ids. Workspaces assign each identity a case-insensitive local mention handle, simple `owner` / `admin` / `member` access, optional public role label, and delegation profile override. Channels belong to one Workspace and select active Workspace members as participants. Structured message authors and targets store stable identity ids, while body `@handles` resolve through Workspace membership. Profiles remain routing metadata—not private system prompts. Owners and admins may update membership aliases, public routing metadata, and status; only owners may change access roles or update another owner, and the last active owner cannot be disabled or demoted. `actorIdentityId` is currently an advisory policy input—not authentication—so access roles are not security claims until authentication and permission enforcement are added. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:
 
 ```http
 POST /channels/:id/messages
@@ -48,7 +49,7 @@ The default server uses Drizzle ORM and libSQL at:
 ~/.minu/channels/channels.db
 ```
 
-Migration `0004_workspace_directory.sql` adds identities, Workspaces, memberships, Channel ownership, and local handles. It conservatively places existing pre-Workspace Channels and participants into a default legacy Workspace while preserving their messages and routing ids.
+Migration `0004_workspace_directory.sql` adds identities, Workspaces, memberships, Channel ownership, and local handles. It conservatively places existing pre-Workspace Channels and participants into a default legacy Workspace while preserving their messages and routing ids. Migration `0005_revisioned_rosters.sql` adds Channel roster revisions, participant status snapshots, and database triggers that prevent concurrent updates from removing the final active Workspace owner.
 
 The same adapter accepts a deployed Turso URL and token. In-memory mode remains available for tests and disposable demonstrations.
 
@@ -72,9 +73,9 @@ The relay wakes agents according to membership policy, fetches the current Chann
 
 The structural Runtime port optionally supports stable `startTurn` and `turn` operations. When available, the relay derives a turn id from the Channel, participant, and trigger message, then recovers the same running or completed work after a relay restart instead of repeating agent side effects. Recovery requires the same Runtime session to remain alive. Relay polling and turn timeouts are configurable; the default turn wait is 30 minutes so implementation work is not mistaken for a stalled agent.
 
-### Future roster caching
+### Revisioned roster caching
 
-The correctness-first MVP currently fetches Channel metadata for each wake-up. Relay prompts display Workspace-local `@handles` while retaining stable identity ids for routing. Once membership becomes mutable, the relay should instead load the roster at startup/reconnect, cache it with a revision, and update it from `participant.added`, `participant.updated`, and `participant.removed` events. A reconnect or revision gap triggers one metadata refetch. Until membership mutation exists, this optimization is intentionally deferred.
+Every Channel has a durable `rosterRevision`. Updating a Workspace member transactionally updates that identity's snapshots in all affected Channels, increments each revision, and emits `roster.updated`. Relays load metadata after the SSE subscription is ready, cache it, and refetch only when an event carries a newer revision. This closes the startup race without reading metadata for every wake-up. Disabled members remain visible for historical attribution but cannot author, receive direct mentions, or wake from `@channel`. Disabling also advances their durable cursor to the current Channel head, intentionally discarding pending wakes so re-enabling cannot rerun uncertain old work.
 
 ### Explicit controls
 

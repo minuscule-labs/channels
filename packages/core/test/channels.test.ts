@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ChannelClient } from "../src/client.js";
 import { createChannelHttpServer } from "../src/http-server.js";
+import type { ChannelEvent } from "../src/types.js";
 
 async function jsonRequest(endpoint: string, path: string, init?: RequestInit) {
   const response = await fetch(`${endpoint}${path}`, init);
@@ -75,6 +76,7 @@ test("creates a channel and starts with no messages", async () => {
       displayName: "Builder",
       role: "implementation",
       profile: "Builds and tests requested changes.",
+      status: "active",
     });
 
     const listed = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`);
@@ -156,6 +158,89 @@ test("registers reusable identities and Workspace-local handles for Channel rout
       client.createChannel({ workspaceId: workspace.id, participantIds: [outsider.id] }),
       /not an active Workspace member/,
     );
+  } finally {
+    await server.close();
+  }
+});
+
+test("owner-governed membership updates revise Channel rosters and preserve history", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const client = new ChannelClient(server.endpoint);
+    const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
+    const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
+    const workspace = await client.createWorkspace({ slug: "mutable-roster", name: "Mutable" });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: owner.id,
+      mentionHandle: "owner",
+      accessRole: "owner",
+    });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: agent.id,
+      mentionHandle: "builder",
+      roleLabel: "implementation",
+    });
+    const channel = await client.createChannel({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, agent.id],
+    });
+    await client.postMessage(channel.id, {
+      participantId: owner.id,
+      body: "@builder original task",
+    });
+    const events: ChannelEvent[] = [];
+    const unsubscribe = await server.service.subscribe(channel.id, (event) => events.push(event));
+
+    await assert.rejects(
+      client.updateWorkspaceMember(workspace.id, agent.id, {
+        actorIdentityId: agent.id,
+        mentionHandle: "not-allowed",
+      }),
+      /owner or admin is required/,
+    );
+    const updated = await client.updateWorkspaceMember(workspace.id, agent.id, {
+      actorIdentityId: owner.id,
+      mentionHandle: "implementer",
+      roleLabel: "builder",
+      profileOverride: "Owns implementation",
+    });
+    assert.equal(updated.mentionHandle, "implementer");
+    assert.equal(events[0]?.type, "roster.updated");
+    if (events[0]?.type === "roster.updated") assert.equal(events[0].rosterRevision, 2);
+    const revised = await client.getChannel(channel.id);
+    assert.equal(revised.rosterRevision, 2);
+    assert.equal(revised.participants[1]?.handle, "implementer");
+    assert.equal(revised.participants[1]?.role, "builder");
+    assert.equal((await client.listMessages(channel.id))[0]?.body, "@builder original task");
+    await assert.rejects(
+      client.postMessage(channel.id, { participantId: owner.id, body: "@builder old alias" }),
+      /not in channel/,
+    );
+
+    await client.updateWorkspaceMember(workspace.id, agent.id, {
+      actorIdentityId: owner.id,
+      status: "disabled",
+    });
+    const disabled = await client.getChannel(channel.id);
+    assert.equal(disabled.rosterRevision, 3);
+    assert.equal(disabled.participants[1]?.status, "disabled");
+    assert.equal(await server.service.storage.getCursor(channel.id, agent.id), 1);
+    await assert.rejects(
+      client.postMessage(channel.id, { participantId: owner.id, body: "@implementer wake" }),
+      /disabled/,
+    );
+    await assert.rejects(
+      client.postMessage(channel.id, { participantId: agent.id, body: "still here" }),
+      /not active/,
+    );
+    await assert.rejects(
+      client.updateWorkspaceMember(workspace.id, owner.id, {
+        actorIdentityId: owner.id,
+        status: "disabled",
+      }),
+      /retain an active owner/,
+    );
+    unsubscribe();
   } finally {
     await server.close();
   }

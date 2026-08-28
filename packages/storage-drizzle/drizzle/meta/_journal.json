@@ -36,6 +36,13 @@
       "when": 1787933696269,
       "tag": "0004_workspace_directory",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787936620783,
+      "tag": "0005_revisioned_rosters",
+      "breakpoints": true
     }
   ]
 }

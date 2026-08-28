@@ -1,4 +1,4 @@
-import type { ChannelCursorStore, ChannelMessage, Participant } from "@minu/channels-core";
+import type { ChannelCursorStore, ChannelMessage, ChannelMetadata, Participant } from "@minu/channels-core";
 import { ChannelClient } from "@minu/channels-core";
 export interface RuntimePortMessage {
   role: "user" | "assistant" | "tool" | "system";
@@ -83,7 +83,10 @@ function participantRoster(participants: Participant[], connectedAgents: Set<str
       const details: string[] = [participant.type, `identity: ${participant.id}`];
       if (participant.displayName) details.push(`name: ${participant.displayName}`);
       if (participant.role) details.push(`role: ${participant.role}`);
-      if (connectedAgents.has(participant.id)) details.push("runtime-connected");
+      if (participant.status === "disabled") details.push("disabled");
+      if (connectedAgents.has(participant.id) && participant.status !== "disabled") {
+        details.push("runtime-connected");
+      }
       const profile = participant.profile?.replace(/\s+/g, " ").trim();
       return `- @${participant.handle ?? participant.id} — ${details.join(" — ")}${
         profile ? `\n  Delegation guidance: ${profile}` : ""
@@ -161,6 +164,8 @@ export class ChannelRuntimeRelay {
   private readonly states: BindingState[];
   private controller: AbortController | undefined;
   private task: Promise<void> | undefined;
+  private roster: ChannelMetadata | undefined;
+  private rosterReady: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: ChannelRuntimeRelayOptions) {
     validatePositiveMilliseconds("turnPollIntervalMs", options.turnPollIntervalMs);
@@ -175,6 +180,10 @@ export class ChannelRuntimeRelay {
 
   async start(): Promise<void> {
     if (this.task) return;
+    let resolveRosterReady!: () => void;
+    this.rosterReady = new Promise<void>((resolve) => {
+      resolveRosterReady = resolve;
+    });
     await Promise.all(
       this.states.map(async (state) => {
         state.lastProcessedSequence =
@@ -200,6 +209,12 @@ export class ChannelRuntimeRelay {
       }
     });
     await ready;
+    // Close the metadata/event subscription race on every start or reconnect.
+    try {
+      this.roster = await this.options.client.getChannel(this.options.channelId);
+    } finally {
+      resolveRosterReady();
+    }
     await this.catchUp();
   }
 
@@ -278,6 +293,13 @@ export class ChannelRuntimeRelay {
       signal: this.controller!.signal,
       onReady,
     })) {
+      await this.rosterReady;
+      if (event.type === "roster.updated") {
+        if (!this.roster || event.rosterRevision > this.roster.rosterRevision) {
+          this.roster = await this.options.client.getChannel(this.options.channelId);
+        }
+        continue;
+      }
       for (const state of this.states) this.enqueue(state, event.message);
     }
   }
@@ -290,6 +312,9 @@ export class ChannelRuntimeRelay {
   }
 
   private enqueue(state: BindingState, message: ChannelMessage): void {
+    if (this.roster?.participants.find(({ id }) => id === state.binding.participantId)?.status === "disabled") {
+      return;
+    }
     if (message.sequence <= state.lastEnqueuedSequence) return;
     if (!shouldWake(message, state.binding)) return;
     state.lastEnqueuedSequence = message.sequence;
@@ -315,7 +340,8 @@ export class ChannelRuntimeRelay {
     const channelMessages = (await this.options.client.listMessages(this.options.channelId)).filter(
       (message) => message.sequence > state.lastProcessedSequence,
     );
-    const channel = await this.options.client.getChannel(this.options.channelId);
+    const channel = this.roster ?? await this.options.client.getChannel(this.options.channelId);
+    this.roster = channel;
     const prompt = contextEnvelope(
       binding.participantId,
       channel.participants,
@@ -351,6 +377,12 @@ export class ChannelRuntimeRelay {
       response = latestAssistant(after, before.length);
     }
     if (binding.verifyLease && !(await binding.verifyLease())) {
+      state.activeTrigger = undefined;
+      state.interruptedTriggerId = undefined;
+      return;
+    }
+    if (this.roster?.participants.find(({ id }) => id === binding.participantId)?.status === "disabled") {
+      state.lastProcessedSequence = Math.max(state.lastProcessedSequence, trigger.sequence);
       state.activeTrigger = undefined;
       state.interruptedTriggerId = undefined;
       return;

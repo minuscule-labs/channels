@@ -78,19 +78,76 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
       participantId: human.id,
       body: "@builder implement this",
     });
+    await first.updateWorkspaceMember(workspace.id, agent.id, {
+      actorIdentityId: human.id,
+      mentionHandle: "implementer",
+      roleLabel: "builder",
+    });
     await first.close();
 
     const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
     const second = new ChannelService(secondStorage);
     assert.equal((await second.listIdentities()).length, 2);
-    assert.equal((await second.listWorkspaceMembers(workspace.id))[1]?.mentionHandle, "builder");
+    assert.equal((await second.listWorkspaceMembers(workspace.id))[1]?.mentionHandle, "implementer");
     const restored = await second.getChannel(channel.id);
     assert.equal(restored.workspaceId, workspace.id);
     assert.equal(restored.participants[1]?.id, agent.id);
-    assert.equal(restored.participants[1]?.handle, "builder");
+    assert.equal(restored.rosterRevision, 2);
+    assert.equal(restored.participants[1]?.handle, "implementer");
+    assert.equal(restored.participants[1]?.role, "builder");
     assert.deepEqual(restored.messages[0]?.to, [agent.id]);
     await second.close();
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Drizzle/libSQL prevents concurrent removal of the last active Workspace owner", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-owners-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
+  const first = new ChannelService(firstStorage);
+  try {
+    const [ownerA, ownerB] = await Promise.all([
+      first.createIdentity({ type: "human", displayName: "Owner A" }),
+      first.createIdentity({ type: "human", displayName: "Owner B" }),
+    ]);
+    const workspace = await first.createWorkspace({ slug: "owner-race", name: "Owners" });
+    await first.addWorkspaceMember(workspace.id, {
+      identityId: ownerA.id,
+      mentionHandle: "owner-a",
+      accessRole: "owner",
+    });
+    await first.addWorkspaceMember(workspace.id, {
+      identityId: ownerB.id,
+      mentionHandle: "owner-b",
+      accessRole: "owner",
+    });
+    const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
+    const second = new ChannelService(secondStorage);
+    try {
+      const updates = await Promise.allSettled([
+        first.updateWorkspaceMember(workspace.id, ownerA.id, {
+          actorIdentityId: ownerA.id,
+          accessRole: "member",
+        }),
+        second.updateWorkspaceMember(workspace.id, ownerB.id, {
+          actorIdentityId: ownerB.id,
+          accessRole: "member",
+        }),
+      ]);
+      assert.deepEqual(updates.map(({ status }) => status).sort(), ["fulfilled", "rejected"]);
+      assert.equal(
+        (await first.listWorkspaceMembers(workspace.id)).filter(
+          ({ accessRole, status }) => accessRole === "owner" && status === "active",
+        ).length,
+        1,
+      );
+    } finally {
+      await second.close();
+    }
+  } finally {
+    await first.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -253,6 +310,7 @@ test("Drizzle/libSQL preserves channels, sequences, messages, and cursors", asyn
       displayName: "Builder",
       role: "implementation",
       profile: "Builds and tests requested changes.",
+      status: "active",
     });
     assert.deepEqual(
       (await second.listMessages(channelId)).map((message) => [message.sequence, message.body]),

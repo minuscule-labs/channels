@@ -9,9 +9,11 @@ import type {
   MessageCommitResult,
   NewChannelMessage,
   NewResponseMessage,
+  Participant,
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  WorkspaceMemberUpdateResult,
 } from "@minu/channels-core";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
@@ -43,6 +45,7 @@ const pendingMessageCommits = new Map<
   { requestFingerprint: string; commit: Promise<MessageCommitResult> }
 >();
 const pendingResponseCommits = new Map<string, Promise<ResponseResult>>();
+const pendingWorkspaceMemberUpdates = new Map<string, Promise<unknown>>();
 
 export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCursorStore {
   private constructor(
@@ -107,6 +110,92 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     return { ...member };
   }
 
+  async updateWorkspaceMember(
+    member: WorkspaceMember,
+    participant: Participant,
+    expectedUpdatedAt: string,
+  ): Promise<WorkspaceMemberUpdateResult | undefined> {
+    const key = `${this.storageKey}:${member.workspaceId}`;
+    const prior = pendingWorkspaceMemberUpdates.get(key) ?? Promise.resolve();
+    const operation = prior.catch(() => undefined).then(
+      () => this.updateWorkspaceMemberOnce(member, participant, expectedUpdatedAt),
+    );
+    pendingWorkspaceMemberUpdates.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (pendingWorkspaceMemberUpdates.get(key) === operation) {
+        pendingWorkspaceMemberUpdates.delete(key);
+      }
+    }
+  }
+
+  private async updateWorkspaceMemberOnce(
+    member: WorkspaceMember,
+    participant: Participant,
+    expectedUpdatedAt: string,
+  ): Promise<WorkspaceMemberUpdateResult | undefined> {
+    return await this.database.transaction(async (transaction) => {
+      const updated = await transaction.update(schema.workspaceMembers).set({
+        mentionHandle: member.mentionHandle,
+        accessRole: member.accessRole,
+        roleLabel: member.roleLabel,
+        profileOverride: member.profileOverride,
+        status: member.status,
+        updatedAt: member.updatedAt,
+      }).where(and(
+        eq(schema.workspaceMembers.workspaceId, member.workspaceId),
+        eq(schema.workspaceMembers.identityId, member.identityId),
+        eq(schema.workspaceMembers.updatedAt, expectedUpdatedAt),
+      )).returning();
+      if (!updated[0]) return undefined;
+      const affected = await transaction.select({ channelId: schema.participants.channelId })
+        .from(schema.participants)
+        .innerJoin(schema.channels, eq(schema.channels.id, schema.participants.channelId))
+        .where(and(
+          eq(schema.channels.workspaceId, member.workspaceId),
+          eq(schema.participants.id, member.identityId),
+        ));
+      const rosters: WorkspaceMemberUpdateResult["rosters"] = [];
+      for (const { channelId } of affected) {
+        await transaction.update(schema.participants).set({
+          handle: participant.handle,
+          displayName: participant.displayName,
+          role: participant.role,
+          profile: participant.profile,
+          status: participant.status ?? "active",
+        }).where(and(
+          eq(schema.participants.channelId, channelId),
+          eq(schema.participants.id, member.identityId),
+        ));
+        const revisions = await transaction.update(schema.channels).set({
+          rosterRevision: sql`${schema.channels.rosterRevision} + 1`,
+        }).where(eq(schema.channels.id, channelId)).returning({
+          rosterRevision: schema.channels.rosterRevision,
+        });
+        if (member.status === "disabled") {
+          const latest = await transaction.select({
+            sequence: sql<number>`coalesce(max(${schema.messages.sequence}), 0)`,
+          }).from(schema.messages).where(eq(schema.messages.channelId, channelId));
+          await transaction.insert(schema.agentCursors).values({
+            channelId,
+            participantId: member.identityId,
+            lastProcessedSequence: latest[0]?.sequence ?? 0,
+            updatedAt: member.updatedAt,
+          }).onConflictDoUpdate({
+            target: [schema.agentCursors.channelId, schema.agentCursors.participantId],
+            set: {
+              lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${latest[0]?.sequence ?? 0})`,
+              updatedAt: member.updatedAt,
+            },
+          });
+        }
+        rosters.push({ channelId, rosterRevision: revisions[0]!.rosterRevision });
+      }
+      return { member: { ...member }, rosters };
+    }, { behavior: "immediate" });
+  }
+
   async getWorkspaceMember(
     workspaceId: string,
     identityId: string,
@@ -146,6 +235,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         workspaceId: channel.workspaceId,
         createdAt: channel.createdAt,
         nextSequence: 1,
+        rosterRevision: channel.rosterRevision,
       });
       if (channel.participants.length > 0) {
         await transaction.insert(schema.participants).values(
@@ -157,6 +247,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
             displayName: participant.displayName,
             role: participant.role,
             profile: participant.profile,
+            status: participant.status ?? "active",
             position,
           })),
         );
@@ -193,6 +284,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       id: channel.id,
       workspaceId: channel.workspaceId ?? "legacy-default-workspace",
       createdAt: channel.createdAt,
+      rosterRevision: channel.rosterRevision,
       participants: participants.map((participant) => ({
         id: participant.id,
         handle: participant.handle ?? participant.id,
@@ -200,6 +292,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         displayName: participant.displayName ?? undefined,
         role: participant.role ?? undefined,
         profile: participant.profile ?? undefined,
+        status: participant.status,
       })),
     };
   }
@@ -225,6 +318,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       id: channel.id,
       workspaceId: channel.workspaceId ?? "legacy-default-workspace",
       createdAt: channel.createdAt,
+      rosterRevision: channel.rosterRevision,
       participants: participants.map((participant) => ({
         id: participant.id,
         handle: participant.handle ?? participant.id,
@@ -232,6 +326,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         displayName: participant.displayName ?? undefined,
         role: participant.role ?? undefined,
         profile: participant.profile ?? undefined,
+        status: participant.status,
       })),
       messages: messages.map((message) => ({
         id: message.id,

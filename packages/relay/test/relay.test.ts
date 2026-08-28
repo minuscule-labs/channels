@@ -198,6 +198,71 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
   }
 });
 
+test("relay caches revisioned rosters and stops waking disabled members", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new FakeRuntime();
+  const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
+  const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
+  const workspace = await client.createWorkspace({ slug: "roster-cache", name: "Roster Cache" });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: owner.id,
+    mentionHandle: "owner",
+    accessRole: "owner",
+  });
+  await client.addWorkspaceMember(workspace.id, {
+    identityId: agent.id,
+    mentionHandle: "builder",
+  });
+  const channel = await client.createChannel({
+    workspaceId: workspace.id,
+    participantIds: [owner.id, agent.id],
+  });
+  const originalGetChannel = client.getChannel.bind(client);
+  let metadataReads = 0;
+  client.getChannel = async (channelId: string) => {
+    metadataReads += 1;
+    return originalGetChannel(channelId);
+  };
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: agent.id, sessionId: "cached-session", runtime }],
+  });
+  try {
+    await relay.start();
+    assert.equal(metadataReads, 1);
+    await client.updateWorkspaceMember(workspace.id, agent.id, {
+      actorIdentityId: owner.id,
+      mentionHandle: "implementer",
+      roleLabel: "builder",
+    });
+    await waitUntil(async () => metadataReads === 2);
+    await client.postMessage(channel.id, {
+      participantId: owner.id,
+      body: "@implementer use the revised roster",
+    });
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    assert.match(runtime.prompts.get("cached-session")?.[0] ?? "", /@implementer/);
+    assert.equal(metadataReads, 2);
+
+    await client.updateWorkspaceMember(workspace.id, agent.id, {
+      actorIdentityId: owner.id,
+      status: "disabled",
+    });
+    await waitUntil(async () => metadataReads === 3);
+    await client.postMessage(channel.id, {
+      participantId: owner.id,
+      body: "@channel disabled agents stay asleep",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(runtime.prompts.get("cached-session")?.length, 1);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("private bindings isolate Channel sessions and restore them under generation-safe leases", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint);

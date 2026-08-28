@@ -52,6 +52,7 @@ export const channels = sqliteTable("channels", {
   workspaceId: text("workspace_id").references(() => workspaces.id),
   createdAt: text("created_at").notNull(),
   nextSequence: integer("next_sequence").notNull().default(1),
+  rosterRevision: integer("roster_revision").notNull().default(1),
 });
 
 export const participants = sqliteTable(
@@ -66,6 +67,7 @@ export const participants = sqliteTable(
     displayName: text("display_name"),
     role: text("role"),
     profile: text("profile"),
+    status: text("status", { enum: ["active", "disabled"] }).notNull().default("active"),
     position: integer("position").notNull(),
   },
   (table) => [primaryKey({ columns: [table.channelId, table.id] })],

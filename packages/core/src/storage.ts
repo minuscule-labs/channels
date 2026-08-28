@@ -4,6 +4,7 @@ import type {
   ChannelMessage,
   ChannelMetadata,
   Identity,
+  Participant,
   ResponseResult,
   Workspace,
   WorkspaceMember,
@@ -17,6 +18,11 @@ export interface MessageCommitResult {
   outcome: "created" | "replayed" | "conflict";
 }
 
+export interface WorkspaceMemberUpdateResult {
+  member: WorkspaceMember;
+  rosters: Array<{ channelId: string; rosterRevision: number }>;
+}
+
 export interface ChannelStorage extends ChannelCursorStore {
   createIdentity(identity: Identity): Promise<Identity>;
   getIdentity(identityId: string): Promise<Identity | undefined>;
@@ -25,6 +31,11 @@ export interface ChannelStorage extends ChannelCursorStore {
   getWorkspace(workspaceId: string): Promise<Workspace | undefined>;
   listWorkspaces(): Promise<Workspace[]>;
   addWorkspaceMember(member: WorkspaceMember): Promise<WorkspaceMember>;
+  updateWorkspaceMember(
+    member: WorkspaceMember,
+    participant: Participant,
+    expectedUpdatedAt: string,
+  ): Promise<WorkspaceMemberUpdateResult | undefined>;
   getWorkspaceMember(workspaceId: string, identityId: string): Promise<WorkspaceMember | undefined>;
   listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
   createChannel(channel: Channel): Promise<Channel>;
@@ -99,6 +110,48 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     return { ...member };
   }
 
+  async updateWorkspaceMember(
+    member: WorkspaceMember,
+    participant: Participant,
+    expectedUpdatedAt: string,
+  ): Promise<WorkspaceMemberUpdateResult | undefined> {
+    const key = `${member.workspaceId}:${member.identityId}`;
+    const current = this.workspaceMembers.get(key);
+    if (current?.updatedAt !== expectedUpdatedAt) return undefined;
+    if (current.status === "active" && current.accessRole === "owner"
+      && (member.status !== "active" || member.accessRole !== "owner")
+      && ![...this.workspaceMembers.values()].some((candidate) =>
+        candidate.workspaceId === member.workspaceId
+        && candidate.identityId !== member.identityId
+        && candidate.status === "active"
+        && candidate.accessRole === "owner")) {
+      throw new Error("Workspace must retain an active owner");
+    }
+    const duplicate = [...this.workspaceMembers.values()].find(
+      (candidate) => candidate.workspaceId === member.workspaceId
+        && candidate.identityId !== member.identityId
+        && candidate.mentionHandle === member.mentionHandle,
+    );
+    if (duplicate) throw new Error("Workspace mention handle already exists");
+    this.workspaceMembers.set(key, { ...member });
+    const rosters: WorkspaceMemberUpdateResult["rosters"] = [];
+    for (const channel of this.channels.values()) {
+      if (channel.workspaceId !== member.workspaceId) continue;
+      const index = channel.participants.findIndex(({ id }) => id === member.identityId);
+      if (index < 0) continue;
+      channel.participants[index] = { ...participant };
+      channel.rosterRevision += 1;
+      if (member.status === "disabled") {
+        this.cursors.set(
+          `${channel.id}:${member.identityId}`,
+          channel.messages.at(-1)?.sequence ?? 0,
+        );
+      }
+      rosters.push({ channelId: channel.id, rosterRevision: channel.rosterRevision });
+    }
+    return { member: { ...member }, rosters };
+  }
+
   async getWorkspaceMember(
     workspaceId: string,
     identityId: string,
@@ -125,6 +178,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
         id: channel.id,
         workspaceId: channel.workspaceId,
         createdAt: channel.createdAt,
+        rosterRevision: channel.rosterRevision,
         participants: channel.participants.map((participant) => ({ ...participant })),
       }));
   }
@@ -141,6 +195,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
       id: channel.id,
       workspaceId: channel.workspaceId,
       createdAt: channel.createdAt,
+      rosterRevision: channel.rosterRevision,
       participants: channel.participants.map((participant) => ({ ...participant })),
     };
   }
