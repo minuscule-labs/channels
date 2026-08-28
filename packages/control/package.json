@@ -15,9 +15,18 @@
     "./server": {
       "types": "./dist/src/server.d.ts",
       "default": "./dist/src/server.js"
+    },
+    "./daemon": {
+      "types": "./dist/src/daemon.d.ts",
+      "default": "./dist/src/daemon.js"
     }
   },
+  "bin": {
+    "minu-channels-control": "./dist/src/cli.js"
+  },
   "dependencies": {
-    "@minu/channels-core": "workspace:*"
+    "@minu/channels-core": "workspace:*",
+    "@minu/channels-relay-storage-drizzle": "workspace:*",
+    "commander": "^15.0.0"
   }
 }

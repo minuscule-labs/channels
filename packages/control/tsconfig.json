@@ -11,6 +11,10 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "references": [{ "path": "../core" }],
+  "references": [
+    { "path": "../core" },
+    { "path": "../relay" },
+    { "path": "../relay-storage-drizzle" }
+  ],
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

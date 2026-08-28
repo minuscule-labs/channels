@@ -14,11 +14,10 @@ Browser
 │   ├── Workspaces and Channels
 │   ├── public rosters
 │   └── messages and live events
-└── local control API
+└── authenticated local control daemon
     ├── read-only binding and Runtime status (implemented)
-    ├── Runtime status
-    ├── steer / interrupt
-    └── local Workspace configuration
+    ├── private Workspace/agent configuration (next)
+    └── steer / interrupt (later)
 ```
 
 The browser must never open `relay.db`, receive Runtime credentials, or import Runtime/Relay packages. `packages/web` depends only on the public Channels client/types.
@@ -50,7 +49,7 @@ POST /channels/:id/messages
 GET /channels/:id/events
 ```
 
-The first localhost control boundary is implemented as `@minu/channels-control`. It provides browser-safe contracts/client exports and a Node server facade over structural Channel, binding, and Runtime status ports. It uses a separate `/local/*` namespace, binds only to loopback, validates Host and an explicit browser-Origin allowlist, exposes only reads, and returns sanitized presentation state. It may compose Relay and Runtime implementations; Channels core and the browser may not import them.
+The localhost control boundary is implemented as `@minu/channels-control`. It provides browser-safe contracts/client exports, a Node server facade over structural Channel, binding, and Runtime status ports, and a real daemon/launcher. The daemon opens private Relay storage, connects to public Channels HTTP, and accepts explicitly loaded structural Runtime adapters without adding a Runtime dependency. It uses a separate `/local/*` namespace, binds only to loopback, validates Host and an explicit browser-Origin allowlist, exposes only reads after bootstrap, and returns sanitized presentation state. Channels core and the browser may not import Relay, Runtime, daemon, or server modules.
 
 Current read-only endpoints are capability-oriented rather than storage CRUD:
 
@@ -62,7 +61,9 @@ GET /local/channels/:id/agents
 
 The agent response reports `unbound | idle | running | offline | disabled | uncertain`, wake policy, and disabled command capability flags without Runtime session IDs, adapter names, leases, credentials, prompts, roots, or database paths. The web roster polls this optional API every five seconds while available, retries a missing service more slowly, and shows local Runtime state separately from public membership. Messaging continues and the roster labels local status unavailable when the service cannot be reached.
 
-Steering, interruption, reconnect, configuration writes, and agent creation remain disabled until browser-session authentication, origin policy, audit, fencing, and confirmations are proven.
+The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves the cookie survives the control-to-web redirect and Vite `/local` proxy.
+
+Steering, interruption, reconnect, configuration writes, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
 
 ## Deferred
 

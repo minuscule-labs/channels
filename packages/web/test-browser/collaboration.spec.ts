@@ -1,4 +1,17 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+
+async function launchAuthenticated(
+  page: Page,
+  request: APIRequestContext,
+  destination: string,
+): Promise<void> {
+  const response = await request.get(
+    `http://127.0.0.1:4312/control-launch?destination=${encodeURIComponent(destination)}`,
+  );
+  expect(response.ok()).toBe(true);
+  const { launchUrl } = await response.json() as { launchUrl: string };
+  await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
+}
 
 test("sends idempotently, refreshes rosters, and catches up after reconnect", async ({ page, request }) => {
   const workspacesResponse = await request.get("http://127.0.0.1:4310/workspaces");
@@ -23,7 +36,11 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
     }
   });
 
-  await page.goto(`/app/workspaces/${workspaceId}/channels/${channelId}`, { waitUntil: "domcontentloaded" });
+  await launchAuthenticated(
+    page,
+    request,
+    `/app/workspaces/${workspaceId}/channels/${channelId}`,
+  );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
   await expect(page.getByTitle("Local Runtime: idle")).toBeVisible();
@@ -75,7 +92,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
 
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Open navigation" }).click();
   const navigation = page.getByRole("dialog", { name: "Navigation" });
   await expect(navigation).toBeVisible();

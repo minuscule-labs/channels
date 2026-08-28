@@ -23,6 +23,12 @@ importers:
       '@minu/channels-core':
         specifier: workspace:*
         version: link:../core
+      '@minu/channels-relay-storage-drizzle':
+        specifier: workspace:*
+        version: link:../relay-storage-drizzle
+      commander:
+        specifier: ^15.0.0
+        version: 15.0.0
 
   packages/core: {}
 

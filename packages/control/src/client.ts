@@ -42,7 +42,7 @@ export class LocalControlClient {
     try {
       const response = await fetch(`${this.endpoint}${path}`, {
         headers: { accept: "application/json" },
-        credentials: "same-origin",
+        credentials: "include",
         signal: controller.signal,
       });
       if (!response.ok) {

@@ -1,6 +1,14 @@
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { LocalControlBrowserSessions } from "./session.js";
+export {
+  LocalControlBrowserSessions,
+  type LocalControlAuditAction,
+  type LocalControlAuditEvent,
+  type LocalControlBrowserSessionsOptions,
+  type LocalControlLaunchExchange,
+} from "./session.js";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalChannelAgent,
@@ -152,6 +160,8 @@ export interface LocalControlHttpServerOptions {
   host?: "127.0.0.1" | "::1";
   port?: number;
   allowedOrigins?: readonly string[];
+  /** Required by the real daemon; optional for isolated read-only fixtures. */
+  browserSessions?: LocalControlBrowserSessions;
 }
 
 export interface LocalControlHttpServer {
@@ -166,6 +176,7 @@ function json(response: ServerResponse, status: number, body: unknown, origin?: 
   response.setHeader("x-content-type-options", "nosniff");
   if (origin) {
     response.setHeader("access-control-allow-origin", origin);
+    response.setHeader("access-control-allow-credentials", "true");
     response.setHeader("vary", "Origin");
   }
   response.end(JSON.stringify(body));
@@ -207,7 +218,26 @@ export async function createLocalControlHttpServer(
     }
 
     void (async () => {
-      const path = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+      const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+      const path = url.pathname;
+      if (path === "/local/session/bootstrap" && options.browserSessions) {
+        const exchange = options.browserSessions.exchangeLaunchCode(url.searchParams.get("code") ?? undefined);
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("referrer-policy", "no-referrer");
+        if (!exchange) {
+          json(response, 401, { error: "Invalid or expired launch code" }, origin);
+          return;
+        }
+        response.statusCode = 303;
+        response.setHeader("set-cookie", exchange.cookie);
+        response.setHeader("location", exchange.redirectUrl);
+        response.end();
+        return;
+      }
+      if (options.browserSessions && !options.browserSessions.authorize(request.headers.cookie)) {
+        json(response, 401, { error: "Local browser session required" }, origin);
+        return;
+      }
       if (path === "/local/health") {
         json(response, 200, options.service.health(), origin);
         return;

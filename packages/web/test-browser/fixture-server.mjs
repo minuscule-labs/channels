@@ -1,5 +1,9 @@
 import { createServer } from "node:http";
-import { createLocalControlHttpServer, LocalControlService } from "../../control/dist/src/server.js";
+import {
+  createLocalControlHttpServer,
+  LocalControlBrowserSessions,
+  LocalControlService,
+} from "../../control/dist/src/server.js";
 import { createChannelHttpServer } from "../../core/dist/src/http-server.js";
 import { ChannelService } from "../../core/dist/src/channel-service.js";
 
@@ -25,9 +29,13 @@ await service.createMessage(channel.id, {
   body: "@builder Verify the browser collaboration flow.",
 });
 
+const browserSessions = new LocalControlBrowserSessions({
+  browserUrl: "http://127.0.0.1:5174/",
+});
 const localControl = await createLocalControlHttpServer({
   port: 4311,
-  allowedOrigins: ["http://127.0.0.1:5174"],
+  allowedOrigins: [browserSessions.browserOrigin],
+  browserSessions,
   service: new LocalControlService({
     channels: service,
     bindings: {
@@ -46,7 +54,16 @@ const localControl = await createLocalControlHttpServer({
 });
 
 const controlServer = createServer(async (request, response) => {
-  if (request.method !== "POST" || request.url !== "/disconnect") {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1:4312");
+  if (request.method === "GET" && url.pathname === "/control-launch") {
+    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify({ launchUrl: browserSessions.issueLaunchUrl(
+      localControl.endpoint,
+      url.searchParams.get("destination") ?? "/",
+    ) }));
+    return;
+  }
+  if (request.method !== "POST" || url.pathname !== "/disconnect") {
     response.writeHead(404).end();
     return;
   }
