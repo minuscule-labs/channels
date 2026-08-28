@@ -10,6 +10,7 @@ Channels does not run agents or decide workflows. MinuRuntime executes agents, w
 - `storage-drizzle` — durable Drizzle/libSQL storage for local files or Turso, plus the standalone server CLI.
 - `relay` — mention-driven integration, private binding contracts, lease recovery, and a small structural `AgentRuntimePort`; it has no Runtime package dependency.
 - `relay-storage-drizzle` — separate local-only Drizzle/libSQL storage for Workspace roots, private agent configuration, and Channel-specific Runtime bindings.
+- `control` — loopback-only, presentation-safe contracts/client/server for read-only agent binding and Runtime status; private identifiers and configuration never enter its DTOs.
 - `web` — responsive React/TanStack/Tailwind collaboration client for Workspace navigation, live Channel messages, mentions, and rosters.
 - `examples/pi-demo` — optional composition example requiring separately installed MinuRuntime packages.
 
@@ -31,6 +32,14 @@ POST /channels/:id/messages
 POST /channels/:id/responses
 GET  /channels/:id/messages
 GET  /channels/:id/events
+```
+
+The separate read-only local control surface currently provides:
+
+```text
+GET /local/health
+GET /local/capabilities
+GET /local/channels/:id/agents
 ```
 
 Identities are reusable humans, agents, or services with stable opaque ids. Workspaces assign each identity a case-insensitive local mention handle, simple `owner` / `admin` / `member` access, optional public role label, and delegation profile override. Channels belong to one Workspace and select active Workspace members as participants. Structured message authors and targets store stable identity ids, while body `@handles` resolve through Workspace membership. Profiles remain routing metadata—not private system prompts. Owners and admins may update membership aliases, public routing metadata, and status; only owners may change access roles or update another owner, and the last active owner cannot be disabled or demoted. `actorIdentityId` is currently an advisory policy input—not authentication—so access roles are not security claims until authentication and permission enforcement are added. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:

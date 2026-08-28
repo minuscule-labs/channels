@@ -26,6 +26,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await page.goto(`/app/workspaces/${workspaceId}/channels/${channelId}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
+  await expect(page.getByTitle("Local Runtime: idle")).toBeVisible();
 
   const composer = page.getByRole("combobox", { name: "Channel message" });
   await composer.fill("@b");
@@ -45,7 +46,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByText("principal builder — Implements features and verifies changes.")).toBeVisible();
   await expect(page.getByText(new RegExp(`roster ${initialRosterRevision + 1}$`))).toBeVisible();
 
-  const disconnect = await request.post("http://127.0.0.1:4311/disconnect");
+  const disconnect = await request.post("http://127.0.0.1:4312/disconnect");
   expect(disconnect.ok()).toBe(true);
   await expect(page.getByLabel("Live updates disconnected")).toBeVisible({ timeout: 10_000 });
 
@@ -88,4 +89,28 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await participants.getByRole("button", { name: "Close participants" }).click();
   await expect(participants).toBeHidden();
   await expect(page.getByRole("button", { name: "Show participants" })).toBeFocused();
+});
+
+test("keeps public messaging available when local Runtime status is unavailable", async ({ page, request }) => {
+  const { workspaces } = await (await request.get("http://127.0.0.1:4310/workspaces")).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(
+    `http://127.0.0.1:4310/workspaces/${workspaceId}/channels`,
+  )).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  await page.route("**/local/**", (route) => route.abort("connectionfailed"));
+
+  await page.goto(`/app/workspaces/${workspaceId}/channels/${channelId}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await expect(page.getByText("Local Runtime status unavailable")).toBeVisible();
+
+  const composer = page.getByRole("combobox", { name: "Channel message" });
+  await composer.fill("Public messaging remains available without local control.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("log").getByText(
+    "Public messaging remains available without local control.",
+    { exact: true },
+  )).toBeVisible();
 });

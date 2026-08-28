@@ -1,0 +1,23 @@
+{
+  "name": "@minu/channels-control",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./contracts": {
+      "types": "./dist/src/contracts.d.ts",
+      "default": "./dist/src/contracts.js"
+    },
+    "./client": {
+      "types": "./dist/src/client.d.ts",
+      "default": "./dist/src/client.js"
+    },
+    "./server": {
+      "types": "./dist/src/server.d.ts",
+      "default": "./dist/src/server.js"
+    }
+  },
+  "dependencies": {
+    "@minu/channels-core": "workspace:*"
+  }
+}

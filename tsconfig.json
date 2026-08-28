@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/control" },
     { "path": "packages/storage-drizzle" },
     { "path": "packages/relay" },
     { "path": "packages/relay-storage-drizzle" }

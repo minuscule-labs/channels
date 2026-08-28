@@ -110,6 +110,25 @@ a { color: inherit; text-decoration: none; }
 .connection-pill.connecting .status-dot { background: var(--warning); }
 .connection-pill.disconnected .status-dot { background: var(--danger); }
 
+.local-agent-state {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.35rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.5625rem;
+  line-height: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.local-agent-state[data-state="idle"] { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); color: var(--success); }
+.local-agent-state[data-state="running"] { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); color: var(--accent); }
+.local-agent-state[data-state="offline"],
+.local-agent-state[data-state="uncertain"] { border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); color: var(--warning); }
+.local-agent-state[data-state="disabled"] { opacity: 0.55; }
+
 .minu-scroll { scrollbar-width: thin; scrollbar-color: transparent transparent; }
 .minu-scroll:hover { scrollbar-color: color-mix(in srgb, var(--muted) 55%, transparent) transparent; }
 .minu-scroll::-webkit-scrollbar { width: 6px; height: 6px; }

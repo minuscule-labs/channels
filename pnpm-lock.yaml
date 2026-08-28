@@ -18,6 +18,12 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/control:
+    dependencies:
+      '@minu/channels-core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/core: {}
 
   packages/relay:
@@ -55,6 +61,9 @@ importers:
 
   packages/web:
     dependencies:
+      '@minu/channels-control':
+        specifier: workspace:^
+        version: link:../control
       '@minu/channels-core':
         specifier: workspace:*
         version: link:../core

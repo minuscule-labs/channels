@@ -36,6 +36,7 @@ describe("query keys", () => {
     expect(queryKeys.channel("one")).toEqual(["channel", "one"]);
     expect(queryKeys.channelMessages("one")).toEqual(["channel", "one", "messages"]);
     expect(queryKeys.workspaceChannels("workspace")).toEqual(["workspace", "workspace", "channels"]);
+    expect(queryKeys.localChannelAgents("one")).toEqual(["local", "channel", "one", "agents"]);
   });
 });
 

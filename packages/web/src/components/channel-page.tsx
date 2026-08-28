@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { channels } from "../lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { channels, localControl } from "../lib/api";
 import { useLiveChannel } from "../lib/live-channel";
 import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
@@ -27,8 +27,19 @@ export function ChannelPage() {
     queryKey: queryKeys.channelMessages(channelId),
     queryFn: () => channels.listMessages(channelId),
   });
+  const localAgents = useQuery({
+    queryKey: queryKeys.localChannelAgents(channelId),
+    queryFn: async () => (await localControl.listChannelAgents(channelId)).agents,
+    retry: false,
+    refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
+  });
   const { connection, retry } = useLiveChannel(channelId);
   const participants = metadata.data?.participants ?? [];
+  const localAgentMap = useMemo(
+    () => localAgents.data ? new Map(localAgents.data.map((agent) => [agent.identityId, agent])) : undefined,
+    [localAgents.data],
+  );
+  const localStatus = localAgents.isSuccess ? "available" : localAgents.isError ? "unavailable" : "loading";
 
   useEffect(() => {
     const count = messages.data?.length ?? 0;
@@ -92,7 +103,7 @@ export function ChannelPage() {
               </button>
             )}
           >
-            <MemberRoster participants={participants} drawer />
+            <MemberRoster participants={participants} localAgents={localAgentMap} localStatus={localStatus} drawer />
           </Drawer>
         </header>
         <div className="relative min-h-0 flex-1">
@@ -123,7 +134,7 @@ export function ChannelPage() {
         <ChannelComposer participants={participants} workspaceId={workspaceId} channelId={channelId} />
       </section>
       <div className="hidden lg:block">
-        <MemberRoster participants={participants} />
+        <MemberRoster participants={participants} localAgents={localAgentMap} localStatus={localStatus} />
       </div>
     </div>
   );
