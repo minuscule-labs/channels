@@ -127,20 +127,26 @@ test("commits one idempotent response and advances its cursor atomically", async
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     };
-    const first = await jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    });
-    const duplicate = await jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    });
-    assert.equal(first.response.status, 201);
-    assert.equal(first.body.created, true);
-    assert.equal(duplicate.response.status, 200);
-    assert.equal(duplicate.body.created, false);
+    const [first, duplicate] = await Promise.all([
+      jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+      jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      }),
+    ]);
+    assert.deepEqual(
+      [first.response.status, duplicate.response.status].sort(),
+      [200, 201],
+    );
+    assert.deepEqual(
+      [first.body.created, duplicate.body.created].sort(),
+      [false, true],
+    );
     assert.equal(
       (first.body.message as { id: string }).id,
       (duplicate.body.message as { id: string }).id,

@@ -34,10 +34,13 @@ export function localLibSqlUrl(path: string): string {
   return path.startsWith("file:") ? path : `file:${resolve(path)}`;
 }
 
+const pendingResponseCommits = new Map<string, Promise<ResponseResult>>();
+
 export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCursorStore {
   private constructor(
     private readonly client: Client,
     private readonly database: LibSQLDatabase<typeof schema>,
+    private readonly storageKey: string,
   ) {}
 
   static async open(options: DrizzleLibSqlStorageOptions): Promise<DrizzleLibSqlChannelStorage> {
@@ -46,7 +49,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     await migrate(database, {
       migrationsFolder: options.migrationsFolder ?? defaultMigrationsFolder(),
     });
-    return new DrizzleLibSqlChannelStorage(client, database);
+    return new DrizzleLibSqlChannelStorage(client, database, options.url);
   }
 
   async createChannel(channel: Channel): Promise<Channel> {
@@ -166,7 +169,50 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     message: NewResponseMessage,
     triggerSequence: number,
   ): Promise<ResponseResult> {
+    const deliveryKey = `${this.storageKey}:${message.channelId}:${message.participantId}:${message.replyTo}`;
+    const pending = pendingResponseCommits.get(deliveryKey);
+    if (pending) {
+      const result = await pending;
+      return { message: { ...result.message, to: [...result.message.to] }, created: false };
+    }
+    const commit = this.commitResponseWithRetry(message, triggerSequence);
+    pendingResponseCommits.set(deliveryKey, commit);
+    try {
+      return await commit;
+    } finally {
+      pendingResponseCommits.delete(deliveryKey);
+    }
+  }
+
+  private async commitResponseWithRetry(
+    message: NewResponseMessage,
+    triggerSequence: number,
+  ): Promise<ResponseResult> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        return await this.commitResponseOnce(message, triggerSequence);
+      } catch (error) {
+        lastError = error;
+        const code = (error as { code?: string }).code;
+        if (code !== "SQLITE_BUSY" && code !== "SQLITE_CONSTRAINT") throw error;
+        await new Promise((resolve) => setTimeout(resolve, 5 * 2 ** attempt));
+      }
+    }
+    throw lastError;
+  }
+
+  private async commitResponseOnce(
+    message: NewResponseMessage,
+    triggerSequence: number,
+  ): Promise<ResponseResult> {
     return await this.database.transaction(async (transaction) => {
+      const [lockedChannel] = await transaction
+        .update(schema.channels)
+        .set({ nextSequence: sql`${schema.channels.nextSequence}` })
+        .where(eq(schema.channels.id, message.channelId))
+        .returning({ id: schema.channels.id });
+      if (!lockedChannel) throw new Error(`Channel not found: ${message.channelId}`);
       const [existingDelivery] = await transaction
         .select({ responseMessageId: schema.responseDeliveries.responseMessageId })
         .from(schema.responseDeliveries)
@@ -184,7 +230,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
           .from(schema.messages)
           .where(eq(schema.messages.id, existingDelivery.responseMessageId))
           .limit(1);
-        if (!existing) throw new Error("Relay delivery references a missing response message");
+        if (!existing) throw new Error("Response delivery references a missing response message");
         return {
           created: false,
           message: {

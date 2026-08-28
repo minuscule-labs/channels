@@ -55,8 +55,16 @@ test("Drizzle/libSQL keeps response commits idempotent across reopen", async () 
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     };
-    const committed = await first.createResponse(channel.id, input);
-    assert.equal(committed.created, true);
+    const competingStorage = await DrizzleLibSqlChannelStorage.open({ url });
+    const competing = new ChannelService(competingStorage);
+    const commits = await Promise.all([
+      first.createResponse(channel.id, input),
+      competing.createResponse(channel.id, input),
+    ]);
+    assert.deepEqual(commits.map((result) => result.created).sort(), [false, true]);
+    assert.equal(commits[0]!.message.id, commits[1]!.message.id);
+    const committed = commits.find((result) => result.created)!;
+    await competing.close();
     await first.close();
 
     const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });

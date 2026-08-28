@@ -33,6 +33,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   private readonly channels = new Map<string, Channel>();
   private readonly cursors = new Map<string, number>();
   private readonly responses = new Map<string, ChannelMessage>();
+  private readonly pendingResponses = new Map<string, Promise<ResponseResult>>();
 
   async createChannel(channel: Channel): Promise<Channel> {
     this.channels.set(channel.id, copyChannel(channel));
@@ -67,6 +68,25 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     triggerSequence: number,
   ): Promise<ResponseResult> {
     const deliveryKey = `${message.channelId}:${message.participantId}:${message.replyTo}`;
+    const pending = this.pendingResponses.get(deliveryKey);
+    if (pending) {
+      const result = await pending;
+      return { message: { ...result.message, to: [...result.message.to] }, created: false };
+    }
+    const commit = this.commitResponseOnce(deliveryKey, message, triggerSequence);
+    this.pendingResponses.set(deliveryKey, commit);
+    try {
+      return await commit;
+    } finally {
+      this.pendingResponses.delete(deliveryKey);
+    }
+  }
+
+  private async commitResponseOnce(
+    deliveryKey: string,
+    message: NewResponseMessage,
+    triggerSequence: number,
+  ): Promise<ResponseResult> {
     const existing = this.responses.get(deliveryKey);
     if (existing) return { message: { ...existing, to: [...existing.to] }, created: false };
     const stored = await this.appendMessage(message);
