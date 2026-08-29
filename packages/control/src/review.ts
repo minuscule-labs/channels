@@ -6,6 +6,11 @@ import {
   type ChannelHttpServer,
 } from "@minu/channels-core";
 import {
+  ChannelRuntimeRelay,
+  type AgentRuntimePort,
+  type RuntimePortMessage,
+} from "@minu/channels-relay";
+import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
@@ -15,6 +20,45 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.js";
 import type { LocalControlAuditEvent } from "./session.js";
+
+class SimulatedReviewRuntime implements AgentRuntimePort {
+  private readonly transcript: RuntimePortMessage[] = [];
+  private working = false;
+
+  async send(sessionId: string, input: string): Promise<void> {
+    if (sessionId !== "review-builder-session") throw new Error("Unknown review session");
+    this.working = true;
+    try {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      const trigger = input.split("\n")
+        .find((line) => line.includes("← TRIGGER"))
+        ?.replace(/^[^:]+:\s*/, "")
+        .replace(/\s*← TRIGGER$/, "")
+        .trim();
+      const summary = (trigger && trigger.length > 160 ? `${trigger.slice(0, 157)}…` : trigger)
+        ?.replace(/[.!?]+$/, "")
+        .replaceAll("@", "＠");
+      this.transcript.push(
+        { role: "user", content: input },
+        {
+          role: "assistant",
+          content: `[Simulated review agent] I received${summary ? ` “${summary}”` : " your message"}. This confirms mention routing, Relay delivery, and response posting are working. Live Pi execution is not enabled in review mode.`,
+        },
+      );
+    } finally {
+      this.working = false;
+    }
+  }
+
+  async status(sessionId: string): Promise<"idle" | "working" | "offline"> {
+    if (sessionId !== "review-builder-session") return "offline";
+    return this.working ? "working" : "idle";
+  }
+
+  async messages(sessionId: string): Promise<RuntimePortMessage[]> {
+    return sessionId === "review-builder-session" ? this.transcript.map((message) => ({ ...message })) : [];
+  }
+}
 
 export interface LocalReviewAppOptions {
   channelsPort?: number;
@@ -41,6 +85,7 @@ export async function createLocalReviewApp(
   const relayDatabasePath = join(directory, "relay.db");
   let channelsServer: ChannelHttpServer | undefined;
   let controlDaemon: LocalControlDaemon | undefined;
+  let relay: ChannelRuntimeRelay | undefined;
   try {
     channelsServer = await createChannelHttpServer({
       port: options.channelsPort ?? 4310,
@@ -102,7 +147,7 @@ export async function createLocalReviewApp(
     await client.postMessage(channel.id, {
       participantId: builder.id,
       to: [human.id, reviewer.id],
-      body: "Review mode is ready. The timeline, structured mentions, roster, and local Runtime badges are available for inspection.",
+      body: "Review mode is ready. Send @builder a message to test the simulated Relay response. Unaddressed messages remain shared context and do not wake agents.",
     });
     await client.postMessage(channel.id, {
       participantId: reviewer.id,
@@ -147,20 +192,27 @@ export async function createLocalReviewApp(
       await store.close();
     }
 
+    const runtime = new SimulatedReviewRuntime();
     controlDaemon = await createLocalControlDaemon({
       channelsEndpoint: channelsServer.endpoint,
       relayDatabasePath,
       webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
       port: options.controlPort ?? 4311,
-      runtimes: {
-        "review-mode": {
-          async status(sessionId) {
-            return sessionId === "review-builder-session" ? "idle" : "offline";
-          },
-        },
-      },
+      runtimes: { "review-mode": runtime },
       onAudit: options.onAudit,
     });
+    relay = new ChannelRuntimeRelay({
+      client,
+      channelId: channel.id,
+      bindings: [{
+        participantId: builder.id,
+        sessionId: "review-builder-session",
+        runtime,
+        wakePolicy: "mentions",
+      }],
+    });
+    await relay.start();
+    await relay.waitForIdle();
 
     let closed = false;
     return {
@@ -175,11 +227,13 @@ export async function createLocalReviewApp(
       async close() {
         if (closed) return;
         closed = true;
+        await relay!.stop().catch(() => undefined);
         await Promise.allSettled([controlDaemon!.close(), channelsServer!.close()]);
         await rm(directory, { recursive: true, force: true });
       },
     };
   } catch (error) {
+    await relay?.stop().catch(() => undefined);
     await Promise.allSettled([controlDaemon?.close(), channelsServer?.close()]);
     await rm(directory, { recursive: true, force: true });
     throw error;

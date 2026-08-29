@@ -52,9 +52,9 @@ From the repository root:
 pnpm dev
 ```
 
-This builds the workspace and coordinates disposable in-memory Channels data, temporary private Relay storage, the authenticated control daemon, and Vite. It seeds one Workspace and Channel with `@you`, `@builder`, and `@reviewer`, sample messages, an idle presentation binding, and an unbound agent; then it opens the authenticated Channel. Ctrl-C terminates the Vite process group, both loopback servers, and temporary storage.
+This builds the workspace and coordinates disposable in-memory Channels data, temporary private Relay storage, the authenticated control daemon, a real `ChannelRuntimeRelay`, and Vite. It seeds one Workspace and Channel with `@you`, `@builder`, and `@reviewer`, sample messages, a simulated builder binding, and an unbound reviewer; then it opens the authenticated Channel. Mention `@builder` to exercise real structured routing, Relay delivery, atomic response posting, SSE delivery, and timeline rendering. Unaddressed messages intentionally remain context without waking the agent. Ctrl-C terminates Relay, the Vite process group, both loopback servers, and temporary storage.
 
-Review mode demonstrates the application UI and control boundary. Its seeded agent messages and `review-mode` Runtime status adapter are fixtures—not live agent execution. Use `pnpm dev -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied. `pnpm app:review` is the explicit equivalent; `pnpm web:dev` remains frontend-only.
+Review mode demonstrates the application and Relay boundary. The `review-mode` Runtime response is deterministic—not live model execution. Use `pnpm dev -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied. `pnpm app:review` is the explicit equivalent; `pnpm web:dev` remains frontend-only.
 
 ## Run services individually
 

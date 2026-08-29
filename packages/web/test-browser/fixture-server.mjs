@@ -7,8 +7,12 @@ import {
 import { createChannelHttpServer } from "../../core/dist/src/http-server.js";
 import { ChannelService } from "../../core/dist/src/channel-service.js";
 
+const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 4310);
+const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 4311);
+const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 4312);
+const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 5174);
 const service = new ChannelService();
-let channelServer = await createChannelHttpServer({ service, port: 4310 });
+let channelServer = await createChannelHttpServer({ service, port: channelsPort });
 const human = await service.createIdentity({ type: "human", displayName: "David Kennedy" });
 const agent = await service.createIdentity({ type: "agent", displayName: "Builder Agent" });
 const workspace = await service.createWorkspace({ slug: "browser-test", name: "Browser Test" });
@@ -30,10 +34,10 @@ await service.createMessage(channel.id, {
 });
 
 const browserSessions = new LocalControlBrowserSessions({
-  browserUrl: "http://127.0.0.1:5174/",
+  browserUrl: `http://127.0.0.1:${webPort}/`,
 });
 const localControl = await createLocalControlHttpServer({
-  port: 4311,
+  port: controlPort,
   allowedOrigins: [browserSessions.browserOrigin],
   browserSessions,
   service: new LocalControlService({
@@ -54,7 +58,7 @@ const localControl = await createLocalControlHttpServer({
 });
 
 const controlServer = createServer(async (request, response) => {
-  const url = new URL(request.url ?? "/", "http://127.0.0.1:4312");
+  const url = new URL(request.url ?? "/", `http://127.0.0.1:${fixturePort}`);
   if (request.method === "GET" && url.pathname === "/control-launch") {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     response.end(JSON.stringify({ launchUrl: browserSessions.issueLaunchUrl(
@@ -74,10 +78,10 @@ const controlServer = createServer(async (request, response) => {
   });
   response.writeHead(202).end();
   setTimeout(async () => {
-    channelServer = await createChannelHttpServer({ service, port: 4310 });
+    channelServer = await createChannelHttpServer({ service, port: channelsPort });
   }, 2_000);
 });
-controlServer.listen(4312, "127.0.0.1");
+controlServer.listen(fixturePort, "127.0.0.1");
 
 console.log(JSON.stringify({ workspaceId: workspace.id, channelId: channel.id }));
 

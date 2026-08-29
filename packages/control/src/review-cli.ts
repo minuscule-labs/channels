@@ -164,6 +164,8 @@ async function main(): Promise<void> {
     console.log(`  Channels: ${app.channelsEndpoint}`);
     console.log(`  Control:  ${app.controlEndpoint}`);
     console.log("  Handles:  @you, @builder, @reviewer");
+    console.log("  Agent:    @mention @builder for a simulated Relay response");
+    console.log("  Context:  unaddressed messages do not wake agents");
     console.log("  Data:     disposable; removed on shutdown");
     if (values["no-open"]) {
       console.log("\nOpen this one-time URL within 60 seconds:");

@@ -12,9 +12,9 @@ From this repository, launch a disposable seeded review Workspace with one comma
 pnpm dev
 ```
 
-The command builds the workspace, starts disposable Channels data, the authenticated local control daemon, and the Vite web client, then opens the seeded Channel in your browser. It includes `@you`, `@builder`, and `@reviewer`, sample timeline messages, one idle presentation binding, and one unbound agent so the primary UI states are visible. Press Ctrl-C to stop every service and remove review data.
+The command builds the workspace, starts disposable Channels data, the authenticated local control daemon, a real Relay worker, and the Vite web client, then opens the seeded Channel in your browser. It includes `@you`, `@builder`, and `@reviewer`, sample timeline messages, one simulated builder binding, and one unbound agent so the primary UI states are visible. Mention `@builder` to receive a deterministic simulated response through the real mention → Relay → response path; unaddressed messages remain shared context and intentionally do not wake an agent. Press Ctrl-C to stop every service and remove review data.
 
-This is a UI review harness, not live agent execution or a production authentication mode. To print the one-time launch URL instead of opening a browser:
+This is a functional UI/Relay review harness, not live model execution or a production authentication mode. To print the one-time launch URL instead of opening a browser:
 
 ```bash
 pnpm dev -- --no-open

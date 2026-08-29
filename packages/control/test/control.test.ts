@@ -269,13 +269,28 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
       },
       {
         sequence: 2,
-        body: "Review mode is ready. The timeline, structured mentions, roster, and local Runtime badges are available for inspection.",
+        body: "Review mode is ready. Send @builder a message to test the simulated Relay response. Unaddressed messages remain shared context and do not wake agents.",
       },
       {
         sequence: 3,
         body: "I’ll independently review the result and report concrete findings here.",
       },
+      {
+        sequence: 4,
+        body: "[Simulated review agent] I received “＠builder Please prepare the first implementation pass and hand it to ＠reviewer”. This confirms mention routing, Relay delivery, and response posting are working. Live Pi execution is not enabled in review mode.",
+      },
     ]);
+
+    await client.postMessage(app.channelId, {
+      participantId: app.humanIdentityId,
+      body: "@builder Confirm this review message.",
+    });
+    let updatedMessages = await client.listMessages(app.channelId);
+    for (let attempt = 0; attempt < 20 && updatedMessages.length < 6; attempt++) {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      updatedMessages = await client.listMessages(app.channelId);
+    }
+    assert.equal(updatedMessages[5]?.body, "[Simulated review agent] I received “＠builder Confirm this review message”. This confirms mention routing, Relay delivery, and response posting are working. Live Pi execution is not enabled in review mode.");
 
     const bootstrap = await fetch(app.issueBrowserLaunchUrl(), { redirect: "manual" });
     const setCookie = bootstrap.headers.get("set-cookie");

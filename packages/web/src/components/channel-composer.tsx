@@ -250,7 +250,7 @@ export function ChannelComposer({
                 ))}
               </select>
             </label>
-            <span className="hidden text-[10px] text-[var(--muted)] sm:inline">⌘/Ctrl + Enter to send</span>
+            <span className="text-[10px] text-[var(--muted)]">@mention wakes an agent · ⌘/Ctrl + Enter to send</span>
             <div className="ml-auto flex items-center gap-2">
               <span className={`font-mono text-[10px] ${bodyTooLarge ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}>
                 {bodyBytes.toLocaleString()} / {MAX_MESSAGE_BYTES.toLocaleString()} B

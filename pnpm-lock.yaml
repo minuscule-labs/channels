@@ -23,6 +23,9 @@ importers:
       '@minu/channels-core':
         specifier: workspace:*
         version: link:../core
+      '@minu/channels-relay':
+        specifier: workspace:*
+        version: link:../relay
       '@minu/channels-relay-storage-drizzle':
         specifier: workspace:*
         version: link:../relay-storage-drizzle

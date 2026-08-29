@@ -1,12 +1,15 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
+const channelsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 4310}`;
+const fixtureBase = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 4312}`;
+
 async function launchAuthenticated(
   page: Page,
   request: APIRequestContext,
   destination: string,
 ): Promise<void> {
   const response = await request.get(
-    `http://127.0.0.1:4312/control-launch?destination=${encodeURIComponent(destination)}`,
+    `${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}`,
   );
   expect(response.ok()).toBe(true);
   const { launchUrl } = await response.json() as { launchUrl: string };
@@ -14,14 +17,14 @@ async function launchAuthenticated(
 }
 
 test("sends idempotently, refreshes rosters, and catches up after reconnect", async ({ page, request }) => {
-  const workspacesResponse = await request.get("http://127.0.0.1:4310/workspaces");
+  const workspacesResponse = await request.get(`${channelsBase}/workspaces`);
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
-  const channelsResponse = await request.get(`http://127.0.0.1:4310/workspaces/${workspaceId}/channels`);
+  const channelsResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`);
   const { channels } = await channelsResponse.json() as { channels: Array<{ id: string; rosterRevision: number }> };
   const channelId = channels[0]!.id;
   const initialRosterRevision = channels[0]!.rosterRevision;
-  const membersResponse = await request.get(`http://127.0.0.1:4310/workspaces/${workspaceId}/members`);
+  const membersResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/members`);
   const { members } = await membersResponse.json() as {
     members: Array<{ identityId: string; mentionHandle: string }>;
   };
@@ -44,6 +47,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
   await expect(page.getByTitle("Local Runtime: idle")).toBeVisible();
+  await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
 
   const composer = page.getByRole("combobox", { name: "Channel message" });
   await composer.fill("@b");
@@ -56,14 +60,14 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(composer).toHaveValue("");
 
   const update = await request.patch(
-    `http://127.0.0.1:4310/workspaces/${workspaceId}/members/${agent.identityId}`,
+    `${channelsBase}/workspaces/${workspaceId}/members/${agent.identityId}`,
     { data: { actorIdentityId: human.identityId, roleLabel: "principal builder" } },
   );
   expect(update.ok()).toBe(true);
   await expect(page.getByText("principal builder — Implements features and verifies changes.")).toBeVisible();
   await expect(page.getByText(new RegExp(`roster ${initialRosterRevision + 1}$`))).toBeVisible();
 
-  const disconnect = await request.post("http://127.0.0.1:4312/disconnect");
+  const disconnect = await request.post(`${fixtureBase}/disconnect`);
   expect(disconnect.ok()).toBe(true);
   await expect(page.getByLabel("Live updates disconnected")).toBeVisible({ timeout: 10_000 });
 
@@ -83,12 +87,12 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
 
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const { workspaces } = await (await request.get("http://127.0.0.1:4310/workspaces")).json() as {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
   const { channels } = await (await request.get(
-    `http://127.0.0.1:4310/workspaces/${workspaceId}/channels`,
+    `${channelsBase}/workspaces/${workspaceId}/channels`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
 
@@ -109,12 +113,12 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
 });
 
 test("keeps public messaging available when local Runtime status is unavailable", async ({ page, request }) => {
-  const { workspaces } = await (await request.get("http://127.0.0.1:4310/workspaces")).json() as {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
   const { channels } = await (await request.get(
-    `http://127.0.0.1:4310/workspaces/${workspaceId}/channels`,
+    `${channelsBase}/workspaces/${workspaceId}/channels`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
   await page.route("**/local/**", (route) => route.abort("connectionfailed"));

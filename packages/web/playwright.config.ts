@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 4310);
+const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 4311);
+const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 4312);
+const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 5174);
+
 export default defineConfig({
   testDir: "./test-browser",
   testMatch: "**/*.spec.ts",
@@ -7,20 +12,30 @@ export default defineConfig({
   workers: 1,
   timeout: 30_000,
   use: {
-    baseURL: "http://127.0.0.1:5174",
+    baseURL: `http://127.0.0.1:${webPort}`,
     trace: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
       command: "node test-browser/fixture-server.mjs",
-      port: 4310,
+      port: channelsPort,
+      env: {
+        MINU_TEST_CHANNELS_PORT: String(channelsPort),
+        MINU_TEST_CONTROL_PORT: String(controlPort),
+        MINU_TEST_FIXTURE_PORT: String(fixturePort),
+        MINU_TEST_WEB_PORT: String(webPort),
+      },
       reuseExistingServer: false,
       timeout: 20_000,
     },
     {
-      command: "pnpm dev",
-      port: 5174,
+      command: `pnpm exec vite --host 127.0.0.1 --port ${webPort} --strictPort`,
+      port: webPort,
+      env: {
+        VITE_CHANNELS_PROXY_TARGET: `http://127.0.0.1:${channelsPort}`,
+        VITE_CHANNELS_CONTROL_PROXY_TARGET: `http://127.0.0.1:${controlPort}`,
+      },
       reuseExistingServer: false,
       timeout: 20_000,
     },
