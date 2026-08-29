@@ -3,8 +3,8 @@ import { Command, InvalidArgumentError } from "commander";
 import { spawn } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon } from "./daemon.ts";
-import type { LocalControlRuntimePort } from "./server.ts";
 
 interface CliOptions {
   port: number;
@@ -35,7 +35,7 @@ function moduleSpecifier(value: string): string {
   return value;
 }
 
-async function runtimeFromModule(specification: string): Promise<[string, LocalControlRuntimePort]> {
+async function runtimeFromModule(specification: string): Promise<[string, LocalManagedRuntimePort]> {
   const separator = specification.indexOf("=");
   if (separator < 1 || separator === specification.length - 1) {
     throw new Error("Runtime adapters must use <name>=<module>[#export]");
@@ -62,7 +62,7 @@ async function runtimeFromModule(specification: string): Promise<[string, LocalC
     || typeof (candidate as { status?: unknown }).status !== "function") {
     throw new Error(`Runtime module for ${name} does not expose an object with status(sessionId)`);
   }
-  return [name, candidate as LocalControlRuntimePort];
+  return [name, candidate as LocalManagedRuntimePort];
 }
 
 async function openBrowser(url: string): Promise<void> {

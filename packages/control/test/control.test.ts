@@ -9,6 +9,7 @@ import { createChannelHttpServer } from "@minu/channels-core";
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
+import { LocalAgentHost, type ManagedRuntimeStartConfig } from "../src/agent-host.ts";
 import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
@@ -72,6 +73,52 @@ async function requestStatus(url: string, headers: Record<string, string>): Prom
   });
 }
 
+class ManagedFakeRuntime {
+  readonly starts: Array<{ sessionId: string; config: ManagedRuntimeStartConfig }> = [];
+  readonly prompts = new Map<string, string[]>();
+  private readonly transcripts = new Map<string, Array<{ role: "user" | "assistant"; content: string }>>();
+
+  async start(config: ManagedRuntimeStartConfig): Promise<{ id: string }> {
+    const sessionId = `managed-session-${this.starts.length + 1}`;
+    this.starts.push({ sessionId, config: { ...config } });
+    this.transcripts.set(sessionId, []);
+    return { id: sessionId };
+  }
+
+  async status(sessionId: string): Promise<"idle" | "offline"> {
+    return this.transcripts.has(sessionId) ? "idle" : "offline";
+  }
+
+  async send(sessionId: string, input: string): Promise<void> {
+    const transcript = this.transcripts.get(sessionId);
+    if (!transcript) throw new Error("Unknown managed session");
+    const prompts = this.prompts.get(sessionId) ?? [];
+    prompts.push(input);
+    this.prompts.set(sessionId, prompts);
+    transcript.push(
+      { role: "user", content: input },
+      { role: "assistant", content: `Genuine managed response from ${sessionId}` },
+    );
+  }
+
+  async messages(sessionId: string) {
+    return (this.transcripts.get(sessionId) ?? []).map((message) => ({ ...message }));
+  }
+
+  async stop(sessionId: string): Promise<void> {
+    this.transcripts.delete(sessionId);
+  }
+}
+
+async function waitUntil(assertion: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await assertion()) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+  throw new Error("Condition was not met before timeout");
+}
+
 function service() {
   const statusCalls: string[] = [];
   const control = new LocalControlService({
@@ -105,8 +152,8 @@ test("projects private bindings into presentation-safe Channel agent status", as
     { identityId: "service-replacing", state: "uncertain" },
   ]);
   assert.deepEqual(statusCalls, ["runtime-session-secret"]);
-  assert.deepEqual(result.agents[0]?.capabilities, { steer: false, interrupt: false, reconnect: false });
-  assert.deepEqual(result.agents[1]?.capabilities, { steer: false, interrupt: false, reconnect: false });
+  assert.deepEqual(result.agents[0]?.capabilities, { start: false, steer: false, interrupt: false, reconnect: false });
+  assert.deepEqual(result.agents[1]?.capabilities, { start: false, steer: false, interrupt: false, reconnect: false });
 
   const publicJson = JSON.stringify(result);
   assert.doesNotMatch(publicJson, /runtime-session-secret|private-adapter|replacement-session-secret/);
@@ -140,6 +187,7 @@ test("validates browser identity and bounded client and Runtime status options",
     currentHumanIdentityId: "   ",
   }), /currentHumanIdentityId/);
   assert.throws(() => new LocalControlClient("", { timeoutMs: 0 }), /positive integer/);
+  assert.throws(() => new LocalControlClient("", { lifecycleTimeoutMs: 0 }), /positive integer/);
   assert.throws(() => new LocalControlService({
     channels: { async getChannel() { return channel; } },
     bindings: { async listChannelBindings() { return []; } },
@@ -158,8 +206,9 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 2 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 3 });
   assert.equal((await client.capabilities()).features.currentSession, true);
+  assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
   const agents = await client.listChannelAgents(channel.id);
   assert.equal(agents.agents[0]?.identityId, "agent-running");
@@ -240,7 +289,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 2, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 3, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -315,7 +364,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 2,
+      protocolVersion: 3,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -418,6 +467,122 @@ test("private configuration authorizes current humans and returns only redacted 
   } finally {
     await store.close();
     await channelServer.close();
+  }
+});
+
+test("agent host starts isolated Channel sessions with private roots and personas", async () => {
+  const sourceDirectory = await mkdtemp(join(tmpdir(), "minu-agent-host-source-"));
+  const channelServer = await createChannelHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new ManagedFakeRuntime();
+  const audit: LocalControlAuditEvent[] = [];
+  let host: LocalAgentHost | undefined;
+  let restoredHost: LocalAgentHost | undefined;
+  try {
+    const client = new ChannelClient(channelServer.endpoint);
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "managed-runtime", name: "Managed Runtime" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, {
+        identityId: owner.id,
+        mentionHandle: "owner",
+        accessRole: "owner",
+      }),
+      client.addWorkspaceMember(workspace.id, {
+        identityId: agent.id,
+        mentionHandle: "builder",
+      }),
+    ]);
+    const [channelA, channelB] = await Promise.all([
+      client.createChannel({
+        workspaceId: workspace.id,
+        name: "channel-a",
+        participantIds: [owner.id, agent.id],
+      }),
+      client.createChannel({
+        workspaceId: workspace.id,
+        name: "channel-b",
+        participantIds: [owner.id, agent.id],
+      }),
+    ]);
+    const configuration = new LocalAgentHostConfiguration({ client, store });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
+      rootUri: sourceDirectory,
+    });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      personaPrompt: "PRIVATE MANAGED PERSONA",
+      runtimeAdapter: "managed-test",
+    });
+    await client.postMessage(channelA.id, {
+      participantId: owner.id,
+      body: "@builder historical work must not auto-run",
+    });
+    host = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      onAudit: (event) => audit.push(event),
+    });
+    assert.equal(host.available, true);
+    await assert.rejects(
+      host.startChannelAgent(channelA.id, agent.id, agent.id),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
+    );
+    await host.startChannelAgent(channelA.id, agent.id, owner.id);
+    await host.startChannelAgent(channelB.id, agent.id, owner.id);
+    assert.deepEqual(runtime.starts.map(({ config }) => config), [
+      { cwd: sourceDirectory, appendSystemPrompt: "PRIVATE MANAGED PERSONA" },
+      { cwd: sourceDirectory, appendSystemPrompt: "PRIVATE MANAGED PERSONA" },
+    ]);
+    assert.notEqual(runtime.starts[0]?.sessionId, runtime.starts[1]?.sessionId);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+    assert.equal((await client.listMessages(channelA.id)).length, 1);
+
+    await Promise.all([
+      client.postMessage(channelA.id, { participantId: owner.id, body: "@builder work only in A" }),
+      client.postMessage(channelB.id, { participantId: owner.id, body: "@builder work only in B" }),
+    ]);
+    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 3
+      && (await client.listMessages(channelB.id)).length === 2);
+    assert.match((await client.listMessages(channelA.id))[2]?.body ?? "", /managed-session-1/);
+    assert.match((await client.listMessages(channelB.id))[1]?.body ?? "", /managed-session-2/);
+    assert.doesNotMatch(runtime.prompts.get("managed-session-1")?.[0] ?? "", /work only in B/);
+    assert.doesNotMatch(runtime.prompts.get("managed-session-2")?.[0] ?? "", /work only in A/);
+    assert.equal((await configuration.getWorkspaceConfiguration(workspace.id, owner.id))
+      .agents[0]?.boundChannelCount, 2);
+
+    await host.close();
+    host = undefined;
+    restoredHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+    });
+    await restoredHost.restore();
+    await client.postMessage(channelA.id, {
+      participantId: owner.id,
+      body: "@builder resume only A",
+    });
+    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 5);
+    assert.equal(await store.getCursor(channelA.id, agent.id), 4);
+    assert.doesNotMatch(
+      JSON.stringify(audit),
+      /PRIVATE MANAGED PERSONA|managed-session|agent-host-source/,
+    );
+    assert.deepEqual(audit.map(({ action, outcome }) => ({ action, outcome })), [
+      { action: "agent.session.started", outcome: "rejected" },
+      { action: "agent.session.started", outcome: "accepted" },
+      { action: "agent.session.started", outcome: "accepted" },
+    ]);
+  } finally {
+    await host?.close().catch(() => undefined);
+    await restoredHost?.close().catch(() => undefined);
+    await store.close();
+    await channelServer.close();
+    await rm(sourceDirectory, { recursive: true, force: true });
   }
 });
 
@@ -563,7 +728,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       identityId: agent.id,
       state: "idle",
       wakePolicy: "mentions",
-      capabilities: { steer: false, interrupt: false, reconnect: false },
+      capabilities: { start: false, steer: false, interrupt: false, reconnect: false },
     }]);
     assert.doesNotMatch(
       JSON.stringify(body),

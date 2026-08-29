@@ -42,6 +42,15 @@ export interface LocalControlRuntimePort {
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
 }
 
+export interface LocalControlAgentLifecyclePort {
+  readonly available: boolean;
+  startChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void>;
+}
+
 export interface LocalControlConfigurationPort {
   getWorkspaceConfiguration(
     workspaceId: string,
@@ -65,10 +74,11 @@ export interface LocalControlServiceOptions {
   bindings: LocalControlBindingDirectory;
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
   configuration?: LocalControlConfigurationPort;
+  lifecycle?: LocalControlAgentLifecyclePort;
   statusTimeoutMs?: number;
 }
 
-const disabledCapabilities = { steer: false, interrupt: false, reconnect: false } as const;
+const disabledCapabilities = { start: false, steer: false, interrupt: false, reconnect: false } as const;
 
 export class LocalControlService {
   private readonly statusTimeoutMs: number;
@@ -93,6 +103,7 @@ export class LocalControlService {
         workspaceConfigRead: Boolean(this.options.configuration),
         workspaceConfigWrite: Boolean(this.options.configuration),
         agentCreate: false,
+        agentStart: Boolean(this.options.lifecycle?.available),
         steer: false,
         interrupt: false,
         reconnect: false,
@@ -138,6 +149,21 @@ export class LocalControlService {
     );
   }
 
+  async startChannelAgent(
+    channelId: string,
+    identityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelAgent> {
+    if (!this.options.lifecycle?.available) {
+      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
+    }
+    await this.options.lifecycle.startChannelAgent(channelId, identityId, actorIdentityId);
+    const response = await this.listChannelAgents(channelId);
+    const agent = response.agents.find((candidate) => candidate.identityId === identityId);
+    if (!agent) throw new LocalConfigurationRequestError("Channel agent unavailable", 404, "unavailable");
+    return agent;
+  }
+
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
     const [channel, records] = await Promise.all([
       this.options.channels.getChannel(channelId),
@@ -165,7 +191,14 @@ export class LocalControlService {
       return { ...base, state: "disabled", capabilities: disabledCapabilities };
     }
     if (matches.length === 0) {
-      return { ...base, state: "unbound", capabilities: disabledCapabilities };
+      return {
+        ...base,
+        state: "unbound",
+        capabilities: {
+          ...disabledCapabilities,
+          start: Boolean(this.options.lifecycle?.available),
+        },
+      };
     }
     if (matches.length > 1) {
       return { ...base, state: "uncertain", capabilities: disabledCapabilities };
@@ -293,7 +326,10 @@ export async function createLocalControlHttpServer(
       json(response, 403, { error: "Forbidden origin" });
       return;
     }
-    if (request.method !== "GET" && request.method !== "PATCH") {
+    const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+    const isAgentStart = request.method === "POST"
+      && /^\/local\/channels\/[^/]+\/agents\/[^/]+\/start$/.test(requestPath);
+    if (request.method !== "GET" && request.method !== "PATCH" && !isAgentStart) {
       response.setHeader("allow", "GET, PATCH");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
@@ -368,6 +404,16 @@ export async function createLocalControlHttpServer(
           await readJson(request),
         );
         json(response, 200, result, origin);
+        return;
+      }
+      const agentStartMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/start$/);
+      if (agentStartMatch && browserSession && request.method === "POST") {
+        const agent = await options.service.startChannelAgent(
+          decodeURIComponent(agentStartMatch[1]!),
+          decodeURIComponent(agentStartMatch[2]!),
+          browserSession.identityId,
+        );
+        json(response, 201, { agent }, origin);
         return;
       }
       const match = path.match(/^\/local\/channels\/([^/]+)\/agents$/);

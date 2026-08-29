@@ -15,6 +15,13 @@
       "when": 1788022400000,
       "tag": "0001_private_agent_launch_config",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788027313977,
+      "tag": "0002_agent_host_cursors",
+      "breakpoints": true
     }
   ]
 }

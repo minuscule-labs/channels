@@ -6,7 +6,7 @@ import type {
   RelayBindingStore,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { and, asc, eq, gt, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { dirname, resolve } from "node:path";
@@ -150,6 +150,11 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return row ? binding(row) : undefined;
   }
 
+  async deleteBinding(bindingId: string): Promise<void> {
+    await this.database.delete(schema.channelAgentBindings)
+      .where(eq(schema.channelAgentBindings.id, bindingId));
+  }
+
   async listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]> {
     const rows = await this.database.select().from(schema.channelAgentBindings)
       .where(eq(schema.channelAgentBindings.channelId, channelId))
@@ -263,6 +268,31 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       eq(schema.channelAgentBindings.generation, expectedGeneration),
     )).returning();
     return rows[0] ? binding(rows[0]) : undefined;
+  }
+
+  async getCursor(channelId: string, participantId: string): Promise<number> {
+    const row = await this.database.query.agentHostCursors.findFirst({
+      where: and(
+        eq(schema.agentHostCursors.channelId, channelId),
+        eq(schema.agentHostCursors.participantId, participantId),
+      ),
+    });
+    return row?.lastProcessedSequence ?? 0;
+  }
+
+  async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
+    await this.database.insert(schema.agentHostCursors).values({
+      channelId,
+      participantId,
+      lastProcessedSequence: sequence,
+      updatedAt: new Date().toISOString(),
+    }).onConflictDoUpdate({
+      target: [schema.agentHostCursors.channelId, schema.agentHostCursors.participantId],
+      set: {
+        lastProcessedSequence: sql`max(${schema.agentHostCursors.lastProcessedSequence}, ${sequence})`,
+        updatedAt: new Date().toISOString(),
+      },
+    });
   }
 
   async close(): Promise<void> {

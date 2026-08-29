@@ -119,6 +119,6 @@ Potential future consumers such as MCP, Slack, Cowork, or other services are not
 2. Consolidate Relay/control/private storage responsibilities behind the internal agent-host interface as needed by implementation—not as a standalone extraction project.
 3. ~~Add authenticated private Workspace root, persona, and Runtime configuration with redacted reads.~~ Internal agent-host API, persistence, and administration UI are implemented.
 4. ~~Add Channel creation, participant assignment, and existing-Channel membership mutation.~~ Implemented with named Channels, selected active Workspace members, optimistic roster revisions, SSE refresh, and preserved historical author identity.
-5. Start and bind a live Pi Runtime session from the product.
-6. Prove `UI → Channels → agent host → MinuRuntime → Channels → UI` with a genuine response.
-7. Package persistent local startup behind one product supervisor; address hosted authentication afterward.
+5. ~~Start and bind a live Pi Runtime session from the product.~~ Implemented through authenticated explicit start, private launch configuration, Channel-isolated binding, durable cursor, lease, and Relay lifecycle.
+6. ~~Prove `UI → Channels → agent host → MinuRuntime → Channels → UI` with a genuine response.~~ Verified through the authenticated product start endpoint with Pi returning `LIVE_PI_PRODUCT_FLOW_OK` as Channel sequence 5 through the normal response commit path.
+7. Package persistent local startup behind one product supervisor; add identity/member creation and session replacement before hosted authentication.

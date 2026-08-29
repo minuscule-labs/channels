@@ -18,6 +18,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
@@ -60,11 +61,18 @@ class SimulatedReviewRuntime implements AgentRuntimePort {
   }
 }
 
+export interface LocalReviewManagedRuntime {
+  adapter: string;
+  runtime: LocalManagedRuntimePort;
+  personaPrompt: string;
+}
+
 export interface LocalReviewAppOptions {
   channelsPort?: number;
   controlPort?: number;
   webUrl?: string;
   workspaceRoot?: string;
+  managedRuntime?: LocalReviewManagedRuntime;
   onAudit?(event: LocalControlAuditEvent): void;
 }
 
@@ -169,52 +177,61 @@ export async function createLocalReviewApp(
         id: "review-builder-config",
         workspaceId: workspace.id,
         agentIdentityId: builder.id,
-        personaRef: "review-mode:builder",
+        personaRef: options.managedRuntime ? undefined : "review-mode:builder",
+        personaPrompt: options.managedRuntime?.personaPrompt,
+        runtimeAdapter: options.managedRuntime?.adapter,
         status: "active",
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      await store.putBinding({
-        id: "review-builder-binding",
-        workspaceAgentConfigId: "review-builder-config",
-        workspaceId: workspace.id,
-        channelId: channel.id,
-        agentIdentityId: builder.id,
-        runtimeAdapter: "review-mode",
-        runtimeSessionId: "review-builder-session",
-        generation: 1,
-        state: "connected",
-        wakePolicy: "mentions",
-        lastVerifiedAt: timestamp,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+      if (!options.managedRuntime) {
+        await store.putBinding({
+          id: "review-builder-binding",
+          workspaceAgentConfigId: "review-builder-config",
+          workspaceId: workspace.id,
+          channelId: channel.id,
+          agentIdentityId: builder.id,
+          runtimeAdapter: "review-mode",
+          runtimeSessionId: "review-builder-session",
+          generation: 1,
+          state: "connected",
+          wakePolicy: "mentions",
+          lastVerifiedAt: timestamp,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      }
     } finally {
       await store.close();
     }
 
-    const runtime = new SimulatedReviewRuntime();
+    const simulatedRuntime = options.managedRuntime ? undefined : new SimulatedReviewRuntime();
+    const runtime = options.managedRuntime?.runtime ?? simulatedRuntime!;
+    const runtimeAdapter = options.managedRuntime?.adapter ?? "review-mode";
     controlDaemon = await createLocalControlDaemon({
       currentHumanIdentityId: human.id,
       channelsEndpoint: channelsServer.endpoint,
       relayDatabasePath,
       webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
       port: options.controlPort ?? 4311,
-      runtimes: { "review-mode": runtime },
+      runtimes: { [runtimeAdapter]: runtime },
+      stopStartedSessionsOnClose: Boolean(options.managedRuntime),
       onAudit: options.onAudit,
     });
-    relay = new ChannelRuntimeRelay({
-      client,
-      channelId: channel.id,
-      bindings: [{
-        participantId: builder.id,
-        sessionId: "review-builder-session",
-        runtime,
-        wakePolicy: "mentions",
-      }],
-    });
-    await relay.start();
-    await relay.waitForIdle();
+    if (!options.managedRuntime) {
+      relay = new ChannelRuntimeRelay({
+        client,
+        channelId: channel.id,
+        bindings: [{
+          participantId: builder.id,
+          sessionId: "review-builder-session",
+          runtime: simulatedRuntime!,
+          wakePolicy: "mentions",
+        }],
+      });
+      await relay.start();
+      await relay.waitForIdle();
+    }
 
     let closed = false;
     return {
@@ -229,7 +246,7 @@ export async function createLocalReviewApp(
       async close() {
         if (closed) return;
         closed = true;
-        await relay!.stop().catch(() => undefined);
+        await relay?.stop().catch(() => undefined);
         await Promise.allSettled([controlDaemon!.close(), channelsServer!.close()]);
         await rm(directory, { recursive: true, force: true });
       },

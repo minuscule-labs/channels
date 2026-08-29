@@ -11,6 +11,7 @@ GET   /local/session
 GET   /local/health
 GET   /local/capabilities
 GET   /local/channels/:channelId/agents
+POST  /local/channels/:channelId/agents/:identityId/start
 GET   /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/agents/:identityId/config
@@ -21,7 +22,8 @@ It combines the public Channel roster with private binding and Runtime reachabil
 - stable Workspace, Channel, and identity IDs;
 - `unbound`, `idle`, `running`, `offline`, `disabled`, or `uncertain` state;
 - wake policy;
-- disabled command capability flags;
+- a start capability only for unbound agents when managed execution is available;
+- disabled steering, interruption, reconnect, and replacement capability flags;
 - last verification timestamp when available.
 
 Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, and Runtime adapter are write-only inputs: they are persisted in private local storage but never returned. It never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
@@ -36,7 +38,7 @@ Workspace configuration summaries return only `configured` booleans, status, and
 - `minu-channels-control` — local control launcher executable.
 - `minu-channels-review` — coordinated developer review launcher.
 
-The daemon opens the private Relay database, connects to the public Channels endpoint, accepts structural Runtime status adapters, and always enables browser-session authentication. Browser bundles continue to import only `client` and `contracts`.
+The daemon opens the private Relay database, connects to the public Channels endpoint, accepts structural status-only or managed Runtime adapters, restores reachable bindings under leases, and always enables browser-session authentication. Managed adapters may start one isolated session per `(Workspace, Channel, agent)` and are connected to normal Channel delivery by the internal agent host. Browser bundles continue to import only `client` and `contracts`.
 
 ## Browser-session launch
 
@@ -61,6 +63,14 @@ pnpm dev
 This builds the workspace and coordinates disposable in-memory Channels data, temporary private Relay storage, the authenticated control daemon, a real `ChannelRuntimeRelay`, and Vite. It seeds one Workspace and Channel with `@you`, `@builder`, and `@reviewer`, sample messages, a simulated builder binding, and an unbound reviewer; then it opens the authenticated Channel. Mention `@builder` to exercise real structured routing, Relay delivery, atomic response posting, SSE delivery, and timeline rendering. Unaddressed messages intentionally remain context without waking the agent. Ctrl-C terminates Relay, the Vite process group, both loopback servers, and temporary storage.
 
 Review mode demonstrates the application and Relay boundary. The `review-mode` Runtime response is deterministic—not live model execution. Use `pnpm dev -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied. `pnpm app:review` is the explicit equivalent; `pnpm web:dev` remains frontend-only.
+
+For the genuine Pi vertical slice:
+
+```bash
+pnpm dev:live -- --cwd /absolute/path/to/workspace
+```
+
+The current development command builds the sibling MinuRuntime repository, loads `PiAgentRuntime`, and seeds write-only root, persona, and `pi` adapter configuration without creating a session. The owner explicitly clicks **Start** for `@builder`; the agent host then starts Pi with the configured directory and `appendSystemPrompt`, persists and leases the private binding, advances the new binding past historical Channel messages, and starts Relay. A later `@builder` message produces a genuine response through Channels. `pnpm app:live` is the explicit alias. Disposable live shutdown stops sessions created by that composition.
 
 ## Run services individually
 
@@ -91,7 +101,7 @@ pnpm control --human-identity-id <stable-human-id> --runtime-adapter \
   'pi=/absolute/path/to/runtime/packages/pi/dist/src/index.js#PiAgentRuntime'
 ```
 
-A loaded export may be a constructible class or an object with `status(sessionId)`. A module may instead expose `localControlRuntime`, a default runtime object, or `createLocalControlRuntime()`. Adapter modules are trusted local code and are loaded only when explicitly configured.
+A loaded export may be a constructible class or an object with `status(sessionId)`. A module may instead expose `localControlRuntime`, a default runtime object, or `createLocalControlRuntime()`. Status-only adapters support projections; adapters also exposing `start`, `send`, and `messages` support explicit session start and Relay execution. Adapter modules are trusted local code and are loaded only when explicitly configured.
 
 ## Local hardening
 
@@ -103,4 +113,4 @@ A loaded export may be a constructible class or an object with `status(sessionId
 - Uses bounded Runtime/client waits, no-store responses, and sanitized errors.
 - Stores private Relay state only in a local file URL.
 
-Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation and authorizes only machine-local private configuration; it cannot authorize direct public Channels API requests. Configuration writes emit secret-free accepted/rejected audit events. Runtime start, steering, interruption, reconnect, and agent creation remain disabled until their lifecycle, fencing, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.
+Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation and authorizes only machine-local private configuration and explicit Runtime start; it cannot authorize direct public Channels API requests. Configuration and start operations emit secret-free accepted/rejected audit events. Start is restricted to active owner/admin browser sessions, active configured agents, local directories, and registered managed adapters. Session replacement, steering, interruption, reconnect, and identity creation remain disabled until their lifecycle, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.

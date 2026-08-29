@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcess } from "node:child_process";
 import { parseArgs } from "node:util";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createLocalReviewApp } from "./review.ts";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { LocalManagedRuntimePort } from "./agent-host.ts";
+import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
 
 function port(value: string | undefined, fallback: number, name: string): number {
   const parsed = value === undefined ? fallback : Number(value);
@@ -15,6 +16,32 @@ function port(value: string | undefined, fallback: number, name: string): number
 
 function repositoryRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+}
+
+function moduleSpecifier(value: string): string {
+  if (value.startsWith(".") || value.startsWith("/") || isAbsolute(value)) {
+    return pathToFileURL(resolve(value)).href;
+  }
+  return value;
+}
+
+async function loadPiRuntime(specifier?: string): Promise<LocalReviewManagedRuntime> {
+  const defaultModule = resolve(repositoryRoot(), "../runtime/packages/pi/dist/src/index.js");
+  const loaded = await import(moduleSpecifier(specifier ?? defaultModule)) as Record<string, unknown>;
+  const Constructor = loaded.PiAgentRuntime;
+  if (typeof Constructor !== "function") {
+    throw new Error("Pi Runtime module does not export PiAgentRuntime");
+  }
+  const runtime = new (Constructor as new () => LocalManagedRuntimePort)();
+  if (typeof runtime.start !== "function" || typeof runtime.send !== "function"
+    || typeof runtime.messages !== "function") {
+    throw new Error("Pi Runtime module does not provide managed execution capabilities");
+  }
+  return {
+    adapter: "pi",
+    runtime,
+    personaPrompt: "You are the implementation agent for this MinuChannels Workspace. Follow the human's Channel requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Channel responses.",
+  };
 }
 
 async function waitForWeb(
@@ -95,12 +122,14 @@ async function main(): Promise<void> {
       "web-port": { type: "string" },
       cwd: { type: "string" },
       "no-open": { type: "boolean", default: false },
+      "live-pi": { type: "boolean", default: false },
+      "pi-module": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm dev [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 4310)\n  --control-port <port>   local control port (default 4311)\n  --web-port <port>       web client port (default 5174)\n  --cwd <path>            private review Workspace root\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 4310)\n  --control-port <port>   local control port (default 4311)\n  --web-port <port>       web client port (default 5174)\n  --cwd <path>            private review Workspace root\n  --live-pi               enable startable live Pi execution\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 
@@ -111,11 +140,15 @@ async function main(): Promise<void> {
     throw new Error("Review service ports must be distinct");
   }
   const webUrl = `http://127.0.0.1:${webPort}/`;
+  const managedRuntime = values["live-pi"]
+    ? await loadPiRuntime(values["pi-module"])
+    : undefined;
   const app = await createLocalReviewApp({
     channelsPort,
     controlPort,
     webUrl,
     workspaceRoot: values.cwd,
+    managedRuntime,
     onAudit(event) {
       process.stderr.write(`${JSON.stringify({ source: "minu-channels-review", ...event })}\n`);
     },
@@ -164,9 +197,12 @@ async function main(): Promise<void> {
     console.log(`  Channels: ${app.channelsEndpoint}`);
     console.log(`  Control:  ${app.controlEndpoint}`);
     console.log("  Handles:  @you, @builder, @reviewer");
-    console.log("  Agent:    @mention @builder for a simulated Relay response");
+    console.log(managedRuntime
+      ? "  Agent:    click Start for @builder, then mention it for a live Pi response"
+      : "  Agent:    @mention @builder for a simulated Relay response");
     console.log("  Context:  unaddressed messages do not wake agents");
     console.log("  Data:     disposable; removed on shutdown");
+    console.log(`  Runtime:  ${managedRuntime ? "live Pi (starts only on explicit click)" : "deterministic simulation"}`);
     if (values["no-open"]) {
       console.log("\nOpen this one-time URL within 60 seconds:");
       console.log(launchUrl);

@@ -23,6 +23,15 @@ export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
     .on(table.workspaceId, table.agentIdentityId),
 ]);
 
+export const agentHostCursors = sqliteTable("agent_host_cursors", {
+  channelId: text("channel_id").notNull(),
+  participantId: text("participant_id").notNull(),
+  lastProcessedSequence: integer("last_processed_sequence").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("agent_host_cursors_route_unique").on(table.channelId, table.participantId),
+]);
+
 export const channelAgentBindings = sqliteTable("channel_agent_bindings", {
   id: text("id").primaryKey(),
   workspaceAgentConfigId: text("workspace_agent_config_id").notNull()

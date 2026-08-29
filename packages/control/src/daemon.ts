@@ -6,12 +6,12 @@ import {
 import { chmod, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { LocalAgentHost, type LocalManagedRuntimePort } from "./agent-host.ts";
 import { LocalAgentHostConfiguration } from "./configuration.ts";
 import {
   createLocalControlHttpServer,
   LocalControlService,
   type LocalControlHttpServer,
-  type LocalControlRuntimePort,
 } from "./server.ts";
 import {
   LocalControlBrowserSessions,
@@ -25,8 +25,9 @@ export interface LocalControlDaemonOptions {
   webUrl?: string;
   host?: "127.0.0.1" | "::1";
   port?: number;
-  runtimes?: Readonly<Record<string, LocalControlRuntimePort>>;
+  runtimes?: Readonly<Record<string, LocalManagedRuntimePort>>;
   statusTimeoutMs?: number;
+  stopStartedSessionsOnClose?: boolean;
   launchCodeTtlMs?: number;
   sessionTtlMs?: number;
   now?: () => Date;
@@ -52,6 +53,7 @@ export async function createLocalControlDaemon(
   if (usesDefaultDatabase) await chmod(dirname(databasePath), 0o700);
   const store = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(databasePath) });
   let server: LocalControlHttpServer | undefined;
+  let agentHost: LocalAgentHost | undefined;
   try {
     for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
       await chmod(path, 0o600).catch((error: NodeJS.ErrnoException) => {
@@ -67,10 +69,20 @@ export async function createLocalControlDaemon(
       onAudit: options.onAudit,
     });
     const client = new ChannelClient(options.channelsEndpoint ?? "http://127.0.0.1:4310");
+    agentHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: options.runtimes ?? {},
+      now: options.now,
+      stopStartedSessionsOnClose: options.stopStartedSessionsOnClose,
+      onAudit: options.onAudit,
+    });
+    await agentHost.restore();
     const service = new LocalControlService({
       channels: client,
       bindings: store,
       runtimes: options.runtimes ?? {},
+      lifecycle: agentHost,
       configuration: new LocalAgentHostConfiguration({
         client,
         store,
@@ -92,11 +104,13 @@ export async function createLocalControlDaemon(
         browserSessions.issueLaunchUrl(server!.endpoint, destinationPath),
       async close() {
         await server!.close();
+        await agentHost!.close();
         await store.close();
       },
     };
   } catch (error) {
     await server?.close().catch(() => undefined);
+    await agentHost?.close().catch(() => undefined);
     await store.close();
     throw error;
   }

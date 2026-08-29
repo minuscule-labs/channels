@@ -12,6 +12,7 @@
     "db:generate": "drizzle-kit generate --config packages/storage-drizzle/drizzle.config.ts",
     "relay-db:generate": "drizzle-kit generate --config packages/relay-storage-drizzle/drizzle.config.ts",
     "dev": "pnpm build && node packages/control/dist/src/review-cli.js",
+    "dev:live": "pnpm --dir ../runtime build && pnpm build && node packages/control/dist/src/review-cli.js --live-pi",
     "web:dev": "pnpm --filter @minu/channels-web dev",
     "web:check": "pnpm --filter @minu/channels-web check",
     "web:test": "pnpm --filter @minu/channels-web test",
@@ -19,7 +20,8 @@
     "web:build": "pnpm --filter @minu/channels-web build",
     "serve": "node packages/storage-drizzle/dist/src/cli.js",
     "control": "node packages/control/dist/src/cli.js",
-    "app:review": "pnpm build && node packages/control/dist/src/review-cli.js"
+    "app:review": "pnpm build && node packages/control/dist/src/review-cli.js",
+    "app:live": "pnpm --dir ../runtime build && pnpm build && node packages/control/dist/src/review-cli.js --live-pi"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

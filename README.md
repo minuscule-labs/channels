@@ -22,6 +22,14 @@ pnpm dev -- --no-open
 
 Use `--cwd`, `--channels-port`, `--control-port`, or `--web-port` after `--` when defaults conflict. `pnpm app:review` remains an explicit alias for the same disposable composition; `pnpm web:dev` starts only the frontend.
 
+To run the same product flow with genuine Pi execution, use the current local polyrepo command:
+
+```bash
+pnpm dev:live -- --cwd /absolute/path/to/workspace
+```
+
+This builds the sibling MinuRuntime repository, seeds private root/persona/Runtime configuration, and exposes an explicit **Start** action for `@builder`. Starting creates a new Pi session isolated to that Channel and advances its cursor past historical messages; Pi does not execute until a later addressed message arrives. Responses return through Relay and normal Channel delivery. Shutdown stops sessions started by this disposable live composition. `pnpm app:live` is the explicit alias. The sibling-repository lookup is development scaffolding until MinuRuntime packages are published.
+
 ## Packages
 
 - `core` — Channel model, in-memory adapter, HTTP/SSE service, and TypeScript client.
@@ -62,6 +70,7 @@ GET   /local/session
 GET   /local/health
 GET   /local/capabilities
 GET   /local/channels/:id/agents
+POST  /local/channels/:id/agents/:identityId/start
 GET   /local/workspaces/:id/config
 PATCH /local/workspaces/:id/config
 PATCH /local/workspaces/:id/agents/:identityId/config
@@ -102,7 +111,7 @@ Machine-local execution configuration is deliberately stored separately at:
 ~/.minu/channels/relay.db
 ```
 
-`LocalRelayDirectory` validates shared Workspace, membership, and Channel records before writing private Workspace roots, agent/persona configuration, Runtime preferences, or Runtime session bindings. Migration `0001_private_agent_launch_config.sql` adds the simple private persona prompt and Runtime adapter preference required for the MVP launch specification. One reusable Workspace agent configuration can have one binding per Channel, and every binding has its own Runtime session id and transcript. Configuration edits apply to new or explicitly replaced sessions; they do not rewrite live transcripts. `restoreChannelBindings` verifies Runtime reachability without silently replacing an offline session, acquires a short ownership lease, and returns only the bindings owned by that Relay. Callers renew leases with `startAutoRenew`; generation compare-and-swap prevents stale session replacement. Relay fencing checks run before work and before response delivery, so a process that loses ownership cannot publish stale output or advance the cursor. Already-running tool or filesystem side effects cannot be undone. Runtime ids, roots, personas, adapters, and leases are not exposed by public Channels HTTP or metadata APIs.
+`LocalRelayDirectory` validates shared Workspace, membership, and Channel records before writing private Workspace roots, agent/persona configuration, Runtime preferences, or Runtime session bindings. Migration `0001_private_agent_launch_config.sql` adds the private persona prompt and Runtime adapter preference required for launch; `0002_agent_host_cursors.sql` adds durable per-Channel recovery cursors to the private agent host. One reusable Workspace agent configuration can have one binding per Channel, and every binding has its own Runtime session id and transcript. Configuration edits apply to new or explicitly replaced sessions; they do not rewrite live transcripts. `restoreChannelBindings` verifies Runtime reachability without silently replacing an offline session, acquires a short ownership lease, and returns only the bindings owned by that Relay. Callers renew leases with `startAutoRenew`; generation compare-and-swap prevents stale session replacement. Relay fencing checks run before work and before response delivery, so a process that loses ownership cannot publish stale output or advance the cursor. Already-running tool or filesystem side effects cannot be undone. Runtime ids, roots, personas, adapters, and leases are not exposed by public Channels HTTP or metadata APIs.
 
 ## Relay
 

@@ -179,6 +179,12 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const { channel } = await createResponse.json() as { channel: { id: string } };
   await expect(page).toHaveURL(new RegExp(`/channels/${channel.id}$`));
   await expect(page.getByRole("heading", { name: "#roster-administration" })).toBeVisible();
+  const startResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/start`));
+  await page.getByRole("button", { name: "Start Builder Agent" }).click();
+  expect((await startResponsePromise).ok()).toBe(true);
+  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
 
   const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {
     data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },

@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 2 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 3 as const;
 
 export interface LocalCurrentSession {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
@@ -47,6 +47,7 @@ export interface LocalControlCapabilities {
     workspaceConfigRead: boolean;
     workspaceConfigWrite: boolean;
     agentCreate: boolean;
+    agentStart: boolean;
     steer: boolean;
     interrupt: boolean;
     reconnect: boolean;
@@ -70,6 +71,7 @@ export interface LocalChannelAgent {
   state: LocalChannelAgentState;
   wakePolicy?: LocalWakePolicy;
   capabilities: {
+    start: boolean;
     steer: boolean;
     interrupt: boolean;
     reconnect: boolean;

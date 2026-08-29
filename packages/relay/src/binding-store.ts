@@ -1,4 +1,4 @@
-import type { ChannelClient } from "@minu/channels-core";
+import type { ChannelClient, ChannelCursorStore } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
 import type { AgentChannelBinding, AgentRuntimePort, WakePolicy } from "./relay.ts";
 
@@ -43,7 +43,7 @@ export interface ChannelAgentBindingRecord {
   updatedAt: string;
 }
 
-export interface RelayBindingStore {
+export interface RelayBindingStore extends ChannelCursorStore {
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
   putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig>;
@@ -55,6 +55,7 @@ export interface RelayBindingStore {
   listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]>;
   putBinding(binding: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord>;
   getBinding(bindingId: string): Promise<ChannelAgentBindingRecord | undefined>;
+  deleteBinding(bindingId: string): Promise<void>;
   listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]>;
   listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]>;
   acquireBindingLease(
@@ -97,6 +98,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly workspaceConfigs = new Map<string, LocalWorkspaceConfig>();
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
   private readonly bindings = new Map<string, ChannelAgentBindingRecord>();
+  private readonly cursors = new Map<string, number>();
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
     this.workspaceConfigs.set(config.workspaceId, { ...config });
@@ -164,6 +166,10 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   async getBinding(bindingId: string): Promise<ChannelAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     return binding ? copyBinding(binding) : undefined;
+  }
+
+  async deleteBinding(bindingId: string): Promise<void> {
+    this.bindings.delete(bindingId);
   }
 
   async listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]> {
@@ -264,6 +270,15 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     delete binding.lastVerifiedAt;
     binding.updatedAt = updatedAt;
     return copyBinding(binding);
+  }
+
+  async getCursor(channelId: string, participantId: string): Promise<number> {
+    return this.cursors.get(`${channelId}:${participantId}`) ?? 0;
+  }
+
+  async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
+    const key = `${channelId}:${participantId}`;
+    this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, sequence));
   }
 
   async close(): Promise<void> {}

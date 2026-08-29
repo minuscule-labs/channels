@@ -54,6 +54,8 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     });
     await first.putAgentConfig(config);
     await first.putBinding(record);
+    await first.setCursor(record.channelId, record.agentIdentityId, 3);
+    await second.setCursor(record.channelId, record.agentIdentityId, 2);
 
     const [leaseA, leaseB] = await Promise.all([
       first.acquireBindingLease(
@@ -129,6 +131,9 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     assert.equal(persisted?.runtimeSessionId, "runtime-session-b");
     assert.equal(persisted?.generation, 2);
     assert.equal(persisted?.leaseOwner, undefined);
+    assert.equal(await reopened.getCursor(record.channelId, record.agentIdentityId), 3);
+    await reopened.deleteBinding(record.id);
+    assert.equal(await reopened.getBinding(record.id), undefined);
   } finally {
     await reopened.close();
     await rm(directory, { recursive: true, force: true });

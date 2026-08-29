@@ -1,4 +1,5 @@
 import type {
+  LocalChannelAgent,
   LocalChannelAgentsResponse,
   LocalControlCapabilities,
   LocalControlHealth,
@@ -20,11 +21,16 @@ export class LocalControlClientError extends Error {
 
 export class LocalControlClient {
   readonly timeoutMs: number;
+  readonly lifecycleTimeoutMs: number;
 
-  constructor(readonly endpoint: string, options: { timeoutMs?: number } = {}) {
+  constructor(readonly endpoint: string, options: { timeoutMs?: number; lifecycleTimeoutMs?: number } = {}) {
     this.timeoutMs = options.timeoutMs ?? 3_000;
+    this.lifecycleTimeoutMs = options.lifecycleTimeoutMs ?? 30_000;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1) {
       throw new RangeError("timeoutMs must be a positive integer");
+    }
+    if (!Number.isSafeInteger(this.lifecycleTimeoutMs) || this.lifecycleTimeoutMs < 1) {
+      throw new RangeError("lifecycleTimeoutMs must be a positive integer");
     }
   }
 
@@ -42,6 +48,15 @@ export class LocalControlClient {
 
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
     return this.get<LocalChannelAgentsResponse>(`/local/channels/${encodeURIComponent(channelId)}/agents`);
+  }
+
+  async startChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
+    const response = await this.request<{ agent: LocalChannelAgent }>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/start`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+    return response.agent;
   }
 
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {
@@ -75,9 +90,13 @@ export class LocalControlClient {
     return this.request<T>(path);
   }
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${this.endpoint}${path}`, {
         ...init,

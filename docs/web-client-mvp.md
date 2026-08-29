@@ -1,6 +1,6 @@
 # MinuChannels Web Client — MVP
 
-**Status:** Reviewable collaboration, private configuration, and Channel administration UI; live agent creation remains in progress
+**Status:** Reviewable collaboration, private configuration, Channel administration, and explicit managed-agent start UI; identity/member creation remains in progress
 
 ## Goal
 
@@ -20,7 +20,7 @@ The browser must never open private storage, receive Runtime credentials/session
 
 ## One-command review harness
 
-`pnpm dev` now builds and starts a disposable seeded Channels service, temporary Relay storage, authenticated local control, and Vite, then opens the seeded Channel through the one-time browser bootstrap. `pnpm app:review` is the explicit alias, while `pnpm web:dev` remains frontend-only. The review Workspace contains one human, builder, and reviewer; representative timeline messages; one simulated builder binding; and one unbound agent. A real `ChannelRuntimeRelay` consumes explicit `@builder` mentions and posts a deterministic simulated response, proving routing, response commit, SSE, and rendering; unaddressed messages intentionally remain context without waking agents. Coordinated Ctrl-C shutdown removes Relay, temporary data, and the Vite process group. This mode is functional but uses a simulated Runtime—not live model execution or production authentication.
+`pnpm dev` builds and starts a disposable seeded Channels service, temporary Relay storage, authenticated local control, and Vite, then opens the seeded Channel through the one-time browser bootstrap. `pnpm app:review` is the explicit alias, while `pnpm web:dev` remains frontend-only. The default review Workspace contains one human, builder, and reviewer; representative timeline messages; one simulated builder binding; and one unbound agent. A real `ChannelRuntimeRelay` consumes explicit `@builder` mentions and posts a deterministic simulated response, proving routing, response commit, SSE, and rendering; unaddressed messages intentionally remain context without waking agents. `pnpm dev:live -- --cwd <absolute-path>` instead loads the sibling Pi Runtime build and exposes an explicit Start action. Starting creates a Channel-isolated Pi session, while execution still waits for a later addressed message. Coordinated Ctrl-C shutdown removes temporary data and stops sessions created by live disposable mode. Neither mode is production authentication.
 
 ## Foundation slice
 
@@ -36,6 +36,7 @@ The browser must never open private storage, receive Runtime credentials/session
 - Workspace configuration dialog with redacted state, write-only source/persona/Runtime replacement forms, owner/admin enforcement, and new-session lifecycle guidance.
 - Named Channel creation from selected active Workspace members.
 - Existing-Channel participant administration with optimistic roster revisions and conflict recovery.
+- Explicit start action for configured unbound agents, with safe pending/error/status presentation.
 - Historical timeline attribution resolved from stable Workspace identities after roster removal.
 - Plain-text composer with mention suggestions and structured targets.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
@@ -66,6 +67,7 @@ GET   /local/session
 GET   /local/health
 GET   /local/capabilities
 GET   /local/channels/:id/agents
+POST  /local/channels/:id/agents/:identityId/start
 GET   /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/agents/:identityId/config
@@ -77,12 +79,12 @@ The agent response reports `unbound | idle | running | offline | disabled | unce
 
 The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie bound to the configured stable human identity. `GET /local/session` returns only that public identity id. The composer verifies active human Channel participation, keys drafts to that identity, and always uses it as the message author even if stale author-selection local storage is present. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. This prevents accidental browser impersonation but is not public API authorization. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves binding across refresh, authorship despite stale impersonation state, cookie bootstrap, and Vite `/local` proxy.
 
-Private configuration writes and their administration UI are implemented. Forms never prefill saved source, persona, or Runtime values and clear replacement inputs after success. Steering, interruption, reconnect, Runtime start, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
+Private configuration writes and their administration UI are implemented. Forms never prefill saved source, persona, or Runtime values and clear replacement inputs after success. Runtime start is implemented for registered managed adapters and derives its actor from the authenticated browser session; responses remain redacted and audit events contain no root, persona, adapter, or session values. Steering, interruption, reconnect, replacement, and identity creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
 
 ## Deferred
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
-- Runtime lifecycle mutations until agent-host fencing and safe Channel command/result projections are defined.
+- Runtime replacement, stop, steering, and interruption controls beyond the implemented initial start operation.
 - Workspace membership and identity creation administration.
 - Channel rename.
 - Threads, reactions, attachments, search, unread state, and notifications.

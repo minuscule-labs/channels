@@ -1,5 +1,5 @@
 import type { Participant } from "@minu/channels-core/types";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -16,6 +16,7 @@ import { Drawer } from "./ui/drawer";
 
 export function ChannelPage() {
   const { workspaceId, channelId } = useParams({ from: "/app/workspaces/$workspaceId/channels/$channelId" });
+  const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -54,6 +55,13 @@ export function ChannelPage() {
     refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
   });
   const { connection, retry } = useLiveChannel(channelId);
+  const startAgent = useMutation({
+    mutationFn: (identityId: string) => localControl.startChannelAgent(channelId, identityId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
+    },
+  });
   const participants = metadata.data?.participants ?? [];
   const attributionParticipants = useMemo<Participant[]>(() => {
     const byId = new Map(participants.map((participant) => [participant.id, participant]));
@@ -143,9 +151,21 @@ export function ChannelPage() {
               </button>
             )}
           >
-            <MemberRoster participants={participants} localAgents={localAgentMap} localStatus={localStatus} drawer />
+            <MemberRoster
+              participants={participants}
+              localAgents={localAgentMap}
+              localStatus={localStatus}
+              drawer
+              onStartAgent={(identityId) => startAgent.mutate(identityId)}
+              startingAgentId={startAgent.isPending ? startAgent.variables : undefined}
+            />
           </Drawer>
         </header>
+        {startAgent.error ? (
+          <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
+            {startAgent.error.message}
+          </div>
+        ) : null}
         <div className="relative min-h-0 flex-1">
           <div
             ref={scrollRef}
@@ -181,7 +201,13 @@ export function ChannelPage() {
         />
       </section>
       <div className="hidden lg:block">
-        <MemberRoster participants={participants} localAgents={localAgentMap} localStatus={localStatus} />
+        <MemberRoster
+          participants={participants}
+          localAgents={localAgentMap}
+          localStatus={localStatus}
+          onStartAgent={(identityId) => startAgent.mutate(identityId)}
+          startingAgentId={startAgent.isPending ? startAgent.variables : undefined}
+        />
       </div>
     </div>
   );
