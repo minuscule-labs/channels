@@ -1,6 +1,8 @@
 # @minu/channels-control
 
-Authenticated, loopback-only, presentation-safe control boundary for the MinuChannels web client.
+**Status:** Transitional internal MinuChannels agent-host package; not planned as an independently published product in the MVP.
+
+Authenticated, loopback-only, presentation-safe boundary used by the current MinuChannels local composition. Product review established that normal work should follow `UI ⇄ Channels ⇄ agent host ⇄ Runtime`; this package is limited to current browser-session bootstrap, safe local presentation status, diagnostics, and composition support. Its Relay/control/private-storage responsibilities will be consolidated behind an internal agent-host boundary during the live-agent vertical slice.
 
 The current API remains read-only:
 
@@ -97,4 +99,4 @@ A loaded export may be a constructible class or an object with `status(sessionId
 - Uses bounded Runtime/client waits, no-store responses, and sanitized errors.
 - Stores private Relay state only in a local file URL.
 
-Loopback plus a browser session is still not hosted-user authentication. Steering, interruption, configuration writes, and agent creation remain disabled until command-specific authorization, audit, fencing, confirmation, and recovery behavior are implemented.
+Loopback plus a browser session is still not hosted-user authentication. Steering, interruption, configuration writes, and agent creation remain disabled until current-human binding, authorization, audit, fencing, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.

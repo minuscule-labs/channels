@@ -8,19 +8,15 @@ Provide a responsive local-first human collaboration client for discovering Work
 
 ## Architecture
 
+MinuChannels is one product with modular internals:
+
 ```text
-Browser
-├── Channels HTTP/SSE
-│   ├── Workspaces and Channels
-│   ├── public rosters
-│   └── messages and live events
-└── authenticated local control daemon
-    ├── read-only binding and Runtime status (implemented)
-    ├── private Workspace/agent configuration (next)
-    └── steer / interrupt (later)
+Browser ⇄ Channels HTTP/SSE ⇄ internal agent host ⇄ MinuRuntime sessions
 ```
 
-The browser must never open `relay.db`, receive Runtime credentials, or import Runtime/Relay/server packages. `packages/web` depends only on the public Channels client/types and browser-safe control client/contracts.
+Normal work, agent responses, safe status projections, and explicit operational intent should flow through Channels. The current direct localhost status overlay is transitional; private Workspace agent configuration, Runtime bindings, credentials, roots, leases, and diagnostics remain internal agent-host data rather than public Channel data.
+
+The browser must never open private storage, receive Runtime credentials/session ids, or import agent-host/Runtime server packages. Current browser-safe control contracts remain only where the local composition still requires them. See [`product-boundary.md`](product-boundary.md).
 
 ## One-command review harness
 
@@ -36,7 +32,7 @@ The browser must never open `relay.db`, receive Runtime credentials, or import R
 - Channel timeline ordered by monotonic sequence.
 - Race-free SSE startup: subscribe, wait for `ready`, refetch, then merge by message id.
 - Revision-aware roster refresh.
-- Human author selection stored locally.
+- Temporary human author selection stored locally; current-human browser-session binding replaces it next.
 - Plain-text composer with mention suggestions and structured targets.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
@@ -55,7 +51,7 @@ POST /channels/:id/messages
 GET /channels/:id/events
 ```
 
-The localhost control boundary is implemented as `@minu/channels-control`. It provides browser-safe contracts/client exports, a Node server facade over structural Channel, binding, and Runtime status ports, and a real daemon/launcher. The daemon opens private Relay storage, connects to public Channels HTTP, and accepts explicitly loaded structural Runtime adapters without adding a Runtime dependency. It uses a separate `/local/*` namespace, binds only to loopback, validates Host and an explicit browser-Origin allowlist, exposes only reads after bootstrap, and returns sanitized presentation state. Channels core and the browser may not import Relay, Runtime, daemon, or server modules.
+The current localhost boundary is implemented as `@minu/channels-control`. It provides browser-safe contracts/client exports, a Node server facade over structural Channel, binding, and Runtime status ports, and the current daemon/launcher. Under the accepted product direction this is a transitional internal agent-host package, not an independent product or alternate work path. Channels core and the browser may not import agent-host, Runtime, daemon, or server modules.
 
 Current read-only endpoints are capability-oriented rather than storage CRUD:
 
@@ -74,7 +70,7 @@ Steering, interruption, reconnect, configuration writes, and agent creation rema
 ## Deferred
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
-- Private Runtime mutations until the local control API receives authenticated command support.
+- Private Runtime mutations until current-human authentication, agent-host fencing, and safe Channel command/result projections are defined.
 - Channel creation and participant selection.
 - Membership administration.
 - Threads, reactions, attachments, search, unread state, and notifications.

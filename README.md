@@ -1,8 +1,8 @@
 # MinuChannels
 
-MinuChannels provides shared communication between humans, agents, sessions, and services. A Channel is the sole conversation primitive; a direct conversation is simply a two-member Channel.
+MinuChannels is one complete collaboration product for humans and agents, from responsive UI through isolated agent execution. A Channel is the sole conversation primitive; a direct conversation is simply a two-member Channel.
 
-Channels does not run agents or decide workflows. MinuRuntime executes agents, while MinuOrchestrator may eventually decide what work should happen next.
+The public Channels core remains communication-only and does not import Runtime or execute agents. The MinuChannels product composes that core with an internal agent host (the current Relay, private binding storage, and control packages), while independently reusable MinuRuntime executes agent sessions. See [`docs/product-boundary.md`](docs/product-boundary.md) for the accepted MVP ownership and extraction strategy.
 
 ## Review the app
 
@@ -26,11 +26,13 @@ Use `--cwd`, `--channels-port`, `--control-port`, or `--web-port` after `--` whe
 
 - `core` — Channel model, in-memory adapter, HTTP/SSE service, and TypeScript client.
 - `storage-drizzle` — durable Drizzle/libSQL storage for local files or Turso, plus the standalone server CLI.
-- `relay` — mention-driven integration, private binding contracts, lease recovery, and a small structural `AgentRuntimePort`; it has no Runtime package dependency.
-- `relay-storage-drizzle` — separate local-only Drizzle/libSQL storage for Workspace roots, private agent configuration, and Channel-specific Runtime bindings.
-- `control` — authenticated loopback daemon, one-command disposable review harness, and presentation-safe contracts/client/server for read-only agent binding and Runtime status; private identifiers and configuration never enter its DTOs.
+- `relay` — internal agent-host processing: mention-driven context, response delivery, recovery, fencing, and a structural Runtime port.
+- `relay-storage-drizzle` — internal agent-host storage for private Workspace agent configuration and Channel-specific Runtime bindings.
+- `control` — transitional internal agent-host control/session package plus the current review composition; its responsibilities will be consolidated before publishing rather than extracted as a separate product now.
 - `web` — responsive React/TanStack/Tailwind collaboration client for Workspace navigation, live Channel messages, mentions, and rosters.
-- `examples/pi-demo` — optional composition example requiring separately installed MinuRuntime packages.
+- `examples/pi-demo` — optional live composition example requiring separately installed MinuRuntime packages.
+
+These packages preserve testable dependency boundaries; they are not separate products users must coordinate. `pnpm dev` is the current product-level supervisor.
 
 ## Current API
 
