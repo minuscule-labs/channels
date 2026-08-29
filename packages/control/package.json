@@ -30,6 +30,7 @@
     }
   },
   "bin": {
+    "minu-channels": "./dist/src/local-cli.js",
     "minu-channels-control": "./dist/src/cli.js",
     "minu-channels-review": "./dist/src/review-cli.js"
   },

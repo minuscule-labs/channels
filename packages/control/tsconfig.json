@@ -16,7 +16,8 @@
   "references": [
     { "path": "../core" },
     { "path": "../relay" },
-    { "path": "../relay-storage-drizzle" }
+    { "path": "../relay-storage-drizzle" },
+    { "path": "../storage-drizzle" }
   ],
   "include": ["src/**/*.ts", "test/**/*.ts"]
 }

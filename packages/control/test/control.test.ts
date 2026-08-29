@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { request as httpRequest } from "node:http";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { createServer as createNodeServer, request as httpRequest } from "node:http";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
 import { createLocalProductApp } from "../src/local.ts";
+import { createLocalWebServer } from "../src/local-web-server.ts";
 import { createLocalReviewApp } from "../src/review.ts";
 import {
   createLocalControlHttpServer,
@@ -385,6 +386,60 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     assert.doesNotMatch(JSON.stringify(body), /review-builder-session|review-mode:builder|rootUri/);
   } finally {
     await app.close();
+  }
+});
+
+test("local production web server serves the SPA and proxies product APIs", async () => {
+  const webDirectory = await mkdtemp(join(tmpdir(), "minu-local-web-"));
+  await mkdir(join(webDirectory, "assets"));
+  await Promise.all([
+    writeFile(join(webDirectory, "index.html"), "<main>MinuChannels production</main>"),
+    writeFile(join(webDirectory, "assets", "app.js"), "console.log('minu')"),
+  ]);
+  const channelsBackend = createNodeServer((request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ source: "channels", path: request.url }));
+  });
+  const controlBackend = createNodeServer((request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ source: "control", origin: request.headers.origin }));
+  });
+  const listen = async (server: ReturnType<typeof createNodeServer>): Promise<string> => {
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing test server address");
+    return `http://127.0.0.1:${address.port}`;
+  };
+  const [channelsEndpoint, controlEndpoint] = await Promise.all([
+    listen(channelsBackend),
+    listen(controlBackend),
+  ]);
+  const web = await createLocalWebServer({
+    channelsEndpoint,
+    controlEndpoint,
+    webDirectory,
+    port: 0,
+  });
+  try {
+    const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/channels/channel`);
+    assert.equal(spa.status, 200);
+    assert.match(await spa.text(), /MinuChannels production/);
+    const asset = await fetch(`${web.endpoint}/assets/app.js`);
+    assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.match(await asset.text(), /console\.log/);
+    const channelsResponse = await (await fetch(`${web.endpoint}/identities`)).json() as { source: string };
+    assert.equal(channelsResponse.source, "channels");
+    const controlResponse = await (await fetch(`${web.endpoint}/local/health`, {
+      headers: { origin: web.endpoint },
+    })).json() as { source: string; origin: string };
+    assert.deepEqual(controlResponse, { source: "control", origin: web.endpoint });
+  } finally {
+    await web.close();
+    await Promise.all([
+      new Promise<void>((resolveClose) => channelsBackend.close(() => resolveClose())),
+      new Promise<void>((resolveClose) => controlBackend.close(() => resolveClose())),
+      rm(webDirectory, { recursive: true, force: true }),
+    ]);
   }
 });
 

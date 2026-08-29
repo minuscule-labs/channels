@@ -27,7 +27,7 @@ function parsePort(value: string): number {
 
 async function main(): Promise<void> {
   const program = new Command()
-    .name("minu-channels")
+    .name("minu-channels-server")
     .description("Run the MinuChannels HTTP and SSE service")
     .option("--port <number>", "HTTP port", parsePort, 4310)
     .addOption(new Option("--db <path>", "local libSQL database path").conflicts("dbUrl"))

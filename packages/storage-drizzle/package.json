@@ -10,7 +10,7 @@
   },
   "types": "./dist/src/index.d.ts",
   "bin": {
-    "minu-channels": "./dist/src/cli.js"
+    "minu-channels-server": "./dist/src/cli.js"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",

@@ -37,6 +37,7 @@ Workspace configuration summaries return only `configured` booleans, status, and
 - `@minu/channels-control/server` — Node loopback service, HTTP server, and session primitives.
 - `@minu/channels-control/daemon` — real local composition over Channels HTTP and Relay storage.
 - `@minu/channels-control/review` — disposable seeded review backend.
+- `minu-channels` — persistent foreground product launcher with production web serving.
 - `minu-channels-control` — local control launcher executable.
 - `minu-channels-review` — coordinated developer review launcher.
 
@@ -72,7 +73,7 @@ For fresh persistent local use with genuine Pi:
 pnpm local -- --cwd /absolute/path/to/workspace
 ```
 
-This reuses the review supervisor but replaces disposable seeding with owner-only persistent state under `~/.minu/channels`. First launch creates stable `@you` and `@builder` identities, a Workspace named after the source directory, and an empty **General** Channel. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The foreground process retains browser bootstrap, audit output, Vite supervision, live Pi integration, and coordinated Ctrl-C shutdown.
+This uses the dedicated `minu-channels` foreground entry point with owner-only persistent state under `~/.minu/channels`. First launch creates stable `@you` and `@builder` identities, a Workspace named after the source directory, and an empty **General** Channel. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The process serves the production web build, proxies collaboration/control/SSE traffic through one loopback URL, and retains browser bootstrap, audit output, live Pi integration, and coordinated Ctrl-C shutdown. Vite remains review/development-only.
 
 No hosted database is required for local MVP use. Collaboration database adapters are independent of the private agent-host store; PostgreSQL and other adapters remain documented future work.
 

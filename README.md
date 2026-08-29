@@ -18,7 +18,7 @@ On first launch, MinuChannels creates one local human (`@you`), one configured b
 
 Collaboration data, private agent-host state, and the stable local-human profile persist under `~/.minu/channels/` with owner-only permissions. Re-running the command reopens the same identities, Workspace, Channel, messages, configuration, bindings, and recovery cursors. `--cwd` initializes the private Workspace root on first launch; later changes should use Workspace settings. Press Ctrl-C to stop the foreground product services. Use `--data-dir /other/path` for an independent local installation or fresh test without touching the default data.
 
-This source-workspace command currently builds and loads the sibling MinuRuntime repository and runs the Vite client. Those are packaging constraints, not missing product lifecycle behavior. [`docs/distribution.md`](docs/distribution.md) records the MVP foreground package, npm/pnpm-dlx, GitHub Release tarball, clone-and-run, and optional future background-service paths.
+This source-workspace command now uses the dedicated `minu-channels` foreground entry point and serves the production web build through one loopback product URL; Vite remains review/development-only. It still builds and loads the sibling MinuRuntime repository, which is the remaining blocker to a self-contained package artifact. [`docs/distribution.md`](docs/distribution.md) records the MVP foreground package, npm/pnpm-dlx, GitHub Release tarball, clone-and-run, and optional future background-service paths.
 
 A hosted database is not needed for one person on one computer. Collaboration storage already has a libSQL/Turso adapter, while private execution state intentionally remains local. PostgreSQL and other collaboration adapters are future portability work; Channels core depends on storage interfaces rather than a specific database.
 
@@ -58,7 +58,7 @@ This builds the sibling MinuRuntime repository, seeds private root/persona/Runti
 - `web` — responsive React/TanStack/Tailwind product client for Workspace configuration, navigation, live Channel messages, mentions, and rosters.
 - `examples/pi-demo` — optional live composition example requiring separately installed MinuRuntime packages.
 
-These packages preserve testable dependency boundaries; they are not separate products users must coordinate. `pnpm dev` is the current product-level supervisor.
+These packages preserve testable dependency boundaries; they are not separate products users must coordinate. `pnpm local` is the persistent product-level command; `pnpm dev` is the disposable review supervisor.
 
 ## Current API
 

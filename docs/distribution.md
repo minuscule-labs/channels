@@ -23,9 +23,9 @@ pnpm install
 pnpm local -- --cwd /absolute/path/to/workspace
 ```
 
-This already provides persistent local collaboration data, restricted agent-host state, browser bootstrap, live Pi startup, terminal logs, and clean foreground supervision. It still builds MinuRuntime from `../runtime` and runs Vite, so a Channels-only clone is not yet self-contained.
+This provides persistent local collaboration data, restricted agent-host state, browser bootstrap, live Pi startup, terminal logs, and clean foreground supervision. The dedicated `minu-channels` entry point serves the production web build and proxies Channels, control, and SSE traffic through one loopback product URL; Vite is no longer part of persistent local startup.
 
-Before advertising a one-repository clone flow, replace the sibling build lookup with an installed Runtime package and serve packaged web assets. Until public GitHub repository URLs exist, documentation must not invent clone commands or repository locations.
+The remaining self-contained-package blocker is MinuRuntime: the source command still builds and loads `../runtime`. Before advertising a one-repository clone or package-tarball flow, replace that sibling lookup with an installed Runtime package. Until public GitHub repository URLs exist, documentation must not invent clone commands or repository locations.
 
 ## Recommended public package
 
