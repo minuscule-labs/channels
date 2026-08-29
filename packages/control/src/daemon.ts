@@ -18,6 +18,7 @@ import {
 } from "./session.ts";
 
 export interface LocalControlDaemonOptions {
+  currentHumanIdentityId: string;
   channelsEndpoint?: string;
   relayDatabasePath?: string;
   webUrl?: string;
@@ -42,7 +43,7 @@ export function defaultRelayDatabasePath(): string {
 }
 
 export async function createLocalControlDaemon(
-  options: LocalControlDaemonOptions = {},
+  options: LocalControlDaemonOptions,
 ): Promise<LocalControlDaemon> {
   const usesDefaultDatabase = options.relayDatabasePath === undefined;
   const databasePath = resolve(options.relayDatabasePath ?? defaultRelayDatabasePath());
@@ -58,6 +59,7 @@ export async function createLocalControlDaemon(
     }
     const browserSessions = new LocalControlBrowserSessions({
       browserUrl: options.webUrl ?? "http://127.0.0.1:5174/",
+      currentHumanIdentityId: options.currentHumanIdentityId,
       launchCodeTtlMs: options.launchCodeTtlMs,
       sessionTtlMs: options.sessionTtlMs,
       now: options.now,

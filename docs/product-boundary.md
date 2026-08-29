@@ -104,7 +104,7 @@ Potential future consumers such as MCP, Slack, Cowork, or other services are not
 
 ## Immediate implementation sequence
 
-1. Bind the browser session to the current human and remove per-message author selection.
+1. ~~Bind the browser session to the current human and remove per-message author selection.~~ Implemented with a presentation-safe `/local/session` projection; public Channels authorization remains future work.
 2. Consolidate Relay/control/private storage responsibilities behind the internal agent-host interface as needed by implementation—not as a standalone extraction project.
 3. Add authenticated private Workspace root, persona, and Runtime configuration with redacted reads.
 4. Add Channel creation, participant assignment, and existing-Channel membership mutation UI.

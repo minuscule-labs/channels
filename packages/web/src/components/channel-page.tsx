@@ -31,6 +31,12 @@ export function ChannelPage() {
     queryKey: queryKeys.channelMessages(channelId),
     queryFn: () => channels.listMessages(channelId),
   });
+  const currentSession = useQuery({
+    queryKey: queryKeys.localCurrentSession(),
+    queryFn: () => localControl.currentSession(),
+    retry: false,
+    refetchInterval: 60_000,
+  });
   const localAgents = useQuery({
     queryKey: queryKeys.localChannelAgents(channelId),
     queryFn: async () => (await localControl.listChannelAgents(channelId)).agents,
@@ -135,7 +141,14 @@ export function ChannelPage() {
             </button>
           ) : null}
         </div>
-        <ChannelComposer participants={participants} workspaceId={workspaceId} channelId={channelId} />
+        <ChannelComposer
+          key={`${channelId}:${currentSession.data?.identityId ?? currentSession.status}`}
+          participants={participants}
+          workspaceId={workspaceId}
+          channelId={channelId}
+          currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
+          identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
+        />
       </section>
       <div className="hidden lg:block">
         <MemberRoster participants={participants} localAgents={localAgentMap} localStatus={localStatus} />

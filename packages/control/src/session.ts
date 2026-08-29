@@ -19,6 +19,7 @@ export interface LocalControlAuditEvent {
 
 export interface LocalControlBrowserSessionsOptions {
   browserUrl: string;
+  currentHumanIdentityId: string;
   launchCodeTtlMs?: number;
   sessionTtlMs?: number;
   now?: () => Date;
@@ -33,6 +34,11 @@ interface LaunchCodeRecord {
 
 interface BrowserSessionRecord {
   expiresAt: number;
+  identityId: string;
+}
+
+export interface LocalControlBrowserSession {
+  identityId: string;
 }
 
 export interface LocalControlLaunchExchange {
@@ -82,6 +88,7 @@ export class LocalControlBrowserSessions {
   readonly browserOrigin: string;
   readonly launchCodeTtlMs: number;
   readonly sessionTtlMs: number;
+  readonly currentHumanIdentityId: string;
   private readonly browserUrl: URL;
   private readonly now: () => Date;
   private readonly launchCodes = new Map<string, LaunchCodeRecord>();
@@ -90,6 +97,10 @@ export class LocalControlBrowserSessions {
   constructor(private readonly options: LocalControlBrowserSessionsOptions) {
     this.browserUrl = loopbackBrowserUrl(options.browserUrl);
     this.browserOrigin = this.browserUrl.origin;
+    this.currentHumanIdentityId = options.currentHumanIdentityId.trim();
+    if (!this.currentHumanIdentityId || this.currentHumanIdentityId.length > 255) {
+      throw new Error("currentHumanIdentityId must be non-empty and at most 255 characters");
+    }
     this.launchCodeTtlMs = positiveInteger(
       options.launchCodeTtlMs ?? DEFAULT_LAUNCH_CODE_TTL_MS,
       "launchCodeTtlMs",
@@ -146,7 +157,10 @@ export class LocalControlBrowserSessions {
       return undefined;
     }
     const sessionToken = secret();
-    this.sessions.set(hash(sessionToken), { expiresAt: this.now().getTime() + this.sessionTtlMs });
+    this.sessions.set(hash(sessionToken), {
+      expiresAt: this.now().getTime() + this.sessionTtlMs,
+      identityId: this.currentHumanIdentityId,
+    });
     this.audit({ action: "launch.redeemed", outcome: "accepted" });
     return {
       cookie: `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/local; Max-Age=${Math.ceil(this.sessionTtlMs / 1_000)}`,
@@ -154,24 +168,28 @@ export class LocalControlBrowserSessions {
     };
   }
 
-  authorize(cookieHeader: string | undefined): boolean {
+  authenticate(cookieHeader: string | undefined): LocalControlBrowserSession | undefined {
     const token = cookieValue(cookieHeader, SESSION_COOKIE);
     if (!token) {
       this.audit({ action: "session.rejected", outcome: "rejected", reason: "missing" });
-      return false;
+      return undefined;
     }
     const key = hash(token);
     const record = this.sessions.get(key);
     if (!record) {
       this.audit({ action: "session.rejected", outcome: "rejected", reason: "invalid" });
-      return false;
+      return undefined;
     }
     if (record.expiresAt <= this.now().getTime()) {
       this.sessions.delete(key);
       this.audit({ action: "session.rejected", outcome: "rejected", reason: "expired" });
-      return false;
+      return undefined;
     }
-    return true;
+    return { identityId: record.identityId };
+  }
+
+  authorize(cookieHeader: string | undefined): boolean {
+    return this.authenticate(cookieHeader) !== undefined;
   }
 
   private audit(event: Omit<LocalControlAuditEvent, "timestamp">): void {

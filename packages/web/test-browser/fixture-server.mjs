@@ -39,6 +39,7 @@ await service.createMessage(channel.id, {
 
 const browserSessions = new LocalControlBrowserSessions({
   browserUrl: `http://127.0.0.1:${webPort}/`,
+  currentHumanIdentityId: human.id,
 });
 const localControl = await createLocalControlHttpServer({
   port: controlPort,

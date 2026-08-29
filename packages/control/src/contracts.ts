@@ -1,4 +1,9 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 1 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 2 as const;
+
+export interface LocalCurrentSession {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  identityId: string;
+}
 
 export interface LocalControlHealth {
   status: "ok";
@@ -8,6 +13,7 @@ export interface LocalControlHealth {
 export interface LocalControlCapabilities {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   features: {
+    currentSession: boolean;
     channelAgentStatus: boolean;
     workspaceConfigRead: boolean;
     workspaceConfigWrite: boolean;

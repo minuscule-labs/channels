@@ -32,10 +32,13 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   const agent = members.find(({ mentionHandle }) => mentionHandle === "builder")!;
 
   const idempotencyKeys: string[] = [];
+  const messageAuthors: string[] = [];
   page.on("request", (outgoing) => {
     if (outgoing.method() === "POST" && outgoing.url().endsWith(`/channels/${channelId}/messages`)) {
       const key = outgoing.headers()["idempotency-key"];
       if (key) idempotencyKeys.push(key);
+      const body = outgoing.postDataJSON() as { participantId?: string };
+      if (body.participantId) messageAuthors.push(body.participantId);
     }
   });
 
@@ -50,6 +53,15 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
   await expect(page.getByTitle("Local Runtime: idle")).toBeVisible();
   await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
+  await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
+  await expect(page.getByText("Send as", { exact: true })).toHaveCount(0);
+
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+    key: `minu.channels.author.${workspaceId}`,
+    value: agent.identityId,
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
 
   const composer = page.getByRole("combobox", { name: "Channel message" });
   await composer.fill("@b");
@@ -93,6 +105,8 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(idempotencyKeys.at(-1)).toBe(failedKey);
   await expect(composer).toHaveValue("");
   await expect(page.getByText("Message created while the browser was offline.", { exact: true })).toBeVisible();
+  expect(messageAuthors.length).toBeGreaterThan(0);
+  expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {
@@ -131,9 +145,13 @@ test("keeps public messaging available when local Runtime status is unavailable"
     `${channelsBase}/workspaces/${workspaceId}/channels`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
-  await page.route("**/local/**", (route) => route.abort("connectionfailed"));
+  await page.route(`**/local/channels/${channelId}/agents`, (route) => route.abort("connectionfailed"));
 
-  await page.goto(`/app/workspaces/${workspaceId}/channels/${channelId}`, { waitUntil: "domcontentloaded" });
+  await launchAuthenticated(
+    page,
+    request,
+    `/app/workspaces/${workspaceId}/channels/${channelId}`,
+  );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Local Runtime status unavailable")).toBeVisible();
 

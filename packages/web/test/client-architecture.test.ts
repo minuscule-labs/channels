@@ -33,6 +33,7 @@ function message(id: string, sequence: number, overrides: Partial<ChannelMessage
 
 describe("query keys", () => {
   it("keeps Channel metadata and messages in one key hierarchy", () => {
+    expect(queryKeys.localCurrentSession()).toEqual(["local", "session"]);
     expect(queryKeys.channel("one")).toEqual(["channel", "one"]);
     expect(queryKeys.channelMessages("one")).toEqual(["channel", "one", "messages"]);
     expect(queryKeys.workspaceChannels("workspace")).toEqual(["workspace", "workspace", "channels"]);

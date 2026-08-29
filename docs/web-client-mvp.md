@@ -32,7 +32,7 @@ The browser must never open private storage, receive Runtime credentials/session
 - Channel timeline ordered by monotonic sequence.
 - Race-free SSE startup: subscribe, wait for `ready`, refetch, then merge by message id.
 - Revision-aware roster refresh.
-- Temporary human author selection stored locally; current-human browser-session binding replaces it next.
+- Authenticated local browser session bound to one stable current-human identity; composer authorship is automatic and offers no impersonation selector.
 - Plain-text composer with mention suggestions and structured targets.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
@@ -56,6 +56,7 @@ The current localhost boundary is implemented as `@minu/channels-control`. It pr
 Current read-only endpoints are capability-oriented rather than storage CRUD:
 
 ```http
+GET /local/session
 GET /local/health
 GET /local/capabilities
 GET /local/channels/:id/agents
@@ -63,7 +64,7 @@ GET /local/channels/:id/agents
 
 The agent response reports `unbound | idle | running | offline | disabled | uncertain`, wake policy, and disabled command capability flags without Runtime session IDs, adapter names, leases, credentials, prompts, roots, or database paths. The web roster polls this optional API every five seconds while available, retries a missing service more slowly, and shows local Runtime state separately from public membership. Messaging continues and the roster labels local status unavailable when the service cannot be reached.
 
-The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves the cookie survives the control-to-web redirect and Vite `/local` proxy.
+The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie bound to the configured stable human identity. `GET /local/session` returns only that public identity id. The composer verifies active human Channel participation, keys drafts to that identity, and always uses it as the message author even if stale author-selection local storage is present. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. This prevents accidental browser impersonation but is not public API authorization. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves binding across refresh, authorship despite stale impersonation state, cookie bootstrap, and Vite `/local` proxy.
 
 Steering, interruption, reconnect, configuration writes, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
 

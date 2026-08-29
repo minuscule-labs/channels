@@ -195,6 +195,7 @@ export async function createLocalReviewApp(
 
     const runtime = new SimulatedReviewRuntime();
     controlDaemon = await createLocalControlDaemon({
+      currentHumanIdentityId: human.id,
       channelsEndpoint: channelsServer.endpoint,
       relayDatabasePath,
       webUrl: options.webUrl ?? "http://127.0.0.1:5174/",

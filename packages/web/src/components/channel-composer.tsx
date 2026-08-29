@@ -13,7 +13,7 @@ import {
   submissionMatchesDraft,
   type MessageSubmission,
 } from "../lib/composer";
-import { mergeMessages, shortId } from "../lib/messages";
+import { mergeMessages } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 
 interface MentionSuggestion {
@@ -31,20 +31,23 @@ export function ChannelComposer({
   participants,
   workspaceId,
   channelId,
+  currentHumanIdentityId,
+  identityStatus,
 }: {
   participants: Participant[];
   workspaceId: string;
   channelId: string;
+  currentHumanIdentityId?: string;
+  identityStatus: "loading" | "ready" | "unavailable";
 }) {
   const queryClient = useQueryClient();
-  const humans = participants.filter((participant) => participant.type === "human" && participant.status !== "disabled");
-  const authorStorageKey = `minu.channels.author.${workspaceId}`;
-  const initialAuthor = localStorage.getItem(authorStorageKey) ?? "";
-  const initialActiveAuthor = humans.some(({ id }) => id === initialAuthor) ? initialAuthor : humans[0]?.id ?? "";
-  const [authorId, setAuthorId] = useState(initialActiveAuthor);
-  const activeAuthorId = humans.some(({ id }) => id === authorId) ? authorId : humans[0]?.id ?? "";
-  const authorReady = authorId === activeAuthorId;
-  const [body, setBody] = useState(() => readDraft(workspaceId, channelId, initialActiveAuthor));
+  const currentHuman = participants.find((participant) =>
+    participant.id === currentHumanIdentityId
+    && participant.type === "human"
+    && participant.status !== "disabled");
+  const activeAuthorId = currentHuman?.id ?? "";
+  const authorReady = Boolean(currentHuman);
+  const [body, setBody] = useState(() => readDraft(workspaceId, channelId, activeAuthorId));
   const [cursor, setCursor] = useState(body.length);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dismissedMention, setDismissedMention] = useState<string>();
@@ -55,19 +58,11 @@ export function ChannelComposer({
   draftRef.current = { authorId: activeAuthorId, body };
 
   useEffect(() => {
-    if (authorId === activeAuthorId) return;
-    if (authorId) localStorage.setItem(draftStorageKey(workspaceId, channelId, authorId), body);
-    setAuthorId(activeAuthorId);
-    setBody(readDraft(workspaceId, channelId, activeAuthorId));
-    setFailedSubmission(undefined);
-  }, [activeAuthorId, authorId, body, channelId, workspaceId]);
-
-  useEffect(() => {
-    if (!activeAuthorId || authorId !== activeAuthorId) return;
+    if (!activeAuthorId) return;
     const key = draftStorageKey(workspaceId, channelId, activeAuthorId);
     if (body) localStorage.setItem(key, body);
     else localStorage.removeItem(key);
-  }, [activeAuthorId, authorId, body, channelId, workspaceId]);
+  }, [activeAuthorId, body, channelId, workspaceId]);
 
   const bodyBytes = useMemo(() => messageByteLength(body), [body]);
   const bodyTooLarge = bodyBytes > MAX_MESSAGE_BYTES;
@@ -146,21 +141,6 @@ export function ChannelComposer({
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(next.cursor, next.cursor);
     });
-  };
-
-  const changeAuthor = (nextAuthorId: string) => {
-    if (activeAuthorId) {
-      const key = draftStorageKey(workspaceId, channelId, activeAuthorId);
-      if (body) localStorage.setItem(key, body);
-      else localStorage.removeItem(key);
-    }
-    setAuthorId(nextAuthorId);
-    localStorage.setItem(authorStorageKey, nextAuthorId);
-    const nextBody = readDraft(workspaceId, channelId, nextAuthorId);
-    setBody(nextBody);
-    setCursor(nextBody.length);
-    setFailedSubmission(undefined);
-    mutation.reset();
   };
 
   const retryAvailable = failedSubmission
@@ -247,26 +227,26 @@ export function ChannelComposer({
             aria-expanded={suggestions.length > 0}
             aria-activedescendant={suggestions.length ? `mention-suggestion-${activeSuggestionIndex}` : undefined}
             role="combobox"
-            placeholder={activeAuthorId ? "Message this Channel… Use @ to mention an agent." : "Add a human participant to send messages."}
+            placeholder={authorReady
+              ? "Message this Channel… Use @ to mention an agent."
+              : identityStatus === "loading"
+                ? "Loading your browser identity…"
+                : identityStatus === "unavailable"
+                  ? "Relaunch MinuChannels to restore your browser identity."
+                  : "You are not an active human participant in this Channel."}
             disabled={!activeAuthorId || !authorReady || mutation.isPending}
             className="block w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-[var(--muted)]"
           />
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] px-2.5 py-2">
-            <label className="flex min-w-0 items-center gap-2 text-xs text-[var(--muted)]">
-              <span className="shrink-0">Send as</span>
-              <select
-                value={activeAuthorId}
-                disabled={mutation.isPending}
-                onChange={(event) => changeAuthor(event.target.value)}
-                className="min-w-0 max-w-44 bg-transparent font-mono text-[var(--text)] outline-none"
-              >
-                {humans.map((participant) => (
-                  <option key={participant.id} value={participant.id}>
-                    {participant.displayName ?? participant.handle ?? shortId(participant.id)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <span className="min-w-0 text-xs text-[var(--muted)]">
+              {currentHuman
+                ? <>Sending as <strong className="font-mono font-medium text-[var(--text)]">@{currentHuman.handle ?? currentHuman.id}</strong></>
+                : identityStatus === "loading"
+                  ? "Loading your identity…"
+                  : identityStatus === "unavailable"
+                    ? "Browser identity unavailable"
+                    : "Current human is not an active Channel participant"}
+            </span>
             <span className="text-[10px] text-[var(--muted)]">Enter sends · Shift or ⌘/Ctrl + Enter adds a line · @mention wakes an agent</span>
             <div className="ml-auto flex items-center gap-2">
               <span className={`font-mono text-[10px] ${bodyTooLarge ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}>

@@ -11,6 +11,7 @@ interface CliOptions {
   channelsUrl: string;
   relayDb?: string;
   webUrl: string;
+  humanIdentityId: string;
   runtimeAdapter: string[];
   open: boolean;
 }
@@ -88,6 +89,7 @@ async function main(): Promise<void> {
     .option("--channels-url <url>", "MinuChannels HTTP endpoint", "http://127.0.0.1:4310")
     .option("--relay-db <path>", "private local Relay database path")
     .option("--web-url <url>", "loopback web client URL", "http://127.0.0.1:5174/")
+    .requiredOption("--human-identity-id <id>", "stable human identity bound to the browser session")
     .option(
       "--runtime-adapter <name=module[#export]>",
       "load a structural Runtime status adapter; repeat for multiple adapters",
@@ -104,6 +106,7 @@ async function main(): Promise<void> {
     throw new Error("Runtime adapter names must be unique");
   }
   const daemon = await createLocalControlDaemon({
+    currentHumanIdentityId: options.humanIdentityId,
     channelsEndpoint: options.channelsUrl,
     relayDatabasePath: options.relayDb,
     webUrl: options.webUrl,

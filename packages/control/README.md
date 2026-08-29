@@ -7,6 +7,7 @@ Authenticated, loopback-only, presentation-safe boundary used by the current Min
 The current API remains read-only:
 
 ```http
+GET /local/session
 GET /local/health
 GET /local/capabilities
 GET /local/channels/:channelId/agents
@@ -39,10 +40,10 @@ The daemon opens the private Relay database, connects to the public Channels end
 The launcher creates a 256-bit, one-time launch code with a 60-second default lifetime. Redeeming it at the loopback bootstrap endpoint:
 
 1. consumes the code exactly once;
-2. issues a separate random browser session in an `HttpOnly`, `SameSite=Strict`, `/local` cookie;
+2. issues a separate random browser session bound to the configured stable human identity in an `HttpOnly`, `SameSite=Strict`, `/local` cookie;
 3. redirects to the clean configured web URL with `Referrer-Policy: no-referrer`.
 
-The browser session credential is never placed in a URL. It expires after eight hours by default and is kept only in daemon memory, so daemon restart revokes it. The browser and daemon must use the same loopback hostname because cookies do not cross `localhost`, `127.0.0.1`, and `[::1]` aliases.
+`GET /local/session` returns only the bound public identity id. The composer verifies that it is an active human participant and uses it automatically; arbitrary `Send as` selection is unavailable. The browser session credential is never placed in a URL. It expires after eight hours by default and is kept only in daemon memory, so daemon restart revokes it. The browser and daemon must use the same loopback hostname because cookies do not cross `localhost`, `127.0.0.1`, and `[::1]` aliases.
 
 Session lifecycle events are emitted through a sanitized audit hook. Events record action, outcome, timestamp, and a bounded rejection reason—never launch codes, cookies, Runtime identifiers, or private configuration.
 
@@ -66,7 +67,7 @@ Build first, start Channels and the web client, then launch control:
 pnpm build
 pnpm serve
 pnpm web:dev
-pnpm control
+pnpm control --human-identity-id <stable-human-id>
 ```
 
 The default composition uses:
@@ -83,7 +84,7 @@ Use `--no-open` to print the short-lived one-time launch URL instead of invoking
 Runtime integrations stay optional and structural:
 
 ```bash
-pnpm control --runtime-adapter \
+pnpm control --human-identity-id <stable-human-id> --runtime-adapter \
   'pi=/absolute/path/to/runtime/packages/pi/dist/src/index.js#PiAgentRuntime'
 ```
 
@@ -99,4 +100,4 @@ A loaded export may be a constructible class or an object with `status(sessionId
 - Uses bounded Runtime/client waits, no-store responses, and sanitized errors.
 - Stores private Relay state only in a local file URL.
 
-Loopback plus a browser session is still not hosted-user authentication. Steering, interruption, configuration writes, and agent creation remain disabled until current-human binding, authorization, audit, fencing, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.
+Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation but cannot authorize direct public Channels API requests. Steering, interruption, configuration writes, and agent creation remain disabled until server-enforced actor authorization, audit, fencing, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.

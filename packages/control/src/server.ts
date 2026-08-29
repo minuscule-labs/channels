@@ -1,11 +1,12 @@
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { LocalControlBrowserSessions } from "./session.ts";
+import { LocalControlBrowserSessions, type LocalControlBrowserSession } from "./session.ts";
 export {
   LocalControlBrowserSessions,
   type LocalControlAuditAction,
   type LocalControlAuditEvent,
+  type LocalControlBrowserSession,
   type LocalControlBrowserSessionsOptions,
   type LocalControlLaunchExchange,
 } from "./session.ts";
@@ -66,6 +67,7 @@ export class LocalControlService {
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       features: {
+        currentSession: true,
         channelAgentStatus: true,
         workspaceConfigRead: false,
         workspaceConfigWrite: false,
@@ -234,8 +236,21 @@ export async function createLocalControlHttpServer(
         response.end();
         return;
       }
-      if (options.browserSessions && !options.browserSessions.authorize(request.headers.cookie)) {
+      const browserSession: LocalControlBrowserSession | undefined =
+        options.browserSessions?.authenticate(request.headers.cookie);
+      if (options.browserSessions && !browserSession) {
         json(response, 401, { error: "Local browser session required" }, origin);
+        return;
+      }
+      if (path === "/local/session") {
+        if (!browserSession) {
+          json(response, 404, { error: "Browser session binding unavailable" }, origin);
+          return;
+        }
+        json(response, 200, {
+          protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+          identityId: browserSession.identityId,
+        }, origin);
         return;
       }
       if (path === "/local/health") {

@@ -2,6 +2,7 @@ import type {
   LocalChannelAgentsResponse,
   LocalControlCapabilities,
   LocalControlHealth,
+  LocalCurrentSession,
 } from "./contracts.ts";
 
 export class LocalControlClientError extends Error {
@@ -26,6 +27,10 @@ export class LocalControlClient {
 
   async health(): Promise<LocalControlHealth> {
     return this.get<LocalControlHealth>("/local/health");
+  }
+
+  async currentSession(): Promise<LocalCurrentSession> {
+    return this.get<LocalCurrentSession>("/local/session");
   }
 
   async capabilities(): Promise<LocalControlCapabilities> {

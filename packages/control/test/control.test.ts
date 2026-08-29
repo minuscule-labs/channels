@@ -132,7 +132,11 @@ test("maps missing, failed, and stalled Runtime bridges to offline without leaki
   assert.equal((await stalled.listChannelAgents(channel.id)).agents[0]?.state, "offline");
 });
 
-test("validates bounded client and Runtime status timeouts", () => {
+test("validates browser identity and bounded client and Runtime status options", () => {
+  assert.throws(() => new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/",
+    currentHumanIdentityId: "   ",
+  }), /currentHumanIdentityId/);
   assert.throws(() => new LocalControlClient("", { timeoutMs: 0 }), /positive integer/);
   assert.throws(() => new LocalControlService({
     channels: { async getChannel() { return channel; } },
@@ -152,7 +156,8 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 1 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 2 });
+  assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.steer, false);
   const agents = await client.listChannelAgents(channel.id);
   assert.equal(agents.agents[0]?.identityId, "agent-running");
@@ -190,6 +195,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const audit: LocalControlAuditEvent[] = [];
   const sessions = new LocalControlBrowserSessions({
     browserUrl: "http://127.0.0.1:5174/app/workspaces/workspace-1",
+    currentHumanIdentityId: "human-1",
     launchCodeTtlMs: 1_000,
     sessionTtlMs: 2_000,
     now: () => currentTime,
@@ -229,6 +235,10 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   });
   assert.equal(authenticated.status, 200);
   assert.equal(authenticated.headers.get("access-control-allow-credentials"), "true");
+  const currentSession = await fetch(`${server.endpoint}/local/session`, {
+    headers: { cookie, origin: sessions.browserOrigin },
+  });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 2, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -297,11 +307,17 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     const bootstrap = await fetch(app.issueBrowserLaunchUrl(), { redirect: "manual" });
     const setCookie = bootstrap.headers.get("set-cookie");
     assert.ok(setCookie);
+    const headers = {
+      cookie: setCookie.split(";", 1)[0]!,
+      origin: "http://127.0.0.1:5174",
+    };
+    const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
+    assert.deepEqual(await sessionResponse.json(), {
+      protocolVersion: 2,
+      identityId: app.humanIdentityId,
+    });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
-      headers: {
-        cookie: setCookie.split(";", 1)[0]!,
-        origin: "http://127.0.0.1:5174",
-      },
+      headers,
     });
     assert.equal(response.status, 200);
     const body = await response.json() as { agents: Array<{ state: string }> };
@@ -370,6 +386,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     await store.close();
 
     daemon = await createLocalControlDaemon({
+      currentHumanIdentityId: human.id,
       channelsEndpoint: channelServer.endpoint,
       relayDatabasePath: databasePath,
       webUrl: "http://127.0.0.1:5174/",
