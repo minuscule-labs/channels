@@ -4,6 +4,7 @@ import type {
   ChannelCursorStore,
   ChannelMessage,
   ChannelMetadata,
+  ChannelRosterUpdateResult,
   ChannelStorage,
   Identity,
   MessageCommitResult,
@@ -46,6 +47,7 @@ const pendingMessageCommits = new Map<
 >();
 const pendingResponseCommits = new Map<string, Promise<ResponseResult>>();
 const pendingWorkspaceMemberUpdates = new Map<string, Promise<unknown>>();
+const pendingChannelRosterUpdates = new Map<string, Promise<unknown>>();
 
 export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCursorStore {
   private constructor(
@@ -297,6 +299,113 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         status: participant.status,
       })),
     };
+  }
+
+  async replaceChannelParticipants(
+    channelId: string,
+    participants: Participant[],
+    expectedRosterRevision: number,
+    updatedAt: string,
+  ): Promise<ChannelRosterUpdateResult | undefined> {
+    const key = `${this.storageKey}:${channelId}`;
+    const prior = pendingChannelRosterUpdates.get(key) ?? Promise.resolve();
+    const operation = prior.catch(() => undefined).then(
+      () => this.replaceChannelParticipantsOnce(
+        channelId,
+        participants,
+        expectedRosterRevision,
+        updatedAt,
+      ),
+    );
+    pendingChannelRosterUpdates.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (pendingChannelRosterUpdates.get(key) === operation) {
+        pendingChannelRosterUpdates.delete(key);
+      }
+    }
+  }
+
+  private async replaceChannelParticipantsOnce(
+    channelId: string,
+    participants: Participant[],
+    expectedRosterRevision: number,
+    updatedAt: string,
+  ): Promise<ChannelRosterUpdateResult | undefined> {
+    return await this.database.transaction(async (transaction) => {
+      const [channel] = await transaction.select({
+        id: schema.channels.id,
+        workspaceId: schema.channels.workspaceId,
+        name: schema.channels.name,
+        createdAt: schema.channels.createdAt,
+      }).from(schema.channels).where(eq(schema.channels.id, channelId)).limit(1);
+      const previous = await transaction.select({ id: schema.participants.id })
+        .from(schema.participants)
+        .where(eq(schema.participants.channelId, channelId));
+      const revisions = await transaction.update(schema.channels).set({
+        rosterRevision: sql`${schema.channels.rosterRevision} + 1`,
+      }).where(and(
+        eq(schema.channels.id, channelId),
+        eq(schema.channels.rosterRevision, expectedRosterRevision),
+      )).returning({ rosterRevision: schema.channels.rosterRevision });
+      if (!revisions[0]) return undefined;
+
+      await transaction.delete(schema.participants)
+        .where(eq(schema.participants.channelId, channelId));
+      if (participants.length > 0) {
+        await transaction.insert(schema.participants).values(
+          participants.map((participant, position) => ({
+            channelId,
+            id: participant.id,
+            handle: participant.handle,
+            type: participant.type,
+            displayName: participant.displayName,
+            role: participant.role,
+            profile: participant.profile,
+            status: participant.status ?? "active",
+            position,
+          })),
+        );
+      }
+
+      const nextIds = new Set(participants.map(({ id }) => id));
+      const removedParticipantIds = previous
+        .filter(({ id }) => !nextIds.has(id))
+        .map(({ id }) => id);
+      if (removedParticipantIds.length > 0) {
+        const latest = await transaction.select({
+          sequence: sql<number>`coalesce(max(${schema.messages.sequence}), 0)`,
+        }).from(schema.messages).where(eq(schema.messages.channelId, channelId));
+        const headSequence = latest[0]?.sequence ?? 0;
+        for (const participantId of removedParticipantIds) {
+          await transaction.insert(schema.agentCursors).values({
+            channelId,
+            participantId,
+            lastProcessedSequence: headSequence,
+            updatedAt,
+          }).onConflictDoUpdate({
+            target: [schema.agentCursors.channelId, schema.agentCursors.participantId],
+            set: {
+              lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${headSequence})`,
+              updatedAt,
+            },
+          });
+        }
+      }
+      if (!channel) throw new Error(`Channel disappeared during roster update: ${channelId}`);
+      return {
+        channel: {
+          id: channel.id,
+          workspaceId: channel.workspaceId ?? "legacy-default-workspace",
+          name: channel.name,
+          createdAt: channel.createdAt,
+          rosterRevision: revisions[0].rosterRevision,
+          participants: participants.map((participant) => ({ ...participant })),
+        },
+        removedParticipantIds,
+      };
+    }, { behavior: "immediate" });
   }
 
   async getChannel(channelId: string): Promise<Channel | undefined> {

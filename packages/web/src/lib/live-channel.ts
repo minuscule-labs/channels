@@ -38,6 +38,12 @@ export function useLiveChannel(channelId: string) {
       } else if (action.type === "refresh-metadata") {
         highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
         void queryClient.invalidateQueries({ queryKey: queryKeys.channel(channelId), exact: true });
+        if (current) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.workspaceChannels(current.workspaceId),
+            exact: true,
+          });
+        }
       }
     };
 

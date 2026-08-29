@@ -240,6 +240,9 @@ export class ChannelRuntimeRelay {
     if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
       throw new Error(`Agent binding lease was lost: ${participantId}`);
     }
+    if (!this.isActiveParticipant(participantId)) {
+      throw new Error(`Agent is not an active Channel participant: ${participantId}`);
+    }
     if (!state.binding.runtime.steer) {
       throw new Error(`Agent Runtime does not support steering: ${participantId}`);
     }
@@ -261,6 +264,9 @@ export class ChannelRuntimeRelay {
     const state = this.stateFor(participantId);
     if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
       throw new Error(`Agent binding lease was lost: ${participantId}`);
+    }
+    if (!this.isActiveParticipant(participantId)) {
+      throw new Error(`Agent is not an active Channel participant: ${participantId}`);
     }
     if (!state.binding.runtime.interrupt) {
       throw new Error(`Agent Runtime does not support interruption: ${participantId}`);
@@ -288,6 +294,12 @@ export class ChannelRuntimeRelay {
     return state;
   }
 
+  private isActiveParticipant(participantId: string): boolean {
+    return this.roster?.participants.some(
+      (participant) => participant.id === participantId && participant.status !== "disabled",
+    ) ?? false;
+  }
+
   private async consume(onReady: () => void): Promise<void> {
     for await (const event of this.options.client.events(this.options.channelId, {
       signal: this.controller!.signal,
@@ -297,6 +309,22 @@ export class ChannelRuntimeRelay {
       if (event.type === "roster.updated") {
         if (!this.roster || event.rosterRevision > this.roster.rosterRevision) {
           this.roster = await this.options.client.getChannel(this.options.channelId);
+        }
+        const retired = this.states.filter(
+          (state) => !this.isActiveParticipant(state.binding.participantId),
+        );
+        if (retired.length > 0) {
+          const messages = await this.options.client.listMessages(this.options.channelId);
+          const headSequence = messages.at(-1)?.sequence ?? 0;
+          for (const state of retired) {
+            state.lastProcessedSequence = Math.max(state.lastProcessedSequence, headSequence);
+            state.lastEnqueuedSequence = Math.max(state.lastEnqueuedSequence, headSequence);
+            await this.options.cursorStore?.setCursor(
+              this.options.channelId,
+              state.binding.participantId,
+              headSequence,
+            );
+          }
         }
         continue;
       }
@@ -312,9 +340,7 @@ export class ChannelRuntimeRelay {
   }
 
   private enqueue(state: BindingState, message: ChannelMessage): void {
-    if (this.roster?.participants.find(({ id }) => id === state.binding.participantId)?.status === "disabled") {
-      return;
-    }
+    if (!this.isActiveParticipant(state.binding.participantId)) return;
     if (message.sequence <= state.lastEnqueuedSequence) return;
     if (!shouldWake(message, state.binding)) return;
     state.lastEnqueuedSequence = message.sequence;
@@ -335,6 +361,10 @@ export class ChannelRuntimeRelay {
     const { binding } = state;
     if (binding.verifyLease && !(await binding.verifyLease())) {
       throw new Error(`Agent binding lease was lost: ${binding.participantId}`);
+    }
+    if (!this.isActiveParticipant(binding.participantId)) {
+      state.lastProcessedSequence = Math.max(state.lastProcessedSequence, trigger.sequence);
+      return;
     }
     state.activeTrigger = trigger;
     const channelMessages = (await this.options.client.listMessages(this.options.channelId)).filter(
@@ -381,7 +411,7 @@ export class ChannelRuntimeRelay {
       state.interruptedTriggerId = undefined;
       return;
     }
-    if (this.roster?.participants.find(({ id }) => id === binding.participantId)?.status === "disabled") {
+    if (!this.isActiveParticipant(binding.participantId)) {
       state.lastProcessedSequence = Math.max(state.lastProcessedSequence, trigger.sequence);
       state.activeTrigger = undefined;
       state.interruptedTriggerId = undefined;

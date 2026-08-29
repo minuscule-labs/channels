@@ -155,6 +155,73 @@ test("Drizzle/libSQL prevents concurrent removal of the last active Workspace ow
   }
 });
 
+test("Drizzle/libSQL atomically replaces revisioned Channel rosters", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-roster-race-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
+  const first = new ChannelService(firstStorage);
+  try {
+    const [owner, builder, reviewer] = await Promise.all([
+      first.createIdentity({ type: "human", displayName: "Owner" }),
+      first.createIdentity({ type: "agent", displayName: "Builder" }),
+      first.createIdentity({ type: "agent", displayName: "Reviewer" }),
+    ]);
+    const workspace = await first.createWorkspace({ slug: "roster-race", name: "Roster race" });
+    await Promise.all([
+      first.addWorkspaceMember(workspace.id, {
+        identityId: owner.id,
+        mentionHandle: "owner",
+        accessRole: "owner",
+      }),
+      first.addWorkspaceMember(workspace.id, {
+        identityId: builder.id,
+        mentionHandle: "builder",
+      }),
+      first.addWorkspaceMember(workspace.id, {
+        identityId: reviewer.id,
+        mentionHandle: "reviewer",
+      }),
+    ]);
+    const channel = await first.createChannel({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, builder.id, reviewer.id],
+    });
+    await first.createMessage(channel.id, { participantId: builder.id, body: "Builder history" });
+    const secondStorage = await DrizzleLibSqlChannelStorage.open({
+      url: url.replace("file:", "file://"),
+    });
+    const second = new ChannelService(secondStorage);
+    try {
+      const updates = await Promise.allSettled([
+        first.updateChannelParticipants(channel.id, {
+          actorIdentityId: owner.id,
+          participantIds: [owner.id, builder.id],
+          expectedRosterRevision: 1,
+        }),
+        second.updateChannelParticipants(channel.id, {
+          actorIdentityId: owner.id,
+          participantIds: [owner.id, reviewer.id],
+          expectedRosterRevision: 1,
+        }),
+      ]);
+      assert.deepEqual(updates.map(({ status }) => status).sort(), ["fulfilled", "rejected"]);
+      const restored = await first.getChannel(channel.id);
+      assert.equal(restored.rosterRevision, 2);
+      assert.equal(restored.participants.length, 2);
+      assert.equal(restored.messages[0]?.participantId, builder.id);
+      const removedId = restored.participants.some(({ id }) => id === builder.id)
+        ? reviewer.id
+        : builder.id;
+      assert.equal(await firstStorage.getCursor(channel.id, removedId), 1);
+    } finally {
+      await second.close();
+    }
+  } finally {
+    await first.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Drizzle/libSQL keeps message idempotency atomic and durable across reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-message-idempotency-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));

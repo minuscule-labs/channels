@@ -23,6 +23,11 @@ export interface WorkspaceMemberUpdateResult {
   rosters: Array<{ channelId: string; rosterRevision: number }>;
 }
 
+export interface ChannelRosterUpdateResult {
+  channel: ChannelMetadata;
+  removedParticipantIds: string[];
+}
+
 export interface ChannelStorage extends ChannelCursorStore {
   createIdentity(identity: Identity): Promise<Identity>;
   getIdentity(identityId: string): Promise<Identity | undefined>;
@@ -42,6 +47,12 @@ export interface ChannelStorage extends ChannelCursorStore {
   listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]>;
   getChannel(channelId: string): Promise<Channel | undefined>;
   getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
+  replaceChannelParticipants(
+    channelId: string,
+    participants: Participant[],
+    expectedRosterRevision: number,
+    updatedAt: string,
+  ): Promise<ChannelRosterUpdateResult | undefined>;
   appendMessage(message: NewChannelMessage): Promise<ChannelMessage>;
   commitMessage(
     message: NewChannelMessage,
@@ -199,6 +210,30 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
       createdAt: channel.createdAt,
       rosterRevision: channel.rosterRevision,
       participants: channel.participants.map((participant) => ({ ...participant })),
+    };
+  }
+
+  async replaceChannelParticipants(
+    channelId: string,
+    participants: Participant[],
+    expectedRosterRevision: number,
+    _updatedAt: string,
+  ): Promise<ChannelRosterUpdateResult | undefined> {
+    const channel = this.channels.get(channelId);
+    if (!channel || channel.rosterRevision !== expectedRosterRevision) return undefined;
+    const nextIds = new Set(participants.map(({ id }) => id));
+    const removedParticipantIds = channel.participants
+      .filter(({ id }) => !nextIds.has(id))
+      .map(({ id }) => id);
+    channel.participants = participants.map((participant) => ({ ...participant }));
+    channel.rosterRevision += 1;
+    const headSequence = channel.messages.at(-1)?.sequence ?? 0;
+    for (const participantId of removedParticipantIds) {
+      this.cursors.set(`${channel.id}:${participantId}`, headSequence);
+    }
+    return {
+      channel: (await this.getChannelMetadata(channelId))!,
+      removedParticipantIds,
     };
   }
 

@@ -140,10 +140,20 @@ test("registers reusable identities and Workspace-local handles for Channel rout
       builder.id,
     );
 
+    await assert.rejects(
+      client.createChannel({
+        workspaceId: workspace.id,
+        name: "member-created",
+        participantIds: [human.id, builder.id],
+        actorIdentityId: builder.id,
+      }),
+      /owner or admin is required/,
+    );
     const channel = await client.createChannel({
       workspaceId: workspace.id,
       name: "runtime-work",
       participantIds: [human.id, builder.id],
+      actorIdentityId: human.id,
     });
     assert.equal(channel.workspaceId, workspace.id);
     assert.equal(channel.name, "runtime-work");
@@ -255,6 +265,88 @@ test("owner-governed membership updates revise Channel rosters and preserve hist
       }),
       /retain an active owner/,
     );
+    unsubscribe();
+  } finally {
+    await server.close();
+  }
+});
+
+test("owner-governed Channel roster replacement is revisioned and preserves message attribution", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const client = new ChannelClient(server.endpoint);
+    const [owner, builder, reviewer] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+      client.createIdentity({ type: "agent", displayName: "Reviewer" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "channel-rosters", name: "Rosters" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, {
+        identityId: owner.id,
+        mentionHandle: "owner",
+        accessRole: "owner",
+      }),
+      client.addWorkspaceMember(workspace.id, {
+        identityId: builder.id,
+        mentionHandle: "builder",
+      }),
+      client.addWorkspaceMember(workspace.id, {
+        identityId: reviewer.id,
+        mentionHandle: "reviewer",
+      }),
+    ]);
+    const channel = await client.createChannel({
+      workspaceId: workspace.id,
+      name: "implementation",
+      participantIds: [owner.id, builder.id],
+      actorIdentityId: owner.id,
+    });
+    await client.postMessage(channel.id, {
+      participantId: builder.id,
+      body: "Historical builder update",
+    });
+    const events: ChannelEvent[] = [];
+    const unsubscribe = await server.service.subscribe(channel.id, (event) => events.push(event));
+
+    await assert.rejects(
+      client.updateChannelParticipants(channel.id, {
+        actorIdentityId: builder.id,
+        participantIds: [owner.id, reviewer.id],
+        expectedRosterRevision: 1,
+      }),
+      /owner or admin is required/,
+    );
+    const revised = await client.updateChannelParticipants(channel.id, {
+      actorIdentityId: owner.id,
+      participantIds: [owner.id, reviewer.id],
+      expectedRosterRevision: 1,
+    });
+    assert.equal(revised.rosterRevision, 2);
+    assert.deepEqual(revised.participants.map(({ id }) => id), [owner.id, reviewer.id]);
+    assert.equal(events[0]?.type, "roster.updated");
+    if (events[0]?.type === "roster.updated") assert.equal(events[0].rosterRevision, 2);
+    assert.equal((await client.listMessages(channel.id))[0]?.participantId, builder.id);
+    assert.equal(await server.service.storage.getCursor(channel.id, builder.id), 1);
+    await assert.rejects(
+      client.postMessage(channel.id, { participantId: builder.id, body: "No longer assigned" }),
+      /not in channel/,
+    );
+    await assert.rejects(
+      client.updateChannelParticipants(channel.id, {
+        actorIdentityId: owner.id,
+        participantIds: [owner.id, builder.id, reviewer.id],
+        expectedRosterRevision: 1,
+      }),
+      /roster changed; reload and retry/i,
+    );
+    const restored = await client.updateChannelParticipants(channel.id, {
+      actorIdentityId: owner.id,
+      participantIds: [owner.id, builder.id, reviewer.id],
+      expectedRosterRevision: revised.rosterRevision,
+    });
+    assert.equal(restored.rosterRevision, 3);
+    assert.deepEqual(restored.participants.map(({ id }) => id), [owner.id, builder.id, reviewer.id]);
     unsubscribe();
   } finally {
     await server.close();

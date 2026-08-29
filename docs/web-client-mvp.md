@@ -1,6 +1,6 @@
 # MinuChannels Web Client — MVP
 
-**Status:** Reviewable collaboration and private configuration UI; Channel administration and live agent creation remain in progress
+**Status:** Reviewable collaboration, private configuration, and Channel administration UI; live agent creation remains in progress
 
 ## Goal
 
@@ -34,6 +34,9 @@ The browser must never open private storage, receive Runtime credentials/session
 - Revision-aware roster refresh.
 - Authenticated browser session bound to one stable current-human identity; composer authorship is automatic and offers no impersonation selector.
 - Workspace configuration dialog with redacted state, write-only source/persona/Runtime replacement forms, owner/admin enforcement, and new-session lifecycle guidance.
+- Named Channel creation from selected active Workspace members.
+- Existing-Channel participant administration with optimistic roster revisions and conflict recovery.
+- Historical timeline attribution resolved from stable Workspace identities after roster removal.
 - Plain-text composer with mention suggestions and structured targets.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
@@ -46,7 +49,9 @@ The public API is already sufficient for the foundation UI:
 ```http
 GET /workspaces
 GET /workspaces/:id/channels
+POST /channels
 GET /channels/:id
+PATCH /channels/:id/participants
 GET /channels/:id/messages
 POST /channels/:id/messages
 GET /channels/:id/events
@@ -78,8 +83,8 @@ Private configuration writes and their administration UI are implemented. Forms 
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
 - Runtime lifecycle mutations until agent-host fencing and safe Channel command/result projections are defined.
-- Channel creation and participant selection.
-- Membership administration.
+- Workspace membership and identity creation administration.
+- Channel rename.
 - Threads, reactions, attachments, search, unread state, and notifications.
 - TUI parity.
 
@@ -93,4 +98,4 @@ The implemented hardening slice builds OpenCode-style client/service seams with 
 - Cursor-aware, keyboard-accessible mention suggestions with IME-safe submission.
 - Deterministic timeline projection with day boundaries and compatible-message grouping.
 - Automatic bounded SSE reconnect with authoritative ready/refetch/merge recovery.
-- Playwright coverage against a real seeded Channels server for message send, roster revision, disconnect catch-up, stable retry keys, and accessible mobile drawers.
+- Playwright coverage against a real seeded Channels server for message send, named Channel creation, optimistic participant replacement, historical attribution, roster revision, disconnect catch-up, stable retry keys, and accessible mobile drawers.

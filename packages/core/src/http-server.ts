@@ -14,6 +14,7 @@ import type {
   CreateMessageInput,
   CreateResponseInput,
   CreateWorkspaceInput,
+  UpdateChannelParticipantsInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 
@@ -146,6 +147,16 @@ export async function createChannelHttpServer(
       const channelMatch = url.pathname.match(/^\/channels\/([^/]+)$/);
       if (channelMatch && request.method === "GET") {
         json(response, 200, { channel: await service.getChannelMetadata(channelMatch[1]!) });
+        return;
+      }
+
+      const participantsMatch = url.pathname.match(/^\/channels\/([^/]+)\/participants$/);
+      if (participantsMatch && request.method === "PATCH") {
+        const channel = await service.updateChannelParticipants(
+          participantsMatch[1]!,
+          (await readJson(request)) as UpdateChannelParticipantsInput,
+        );
+        json(response, 200, { channel });
         return;
       }
 

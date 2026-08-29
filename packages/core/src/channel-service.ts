@@ -21,6 +21,7 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  UpdateChannelParticipantsInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 
@@ -375,6 +376,49 @@ export class ChannelService {
     return await this.storage.listWorkspaceChannels(workspaceId);
   }
 
+  private async assertWorkspaceAdministrator(
+    workspaceId: string,
+    actorIdentityId: string,
+  ): Promise<void> {
+    const actor = await this.storage.getWorkspaceMember(workspaceId, actorIdentityId);
+    if (!actor || actor.status !== "active" || !["owner", "admin"].includes(actor.accessRole)) {
+      throw new ChannelValidationError("An active Workspace owner or admin is required");
+    }
+  }
+
+  private async resolveActiveParticipants(
+    workspaceId: string,
+    participantIds: string[],
+  ): Promise<Participant[]> {
+    if (participantIds.length === 0) {
+      throw new ChannelValidationError("A Channel must have at least one participant");
+    }
+    if (new Set(participantIds).size !== participantIds.length) {
+      throw new ChannelValidationError("participantIds must be unique within a Channel");
+    }
+    if (participantIds.some((identityId) => typeof identityId !== "string" || !identityId.trim())) {
+      throw new ChannelValidationError("participantIds must contain non-empty identity ids");
+    }
+    return await Promise.all(participantIds.map(async (identityId) => {
+      const [identity, member] = await Promise.all([
+        this.getIdentity(identityId),
+        this.storage.getWorkspaceMember(workspaceId, identityId),
+      ]);
+      if (identity.status !== "active" || !member || member.status !== "active") {
+        throw new ChannelValidationError(`Identity is not an active Workspace member: ${identityId}`);
+      }
+      return {
+        id: identity.id,
+        handle: member.mentionHandle,
+        type: identity.type,
+        displayName: identity.displayName,
+        role: member.roleLabel,
+        profile: member.profileOverride ?? identity.publicProfile,
+        status: "active",
+      };
+    }));
+  }
+
   async createChannel(input: CreateChannelInput): Promise<Channel> {
     if (!input || (input.participantIds === undefined && input.participants === undefined)) {
       throw new ChannelValidationError("participantIds must be an array");
@@ -397,27 +441,13 @@ export class ChannelService {
       }
       const workspace = await this.getWorkspace(workspaceId);
       if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
-      if (new Set(input.participantIds).size !== input.participantIds.length) {
-        throw new ChannelValidationError("participantIds must be unique within a Channel");
-      }
-      participants = await Promise.all(input.participantIds.map(async (identityId) => {
-        const [identity, member] = await Promise.all([
-          this.getIdentity(identityId),
-          this.storage.getWorkspaceMember(workspaceId!, identityId),
-        ]);
-        if (identity.status !== "active" || !member || member.status !== "active") {
-          throw new ChannelValidationError(`Identity is not an active Workspace member: ${identityId}`);
+      if (input.actorIdentityId !== undefined) {
+        if (typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+          throw new ChannelValidationError("actorIdentityId must be a non-empty string");
         }
-        return {
-          id: identity.id,
-          handle: member.mentionHandle,
-          type: identity.type,
-          displayName: identity.displayName,
-          role: member.roleLabel,
-          profile: member.profileOverride ?? identity.publicProfile,
-          status: "active",
-        };
-      }));
+        await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+      }
+      participants = await this.resolveActiveParticipants(workspaceId, input.participantIds);
     } else {
       if (input.workspaceId && input.workspaceId !== LEGACY_WORKSPACE_ID) {
         throw new ChannelValidationError("legacy participants cannot be used with an explicit Workspace");
@@ -483,6 +513,46 @@ export class ChannelService {
       rosterRevision: 1,
       createdAt: new Date().toISOString(),
     });
+  }
+
+  async updateChannelParticipants(
+    channelId: string,
+    input: UpdateChannelParticipantsInput,
+  ): Promise<ChannelMetadata> {
+    if (!input || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+      throw new ChannelValidationError("actorIdentityId is required");
+    }
+    if (!Array.isArray(input.participantIds)) {
+      throw new ChannelValidationError("participantIds must be an array");
+    }
+    if (!Number.isSafeInteger(input.expectedRosterRevision) || input.expectedRosterRevision < 1) {
+      throw new ChannelValidationError("expectedRosterRevision must be a positive integer");
+    }
+    const channel = await this.getChannelMetadata(channelId);
+    const workspace = await this.getWorkspace(channel.workspaceId);
+    if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
+    await this.assertWorkspaceAdministrator(channel.workspaceId, input.actorIdentityId);
+    const participants = await this.resolveActiveParticipants(
+      channel.workspaceId,
+      input.participantIds,
+    );
+    const updatedAt = new Date().toISOString();
+    const result = await this.storage.replaceChannelParticipants(
+      channelId,
+      participants,
+      input.expectedRosterRevision,
+      updatedAt,
+    );
+    if (!result) throw new ChannelConflictError("Channel roster changed; reload and retry");
+    const event: ChannelEvent = {
+      id: randomUUID(),
+      type: "roster.updated",
+      channelId,
+      rosterRevision: result.channel.rosterRevision,
+      createdAt: updatedAt,
+    };
+    for (const listener of this.listeners.get(channelId) ?? []) listener(event);
+    return result.channel;
   }
 
   async getChannel(channelId: string): Promise<Channel> {

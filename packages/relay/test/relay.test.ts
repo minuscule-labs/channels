@@ -198,10 +198,11 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
   }
 });
 
-test("relay caches revisioned rosters and stops waking disabled members", async () => {
+test("relay caches revisioned rosters and stops waking disabled or removed members", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint);
   const runtime = new FakeRuntime();
+  const cursors = new InMemoryChannelStorage();
   const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
   const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
   const workspace = await client.createWorkspace({ slug: "roster-cache", name: "Roster Cache" });
@@ -228,6 +229,7 @@ test("relay caches revisioned rosters and stops waking disabled members", async 
     client,
     channelId: channel.id,
     bindings: [{ participantId: agent.id, sessionId: "cached-session", runtime }],
+    cursorStore: cursors,
   });
   try {
     await relay.start();
@@ -257,6 +259,75 @@ test("relay caches revisioned rosters and stops waking disabled members", async 
     });
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(runtime.prompts.get("cached-session")?.length, 1);
+
+    await client.updateChannelParticipants(channel.id, {
+      actorIdentityId: owner.id,
+      participantIds: [owner.id],
+      expectedRosterRevision: 3,
+    });
+    await waitUntil(async () => metadataReads === 4);
+    await client.postMessage(channel.id, {
+      participantId: owner.id,
+      body: "@channel removed agents also stay asleep",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(runtime.prompts.get("cached-session")?.length, 1);
+    assert.equal(await cursors.getCursor(channel.id, agent.id), 3);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("removing an agent fences an active turn result and advances recovery", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new RecoverableRuntime();
+  const cursors = new InMemoryChannelStorage();
+  const [owner, agent] = await Promise.all([
+    client.createIdentity({ type: "human", displayName: "Owner" }),
+    client.createIdentity({ type: "agent", displayName: "Builder" }),
+  ]);
+  const workspace = await client.createWorkspace({ slug: "active-removal", name: "Active removal" });
+  await Promise.all([
+    client.addWorkspaceMember(workspace.id, {
+      identityId: owner.id,
+      mentionHandle: "owner",
+      accessRole: "owner",
+    }),
+    client.addWorkspaceMember(workspace.id, {
+      identityId: agent.id,
+      mentionHandle: "builder",
+    }),
+  ]);
+  const channel = await client.createChannel({
+    workspaceId: workspace.id,
+    participantIds: [owner.id, agent.id],
+  });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: agent.id, sessionId: "removed-active", runtime }],
+    cursorStore: cursors,
+    turnPollIntervalMs: 5,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, {
+      participantId: owner.id,
+      body: "@builder start work",
+    });
+    await waitUntil(async () => runtime.startCount === 1);
+    await client.updateChannelParticipants(channel.id, {
+      actorIdentityId: owner.id,
+      participantIds: [owner.id],
+      expectedRosterRevision: 1,
+    });
+    await waitUntil(async () => (await cursors.getCursor(channel.id, agent.id)) === 1);
+    runtime.complete("This stale result must not be posted");
+    await relay.waitForIdle();
+    assert.equal((await client.listMessages(channel.id)).length, 1);
+    assert.equal(relay.cursor(agent.id), 1);
   } finally {
     await relay.stop();
     await server.close();

@@ -1,3 +1,4 @@
+import type { Participant } from "@minu/channels-core/types";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
@@ -7,6 +8,7 @@ import { useLiveChannel } from "../lib/live-channel";
 import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 import { isNearTimelineEnd } from "../lib/timeline";
+import { EditChannelParticipantsDialog } from "./channel-administration-dialog";
 import { ChannelComposer } from "./channel-composer";
 import { ChannelTimeline } from "./channel-timeline";
 import { MemberRoster } from "./member-roster";
@@ -27,6 +29,14 @@ export function ChannelPage() {
     queryKey: queryKeys.channel(channelId),
     queryFn: () => channels.getChannel(channelId),
   });
+  const workspaceMembers = useQuery({
+    queryKey: queryKeys.workspaceMembers(workspaceId),
+    queryFn: () => channels.listWorkspaceMembers(workspaceId),
+  });
+  const identities = useQuery({
+    queryKey: queryKeys.identities(),
+    queryFn: () => channels.listIdentities(),
+  });
   const messages = useQuery({
     queryKey: queryKeys.channelMessages(channelId),
     queryFn: () => channels.listMessages(channelId),
@@ -45,6 +55,25 @@ export function ChannelPage() {
   });
   const { connection, retry } = useLiveChannel(channelId);
   const participants = metadata.data?.participants ?? [];
+  const attributionParticipants = useMemo<Participant[]>(() => {
+    const byId = new Map(participants.map((participant) => [participant.id, participant]));
+    const identitiesById = new Map((identities.data ?? []).map((identity) => [identity.id, identity]));
+    for (const member of workspaceMembers.data ?? []) {
+      if (byId.has(member.identityId)) continue;
+      const identity = identitiesById.get(member.identityId);
+      if (!identity) continue;
+      byId.set(identity.id, {
+        id: identity.id,
+        handle: member.mentionHandle,
+        type: identity.type,
+        displayName: identity.displayName,
+        role: member.roleLabel,
+        profile: member.profileOverride ?? identity.publicProfile,
+        status: member.status,
+      });
+    }
+    return [...byId.values()];
+  }, [identities.data, participants, workspaceMembers.data]);
   const localAgentMap = useMemo(
     () => localAgents.data ? new Map(localAgents.data.map((agent) => [agent.identityId, agent])) : undefined,
     [localAgents.data],
@@ -101,6 +130,7 @@ export function ChannelPage() {
               <RefreshCw className="h-3.5 w-3.5" /> Retry
             </button>
           ) : null}
+          <EditChannelParticipantsDialog channel={metadata.data} />
           <Drawer
             open={rosterOpen}
             onOpenChange={setRosterOpen}
@@ -125,7 +155,7 @@ export function ChannelPage() {
               if (nearEndRef.current) setUnseenMessages(0);
             }}
           >
-            <ChannelTimeline messages={messages.data ?? []} participants={participants} />
+            <ChannelTimeline messages={messages.data ?? []} participants={attributionParticipants} />
           </div>
           {unseenMessages ? (
             <button

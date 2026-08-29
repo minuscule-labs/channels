@@ -127,8 +127,17 @@ export interface CreateChannelInput {
   workspaceId?: string;
   name?: string;
   participantIds?: string[];
+  /** Advisory product policy until requests are authenticated. */
+  actorIdentityId?: string;
   /** @deprecated Compatibility path for pre-Workspace callers. */
   participants?: Participant[];
+}
+
+export interface UpdateChannelParticipantsInput {
+  /** Advisory product policy until requests are authenticated. */
+  actorIdentityId: string;
+  participantIds: string[];
+  expectedRosterRevision: number;
 }
 
 export interface CreateMessageInput {

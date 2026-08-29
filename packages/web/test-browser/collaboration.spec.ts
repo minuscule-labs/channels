@@ -154,6 +154,55 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(dialog.getByText(personaValue, { exact: true })).toHaveCount(0);
 });
 
+test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces[0]!;
+  const { members } = await (await request.get(
+    `${channelsBase}/workspaces/${workspace.id}/members`,
+  )).json() as { members: Array<{ identityId: string; mentionHandle: string }> };
+  const builder = members.find(({ mentionHandle }) => mentionHandle === "builder")!;
+  await launchAuthenticated(page, request, "/");
+
+  await page.getByRole("button", { name: `Create Channel in ${workspace.name}` }).click();
+  const createDialog = page.getByRole("dialog", { name: `Create a Channel in ${workspace.name}` });
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByLabel("Channel name").fill("roster-administration");
+  await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toBeChecked();
+  await createDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
+  const createResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/channels"));
+  await createDialog.getByRole("button", { name: "Create Channel" }).click();
+  const createResponse = await createResponsePromise;
+  expect(createResponse.ok()).toBe(true);
+  const { channel } = await createResponse.json() as { channel: { id: string } };
+  await expect(page).toHaveURL(new RegExp(`/channels/${channel.id}$`));
+  await expect(page.getByRole("heading", { name: "#roster-administration" })).toBeVisible();
+
+  const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {
+    data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },
+  });
+  expect(historical.ok()).toBe(true);
+  await expect(page.getByRole("log").getByText("Builder attribution survives roster removal.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Manage Channel participants" }).click();
+  let rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
+  await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
+  await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).uncheck();
+  await rosterDialog.getByRole("button", { name: "Save participants" }).click();
+  await expect(rosterDialog).toBeHidden();
+  await expect(page.getByText(/roster 2$/)).toBeVisible();
+  await expect(page.getByRole("log").getByText("Builder Agent", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Manage Channel participants" }).click();
+  rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
+  await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
+  await rosterDialog.getByRole("button", { name: "Save participants" }).click();
+  await expect(rosterDialog).toBeHidden();
+  await expect(page.getByText(/roster 3$/)).toBeVisible();
+});
+
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {

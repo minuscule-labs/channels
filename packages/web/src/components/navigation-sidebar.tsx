@@ -1,6 +1,7 @@
 import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
 import { Hash, MessageSquare, X } from "lucide-react";
+import { CreateChannelDialog } from "./channel-administration-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
 
 export interface WorkspaceNavigationItem {
@@ -49,6 +50,7 @@ export function NavigationSidebar({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="status-dot" data-status={workspace.status} title={workspace.status} />
+                  <CreateChannelDialog workspace={workspace} onNavigate={onNavigate} />
                   <WorkspaceSettingsDialog workspace={workspace} />
                 </div>
               </div>
