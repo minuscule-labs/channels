@@ -1,7 +1,7 @@
 import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Send } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { channels } from "../lib/api";
 import {
   createMessageSubmission,
@@ -54,6 +54,7 @@ export function ChannelComposer({
   const [failedSubmission, setFailedSubmission] = useState<MessageSubmission>();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
+  const pendingCursorRef = useRef<number | undefined>(undefined);
   const draftRef = useRef({ authorId: activeAuthorId, body });
   draftRef.current = { authorId: activeAuthorId, body };
 
@@ -63,6 +64,14 @@ export function ChannelComposer({
     if (body) localStorage.setItem(key, body);
     else localStorage.removeItem(key);
   }, [activeAuthorId, body, channelId, workspaceId]);
+
+  useLayoutEffect(() => {
+    const pendingCursor = pendingCursorRef.current;
+    if (pendingCursor === undefined) return;
+    pendingCursorRef.current = undefined;
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(pendingCursor, pendingCursor);
+  }, [body]);
 
   const bodyBytes = useMemo(() => messageByteLength(body), [body]);
   const bodyTooLarge = bodyBytes > MAX_MESSAGE_BYTES;
@@ -125,22 +134,16 @@ export function ChannelComposer({
     const end = textareaRef.current?.selectionEnd ?? start;
     const nextBody = `${body.slice(0, start)}\n${body.slice(end)}`;
     const nextCursor = start + 1;
+    pendingCursorRef.current = nextCursor;
     updateBody(nextBody, nextCursor);
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-    });
   };
 
   const insertMention = (suggestion: MentionSuggestion) => {
     if (!mentionQuery) return;
     const next = replaceMention(body, mentionQuery, suggestion.handle);
+    pendingCursorRef.current = next.cursor;
     updateBody(next.body, next.cursor);
     setDismissedMention(`${next.cursor}:${next.cursor}:`);
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(next.cursor, next.cursor);
-    });
   };
 
   const retryAvailable = failedSubmission
