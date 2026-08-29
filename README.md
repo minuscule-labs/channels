@@ -28,7 +28,7 @@ Use `--cwd`, `--channels-port`, `--control-port`, or `--web-port` after `--` whe
 - `storage-drizzle` — durable Drizzle/libSQL storage for local files or Turso, plus the standalone server CLI.
 - `relay` — internal agent-host processing: mention-driven context, response delivery, recovery, fencing, and a structural Runtime port.
 - `relay-storage-drizzle` — internal agent-host storage for private Workspace agent configuration and Channel-specific Runtime bindings.
-- `control` — transitional internal agent-host control/session package plus the current review composition; its responsibilities will be consolidated before publishing rather than extracted as a separate product now.
+- `control` — transitional internal agent-host session, redacted private-configuration, status, and review-composition package; its responsibilities will be consolidated before publishing rather than extracted as a separate product now.
 - `web` — responsive React/TanStack/Tailwind collaboration client for Workspace navigation, live Channel messages, mentions, and rosters.
 - `examples/pi-demo` — optional live composition example requiring separately installed MinuRuntime packages.
 
@@ -57,13 +57,16 @@ GET  /channels/:id/events
 The transitional internal agent-host control surface currently provides:
 
 ```text
-GET /local/session
-GET /local/health
-GET /local/capabilities
-GET /local/channels/:id/agents
+GET   /local/session
+GET   /local/health
+GET   /local/capabilities
+GET   /local/channels/:id/agents
+GET   /local/workspaces/:id/config
+PATCH /local/workspaces/:id/config
+PATCH /local/workspaces/:id/agents/:identityId/config
 ```
 
-The real local daemon opens `~/.minu/channels/relay.db`, composes it with public Channels HTTP and explicitly loaded structural Runtime status adapters, and requires a browser session. A random 60-second one-time launch code is exchanged for a distinct eight-hour in-memory session carried by an HttpOnly, SameSite=Strict `/local` cookie. Each session is bound to one stable human identity, and `/local/session` returns only that public identity id so the composer cannot select another author. The session credential never appears in a URL and daemon restart revokes it. This is local workflow enforcement, not authorization of the still-unauthenticated public Channels API. Sanitized audit events contain no codes, cookies, Runtime ids, or private configuration. Isolated read-only server fixtures may explicitly omit session enforcement.
+The real local daemon opens `~/.minu/channels/relay.db`, composes it with public Channels HTTP and explicitly loaded structural Runtime status adapters, and requires a browser session. A random 60-second one-time launch code is exchanged for a distinct eight-hour in-memory session carried by an HttpOnly, SameSite=Strict `/local` cookie. Each session is bound to one stable human identity, and `/local/session` returns only that public identity id so the composer cannot select another author. Private configuration reads return booleans/counts only; root URI, notes routing, persona prompt, and Runtime adapter are write-only browser inputs and never appear in responses or audit events. Workspace configuration requires the bound human to be an active owner/admin. Lifecycle/start capabilities remain disabled. The session credential never appears in a URL and daemon restart revokes it. This is local workflow enforcement, not authorization of the still-unauthenticated public Channels API.
 
 Channels have durable human-readable names scoped by their Workspace; opaque ids remain stable routing keys and URL parameters. Identities are reusable humans, agents, or services with stable opaque ids. Workspaces assign each identity a case-insensitive local mention handle, simple `owner` / `admin` / `member` access, optional public role label, and delegation profile override. Channels belong to one Workspace and select active Workspace members as participants. Structured message authors and targets store stable identity ids, while body `@handles` resolve through Workspace membership. Profiles remain routing metadata—not private system prompts. Owners and admins may update membership aliases, public routing metadata, and status; only owners may change access roles or update another owner, and the last active owner cannot be disabled or demoted. `actorIdentityId` is currently an advisory policy input—not authentication—so access roles are not security claims until authentication and permission enforcement are added. Messages have a monotonic per-Channel sequence, structured targets, optional replies, and parsed `@participant` / `@channel` mentions. SSE emits `message.created` notifications and periodic keepalive comments so quiet Channels remain connected. Message clients may protect retries with an optional key:
 
@@ -98,7 +101,7 @@ Machine-local execution configuration is deliberately stored separately at:
 ~/.minu/channels/relay.db
 ```
 
-`LocalRelayDirectory` validates shared Workspace, membership, and Channel records before writing private Workspace roots, agent/persona references, or Runtime session bindings. One reusable Workspace agent configuration can have one binding per Channel, and every binding has its own Runtime session id and transcript. `restoreChannelBindings` verifies Runtime reachability without silently replacing an offline session, acquires a short ownership lease, and returns only the bindings owned by that Relay. Callers renew leases with `startAutoRenew`; generation compare-and-swap prevents stale session replacement. Relay fencing checks run before work and before response delivery, so a process that loses ownership cannot publish stale output or advance the cursor. Already-running tool or filesystem side effects cannot be undone. Runtime ids, roots, personas, and leases are not exposed by Channels HTTP or metadata APIs.
+`LocalRelayDirectory` validates shared Workspace, membership, and Channel records before writing private Workspace roots, agent/persona configuration, Runtime preferences, or Runtime session bindings. Migration `0001_private_agent_launch_config.sql` adds the simple private persona prompt and Runtime adapter preference required for the MVP launch specification. One reusable Workspace agent configuration can have one binding per Channel, and every binding has its own Runtime session id and transcript. Configuration edits apply to new or explicitly replaced sessions; they do not rewrite live transcripts. `restoreChannelBindings` verifies Runtime reachability without silently replacing an offline session, acquires a short ownership lease, and returns only the bindings owned by that Relay. Callers renew leases with `startAutoRenew`; generation compare-and-swap prevents stale session replacement. Relay fencing checks run before work and before response delivery, so a process that loses ownership cannot publish stale output or advance the cursor. Already-running tool or filesystem side effects cannot be undone. Runtime ids, roots, personas, adapters, and leases are not exposed by public Channels HTTP or metadata APIs.
 
 ## Relay
 

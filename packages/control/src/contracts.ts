@@ -10,6 +10,35 @@ export interface LocalControlHealth {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
 }
 
+export interface LocalWorkspaceAgentConfigurationSummary {
+  identityId: string;
+  configured: boolean;
+  personaConfigured: boolean;
+  runtimeConfigured: boolean;
+  status: "active" | "disabled" | "unconfigured";
+  boundChannelCount: number;
+  changesApplyToNewSessions: true;
+}
+
+export interface LocalWorkspaceConfigurationSummary {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  workspaceId: string;
+  rootConfigured: boolean;
+  notesFolderConfigured: boolean;
+  agents: LocalWorkspaceAgentConfigurationSummary[];
+}
+
+export interface UpdateLocalWorkspaceConfigurationInput {
+  rootUri: string;
+  notesFolderId?: string | null;
+}
+
+export interface UpdateLocalWorkspaceAgentConfigurationInput {
+  personaPrompt?: string | null;
+  runtimeAdapter?: string | null;
+  status?: "active" | "disabled";
+}
+
 export interface LocalControlCapabilities {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   features: {

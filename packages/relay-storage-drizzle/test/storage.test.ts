@@ -24,6 +24,8 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     workspaceId: "workspace-a",
     agentIdentityId: "agent-a",
     personaRef: "persona:builder:v1",
+    personaPrompt: "Build carefully and verify every change.",
+    runtimeAdapter: "pi",
     status: "active",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -117,7 +119,12 @@ test("private relay storage preserves configs and arbitrates binding leases acro
   const reopened = await DrizzleLibSqlRelayStorage.open({ url });
   try {
     assert.equal((await reopened.getWorkspaceConfig(config.workspaceId))?.rootUri, "file:///private/workspace");
-    assert.equal((await reopened.getAgentConfig(config.id))?.personaRef, "persona:builder:v1");
+    const reopenedConfig = await reopened.getAgentConfig(config.id);
+    assert.equal(reopenedConfig?.personaRef, "persona:builder:v1");
+    assert.equal(reopenedConfig?.personaPrompt, "Build carefully and verify every change.");
+    assert.equal(reopenedConfig?.runtimeAdapter, "pi");
+    assert.equal((await reopened.listWorkspaceAgentConfigs(config.workspaceId)).length, 1);
+    assert.equal((await reopened.listWorkspaceBindings(config.workspaceId)).length, 1);
     const persisted = await reopened.getBinding(record.id);
     assert.equal(persisted?.runtimeSessionId, "runtime-session-b");
     assert.equal(persisted?.generation, 2);

@@ -15,6 +15,8 @@ export interface WorkspaceAgentConfig {
   workspaceId: string;
   agentIdentityId: string;
   personaRef?: string;
+  personaPrompt?: string;
+  runtimeAdapter?: string;
   status: "active" | "disabled";
   createdAt: string;
   updatedAt: string;
@@ -50,9 +52,11 @@ export interface RelayBindingStore {
     workspaceId: string,
     agentIdentityId: string,
   ): Promise<WorkspaceAgentConfig | undefined>;
+  listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]>;
   putBinding(binding: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord>;
   getBinding(bindingId: string): Promise<ChannelAgentBindingRecord | undefined>;
   listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]>;
+  listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]>;
   acquireBindingLease(
     bindingId: string,
     leaseOwner: string,
@@ -131,6 +135,12 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     return config ? { ...config } : undefined;
   }
 
+  async listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]> {
+    return [...this.agentConfigs.values()]
+      .filter((config) => config.workspaceId === workspaceId)
+      .map((config) => ({ ...config }));
+  }
+
   async putBinding(binding: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord> {
     if (this.bindings.has(binding.id)) throw new Error("Channel agent binding id already exists");
     const duplicate = [...this.bindings.values()].find(
@@ -159,6 +169,12 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   async listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]> {
     return [...this.bindings.values()]
       .filter((binding) => binding.channelId === channelId)
+      .map(copyBinding);
+  }
+
+  async listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]> {
+    return [...this.bindings.values()]
+      .filter((binding) => binding.workspaceId === workspaceId)
       .map(copyBinding);
   }
 
@@ -263,7 +279,7 @@ export class LocalRelayDirectory {
   async configureWorkspace(input: {
     workspaceId: string;
     rootUri: string;
-    notesFolderId?: string;
+    notesFolderId?: string | null;
   }): Promise<LocalWorkspaceConfig> {
     await this.client.getWorkspace(input.workspaceId);
     if (!input.rootUri.trim()) throw new Error("rootUri is required");
@@ -272,7 +288,9 @@ export class LocalRelayDirectory {
     return this.store.putWorkspaceConfig({
       workspaceId: input.workspaceId,
       rootUri: input.rootUri,
-      notesFolderId: input.notesFolderId,
+      notesFolderId: input.notesFolderId === undefined
+        ? existing?.notesFolderId
+        : input.notesFolderId ?? undefined,
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     });
@@ -281,7 +299,9 @@ export class LocalRelayDirectory {
   async configureAgent(input: {
     workspaceId: string;
     agentIdentityId: string;
-    personaRef?: string;
+    personaRef?: string | null;
+    personaPrompt?: string | null;
+    runtimeAdapter?: string | null;
     status?: "active" | "disabled";
   }): Promise<WorkspaceAgentConfig> {
     const [identity, members, workspaceConfig] = await Promise.all([
@@ -291,21 +311,37 @@ export class LocalRelayDirectory {
     ]);
     const member = members.find(({ identityId }) => identityId === input.agentIdentityId);
     if (!workspaceConfig) throw new Error("Private Workspace configuration is required");
-    if ((identity.type !== "agent" && identity.type !== "service") || !member
-      || member.status !== "active") {
+    if ((identity.type !== "agent" && identity.type !== "service") || identity.status !== "active"
+      || !member || member.status !== "active") {
       throw new Error("Agent must be an active member of the Workspace");
     }
     const existing = await this.store.getWorkspaceAgentConfig(
       input.workspaceId,
       input.agentIdentityId,
     );
+    const personaPrompt = input.personaPrompt === undefined
+      ? existing?.personaPrompt
+      : input.personaPrompt ?? undefined;
+    const runtimeAdapter = input.runtimeAdapter === undefined
+      ? existing?.runtimeAdapter
+      : input.runtimeAdapter ?? undefined;
+    if (personaPrompt !== undefined && !personaPrompt.trim()) {
+      throw new Error("Persona prompt must not be empty");
+    }
+    if (runtimeAdapter !== undefined && !runtimeAdapter.trim()) {
+      throw new Error("Runtime adapter must not be empty");
+    }
     const timestamp = this.now().toISOString();
     return this.store.putAgentConfig({
       id: existing?.id ?? randomUUID(),
       workspaceId: input.workspaceId,
       agentIdentityId: input.agentIdentityId,
-      personaRef: input.personaRef,
-      status: input.status ?? "active",
+      personaRef: input.personaRef === undefined
+        ? existing?.personaRef
+        : input.personaRef ?? undefined,
+      personaPrompt,
+      runtimeAdapter,
+      status: input.status ?? existing?.status ?? "active",
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     });

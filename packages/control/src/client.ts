@@ -3,6 +3,9 @@ import type {
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
+  LocalWorkspaceConfigurationSummary,
+  UpdateLocalWorkspaceAgentConfigurationInput,
+  UpdateLocalWorkspaceConfigurationInput,
 } from "./contracts.ts";
 
 export class LocalControlClientError extends Error {
@@ -41,12 +44,48 @@ export class LocalControlClient {
     return this.get<LocalChannelAgentsResponse>(`/local/channels/${encodeURIComponent(channelId)}/agents`);
   }
 
+  async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {
+    return this.get<LocalWorkspaceConfigurationSummary>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/config`,
+    );
+  }
+
+  async updateWorkspaceConfiguration(
+    workspaceId: string,
+    input: UpdateLocalWorkspaceConfigurationInput,
+  ): Promise<LocalWorkspaceConfigurationSummary> {
+    return this.request<LocalWorkspaceConfigurationSummary>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/config`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    );
+  }
+
+  async updateWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+    input: UpdateLocalWorkspaceAgentConfigurationInput,
+  ): Promise<LocalWorkspaceConfigurationSummary> {
+    return this.request<LocalWorkspaceConfigurationSummary>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentIdentityId)}/config`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    );
+  }
+
   private async get<T>(path: string): Promise<T> {
+    return this.request<T>(path);
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const response = await fetch(`${this.endpoint}${path}`, {
-        headers: { accept: "application/json" },
+        ...init,
+        headers: {
+          accept: "application/json",
+          ...(init.body ? { "content-type": "application/json" } : {}),
+          ...init.headers,
+        },
         credentials: "include",
         signal: controller.signal,
       });

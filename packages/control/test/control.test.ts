@@ -7,8 +7,10 @@ import test from "node:test";
 import { ChannelClient } from "@minu/channels-core/client";
 import { createChannelHttpServer } from "@minu/channels-core";
 import type { ChannelMetadata } from "@minu/channels-core/types";
+import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
+import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
 import { createLocalReviewApp } from "../src/review.ts";
 import {
@@ -328,10 +330,102 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
   }
 });
 
+test("private configuration authorizes current humans and returns only redacted state", async () => {
+  const channelServer = await createChannelHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const audit: LocalControlAuditEvent[] = [];
+  try {
+    const client = new ChannelClient(channelServer.endpoint);
+    const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
+    const member = await client.createIdentity({ type: "human", displayName: "Member" });
+    const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
+    const workspace = await client.createWorkspace({ slug: "private-config", name: "Private Config" });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: owner.id,
+      mentionHandle: "owner",
+      accessRole: "owner",
+    });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: member.id,
+      mentionHandle: "member",
+    });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: agent.id,
+      mentionHandle: "builder",
+    });
+    const configuration = new LocalAgentHostConfiguration({
+      client,
+      store,
+      now: () => new Date("2026-08-29T00:00:00.000Z"),
+      onAudit: (event) => audit.push(event),
+    });
+
+    await assert.rejects(
+      configuration.updateWorkspaceConfiguration(workspace.id, member.id, {
+        rootUri: "file:///must-not-be-written",
+      }),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
+    );
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
+      rootUri: "file:///private/source/root",
+      notesFolderId: "private-notes-folder",
+    });
+    await assert.rejects(
+      configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+        unknownSecretField: "must-not-be-accepted",
+      }),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400,
+    );
+    const summary = await configuration.updateWorkspaceAgentConfiguration(
+      workspace.id,
+      agent.id,
+      owner.id,
+      {
+        personaPrompt: "PRIVATE PERSONA: build and verify carefully",
+        runtimeAdapter: "pi-owned",
+      },
+    );
+
+    assert.equal(summary.rootConfigured, true);
+    assert.deepEqual(summary.agents, [{
+      identityId: agent.id,
+      configured: true,
+      personaConfigured: true,
+      runtimeConfigured: true,
+      status: "active",
+      boundChannelCount: 0,
+      changesApplyToNewSessions: true,
+    }]);
+    assert.equal((await store.getWorkspaceConfig(workspace.id))?.rootUri, "file:///private/source/root");
+    const storedAgent = await store.getWorkspaceAgentConfig(workspace.id, agent.id);
+    assert.equal(storedAgent?.personaPrompt, "PRIVATE PERSONA: build and verify carefully");
+    assert.equal(storedAgent?.runtimeAdapter, "pi-owned");
+    const presented = JSON.stringify(summary);
+    assert.doesNotMatch(
+      presented,
+      /private\/source|private-notes-folder|PRIVATE PERSONA|pi-owned|personaPrompt|runtimeAdapter|rootUri/,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(audit),
+      /must-not-be-written|must-not-be-accepted|private\/source|private-notes-folder|PRIVATE PERSONA|pi-owned/,
+    );
+    assert.deepEqual(audit.map(({ action, outcome, reason }) => ({ action, outcome, reason })), [
+      { action: "workspace.config.updated", outcome: "rejected", reason: "forbidden" },
+      { action: "workspace.config.updated", outcome: "accepted", reason: undefined },
+      { action: "agent.config.updated", outcome: "rejected", reason: "invalid" },
+      { action: "agent.config.updated", outcome: "accepted", reason: undefined },
+    ]);
+  } finally {
+    await store.close();
+    await channelServer.close();
+  }
+});
+
 test("daemon composes public Channels, private Relay storage, Runtime status, and browser auth", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-control-daemon-"));
   const databasePath = join(directory, "relay.db");
   const channelServer = await createChannelHttpServer({ port: 0 });
+  const audit: LocalControlAuditEvent[] = [];
   let daemon: Awaited<ReturnType<typeof createLocalControlDaemon>> | undefined;
   try {
     const client = new ChannelClient(channelServer.endpoint);
@@ -399,6 +493,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
           },
         },
       },
+      onAudit: (event) => audit.push(event),
     });
     assert.equal((await stat(databasePath)).mode & 0o777, 0o600);
     assert.equal((await fetch(`${daemon.endpoint}/local/health`)).status, 401);
@@ -406,6 +501,57 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     const setCookie = bootstrap.headers.get("set-cookie");
     assert.ok(setCookie);
     const cookie = setCookie.split(";", 1)[0]!;
+    const requestHeaders = {
+      cookie,
+      origin: "http://127.0.0.1:5174",
+      "content-type": "application/json",
+    };
+    const workspaceUpdate = await fetch(`${daemon.endpoint}/local/workspaces/${workspace.id}/config`, {
+      method: "PATCH",
+      headers: requestHeaders,
+      body: JSON.stringify({ rootUri: "file:///new/private/root" }),
+    });
+    assert.equal(workspaceUpdate.status, 200);
+    const agentUpdate = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/config`,
+      {
+        method: "PATCH",
+        headers: requestHeaders,
+        body: JSON.stringify({
+          personaPrompt: "DAEMON PRIVATE PERSONA",
+          runtimeAdapter: "pi-owned-private",
+        }),
+      },
+    );
+    assert.equal(agentUpdate.status, 200);
+    const configurationResponse = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/config`,
+      { headers: { cookie, origin: "http://127.0.0.1:5174" } },
+    );
+    assert.equal(configurationResponse.status, 200);
+    const configurationBody = await configurationResponse.json() as {
+      rootConfigured: boolean;
+      agents: Array<{ personaConfigured: boolean; runtimeConfigured: boolean; boundChannelCount: number }>;
+    };
+    assert.equal(configurationBody.rootConfigured, true);
+    assert.deepEqual(configurationBody.agents, [{
+      identityId: agent.id,
+      configured: true,
+      personaConfigured: true,
+      runtimeConfigured: true,
+      status: "active",
+      boundChannelCount: 1,
+      changesApplyToNewSessions: true,
+    }]);
+    assert.doesNotMatch(
+      JSON.stringify(configurationBody),
+      /new\/private|DAEMON PRIVATE PERSONA|pi-owned-private|rootUri|personaPrompt|runtimeAdapter/,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(audit),
+      /new\/private|DAEMON PRIVATE PERSONA|pi-owned-private/,
+    );
+
     const response = await fetch(`${daemon.endpoint}/local/channels/${createdChannel.id}/agents`, {
       headers: { cookie, origin: "http://127.0.0.1:5174" },
     });

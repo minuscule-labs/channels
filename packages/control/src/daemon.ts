@@ -6,6 +6,7 @@ import {
 import { chmod, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { LocalAgentHostConfiguration } from "./configuration.ts";
 import {
   createLocalControlHttpServer,
   LocalControlService,
@@ -65,10 +66,17 @@ export async function createLocalControlDaemon(
       now: options.now,
       onAudit: options.onAudit,
     });
+    const client = new ChannelClient(options.channelsEndpoint ?? "http://127.0.0.1:4310");
     const service = new LocalControlService({
-      channels: new ChannelClient(options.channelsEndpoint ?? "http://127.0.0.1:4310"),
+      channels: client,
       bindings: store,
       runtimes: options.runtimes ?? {},
+      configuration: new LocalAgentHostConfiguration({
+        client,
+        store,
+        now: options.now,
+        onAudit: options.onAudit,
+      }),
       statusTimeoutMs: options.statusTimeoutMs,
     });
     server = await createLocalControlHttpServer({

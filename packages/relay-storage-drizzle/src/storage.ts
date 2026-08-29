@@ -36,7 +36,12 @@ function workspaceConfig(row: typeof schema.localWorkspaceConfigs.$inferSelect):
 }
 
 function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): WorkspaceAgentConfig {
-  return { ...row, personaRef: row.personaRef ?? undefined };
+  return {
+    ...row,
+    personaRef: row.personaRef ?? undefined,
+    personaPrompt: row.personaPrompt ?? undefined,
+    runtimeAdapter: row.runtimeAdapter ?? undefined,
+  };
 }
 
 function binding(row: typeof schema.channelAgentBindings.$inferSelect): ChannelAgentBindingRecord {
@@ -75,7 +80,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       target: schema.localWorkspaceConfigs.workspaceId,
       set: {
         rootUri: config.rootUri,
-        notesFolderId: config.notesFolderId,
+        notesFolderId: config.notesFolderId ?? null,
         updatedAt: config.updatedAt,
       },
     });
@@ -96,7 +101,9 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         schema.workspaceAgentConfigs.agentIdentityId,
       ],
       set: {
-        personaRef: config.personaRef,
+        personaRef: config.personaRef ?? null,
+        personaPrompt: config.personaPrompt ?? null,
+        runtimeAdapter: config.runtimeAdapter ?? null,
         status: config.status,
         updatedAt: config.updatedAt,
       },
@@ -124,6 +131,13 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return row ? agentConfig(row) : undefined;
   }
 
+  async listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]> {
+    const rows = await this.database.select().from(schema.workspaceAgentConfigs)
+      .where(eq(schema.workspaceAgentConfigs.workspaceId, workspaceId))
+      .orderBy(asc(schema.workspaceAgentConfigs.createdAt));
+    return rows.map(agentConfig);
+  }
+
   async putBinding(record: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord> {
     await this.database.insert(schema.channelAgentBindings).values(record);
     return { ...record };
@@ -139,6 +153,13 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   async listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]> {
     const rows = await this.database.select().from(schema.channelAgentBindings)
       .where(eq(schema.channelAgentBindings.channelId, channelId))
+      .orderBy(asc(schema.channelAgentBindings.createdAt));
+    return rows.map(binding);
+  }
+
+  async listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]> {
+    const rows = await this.database.select().from(schema.channelAgentBindings)
+      .where(eq(schema.channelAgentBindings.workspaceId, workspaceId))
       .orderBy(asc(schema.channelAgentBindings.createdAt));
     return rows.map(binding);
   }

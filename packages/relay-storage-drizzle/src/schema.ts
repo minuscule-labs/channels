@@ -13,6 +13,8 @@ export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
   workspaceId: text("workspace_id").notNull(),
   agentIdentityId: text("agent_identity_id").notNull(),
   personaRef: text("persona_ref"),
+  personaPrompt: text("persona_prompt"),
+  runtimeAdapter: text("runtime_adapter"),
   status: text("status", { enum: ["active", "disabled"] }).notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

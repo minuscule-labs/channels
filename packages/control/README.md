@@ -2,15 +2,18 @@
 
 **Status:** Transitional internal MinuChannels agent-host package; not planned as an independently published product in the MVP.
 
-Authenticated, loopback-only, presentation-safe boundary used by the current MinuChannels local composition. Product review established that normal work should follow `UI ⇄ Channels ⇄ agent host ⇄ Runtime`; this package is limited to current browser-session bootstrap, safe local presentation status, diagnostics, and composition support. Its Relay/control/private-storage responsibilities will be consolidated behind an internal agent-host boundary during the live-agent vertical slice.
+Authenticated, loopback-only, presentation-safe boundary used by the current MinuChannels local composition. Product review established that normal work should follow `UI ⇄ Channels ⇄ agent host ⇄ Runtime`; this package is limited to browser-session bootstrap, private product setup, safe local presentation status, diagnostics, and composition support. Its Relay/control/private-storage responsibilities will be consolidated behind an internal agent-host boundary during the live-agent vertical slice.
 
-The current API remains read-only:
+The current API keeps normal work out of control while supporting private product setup:
 
 ```http
-GET /local/session
-GET /local/health
-GET /local/capabilities
-GET /local/channels/:channelId/agents
+GET   /local/session
+GET   /local/health
+GET   /local/capabilities
+GET   /local/channels/:channelId/agents
+GET   /local/workspaces/:workspaceId/config
+PATCH /local/workspaces/:workspaceId/config
+PATCH /local/workspaces/:workspaceId/agents/:identityId/config
 ```
 
 It combines the public Channel roster with private binding and Runtime reachability internally, then returns only UI-safe state:
@@ -21,7 +24,7 @@ It combines the public Channel roster with private binding and Runtime reachabil
 - disabled command capability flags;
 - last verification timestamp when available.
 
-It never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
+Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, and Runtime adapter are write-only inputs: they are persisted in private local storage but never returned. It never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
 
 ## Exports and executable
 
@@ -96,8 +99,8 @@ A loaded export may be a constructible class or an object with `status(sessionId
 - Rejects non-loopback `Host` headers.
 - Rejects browser origins unless explicitly allowlisted.
 - Requires an authenticated browser session in the real daemon.
-- Exposes only read operations after bootstrap in this slice.
+- Limits writes to bounded JSON private-configuration endpoints authorized for the bound active Workspace owner/admin.
 - Uses bounded Runtime/client waits, no-store responses, and sanitized errors.
 - Stores private Relay state only in a local file URL.
 
-Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation but cannot authorize direct public Channels API requests. Steering, interruption, configuration writes, and agent creation remain disabled until server-enforced actor authorization, audit, fencing, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.
+Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation and authorizes only machine-local private configuration; it cannot authorize direct public Channels API requests. Configuration writes emit secret-free accepted/rejected audit events. Runtime start, steering, interruption, reconnect, and agent creation remain disabled until their lifecycle, fencing, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.

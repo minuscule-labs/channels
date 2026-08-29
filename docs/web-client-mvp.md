@@ -1,6 +1,6 @@
 # MinuChannels Web Client — MVP
 
-**Status:** Reviewable collaboration UI; administration and live agent creation remain in progress
+**Status:** Reviewable collaboration UI with private configuration API; administration UI and live agent creation remain in progress
 
 ## Goal
 
@@ -53,25 +53,30 @@ GET /channels/:id/events
 
 The current localhost boundary is implemented as `@minu/channels-control`. It provides browser-safe contracts/client exports, a Node server facade over structural Channel, binding, and Runtime status ports, and the current daemon/launcher. Under the accepted product direction this is a transitional internal agent-host package, not an independent product or alternate work path. Channels core and the browser may not import agent-host, Runtime, daemon, or server modules.
 
-Current read-only endpoints are capability-oriented rather than storage CRUD:
+Current endpoints are capability-oriented rather than raw storage CRUD:
 
 ```http
-GET /local/session
-GET /local/health
-GET /local/capabilities
-GET /local/channels/:id/agents
+GET   /local/session
+GET   /local/health
+GET   /local/capabilities
+GET   /local/channels/:id/agents
+GET   /local/workspaces/:workspaceId/config
+PATCH /local/workspaces/:workspaceId/config
+PATCH /local/workspaces/:workspaceId/agents/:identityId/config
 ```
+
+Private configuration reads return only configured flags, status, and bound-Channel counts. Workspace root, notes routing, persona prompt, and Runtime adapter are write-only inputs; successful or rejected updates emit audit metadata without values. The bound human must be an active Workspace owner/admin. Persona/Runtime edits apply only to new or explicitly replaced sessions.
 
 The agent response reports `unbound | idle | running | offline | disabled | uncertain`, wake policy, and disabled command capability flags without Runtime session IDs, adapter names, leases, credentials, prompts, roots, or database paths. The web roster polls this optional API every five seconds while available, retries a missing service more slowly, and shows local Runtime state separately from public membership. Messaging continues and the roster labels local status unavailable when the service cannot be reached.
 
 The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie bound to the configured stable human identity. `GET /local/session` returns only that public identity id. The composer verifies active human Channel participation, keys drafts to that identity, and always uses it as the message author even if stale author-selection local storage is present. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. This prevents accidental browser impersonation but is not public API authorization. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves binding across refresh, authorship despite stale impersonation state, cookie bootstrap, and Vite `/local` proxy.
 
-Steering, interruption, reconnect, configuration writes, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
+Private configuration writes are implemented. Steering, interruption, reconnect, Runtime start, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
 
 ## Deferred
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
-- Private Runtime mutations until current-human authentication, agent-host fencing, and safe Channel command/result projections are defined.
+- Runtime lifecycle mutations until agent-host fencing and safe Channel command/result projections are defined.
 - Channel creation and participant selection.
 - Membership administration.
 - Threads, reactions, attachments, search, unread state, and notifications.

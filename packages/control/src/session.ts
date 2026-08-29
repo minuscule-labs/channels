@@ -8,13 +8,18 @@ export type LocalControlAuditAction =
   | "launch.created"
   | "launch.redeemed"
   | "launch.rejected"
-  | "session.rejected";
+  | "session.rejected"
+  | "workspace.config.updated"
+  | "agent.config.updated";
 
 export interface LocalControlAuditEvent {
   action: LocalControlAuditAction;
   outcome: "accepted" | "rejected";
   timestamp: string;
-  reason?: "missing" | "invalid" | "expired" | "reused";
+  reason?: "missing" | "invalid" | "expired" | "reused" | "forbidden" | "unavailable";
+  actorIdentityId?: string;
+  workspaceId?: string;
+  targetIdentityId?: string;
 }
 
 export interface LocalControlBrowserSessionsOptions {

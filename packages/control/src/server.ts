@@ -1,6 +1,7 @@
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { LocalConfigurationRequestError } from "./configuration.ts";
 import { LocalControlBrowserSessions, type LocalControlBrowserSession } from "./session.ts";
 export {
   LocalControlBrowserSessions,
@@ -17,6 +18,7 @@ import {
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalWakePolicy,
+  type LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
 
 export interface LocalControlChannelDirectory {
@@ -40,10 +42,29 @@ export interface LocalControlRuntimePort {
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
 }
 
+export interface LocalControlConfigurationPort {
+  getWorkspaceConfiguration(
+    workspaceId: string,
+    actorIdentityId: string,
+  ): Promise<LocalWorkspaceConfigurationSummary>;
+  updateWorkspaceConfiguration(
+    workspaceId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalWorkspaceConfigurationSummary>;
+  updateWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalWorkspaceConfigurationSummary>;
+}
+
 export interface LocalControlServiceOptions {
   channels: LocalControlChannelDirectory;
   bindings: LocalControlBindingDirectory;
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
+  configuration?: LocalControlConfigurationPort;
   statusTimeoutMs?: number;
 }
 
@@ -69,14 +90,52 @@ export class LocalControlService {
       features: {
         currentSession: true,
         channelAgentStatus: true,
-        workspaceConfigRead: false,
-        workspaceConfigWrite: false,
+        workspaceConfigRead: Boolean(this.options.configuration),
+        workspaceConfigWrite: Boolean(this.options.configuration),
         agentCreate: false,
         steer: false,
         interrupt: false,
         reconnect: false,
       },
     };
+  }
+
+  async getWorkspaceConfiguration(
+    workspaceId: string,
+    actorIdentityId: string,
+  ): Promise<LocalWorkspaceConfigurationSummary> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getWorkspaceConfiguration(workspaceId, actorIdentityId);
+  }
+
+  async updateWorkspaceConfiguration(
+    workspaceId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalWorkspaceConfigurationSummary> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.updateWorkspaceConfiguration(workspaceId, actorIdentityId, input);
+  }
+
+  async updateWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalWorkspaceConfigurationSummary> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.updateWorkspaceAgentConfiguration(
+      workspaceId,
+      agentIdentityId,
+      actorIdentityId,
+      input,
+    );
   }
 
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
@@ -184,6 +243,27 @@ function json(response: ServerResponse, status: number, body: unknown, origin?: 
   response.end(JSON.stringify(body));
 }
 
+async function readJson(request: IncomingMessage): Promise<unknown> {
+  if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
+    throw new LocalConfigurationRequestError("Content-Type must be application/json", 400, "invalid");
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 128 * 1024) {
+      throw new LocalConfigurationRequestError("Configuration request is too large", 413, "invalid");
+    }
+    chunks.push(buffer);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  } catch {
+    throw new LocalConfigurationRequestError("Invalid JSON", 400, "invalid");
+  }
+}
+
 function requestHostname(request: IncomingMessage): string | undefined {
   const host = request.headers.host;
   if (!host) return undefined;
@@ -213,8 +293,8 @@ export async function createLocalControlHttpServer(
       json(response, 403, { error: "Forbidden origin" });
       return;
     }
-    if (request.method !== "GET") {
-      response.setHeader("allow", "GET");
+    if (request.method !== "GET" && request.method !== "PATCH") {
+      response.setHeader("allow", "GET, PATCH");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
     }
@@ -223,6 +303,11 @@ export async function createLocalControlHttpServer(
       const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
       const path = url.pathname;
       if (path === "/local/session/bootstrap" && options.browserSessions) {
+        if (request.method !== "GET") {
+          response.setHeader("allow", "GET");
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
         const exchange = options.browserSessions.exchangeLaunchCode(url.searchParams.get("code") ?? undefined);
         response.setHeader("cache-control", "no-store");
         response.setHeader("referrer-policy", "no-referrer");
@@ -242,7 +327,7 @@ export async function createLocalControlHttpServer(
         json(response, 401, { error: "Local browser session required" }, origin);
         return;
       }
-      if (path === "/local/session") {
+      if (path === "/local/session" && request.method === "GET") {
         if (!browserSession) {
           json(response, 404, { error: "Browser session binding unavailable" }, origin);
           return;
@@ -253,24 +338,53 @@ export async function createLocalControlHttpServer(
         }, origin);
         return;
       }
-      if (path === "/local/health") {
+      if (path === "/local/health" && request.method === "GET") {
         json(response, 200, options.service.health(), origin);
         return;
       }
-      if (path === "/local/capabilities") {
+      if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
         return;
       }
+      const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);
+      if (workspaceConfigMatch && browserSession) {
+        const workspaceId = decodeURIComponent(workspaceConfigMatch[1]!);
+        const result = request.method === "GET"
+          ? await options.service.getWorkspaceConfiguration(workspaceId, browserSession.identityId)
+          : await options.service.updateWorkspaceConfiguration(
+            workspaceId,
+            browserSession.identityId,
+            await readJson(request),
+          );
+        json(response, 200, result, origin);
+        return;
+      }
+      const agentConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/agents\/([^/]+)\/config$/);
+      if (agentConfigMatch && browserSession && request.method === "PATCH") {
+        const result = await options.service.updateWorkspaceAgentConfiguration(
+          decodeURIComponent(agentConfigMatch[1]!),
+          decodeURIComponent(agentConfigMatch[2]!),
+          browserSession.identityId,
+          await readJson(request),
+        );
+        json(response, 200, result, origin);
+        return;
+      }
       const match = path.match(/^\/local\/channels\/([^/]+)\/agents$/);
-      if (match) {
+      if (match && request.method === "GET") {
         const result = await options.service.listChannelAgents(decodeURIComponent(match[1]!));
         json(response, 200, result, origin);
         return;
       }
       json(response, 404, { error: "Not found" }, origin);
-    })().catch(() => {
-      if (!response.headersSent) json(response, 502, { error: "Local control status unavailable" }, origin);
-      else response.destroy();
+    })().catch((error: unknown) => {
+      if (!response.headersSent && error instanceof LocalConfigurationRequestError) {
+        json(response, error.status, { error: error.message }, origin);
+      } else if (!response.headersSent) {
+        json(response, 502, { error: "Local control status unavailable" }, origin);
+      } else {
+        response.destroy();
+      }
     });
   });
 
