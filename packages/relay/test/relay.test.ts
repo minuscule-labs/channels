@@ -340,7 +340,7 @@ test("private bindings isolate Channel sessions and restore them under generatio
     channelId: channelA.id,
     leaseOwner: "relay-one",
     runtimes: { fake: runtime },
-    leaseDurationMs: 30,
+    leaseDurationMs: 300,
   });
   const competitor = await restoreChannelBindings({
     client,

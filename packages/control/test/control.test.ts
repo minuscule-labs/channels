@@ -10,6 +10,7 @@ import type { ChannelMetadata } from "@minu/channels-core/types";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import { LocalControlClient, LocalControlClientError } from "../src/client.js";
 import { createLocalControlDaemon } from "../src/daemon.js";
+import { createLocalReviewApp } from "../src/review.js";
 import {
   createLocalControlHttpServer,
   LocalControlBrowserSessions,
@@ -245,6 +246,53 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
     { action: "launch.rejected", outcome: "rejected", reason: "expired" },
   ]);
   assert.doesNotMatch(JSON.stringify(audit), /minu_local_session|code=|runtime-session-secret/);
+});
+
+test("review app seeds a disposable Workspace and authenticated presentation states", async () => {
+  const app = await createLocalReviewApp({
+    channelsPort: 0,
+    controlPort: 0,
+    webUrl: "http://127.0.0.1:5174/",
+  });
+  try {
+    const client = new ChannelClient(app.channelsEndpoint);
+    const workspaces = await client.listWorkspaces();
+    assert.deepEqual(workspaces.map(({ id, name }) => ({ id, name })), [{
+      id: app.workspaceId,
+      name: "MinuChannels Review",
+    }]);
+    const messages = await client.listMessages(app.channelId);
+    assert.deepEqual(messages.map(({ sequence, body }) => ({ sequence, body })), [
+      {
+        sequence: 1,
+        body: "@builder Please prepare the first implementation pass and hand it to @reviewer.",
+      },
+      {
+        sequence: 2,
+        body: "Review mode is ready. The timeline, structured mentions, roster, and local Runtime badges are available for inspection.",
+      },
+      {
+        sequence: 3,
+        body: "I’ll independently review the result and report concrete findings here.",
+      },
+    ]);
+
+    const bootstrap = await fetch(app.issueBrowserLaunchUrl(), { redirect: "manual" });
+    const setCookie = bootstrap.headers.get("set-cookie");
+    assert.ok(setCookie);
+    const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
+      headers: {
+        cookie: setCookie.split(";", 1)[0]!,
+        origin: "http://127.0.0.1:5174",
+      },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { agents: Array<{ state: string }> };
+    assert.deepEqual(body.agents.map(({ state }) => state), ["idle", "unbound"]);
+    assert.doesNotMatch(JSON.stringify(body), /review-builder-session|review-mode:builder|rootUri/);
+  } finally {
+    await app.close();
+  }
 });
 
 test("daemon composes public Channels, private Relay storage, Runtime status, and browser auth", async () => {

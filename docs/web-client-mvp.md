@@ -1,6 +1,6 @@
 # MinuChannels Web Client — MVP
 
-**Status:** In progress
+**Status:** Reviewable collaboration UI; administration and live agent creation remain in progress
 
 ## Goal
 
@@ -20,7 +20,11 @@ Browser
     └── steer / interrupt (later)
 ```
 
-The browser must never open `relay.db`, receive Runtime credentials, or import Runtime/Relay packages. `packages/web` depends only on the public Channels client/types.
+The browser must never open `relay.db`, receive Runtime credentials, or import Runtime/Relay/server packages. `packages/web` depends only on the public Channels client/types and browser-safe control client/contracts.
+
+## One-command review harness
+
+`pnpm app:review` now builds and starts a disposable seeded Channels service, temporary Relay storage, authenticated local control, and Vite, then opens the seeded Channel through the one-time browser bootstrap. The review Workspace contains one human, builder, and reviewer; representative timeline messages; one idle presentation binding; and one unbound agent. Coordinated Ctrl-C shutdown removes the temporary data and Vite process group. This mode is explicitly a UI fixture, not live agent execution or production authentication.
 
 ## Foundation slice
 

@@ -26,7 +26,9 @@ It never returns Runtime session IDs, adapter names, leases, credentials, prompt
 - `@minu/channels-control/client` — browser-safe HTTP client.
 - `@minu/channels-control/server` — Node loopback service, HTTP server, and session primitives.
 - `@minu/channels-control/daemon` — real local composition over Channels HTTP and Relay storage.
-- `minu-channels-control` — local launcher executable.
+- `@minu/channels-control/review` — disposable seeded review backend.
+- `minu-channels-control` — local control launcher executable.
+- `minu-channels-review` — coordinated developer review launcher.
 
 The daemon opens the private Relay database, connects to the public Channels endpoint, accepts structural Runtime status adapters, and always enables browser-session authentication. Browser bundles continue to import only `client` and `contracts`.
 
@@ -42,7 +44,19 @@ The browser session credential is never placed in a URL. It expires after eight 
 
 Session lifecycle events are emitted through a sanitized audit hook. Events record action, outcome, timestamp, and a bounded rejection reason—never launch codes, cookies, Runtime identifiers, or private configuration.
 
-## Run locally
+## Review the current app
+
+From the repository root:
+
+```bash
+pnpm app:review
+```
+
+This builds the workspace and coordinates disposable in-memory Channels data, temporary private Relay storage, the authenticated control daemon, and Vite. It seeds one Workspace and Channel with `@you`, `@builder`, and `@reviewer`, sample messages, an idle presentation binding, and an unbound agent; then it opens the authenticated Channel. Ctrl-C terminates the Vite process group, both loopback servers, and temporary storage.
+
+Review mode demonstrates the application UI and control boundary. Its seeded agent messages and `review-mode` Runtime status adapter are fixtures—not live agent execution. Use `pnpm app:review -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied.
+
+## Run services individually
 
 Build first, start Channels and the web client, then launch control:
 

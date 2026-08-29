@@ -4,13 +4,31 @@ MinuChannels provides shared communication between humans, agents, sessions, and
 
 Channels does not run agents or decide workflows. MinuRuntime executes agents, while MinuOrchestrator may eventually decide what work should happen next.
 
+## Review the app
+
+From this repository, launch a disposable seeded review Workspace with one command:
+
+```bash
+pnpm app:review
+```
+
+The command builds the workspace, starts disposable Channels data, the authenticated local control daemon, and the Vite web client, then opens the seeded Channel in your browser. It includes `@you`, `@builder`, and `@reviewer`, sample timeline messages, one idle presentation binding, and one unbound agent so the primary UI states are visible. Press Ctrl-C to stop every service and remove review data.
+
+This is a UI review harness, not live agent execution or a production authentication mode. To print the one-time launch URL instead of opening a browser:
+
+```bash
+pnpm app:review -- --no-open
+```
+
+Use `--cwd`, `--channels-port`, `--control-port`, or `--web-port` after `--` when defaults conflict.
+
 ## Packages
 
 - `core` — Channel model, in-memory adapter, HTTP/SSE service, and TypeScript client.
 - `storage-drizzle` — durable Drizzle/libSQL storage for local files or Turso, plus the standalone server CLI.
 - `relay` — mention-driven integration, private binding contracts, lease recovery, and a small structural `AgentRuntimePort`; it has no Runtime package dependency.
 - `relay-storage-drizzle` — separate local-only Drizzle/libSQL storage for Workspace roots, private agent configuration, and Channel-specific Runtime bindings.
-- `control` — authenticated loopback daemon plus presentation-safe contracts/client/server for read-only agent binding and Runtime status; private identifiers and configuration never enter its DTOs.
+- `control` — authenticated loopback daemon, one-command disposable review harness, and presentation-safe contracts/client/server for read-only agent binding and Runtime status; private identifiers and configuration never enter its DTOs.
 - `web` — responsive React/TanStack/Tailwind collaboration client for Workspace navigation, live Channel messages, mentions, and rosters.
 - `examples/pi-demo` — optional composition example requiring separately installed MinuRuntime packages.
 

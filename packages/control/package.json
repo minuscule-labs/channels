@@ -19,10 +19,15 @@
     "./daemon": {
       "types": "./dist/src/daemon.d.ts",
       "default": "./dist/src/daemon.js"
+    },
+    "./review": {
+      "types": "./dist/src/review.d.ts",
+      "default": "./dist/src/review.js"
     }
   },
   "bin": {
-    "minu-channels-control": "./dist/src/cli.js"
+    "minu-channels-control": "./dist/src/cli.js",
+    "minu-channels-review": "./dist/src/review-cli.js"
   },
   "dependencies": {
     "@minu/channels-core": "workspace:*",
