@@ -1,6 +1,6 @@
 # MinuChannels Web Client — MVP
 
-**Status:** Reviewable collaboration UI with private configuration API; administration UI and live agent creation remain in progress
+**Status:** Reviewable collaboration and private configuration UI; Channel administration and live agent creation remain in progress
 
 ## Goal
 
@@ -32,7 +32,8 @@ The browser must never open private storage, receive Runtime credentials/session
 - Channel timeline ordered by monotonic sequence.
 - Race-free SSE startup: subscribe, wait for `ready`, refetch, then merge by message id.
 - Revision-aware roster refresh.
-- Authenticated local browser session bound to one stable current-human identity; composer authorship is automatic and offers no impersonation selector.
+- Authenticated browser session bound to one stable current-human identity; composer authorship is automatic and offers no impersonation selector.
+- Workspace configuration dialog with redacted state, write-only source/persona/Runtime replacement forms, owner/admin enforcement, and new-session lifecycle guidance.
 - Plain-text composer with mention suggestions and structured targets.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
@@ -71,7 +72,7 @@ The agent response reports `unbound | idle | running | offline | disabled | unce
 
 The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie bound to the configured stable human identity. `GET /local/session` returns only that public identity id. The composer verifies active human Channel participation, keys drafts to that identity, and always uses it as the message author even if stale author-selection local storage is present. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. This prevents accidental browser impersonation but is not public API authorization. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves binding across refresh, authorship despite stale impersonation state, cookie bootstrap, and Vite `/local` proxy.
 
-Private configuration writes are implemented. Steering, interruption, reconnect, Runtime start, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
+Private configuration writes and their administration UI are implemented. Forms never prefill saved source, persona, or Runtime values and clear replacement inputs after success. Steering, interruption, reconnect, Runtime start, and agent creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
 
 ## Deferred
 

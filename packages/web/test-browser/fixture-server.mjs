@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { LocalAgentHostConfiguration } from "../../control/dist/src/configuration.js";
 import {
   createLocalControlHttpServer,
   LocalControlBrowserSessions,
@@ -6,6 +7,8 @@ import {
 } from "../../control/dist/src/server.js";
 import { createChannelHttpServer } from "../../core/dist/src/http-server.js";
 import { ChannelService } from "../../core/dist/src/channel-service.js";
+import { ChannelClient } from "../../core/dist/src/client.js";
+import { InMemoryRelayBindingStore } from "../../relay/dist/src/binding-store.js";
 
 const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 4310);
 const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 4311);
@@ -37,6 +40,8 @@ await service.createMessage(channel.id, {
   body: "@builder Verify the browser collaboration flow.",
 });
 
+const privateStore = new InMemoryRelayBindingStore();
+const channelClient = new ChannelClient(channelServer.endpoint);
 const browserSessions = new LocalControlBrowserSessions({
   browserUrl: `http://127.0.0.1:${webPort}/`,
   currentHumanIdentityId: human.id,
@@ -59,6 +64,7 @@ const localControl = await createLocalControlHttpServer({
       },
     },
     runtimes: { "browser-test": { async status() { return "idle"; } } },
+    configuration: new LocalAgentHostConfiguration({ client: channelClient, store: privateStore }),
   }),
 });
 
@@ -93,6 +99,7 @@ console.log(JSON.stringify({ workspaceId: workspace.id, channelId: channel.id })
 const close = async () => {
   await channelServer.close().catch(() => undefined);
   await localControl.close().catch(() => undefined);
+  await privateStore.close().catch(() => undefined);
   controlServer.close();
   process.exit(0);
 };

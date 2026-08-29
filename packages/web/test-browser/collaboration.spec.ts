@@ -51,7 +51,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
   await expect(page.getByText("Workspace: Browser Test", { exact: false })).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
-  await expect(page.getByTitle("Local Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
   await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
   await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
   await expect(page.getByText("Send as", { exact: true })).toHaveCount(0);
@@ -109,6 +109,51 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
+test("configures Workspace agent startup without reflecting saved values", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces[0]!;
+  await launchAuthenticated(page, request, "/");
+
+  await page.getByRole("button", { name: `Configure Workspace ${workspace.name}` }).click();
+  const dialog = page.getByRole("dialog", { name: `${workspace.name} configuration` });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Signed in as @david · owner");
+
+  const rootValue = "file:///secret/browser-review-root";
+  await dialog.getByLabel("Source location", { exact: true }).fill(rootValue);
+  const rootResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PATCH"
+    && response.url().endsWith(`/local/workspaces/${workspace.id}/config`));
+  await dialog.getByRole("button", { name: "Save source" }).click();
+  const rootResponse = await rootResponsePromise;
+  expect(rootResponse.ok()).toBe(true);
+  expect(await rootResponse.text()).not.toContain(rootValue);
+  await expect(dialog.getByText("Source: configured", { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel("Replace source location", { exact: true })).toHaveValue("");
+
+  const agentForm = dialog.locator("form").filter({ hasText: "Builder Agent" });
+  const runtimeValue = "pi-private-browser";
+  const personaValue = "SECRET BROWSER PERSONA";
+  await agentForm.getByLabel("Runtime preference", { exact: true }).fill(runtimeValue);
+  await agentForm.getByLabel("Persona", { exact: true }).fill(personaValue);
+  const agentResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PATCH"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await agentForm.getByRole("button", { name: "Save agent" }).click();
+  const agentResponse = await agentResponsePromise;
+  expect(agentResponse.ok()).toBe(true);
+  const agentResponseBody = await agentResponse.text();
+  expect(agentResponseBody).not.toContain(runtimeValue);
+  expect(agentResponseBody).not.toContain(personaValue);
+  await expect(agentForm.getByText("Runtime: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByText("Persona: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByLabel("Replace Runtime preference", { exact: true })).toHaveValue("");
+  await expect(agentForm.getByLabel("Replace persona", { exact: true })).toHaveValue("");
+  await expect(dialog.getByText(personaValue, { exact: true })).toHaveCount(0);
+});
+
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
@@ -136,7 +181,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await expect(page.getByRole("button", { name: "Show participants" })).toBeFocused();
 });
 
-test("keeps public messaging available when local Runtime status is unavailable", async ({ page, request }) => {
+test("keeps messaging available when Runtime status is unavailable", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
@@ -153,7 +198,7 @@ test("keeps public messaging available when local Runtime status is unavailable"
     `/app/workspaces/${workspaceId}/channels/${channelId}`,
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
-  await expect(page.getByText("Local Runtime status unavailable")).toBeVisible();
+  await expect(page.getByText("Runtime status unavailable")).toBeVisible();
 
   const composer = page.getByRole("combobox", { name: "Channel message" });
   await composer.fill("Public messaging remains available without local control.");

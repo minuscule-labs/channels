@@ -22,7 +22,7 @@ export function MemberRoster({
           <h2 className="text-sm font-semibold">Participants</h2>
           <p className="text-xs text-[var(--muted)]">{participants.length} in this Channel</p>
           {localStatus === "unavailable" ? (
-            <p className="text-[10px] text-[var(--warning)]">Local Runtime status unavailable</p>
+            <p className="text-[10px] text-[var(--warning)]">Runtime status unavailable</p>
           ) : null}
         </div>
         {drawer ? <DrawerCloseButton label="Close participants" /> : null}
@@ -52,9 +52,9 @@ export function MemberRoster({
                       <span
                         className="local-agent-state"
                         data-state={localAgent.state}
-                        title={`Local Runtime: ${localAgent.state}`}
+                        title={`Runtime: ${localAgent.state}`}
                       >
-                        local: {localAgent.state}
+                        runtime: {localAgent.state}
                       </span>
                     ) : null}
                   </div>
