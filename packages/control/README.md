@@ -66,7 +66,17 @@ This builds the workspace and coordinates disposable in-memory Channels data, te
 
 Review mode demonstrates the application and Relay boundary. The `review-mode` Runtime response is deterministic—not live model execution. Use `pnpm dev -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied. `pnpm app:review` is the explicit equivalent; `pnpm web:dev` remains frontend-only.
 
-For the genuine Pi vertical slice:
+For fresh persistent local use with genuine Pi:
+
+```bash
+pnpm local -- --cwd /absolute/path/to/workspace
+```
+
+This reuses the review supervisor but replaces disposable seeding with owner-only persistent state under `~/.minu/channels`. First launch creates stable `@you` and `@builder` identities, a Workspace named after the source directory, and an empty **General** Channel. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The foreground process retains browser bootstrap, audit output, Vite supervision, live Pi integration, and coordinated Ctrl-C shutdown.
+
+No hosted database is required for local MVP use. Collaboration database adapters are independent of the private agent-host store; PostgreSQL and other adapters remain documented future work.
+
+For the disposable genuine Pi vertical slice:
 
 ```bash
 pnpm dev:live -- --cwd /absolute/path/to/workspace

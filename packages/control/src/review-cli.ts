@@ -4,6 +4,8 @@ import { parseArgs } from "node:util";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
+import type { LocalControlAuditEvent } from "./session.ts";
+import { createLocalProductApp } from "./local.ts";
 import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
 
 function port(value: string | undefined, fallback: number, name: string): number {
@@ -113,7 +115,8 @@ async function stopProcessGroup(child: ChildProcess): Promise<void> {
 
 async function main(): Promise<void> {
   const arguments_ = process.argv.slice(2);
-  if (arguments_[0] === "--") arguments_.shift();
+  const forwardedSeparator = arguments_.indexOf("--");
+  if (forwardedSeparator >= 0) arguments_.splice(forwardedSeparator, 1);
   const { values } = parseArgs({
     args: arguments_,
     options: {
@@ -123,13 +126,15 @@ async function main(): Promise<void> {
       cwd: { type: "string" },
       "no-open": { type: "boolean", default: false },
       "live-pi": { type: "boolean", default: false },
+      local: { type: "boolean", default: false },
+      "data-dir": { type: "string" },
       "pi-module": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm dev [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 4310)\n  --control-port <port>   local control port (default 4311)\n  --web-port <port>       web client port (default 5174)\n  --cwd <path>            private review Workspace root\n  --live-pi               enable startable live Pi execution\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 4310)\n  --control-port <port>   local control port (default 4311)\n  --web-port <port>       web client port (default 5174)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 
@@ -140,19 +145,33 @@ async function main(): Promise<void> {
     throw new Error("Review service ports must be distinct");
   }
   const webUrl = `http://127.0.0.1:${webPort}/`;
-  const managedRuntime = values["live-pi"]
+  const persistent = values.local;
+  const managedRuntime = values["live-pi"] || persistent
     ? await loadPiRuntime(values["pi-module"])
     : undefined;
-  const app = await createLocalReviewApp({
-    channelsPort,
-    controlPort,
-    webUrl,
-    workspaceRoot: values.cwd,
-    managedRuntime,
-    onAudit(event) {
-      process.stderr.write(`${JSON.stringify({ source: "minu-channels-review", ...event })}\n`);
-    },
-  });
+  const onAudit = (event: LocalControlAuditEvent) => {
+    process.stderr.write(`${JSON.stringify({ source: persistent ? "minu-channels-local" : "minu-channels-review", ...event })}\n`);
+  };
+  const app = persistent
+    ? await createLocalProductApp({
+      channelsPort,
+      controlPort,
+      webUrl,
+      workspaceRoot: values.cwd,
+      dataDirectory: values["data-dir"],
+      runtimeAdapter: managedRuntime!.adapter,
+      runtime: managedRuntime!.runtime,
+      personaPrompt: managedRuntime!.personaPrompt,
+      onAudit,
+    })
+    : await createLocalReviewApp({
+      channelsPort,
+      controlPort,
+      webUrl,
+      workspaceRoot: values.cwd,
+      managedRuntime,
+      onAudit,
+    });
   const vite = spawn(
     process.platform === "win32" ? "pnpm.cmd" : "pnpm",
     ["--filter", "@minu/channels-web", "exec", "vite", "--host", "127.0.0.1", "--port", String(webPort), "--strictPort"],
@@ -192,16 +211,21 @@ async function main(): Promise<void> {
   try {
     await waitForWeb(webUrl, vite, () => viteSpawnError);
     const launchUrl = app.issueBrowserLaunchUrl();
-    console.log("\nMinuChannels review app is ready");
+    console.log(`\nMinuChannels ${persistent ? "local app" : "review app"} is ready`);
     console.log(`  Web:      ${webUrl}`);
     console.log(`  Channels: ${app.channelsEndpoint}`);
     console.log(`  Control:  ${app.controlEndpoint}`);
-    console.log("  Handles:  @you, @builder, @reviewer");
+    console.log(`  Handles:  ${persistent ? "@you, @builder" : "@you, @builder, @reviewer"}`);
     console.log(managedRuntime
       ? "  Agent:    click Start for @builder, then mention it for a live Pi response"
       : "  Agent:    @mention @builder for a simulated Relay response");
     console.log("  Context:  unaddressed messages do not wake agents");
-    console.log("  Data:     disposable; removed on shutdown");
+    console.log(persistent
+      ? `  Data:     persistent at ${"dataDirectory" in app ? app.dataDirectory : "~/.minu/channels"}`
+      : "  Data:     disposable; removed on shutdown");
+    if (persistent && "initialized" in app) {
+      console.log(`  Setup:    ${app.initialized ? "created a fresh local Workspace" : "reopened existing local data"}`);
+    }
     console.log(`  Runtime:  ${managedRuntime ? "live Pi (starts only on explicit click)" : "deterministic simulation"}`);
     if (values["no-open"]) {
       console.log("\nOpen this one-time URL within 60 seconds:");
@@ -210,7 +234,7 @@ async function main(): Promise<void> {
       await openBrowser(launchUrl);
       console.log("\nOpened the authenticated review Workspace in your browser.");
     }
-    console.log("Press Ctrl-C to stop all review services.");
+    console.log(`Press Ctrl-C to stop all ${persistent ? "local" : "review"} services.`);
   } catch (error) {
     await close();
     throw error;

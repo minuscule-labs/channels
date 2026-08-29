@@ -13,6 +13,7 @@
     "relay-db:generate": "drizzle-kit generate --config packages/relay-storage-drizzle/drizzle.config.ts",
     "dev": "pnpm build && node packages/control/dist/src/review-cli.js",
     "dev:live": "pnpm --dir ../runtime build && pnpm build && node packages/control/dist/src/review-cli.js --live-pi",
+    "local": "pnpm --dir ../runtime build && pnpm build && node packages/control/dist/src/review-cli.js --local",
     "web:dev": "pnpm --filter @minu/channels-web dev",
     "web:check": "pnpm --filter @minu/channels-web check",
     "web:test": "pnpm --filter @minu/channels-web test",

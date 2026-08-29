@@ -23,6 +23,10 @@
     "./review": {
       "types": "./dist/src/review.d.ts",
       "default": "./dist/src/review.js"
+    },
+    "./local": {
+      "types": "./dist/src/local.d.ts",
+      "default": "./dist/src/local.js"
     }
   },
   "bin": {
@@ -33,6 +37,7 @@
     "@minu/channels-core": "workspace:*",
     "@minu/channels-relay": "workspace:*",
     "@minu/channels-relay-storage-drizzle": "workspace:*",
+    "@minu/channels-storage-drizzle": "workspace:*",
     "commander": "^15.0.0"
   }
 }

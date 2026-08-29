@@ -74,6 +74,8 @@ Private personas, local roots, credentials, Runtime session ids, adapters, lease
 
 The product may store them in local private storage for a local deployment or an authenticated secrets/configuration service for a hosted deployment. The agent host receives them through an internal launch specification and passes persona instructions to Runtime with `appendSystemPrompt` by default.
 
+For the local MVP, collaboration and private execution databases are separate local libSQL files. A hosted database is unnecessary for one user on one machine. Collaboration storage may later use the existing Turso adapter or new PostgreSQL/other adapters through the Channels storage interfaces. Private execution state remains host-local unless a future authenticated agent-host deployment supplies an equivalent restricted store. Database portability is documented future work, not an MVP implementation task.
+
 ## Internal package direction
 
 Current packages were intentionally separated while discovering contracts:
@@ -117,7 +119,7 @@ Potential future consumers such as MCP, Slack, Cowork, or other services are not
 
 The lifecycle vertical slice is complete. From this point, prefer documenting future behavior over implementing it. MVP implementation is limited to:
 
-1. one reliable product command for startup, status/log visibility, and shutdown;
+1. one reliable foreground product command for startup, status/log visibility, and shutdown;
 2. basic reusable identity and Workspace-member creation/administration;
 3. Channel rename; and
 4. defects or usability problems that block review, installation, or the core collaboration flow.
@@ -135,5 +137,6 @@ Architecture consolidation is allowed only when required to ship the items above
 5. ~~Start and bind a live Pi Runtime session from the product.~~ Implemented through authenticated explicit start, private launch configuration, Channel-isolated binding, durable cursor, lease, and Relay lifecycle.
 6. ~~Prove `UI → Channels → agent host → MinuRuntime → Channels → UI` with a genuine response.~~ Verified through the authenticated product start endpoint with Pi returning `LIVE_PI_PRODUCT_FLOW_OK` as Channel sequence 5 through the normal response commit path.
 7. ~~Add explicit session replacement and stop with generation fencing, confirmation, and recovery-safe cursor behavior.~~ Implemented through protocol-v4 owner/admin lifecycle commands and verified against genuine Pi.
-8. Package persistent local startup behind one product supervisor; add basic identity/member administration and Channel rename.
-9. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.
+8. ~~Promote the working demo composition into persistent fresh local startup.~~ `pnpm local -- --cwd <path>` now initializes an empty local Workspace once, persists collaboration and private execution state under `~/.minu/channels`, reopens stable identities and Channels, runs live Pi only after explicit Start, logs in the foreground, and shuts down with Ctrl-C. Publishing/installing Runtime and serving packaged web assets remain distribution work.
+9. Add basic identity/member administration and Channel rename.
+10. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.

@@ -13,6 +13,7 @@ import { LocalAgentHost, type ManagedRuntimeStartConfig } from "../src/agent-hos
 import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
+import { createLocalProductApp } from "../src/local.ts";
 import { createLocalReviewApp } from "../src/review.ts";
 import {
   createLocalControlHttpServer,
@@ -384,6 +385,66 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     assert.doesNotMatch(JSON.stringify(body), /review-builder-session|review-mode:builder|rootUri/);
   } finally {
     await app.close();
+  }
+});
+
+test("local product initializes once and reopens persistent collaboration data", async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-product-"));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-local-workspace-"));
+  const runtime = new ManagedFakeRuntime();
+  let first: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
+  let reopened: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
+  try {
+    first = await createLocalProductApp({
+      dataDirectory,
+      workspaceRoot,
+      channelsPort: 0,
+      controlPort: 0,
+      webUrl: "http://127.0.0.1:5199/",
+      runtimeAdapter: "managed-test",
+      runtime,
+    });
+    assert.equal(first.initialized, true);
+    const firstClient = new ChannelClient(first.channelsEndpoint);
+    assert.equal((await firstClient.listIdentities()).length, 2);
+    assert.equal((await firstClient.listWorkspaces()).length, 1);
+    assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId)).length, 1);
+    assert.deepEqual(await firstClient.listMessages(first.channelId), []);
+    const original = {
+      humanIdentityId: first.humanIdentityId,
+      workspaceId: first.workspaceId,
+      channelId: first.channelId,
+    };
+    await first.close();
+    first = undefined;
+
+    reopened = await createLocalProductApp({
+      dataDirectory,
+      workspaceRoot,
+      channelsPort: 0,
+      controlPort: 0,
+      webUrl: "http://127.0.0.1:5199/",
+      runtimeAdapter: "managed-test",
+      runtime,
+    });
+    assert.equal(reopened.initialized, false);
+    assert.deepEqual({
+      humanIdentityId: reopened.humanIdentityId,
+      workspaceId: reopened.workspaceId,
+      channelId: reopened.channelId,
+    }, original);
+    const reopenedClient = new ChannelClient(reopened.channelsEndpoint);
+    assert.equal((await reopenedClient.listIdentities()).length, 2);
+    assert.equal((await reopenedClient.listWorkspaces()).length, 1);
+    assert.equal((await stat(join(dataDirectory, "local-profile.json"))).mode & 0o777, 0o600);
+    assert.equal((await stat(dataDirectory)).mode & 0o777, 0o700);
+  } finally {
+    await first?.close().catch(() => undefined);
+    await reopened?.close().catch(() => undefined);
+    await Promise.all([
+      rm(dataDirectory, { recursive: true, force: true }),
+      rm(workspaceRoot, { recursive: true, force: true }),
+    ]);
   }
 });
 

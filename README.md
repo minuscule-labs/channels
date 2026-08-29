@@ -1,10 +1,26 @@
 # MinuChannels
 
-> **MVP scope:** Remaining feature work is limited to one-command product supervision, basic identity/Workspace-member administration, Channel rename, and release-blocking fixes. Richer supervision, hosted auth/deployment, worktrees, additional adapters, advanced controls, pagination, desktop/TUI work, and similar ideas are documented future work—not current implementation tasks. See [`docs/product-boundary.md`](docs/product-boundary.md#mvp-implementation-guardrail).
+> **MVP scope:** Remaining feature work is limited to basic identity/Workspace-member administration, Channel rename, packaging the proven local command for distribution, and release-blocking fixes. Richer supervision, hosted auth/deployment, worktrees, additional adapters, advanced controls, pagination, desktop/TUI work, and similar ideas are documented future work—not current implementation tasks. See [`docs/product-boundary.md`](docs/product-boundary.md#mvp-implementation-guardrail).
 
 MinuChannels is one complete collaboration product for humans and agents, from responsive UI through isolated agent execution. A Channel is the sole conversation primitive; a direct conversation is simply a two-member Channel.
 
 The public Channels core remains communication-only and does not import Runtime or execute agents. The MinuChannels product composes that core with an internal agent host (the current Relay, private binding storage, and control packages), while independently reusable MinuRuntime executes agent sessions. See [`docs/product-boundary.md`](docs/product-boundary.md) for the accepted MVP ownership and extraction strategy.
+
+## Start fresh locally
+
+From this repository, start a persistent local Workspace with live Pi execution:
+
+```bash
+pnpm local -- --cwd /absolute/path/to/workspace
+```
+
+On first launch, MinuChannels creates one local human (`@you`), one configured but unstarted agent (`@builder`), one Workspace named after the source directory, and an empty **General** Channel. It does not create sample messages or execute the model automatically. Click **Start** and then mention `@builder` when ready.
+
+Collaboration data, private agent-host state, and the stable local-human profile persist under `~/.minu/channels/` with owner-only permissions. Re-running the command reopens the same identities, Workspace, Channel, messages, configuration, bindings, and recovery cursors. `--cwd` initializes the private Workspace root on first launch; later changes should use Workspace settings. Press Ctrl-C to stop the foreground product services. Use `--data-dir /other/path` for an independent local installation or fresh test without touching the default data.
+
+This source-workspace command currently builds and loads the sibling MinuRuntime repository and runs the Vite client. Those are packaging constraints, not missing product lifecycle behavior.
+
+A hosted database is not needed for one person on one computer. Collaboration storage already has a libSQL/Turso adapter, while private execution state intentionally remains local. PostgreSQL and other collaboration adapters are future portability work; Channels core depends on storage interfaces rather than a specific database.
 
 ## Review the app
 
