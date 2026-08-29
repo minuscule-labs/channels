@@ -7,7 +7,7 @@ import {
   createChannelHttpServer,
   InMemoryChannelStorage,
 } from "@minu/channels-core";
-import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "./storage.js";
+import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "./storage.ts";
 
 interface CliOptions {
   port: number;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ChannelAgentBindingRecord, WorkspaceAgentConfig } from "@minu/channels-relay";
-import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.js";
+import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
 
 test("private relay storage rejects remote database URLs", async () => {
   await assert.rejects(

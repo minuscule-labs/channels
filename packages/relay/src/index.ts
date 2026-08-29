@@ -9,7 +9,7 @@ export {
   type RelayBindingStore,
   type RestoreChannelBindingsOptions,
   type WorkspaceAgentConfig,
-} from "./binding-store.js";
+} from "./binding-store.ts";
 export {
   ChannelRuntimeRelay,
   type AgentChannelBinding,
@@ -18,4 +18,4 @@ export {
   type RuntimePortMessage,
   type RuntimePortTurn,
   type WakePolicy,
-} from "./relay.js";
+} from "./relay.ts";

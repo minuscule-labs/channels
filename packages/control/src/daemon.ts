@@ -11,11 +11,11 @@ import {
   LocalControlService,
   type LocalControlHttpServer,
   type LocalControlRuntimePort,
-} from "./server.js";
+} from "./server.ts";
 import {
   LocalControlBrowserSessions,
   type LocalControlAuditEvent,
-} from "./session.js";
+} from "./session.ts";
 
 export interface LocalControlDaemonOptions {
   channelsEndpoint?: string;

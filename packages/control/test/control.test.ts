@@ -8,16 +8,16 @@ import { ChannelClient } from "@minu/channels-core/client";
 import { createChannelHttpServer } from "@minu/channels-core";
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
-import { LocalControlClient, LocalControlClientError } from "../src/client.js";
-import { createLocalControlDaemon } from "../src/daemon.js";
-import { createLocalReviewApp } from "../src/review.js";
+import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
+import { createLocalControlDaemon } from "../src/daemon.ts";
+import { createLocalReviewApp } from "../src/review.ts";
 import {
   createLocalControlHttpServer,
   LocalControlBrowserSessions,
   LocalControlService,
   type LocalControlAuditEvent,
   type LocalControlBindingRecord,
-} from "../src/server.js";
+} from "../src/server.ts";
 
 const channel: ChannelMetadata = {
   id: "channel-1",

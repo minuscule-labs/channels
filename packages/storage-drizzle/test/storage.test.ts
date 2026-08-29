@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ChannelService } from "@minu/channels-core";
-import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "../src/storage.js";
+import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "../src/storage.ts";
 
 test("initial migration adopts the previous raw SQLite schema", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-legacy-"));

@@ -1,14 +1,14 @@
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { LocalControlBrowserSessions } from "./session.js";
+import { LocalControlBrowserSessions } from "./session.ts";
 export {
   LocalControlBrowserSessions,
   type LocalControlAuditAction,
   type LocalControlAuditEvent,
   type LocalControlBrowserSessionsOptions,
   type LocalControlLaunchExchange,
-} from "./session.js";
+} from "./session.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalChannelAgent,
@@ -16,7 +16,7 @@ import {
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalWakePolicy,
-} from "./contracts.js";
+} from "./contracts.ts";
 
 export interface LocalControlChannelDirectory {
   getChannel(channelId: string): Promise<ChannelMetadata>;

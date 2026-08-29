@@ -5,7 +5,7 @@ import {
   ChannelNotFoundError,
   ChannelService,
   ChannelValidationError,
-} from "./channel-service.js";
+} from "./channel-service.ts";
 import type {
   AddWorkspaceMemberInput,
   ChannelEvent,
@@ -15,7 +15,7 @@ import type {
   CreateResponseInput,
   CreateWorkspaceInput,
   UpdateWorkspaceMemberInput,
-} from "./types.js";
+} from "./types.ts";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 

@@ -3,8 +3,8 @@ import { Command, InvalidArgumentError } from "commander";
 import { spawn } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createLocalControlDaemon } from "./daemon.js";
-import type { LocalControlRuntimePort } from "./server.js";
+import { createLocalControlDaemon } from "./daemon.ts";
+import type { LocalControlRuntimePort } from "./server.ts";
 
 interface CliOptions {
   port: number;

@@ -2,7 +2,7 @@ import type {
   LocalChannelAgentsResponse,
   LocalControlCapabilities,
   LocalControlHealth,
-} from "./contracts.js";
+} from "./contracts.ts";
 
 export class LocalControlClientError extends Error {
   constructor(

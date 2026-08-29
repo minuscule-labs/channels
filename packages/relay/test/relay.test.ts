@@ -12,13 +12,13 @@ import {
   InMemoryRelayBindingStore,
   LocalRelayDirectory,
   restoreChannelBindings,
-} from "../src/binding-store.js";
+} from "../src/binding-store.ts";
 import {
   ChannelRuntimeRelay,
   type AgentRuntimePort,
   type RuntimePortMessage,
   type RuntimePortTurn,
-} from "../src/relay.js";
+} from "../src/relay.ts";
 
 class FakeRuntime implements AgentRuntimePort {
   readonly prompts = new Map<string, string[]>();

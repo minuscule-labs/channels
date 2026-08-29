@@ -1,6 +1,6 @@
 import type { ChannelClient } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
-import type { AgentChannelBinding, AgentRuntimePort, WakePolicy } from "./relay.js";
+import type { AgentChannelBinding, AgentRuntimePort, WakePolicy } from "./relay.ts";
 
 export interface LocalWorkspaceConfig {
   workspaceId: string;

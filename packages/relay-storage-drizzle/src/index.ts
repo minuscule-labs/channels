@@ -2,4 +2,4 @@ export {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
   type DrizzleLibSqlRelayStorageOptions,
-} from "./storage.js";
+} from "./storage.ts";

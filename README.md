@@ -118,6 +118,16 @@ Normal addressed messages remain queued turns. Human clients may explicitly cont
 
 Steering is delivered at the Runtime adapter's next safe model boundary and is recorded as an unaddressed Channel control message so it does not create another wake-up. Interruption aborts the active run, marks its trigger handled, and posts the replacement as a normal addressed Channel message. Interruption cannot undo tool or filesystem side effects.
 
+## TypeScript source imports
+
+Node-facing packages use explicit TypeScript extensions in source:
+
+```ts
+import { ChannelClient } from "./client.ts";
+```
+
+TypeScript 5.9 `rewriteRelativeImportExtensions` emits the runtime-safe `./client.js` specifier in `dist`. This keeps source imports honest while preserving standard Node ESM output. Bare package imports and Vite-managed browser imports are unchanged.
+
 ## CLI
 
 Install and operate Channels independently:

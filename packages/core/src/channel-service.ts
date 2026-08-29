@@ -4,7 +4,7 @@ import {
   type ChannelStorage,
   type NewChannelMessage,
   type WorkspaceMemberUpdateResult,
-} from "./storage.js";
+} from "./storage.ts";
 import type {
   Channel,
   ChannelEvent,
@@ -22,7 +22,7 @@ import type {
   Workspace,
   WorkspaceMember,
   UpdateWorkspaceMemberInput,
-} from "./types.js";
+} from "./types.ts";
 
 export class ChannelNotFoundError extends Error {}
 export class ChannelValidationError extends Error {}

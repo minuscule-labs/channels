@@ -11,7 +11,7 @@ import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import * as schema from "./schema.js";
+import * as schema from "./schema.ts";
 
 export interface DrizzleLibSqlRelayStorageOptions {
   /** Private Relay state is local-only and must use a file: libSQL URL. */

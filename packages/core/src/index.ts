@@ -1,10 +1,10 @@
-export { ChannelClient, type ChannelEventOptions, type PostMessageOptions } from "./client.js";
+export { ChannelClient, type ChannelEventOptions, type PostMessageOptions } from "./client.ts";
 export {
   ChannelConflictError,
   ChannelNotFoundError,
   ChannelService,
   ChannelValidationError,
-} from "./channel-service.js";
+} from "./channel-service.ts";
 export {
   InMemoryChannelStorage,
   type ChannelStorage,
@@ -12,12 +12,12 @@ export {
   type NewChannelMessage,
   type NewResponseMessage,
   type WorkspaceMemberUpdateResult,
-} from "./storage.js";
+} from "./storage.ts";
 export {
   createChannelHttpServer,
   type ChannelHttpServer,
   type ChannelHttpServerOptions,
-} from "./http-server.js";
+} from "./http-server.ts";
 export type {
   AddWorkspaceMemberInput,
   Channel,
@@ -44,4 +44,4 @@ export type {
   WorkspaceMemberStatus,
   WorkspaceStatus,
   UpdateWorkspaceMemberInput,
-} from "./types.js";
+} from "./types.ts";

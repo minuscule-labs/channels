@@ -8,7 +8,7 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
-} from "./types.js";
+} from "./types.ts";
 
 export type NewChannelMessage = Omit<ChannelMessage, "sequence">;
 export type NewResponseMessage = NewChannelMessage & { replyTo: string };

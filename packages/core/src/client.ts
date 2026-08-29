@@ -14,7 +14,7 @@ import type {
   Workspace,
   WorkspaceMember,
   UpdateWorkspaceMemberInput,
-} from "./types.js";
+} from "./types.ts";
 
 export interface ChannelEventOptions {
   signal?: AbortSignal;

@@ -18,8 +18,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.js";
-import type { LocalControlAuditEvent } from "./session.js";
+import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
+import type { LocalControlAuditEvent } from "./session.ts";
 
 class SimulatedReviewRuntime implements AgentRuntimePort {
   private readonly transcript: RuntimePortMessage[] = [];

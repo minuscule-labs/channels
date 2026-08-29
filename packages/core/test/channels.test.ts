@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ChannelClient } from "../src/client.js";
-import { createChannelHttpServer } from "../src/http-server.js";
-import type { ChannelEvent } from "../src/types.js";
+import { ChannelClient } from "../src/client.ts";
+import { createChannelHttpServer } from "../src/http-server.ts";
+import type { ChannelEvent } from "../src/types.ts";
 
 async function jsonRequest(endpoint: string, path: string, init?: RequestInit) {
   const response = await fetch(`${endpoint}${path}`, init);

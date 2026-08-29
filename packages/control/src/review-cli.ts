@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { parseArgs } from "node:util";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createLocalReviewApp } from "./review.js";
+import { createLocalReviewApp } from "./review.ts";
 
 function port(value: string | undefined, fallback: number, name: string): number {
   const parsed = value === undefined ? fallback : Number(value);
