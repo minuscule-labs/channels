@@ -100,7 +100,7 @@ async function main(): Promise<void> {
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm app:review [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 4310)\n  --control-port <port>   local control port (default 4311)\n  --web-port <port>       web client port (default 5174)\n  --cwd <path>            private review Workspace root\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 4310)\n  --control-port <port>   local control port (default 4311)\n  --web-port <port>       web client port (default 5174)\n  --cwd <path>            private review Workspace root\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 

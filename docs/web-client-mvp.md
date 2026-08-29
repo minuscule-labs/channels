@@ -24,7 +24,7 @@ The browser must never open `relay.db`, receive Runtime credentials, or import R
 
 ## One-command review harness
 
-`pnpm app:review` now builds and starts a disposable seeded Channels service, temporary Relay storage, authenticated local control, and Vite, then opens the seeded Channel through the one-time browser bootstrap. The review Workspace contains one human, builder, and reviewer; representative timeline messages; one idle presentation binding; and one unbound agent. Coordinated Ctrl-C shutdown removes the temporary data and Vite process group. This mode is explicitly a UI fixture, not live agent execution or production authentication.
+`pnpm dev` now builds and starts a disposable seeded Channels service, temporary Relay storage, authenticated local control, and Vite, then opens the seeded Channel through the one-time browser bootstrap. `pnpm app:review` is the explicit alias, while `pnpm web:dev` remains frontend-only. The review Workspace contains one human, builder, and reviewer; representative timeline messages; one idle presentation binding; and one unbound agent. Coordinated Ctrl-C shutdown removes the temporary data and Vite process group. This mode is explicitly a UI fixture, not live agent execution or production authentication.
 
 ## Foundation slice
 

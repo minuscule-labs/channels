@@ -11,6 +11,7 @@
     "test": "pnpm build && node --test packages/*/dist/test/*.test.js",
     "db:generate": "drizzle-kit generate --config packages/storage-drizzle/drizzle.config.ts",
     "relay-db:generate": "drizzle-kit generate --config packages/relay-storage-drizzle/drizzle.config.ts",
+    "dev": "pnpm build && node packages/control/dist/src/review-cli.js",
     "web:dev": "pnpm --filter @minu/channels-web dev",
     "web:check": "pnpm --filter @minu/channels-web check",
     "web:test": "pnpm --filter @minu/channels-web test",

@@ -9,7 +9,7 @@ Channels does not run agents or decide workflows. MinuRuntime executes agents, w
 From this repository, launch a disposable seeded review Workspace with one command:
 
 ```bash
-pnpm app:review
+pnpm dev
 ```
 
 The command builds the workspace, starts disposable Channels data, the authenticated local control daemon, and the Vite web client, then opens the seeded Channel in your browser. It includes `@you`, `@builder`, and `@reviewer`, sample timeline messages, one idle presentation binding, and one unbound agent so the primary UI states are visible. Press Ctrl-C to stop every service and remove review data.
@@ -17,10 +17,10 @@ The command builds the workspace, starts disposable Channels data, the authentic
 This is a UI review harness, not live agent execution or a production authentication mode. To print the one-time launch URL instead of opening a browser:
 
 ```bash
-pnpm app:review -- --no-open
+pnpm dev -- --no-open
 ```
 
-Use `--cwd`, `--channels-port`, `--control-port`, or `--web-port` after `--` when defaults conflict.
+Use `--cwd`, `--channels-port`, `--control-port`, or `--web-port` after `--` when defaults conflict. `pnpm app:review` remains an explicit alias for the same disposable composition; `pnpm web:dev` starts only the frontend.
 
 ## Packages
 

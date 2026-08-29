@@ -49,12 +49,12 @@ Session lifecycle events are emitted through a sanitized audit hook. Events reco
 From the repository root:
 
 ```bash
-pnpm app:review
+pnpm dev
 ```
 
 This builds the workspace and coordinates disposable in-memory Channels data, temporary private Relay storage, the authenticated control daemon, and Vite. It seeds one Workspace and Channel with `@you`, `@builder`, and `@reviewer`, sample messages, an idle presentation binding, and an unbound agent; then it opens the authenticated Channel. Ctrl-C terminates the Vite process group, both loopback servers, and temporary storage.
 
-Review mode demonstrates the application UI and control boundary. Its seeded agent messages and `review-mode` Runtime status adapter are fixtures—not live agent execution. Use `pnpm app:review -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied.
+Review mode demonstrates the application UI and control boundary. Its seeded agent messages and `review-mode` Runtime status adapter are fixtures—not live agent execution. Use `pnpm dev -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied. `pnpm app:review` is the explicit equivalent; `pnpm web:dev` remains frontend-only.
 
 ## Run services individually
 
