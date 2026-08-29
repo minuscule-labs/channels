@@ -12,6 +12,8 @@ GET   /local/health
 GET   /local/capabilities
 GET   /local/channels/:channelId/agents
 POST  /local/channels/:channelId/agents/:identityId/start
+POST  /local/channels/:channelId/agents/:identityId/replace
+POST  /local/channels/:channelId/agents/:identityId/stop
 GET   /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/agents/:identityId/config
@@ -22,8 +24,8 @@ It combines the public Channel roster with private binding and Runtime reachabil
 - stable Workspace, Channel, and identity IDs;
 - `unbound`, `idle`, `running`, `offline`, `disabled`, or `uncertain` state;
 - wake policy;
-- a start capability only for unbound agents when managed execution is available;
-- disabled steering, interruption, reconnect, and replacement capability flags;
+- start for unbound agents, replace for idle/offline/stopped agents, and stop for bound agents when managed execution is available;
+- disabled steering, interruption, and reconnect capability flags;
 - last verification timestamp when available.
 
 Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, and Runtime adapter are write-only inputs: they are persisted in private local storage but never returned. It never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
@@ -70,7 +72,7 @@ For the genuine Pi vertical slice:
 pnpm dev:live -- --cwd /absolute/path/to/workspace
 ```
 
-The current development command builds the sibling MinuRuntime repository, loads `PiAgentRuntime`, and seeds write-only root, persona, and `pi` adapter configuration without creating a session. The owner explicitly clicks **Start** for `@builder`; the agent host then starts Pi with the configured directory and `appendSystemPrompt`, persists and leases the private binding, advances the new binding past historical Channel messages, and starts Relay. A later `@builder` message produces a genuine response through Channels. `pnpm app:live` is the explicit alias. Disposable live shutdown stops sessions created by that composition.
+The current development command builds the sibling MinuRuntime repository, loads `PiAgentRuntime`, and seeds write-only root, persona, and `pi` adapter configuration without creating a session. The owner explicitly clicks **Start** for `@builder`; the agent host then starts Pi with the configured directory and `appendSystemPrompt`, persists and leases the private binding, advances the new binding past historical Channel messages, and starts Relay. A later `@builder` message produces a genuine response through Channels. **Replace** starts a fresh session from current private configuration only when Channel agent work is idle, compare-and-swaps the binding generation, advances recovery to the current head, rebuilds Relay, and best-effort stops the prior Runtime. **Stop** first increments the generation and disables the binding so stale output is fenced, then stops the process and removes it from Relay. Both actions require confirmation because transcripts do not carry over and filesystem effects remain. `pnpm app:live` is the explicit alias. Disposable live shutdown stops sessions created by that composition.
 
 ## Run services individually
 
@@ -113,4 +115,4 @@ A loaded export may be a constructible class or an object with `status(sessionId
 - Uses bounded Runtime/client waits, no-store responses, and sanitized errors.
 - Stores private Relay state only in a local file URL.
 
-Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation and authorizes only machine-local private configuration and explicit Runtime start; it cannot authorize direct public Channels API requests. Configuration and start operations emit secret-free accepted/rejected audit events. Start is restricted to active owner/admin browser sessions, active configured agents, local directories, and registered managed adapters. Session replacement, steering, interruption, reconnect, and identity creation remain disabled until their lifecycle, confirmation, and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.
+Loopback plus a bound browser session is still not hosted-user authentication. It prevents accidental UI impersonation and authorizes machine-local private configuration plus explicit Runtime start/replace/stop; it cannot authorize direct public Channels API requests. Lifecycle operations emit secret-free accepted/rejected audit events and are restricted to active owner/admin browser sessions, active Channel agents, local directories, and registered managed adapters. Replace uses generation compare-and-swap and refuses active Channel work; Stop fences the binding before process termination and warns that external side effects remain. Steering, interruption, reconnect, and identity creation remain disabled until their command-specific confirmation and recovery behavior are implemented. Do not expand this package into a parallel browser work API; normal work and safe operational results belong in Channels.

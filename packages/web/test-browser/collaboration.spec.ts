@@ -186,6 +186,26 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   expect((await startResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: idle")).toBeVisible();
 
+  page.once("dialog", (dialog) => dialog.accept());
+  const replaceResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/replace`));
+  await page.getByRole("button", { name: "Replace Builder Agent session" }).click();
+  expect((await replaceResponsePromise).ok()).toBe(true);
+  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  const stopResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/stop`));
+  await page.getByRole("button", { name: "Stop Builder Agent" }).click();
+  expect((await stopResponsePromise).ok()).toBe(true);
+  await expect(page.getByTitle("Runtime: disabled")).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Replace Builder Agent session" }).click();
+  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+
   const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {
     data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },
   });

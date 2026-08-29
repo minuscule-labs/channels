@@ -36,7 +36,7 @@ The browser must never open private storage, receive Runtime credentials/session
 - Workspace configuration dialog with redacted state, write-only source/persona/Runtime replacement forms, owner/admin enforcement, and new-session lifecycle guidance.
 - Named Channel creation from selected active Workspace members.
 - Existing-Channel participant administration with optimistic roster revisions and conflict recovery.
-- Explicit start action for configured unbound agents, with safe pending/error/status presentation.
+- Explicit start, replacement, and stop actions with confirmation, bounded pending/error state, and redacted status refresh.
 - Historical timeline attribution resolved from stable Workspace identities after roster removal.
 - Plain-text composer with mention suggestions and structured targets.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
@@ -68,6 +68,8 @@ GET   /local/health
 GET   /local/capabilities
 GET   /local/channels/:id/agents
 POST  /local/channels/:id/agents/:identityId/start
+POST  /local/channels/:id/agents/:identityId/replace
+POST  /local/channels/:id/agents/:identityId/stop
 GET   /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/agents/:identityId/config
@@ -79,12 +81,12 @@ The agent response reports `unbound | idle | running | offline | disabled | unce
 
 The real daemon now requires a browser session. A 256-bit one-time code valid for 60 seconds is redeemed at a loopback bootstrap endpoint for a separate random, HttpOnly, SameSite=Strict `/local` cookie bound to the configured stable human identity. `GET /local/session` returns only that public identity id. The composer verifies active human Channel participation, keys drafts to that identity, and always uses it as the message author even if stale author-selection local storage is present. The credential is never placed in a URL, remains only in daemon memory, expires after eight hours, and is revoked by daemon restart. Browser and control use the same loopback hostname. This prevents accidental browser impersonation but is not public API authorization. Sanitized audit events record session issuance and rejection without recording either secret or private execution metadata. Playwright proves binding across refresh, authorship despite stale impersonation state, cookie bootstrap, and Vite `/local` proxy.
 
-Private configuration writes and their administration UI are implemented. Forms never prefill saved source, persona, or Runtime values and clear replacement inputs after success. Runtime start is implemented for registered managed adapters and derives its actor from the authenticated browser session; responses remain redacted and audit events contain no root, persona, adapter, or session values. Steering, interruption, reconnect, replacement, and identity creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
+Private configuration writes and their administration UI are implemented. Forms never prefill saved source, persona, or Runtime values and clear replacement inputs after success. Runtime start, replace, and stop derive their actor from the authenticated browser session; responses remain redacted and audit events contain no root, persona, adapter, or session values. Replace is unavailable during active Channel work, starts from current configuration, generation-fences the old binding, and discards pre-replacement pending work. Stop confirms that side effects remain, fences output before process termination, and presents the binding as stopped/disabled. Steering, interruption, reconnect, and identity creation remain disabled until command-specific authorization, audit, fencing, and confirmations are implemented.
 
 ## Deferred
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
-- Runtime replacement, stop, steering, and interruption controls beyond the implemented initial start operation.
+- Runtime steering, interruption, and reconnect controls beyond the implemented start/replace/stop operations.
 - Workspace membership and identity creation administration.
 - Channel rename.
 - Threads, reactions, attachments, search, unread state, and notifications.
@@ -100,4 +102,4 @@ The implemented hardening slice builds OpenCode-style client/service seams with 
 - Cursor-aware, keyboard-accessible mention suggestions with IME-safe submission.
 - Deterministic timeline projection with day boundaries and compatible-message grouping.
 - Automatic bounded SSE reconnect with authoritative ready/refetch/merge recovery.
-- Playwright coverage against a real seeded Channels server for message send, named Channel creation, optimistic participant replacement, historical attribution, roster revision, disconnect catch-up, stable retry keys, and accessible mobile drawers.
+- Playwright coverage against a real seeded Channels server for message send, named Channel creation, optimistic participant replacement, historical attribution, Runtime start/replace/stop confirmations, roster revision, disconnect catch-up, stable retry keys, and accessible mobile drawers.

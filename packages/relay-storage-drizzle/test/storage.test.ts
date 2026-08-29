@@ -132,6 +132,18 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     assert.equal(persisted?.generation, 2);
     assert.equal(persisted?.leaseOwner, undefined);
     assert.equal(await reopened.getCursor(record.channelId, record.agentIdentityId), 3);
+    const disabled = await reopened.disableBinding(
+      record.id,
+      2,
+      "2026-01-01T00:00:06.000Z",
+    );
+    assert.equal(disabled?.state, "disabled");
+    assert.equal(disabled?.generation, 3);
+    assert.equal(await reopened.disableBinding(
+      record.id,
+      2,
+      "2026-01-01T00:00:07.000Z",
+    ), undefined);
     await reopened.deleteBinding(record.id);
     assert.equal(await reopened.getBinding(record.id), undefined);
   } finally {

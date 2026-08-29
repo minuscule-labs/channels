@@ -4,6 +4,7 @@ import {
   LocalRelayDirectory,
   restoreChannelBindings,
   type AgentRuntimePort,
+  type ChannelAgentBindingRecord,
   type RelayBindingStore,
   type RestoredChannelBindings,
 } from "@minu/channels-relay";
@@ -183,6 +184,7 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
+        await this.assertBindingsIdle(bindings);
         const cwd = await workspaceDirectory(workspaceConfig.rootUri);
         let session: ManagedRuntimeSession | undefined;
         let bindingId: string | undefined;
@@ -247,6 +249,164 @@ export class LocalAgentHost {
     });
   }
 
+  async replaceChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void> {
+    return this.exclusive(channelId, async () => {
+      let session: ManagedRuntimeSession | undefined;
+      let runtime: (AgentRuntimePort & LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">>) | undefined;
+      let committed = false;
+      let workspaceId: string | undefined;
+      try {
+        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        const context = await this.configuredContext(channelId, agentIdentityId, actorIdentityId);
+        workspaceId = context.channel.workspaceId;
+        const matches = context.bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
+        if (matches.length !== 1) {
+          throw new LocalConfigurationRequestError(
+            matches.length === 0
+              ? "Agent has no Channel session; start it first"
+              : "Agent Channel session is uncertain",
+            409,
+            "unavailable",
+          );
+        }
+        const previous = matches[0]!;
+        await this.assertBindingsIdle(context.bindings, previous.id);
+        runtime = context.runtime;
+        session = await runtime.start({
+          cwd: context.cwd,
+          appendSystemPrompt: context.agentConfig.personaPrompt,
+        });
+        const replaced = await this.directory.replaceSession({
+          bindingId: previous.id,
+          expectedGeneration: previous.generation,
+          runtimeAdapter: context.agentConfig.runtimeAdapter!,
+          runtimeSessionId: session.id,
+        });
+        committed = true;
+        const messages = await this.options.client.listMessages(channelId);
+        await this.options.store.setCursor(
+          channelId,
+          agentIdentityId,
+          messages.at(-1)?.sequence ?? 0,
+        );
+        await this.refreshChannelOnce(channelId).catch((error) => {
+          this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+        });
+        await this.stopRuntimeBestEffort(
+          this.options.runtimes[previous.runtimeAdapter],
+          previous.runtimeSessionId,
+        );
+        this.startedSessions.set(replaced.id, {
+          bindingId: replaced.id,
+          runtime,
+          sessionId: session.id,
+        });
+        this.audit({
+          action: "agent.session.replaced",
+          outcome: "accepted",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+      } catch (error) {
+        if (!committed && session && runtime?.stop) {
+          await runtime.stop(session.id).catch(() => undefined);
+        }
+        this.audit({
+          action: "agent.session.replaced",
+          outcome: "rejected",
+          reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+        if (error instanceof LocalConfigurationRequestError) throw error;
+        throw new LocalConfigurationRequestError("Agent session could not be replaced", 409, "unavailable");
+      }
+    });
+  }
+
+  async stopChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void> {
+    return this.exclusive(channelId, async () => {
+      let workspaceId: string | undefined;
+      let committed = false;
+      try {
+        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+        workspaceId = context.channel.workspaceId;
+        const matches = context.bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
+        if (matches.length !== 1) {
+          throw new LocalConfigurationRequestError(
+            matches.length === 0 ? "Agent has no Channel session" : "Agent Channel session is uncertain",
+            409,
+            "unavailable",
+          );
+        }
+        const target = matches[0]!;
+        if (target.state === "disabled") {
+          throw new LocalConfigurationRequestError("Agent Channel session is already stopped", 409, "unavailable");
+        }
+        await this.assertBindingsIdle(
+          context.bindings.filter((binding) => binding.id !== target.id),
+        );
+        const disabled = await this.options.store.disableBinding(
+          target.id,
+          target.generation,
+          this.now().toISOString(),
+        );
+        if (!disabled) {
+          throw new LocalConfigurationRequestError(
+            "Agent binding changed; reload before stopping",
+            409,
+            "unavailable",
+          );
+        }
+        committed = true;
+        await this.stopRuntimeBestEffort(
+          this.options.runtimes[target.runtimeAdapter],
+          target.runtimeSessionId,
+        );
+        this.startedSessions.delete(target.id);
+        await this.refreshChannelOnce(channelId).catch((error) => {
+          this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+        });
+        this.audit({
+          action: "agent.session.stopped",
+          outcome: "accepted",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+      } catch (error) {
+        this.audit({
+          action: "agent.session.stopped",
+          outcome: committed ? "accepted" : "rejected",
+          reason: committed
+            ? undefined
+            : error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+        if (committed) return;
+        if (error instanceof LocalConfigurationRequestError) throw error;
+        throw new LocalConfigurationRequestError("Agent session could not be stopped", 409, "unavailable");
+      }
+    });
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -263,6 +423,146 @@ export class LocalAgentHost {
         if (runtime.stop) await runtime.stop(sessionId);
         await this.options.store.deleteBinding(bindingId);
       }));
+    }
+  }
+
+  private async baseContext(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ) {
+    const channel = await this.options.client.getChannel(channelId).catch(() => {
+      throw new LocalConfigurationRequestError("Channel is unavailable", 404, "unavailable");
+    });
+    const [workspace, members, actor, identity, bindings] = await Promise.all([
+      this.options.client.getWorkspace(channel.workspaceId),
+      this.options.client.listWorkspaceMembers(channel.workspaceId),
+      this.options.client.getIdentity(actorIdentityId),
+      this.options.client.getIdentity(agentIdentityId),
+      this.options.store.listChannelBindings(channelId),
+    ]);
+    const actorMembership = members.find(({ identityId }) => identityId === actorIdentityId);
+    if (actor.type !== "human" || actor.status !== "active" || actorMembership?.status !== "active"
+      || (actorMembership.accessRole !== "owner" && actorMembership.accessRole !== "admin")) {
+      throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
+    }
+    const agentMembership = members.find(({ identityId }) => identityId === agentIdentityId);
+    const participant = channel.participants.find(({ id }) => id === agentIdentityId);
+    if (workspace.status !== "active" || identity.status !== "active"
+      || (identity.type !== "agent" && identity.type !== "service")
+      || agentMembership?.status !== "active" || participant?.status !== "active") {
+      throw new LocalConfigurationRequestError(
+        "Agent must be an active Channel participant",
+        409,
+        "unavailable",
+      );
+    }
+    return { channel, bindings };
+  }
+
+  private async configuredContext(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ) {
+    const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+    const [workspaceConfig, agentConfig] = await Promise.all([
+      this.options.store.getWorkspaceConfig(context.channel.workspaceId),
+      this.options.store.getWorkspaceAgentConfig(context.channel.workspaceId, agentIdentityId),
+    ]);
+    if (!workspaceConfig || !agentConfig || agentConfig.status !== "active"
+      || !agentConfig.runtimeAdapter) {
+      throw new LocalConfigurationRequestError(
+        "Configure the Workspace source and active agent Runtime before replacing",
+        409,
+        "unavailable",
+      );
+    }
+    const runtime = this.options.runtimes[agentConfig.runtimeAdapter];
+    if (!launchableRuntime(runtime)) {
+      throw new LocalConfigurationRequestError(
+        "Configured agent Runtime is unavailable",
+        409,
+        "unavailable",
+      );
+    }
+    return {
+      ...context,
+      agentConfig,
+      runtime,
+      cwd: await workspaceDirectory(workspaceConfig.rootUri),
+    };
+  }
+
+  private async assertBindingsIdle(
+    bindings: ChannelAgentBindingRecord[],
+    allowUnreachableBindingId?: string,
+  ): Promise<void> {
+    for (const binding of bindings) {
+      if (binding.state === "disabled") continue;
+      const runtime = this.options.runtimes[binding.runtimeAdapter];
+      if (!runtime) {
+        if (binding.id === allowUnreachableBindingId) continue;
+        throw new LocalConfigurationRequestError(
+          "Channel agent status is uncertain; retry before changing sessions",
+          409,
+          "unavailable",
+        );
+      }
+      try {
+        if ((await this.runtimeStatus(runtime, binding.runtimeSessionId)) === "working") {
+          throw new LocalConfigurationRequestError(
+            "Channel has active agent work; retry when it is idle",
+            409,
+            "unavailable",
+          );
+        }
+      } catch (error) {
+        if (error instanceof LocalConfigurationRequestError) throw error;
+        if (binding.id !== allowUnreachableBindingId) {
+          throw new LocalConfigurationRequestError(
+            "Channel agent status is uncertain; retry before changing sessions",
+            409,
+            "unavailable",
+          );
+        }
+        // Explicit replacement may proceed for its unreachable target; the confirmation warns that effects remain.
+      }
+    }
+  }
+
+  private async runtimeStatus(
+    runtime: LocalManagedRuntimePort,
+    sessionId: string,
+  ): Promise<"idle" | "working" | "offline"> {
+    return this.withTimeout(runtime.status(sessionId), 2_000, "Runtime status timed out");
+  }
+
+  private async stopRuntimeBestEffort(
+    runtime: LocalManagedRuntimePort | undefined,
+    sessionId: string,
+  ): Promise<void> {
+    if (!runtime?.stop) return;
+    try {
+      if ((await this.runtimeStatus(runtime, sessionId)) === "offline") return;
+      await this.withTimeout(runtime.stop(sessionId), 15_000, "Runtime stop timed out");
+    } catch (error) {
+      this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), milliseconds);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

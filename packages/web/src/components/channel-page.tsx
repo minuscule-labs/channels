@@ -55,8 +55,12 @@ export function ChannelPage() {
     refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
   });
   const { connection, retry } = useLiveChannel(channelId);
-  const startAgent = useMutation({
-    mutationFn: (identityId: string) => localControl.startChannelAgent(channelId, identityId),
+  const agentAction = useMutation({
+    mutationFn: ({ action, identityId }: { action: "start" | "replace" | "stop"; identityId: string }) => {
+      if (action === "replace") return localControl.replaceChannelAgent(channelId, identityId);
+      if (action === "stop") return localControl.stopChannelAgent(channelId, identityId);
+      return localControl.startChannelAgent(channelId, identityId);
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
@@ -156,14 +160,24 @@ export function ChannelPage() {
               localAgents={localAgentMap}
               localStatus={localStatus}
               drawer
-              onStartAgent={(identityId) => startAgent.mutate(identityId)}
-              startingAgentId={startAgent.isPending ? startAgent.variables : undefined}
+              onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
+              onReplaceAgent={(identityId) => {
+                if (window.confirm("Replace this agent session? The existing Runtime transcript will not carry over, and filesystem effects remain.")) {
+                  agentAction.mutate({ action: "replace", identityId });
+                }
+              }}
+              onStopAgent={(identityId) => {
+                if (window.confirm("Stop this agent session? Active tool or filesystem effects cannot be rolled back.")) {
+                  agentAction.mutate({ action: "stop", identityId });
+                }
+              }}
+              pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
             />
           </Drawer>
         </header>
-        {startAgent.error ? (
+        {agentAction.error ? (
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
-            {startAgent.error.message}
+            {agentAction.error.message}
           </div>
         ) : null}
         <div className="relative min-h-0 flex-1">
@@ -205,8 +219,18 @@ export function ChannelPage() {
           participants={participants}
           localAgents={localAgentMap}
           localStatus={localStatus}
-          onStartAgent={(identityId) => startAgent.mutate(identityId)}
-          startingAgentId={startAgent.isPending ? startAgent.variables : undefined}
+          onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
+          onReplaceAgent={(identityId) => {
+            if (window.confirm("Replace this agent session? The existing Runtime transcript will not carry over, and filesystem effects remain.")) {
+              agentAction.mutate({ action: "replace", identityId });
+            }
+          }}
+          onStopAgent={(identityId) => {
+            if (window.confirm("Stop this agent session? Active tool or filesystem effects cannot be rolled back.")) {
+              agentAction.mutate({ action: "stop", identityId });
+            }
+          }}
+          pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
         />
       </div>
     </div>

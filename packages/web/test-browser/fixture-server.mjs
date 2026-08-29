@@ -46,7 +46,7 @@ const browserSessions = new LocalControlBrowserSessions({
   browserUrl: `http://127.0.0.1:${webPort}/`,
   currentHumanIdentityId: human.id,
 });
-const startedAgents = new Set();
+const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
 const localControl = await createLocalControlHttpServer({
   port: controlPort,
   allowedOrigins: [browserSessions.browserOrigin],
@@ -55,12 +55,13 @@ const localControl = await createLocalControlHttpServer({
     channels: service,
     bindings: {
       async listChannelBindings(channelId) {
-        if (channelId !== channel.id && !startedAgents.has(`${channelId}:${agent.id}`)) return [];
+        const state = agentBindings.get(`${channelId}:${agent.id}`);
+        if (!state) return [];
         return [{
           agentIdentityId: agent.id,
           runtimeAdapter: "browser-test",
           runtimeSessionId: "private-browser-session",
-          state: "connected",
+          state,
           wakePolicy: "mentions",
         }];
       },
@@ -70,7 +71,15 @@ const localControl = await createLocalControlHttpServer({
       available: true,
       async startChannelAgent(channelId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        startedAgents.add(`${channelId}:${identityId}`);
+        agentBindings.set(`${channelId}:${identityId}`, "connected");
+      },
+      async replaceChannelAgent(channelId, identityId) {
+        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+        agentBindings.set(`${channelId}:${identityId}`, "connected");
+      },
+      async stopChannelAgent(channelId, identityId) {
+        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+        agentBindings.set(`${channelId}:${identityId}`, "disabled");
       },
     },
     configuration: new LocalAgentHostConfiguration({ client: channelClient, store: privateStore }),

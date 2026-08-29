@@ -11,7 +11,9 @@ export type LocalControlAuditAction =
   | "session.rejected"
   | "workspace.config.updated"
   | "agent.config.updated"
-  | "agent.session.started";
+  | "agent.session.started"
+  | "agent.session.replaced"
+  | "agent.session.stopped";
 
 export interface LocalControlAuditEvent {
   action: LocalControlAuditAction;

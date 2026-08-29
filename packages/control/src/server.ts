@@ -49,6 +49,16 @@ export interface LocalControlAgentLifecyclePort {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
+  replaceChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void>;
+  stopChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void>;
 }
 
 export interface LocalControlConfigurationPort {
@@ -78,7 +88,14 @@ export interface LocalControlServiceOptions {
   statusTimeoutMs?: number;
 }
 
-const disabledCapabilities = { start: false, steer: false, interrupt: false, reconnect: false } as const;
+const disabledCapabilities = {
+  start: false,
+  replace: false,
+  stop: false,
+  steer: false,
+  interrupt: false,
+  reconnect: false,
+} as const;
 
 export class LocalControlService {
   private readonly statusTimeoutMs: number;
@@ -104,6 +121,8 @@ export class LocalControlService {
         workspaceConfigWrite: Boolean(this.options.configuration),
         agentCreate: false,
         agentStart: Boolean(this.options.lifecycle?.available),
+        agentReplace: Boolean(this.options.lifecycle?.available),
+        agentStop: Boolean(this.options.lifecycle?.available),
         steer: false,
         interrupt: false,
         reconnect: false,
@@ -158,6 +177,34 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
     await this.options.lifecycle.startChannelAgent(channelId, identityId, actorIdentityId);
+    return this.channelAgent(channelId, identityId);
+  }
+
+  async replaceChannelAgent(
+    channelId: string,
+    identityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelAgent> {
+    if (!this.options.lifecycle?.available) {
+      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
+    }
+    await this.options.lifecycle.replaceChannelAgent(channelId, identityId, actorIdentityId);
+    return this.channelAgent(channelId, identityId);
+  }
+
+  async stopChannelAgent(
+    channelId: string,
+    identityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelAgent> {
+    if (!this.options.lifecycle?.available) {
+      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
+    }
+    await this.options.lifecycle.stopChannelAgent(channelId, identityId, actorIdentityId);
+    return this.channelAgent(channelId, identityId);
+  }
+
+  private async channelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.listChannelAgents(channelId);
     const agent = response.agents.find((candidate) => candidate.identityId === identityId);
     if (!agent) throw new LocalConfigurationRequestError("Channel agent unavailable", 404, "unavailable");
@@ -206,28 +253,66 @@ export class LocalControlService {
     const binding = matches[0]!;
     const details = { wakePolicy: binding.wakePolicy, lastVerifiedAt: binding.lastVerifiedAt };
     if (binding.state === "disabled") {
-      return { ...base, ...details, state: "disabled", capabilities: disabledCapabilities };
+      return {
+        ...base,
+        ...details,
+        state: "disabled",
+        capabilities: {
+          ...disabledCapabilities,
+          replace: Boolean(this.options.lifecycle?.available),
+        },
+      };
     }
     if (binding.state === "replacing") {
       return { ...base, ...details, state: "uncertain", capabilities: disabledCapabilities };
     }
     const runtime = this.options.runtimes[binding.runtimeAdapter];
     if (!runtime) {
-      return { ...base, ...details, state: "offline", capabilities: disabledCapabilities };
+      return {
+        ...base,
+        ...details,
+        state: "offline",
+        capabilities: {
+          ...disabledCapabilities,
+          replace: Boolean(this.options.lifecycle?.available),
+          stop: Boolean(this.options.lifecycle?.available),
+        },
+      };
     }
     try {
       const status = await this.readRuntimeStatus(runtime, binding.runtimeSessionId);
       if (status === "working") {
-        return { ...base, ...details, state: "running", capabilities: disabledCapabilities };
+        return {
+          ...base,
+          ...details,
+          state: "running",
+          capabilities: {
+            ...disabledCapabilities,
+            stop: Boolean(this.options.lifecycle?.available),
+          },
+        };
       }
       return {
         ...base,
         ...details,
         state: status === "idle" ? "idle" : "offline",
-        capabilities: disabledCapabilities,
+        capabilities: {
+          ...disabledCapabilities,
+          replace: Boolean(this.options.lifecycle?.available),
+          stop: Boolean(this.options.lifecycle?.available),
+        },
       };
     } catch {
-      return { ...base, ...details, state: "offline", capabilities: disabledCapabilities };
+      return {
+        ...base,
+        ...details,
+        state: "offline",
+        capabilities: {
+          ...disabledCapabilities,
+          replace: Boolean(this.options.lifecycle?.available),
+          stop: Boolean(this.options.lifecycle?.available),
+        },
+      };
     }
   }
 
@@ -327,9 +412,9 @@ export async function createLocalControlHttpServer(
       return;
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
-    const isAgentStart = request.method === "POST"
-      && /^\/local\/channels\/[^/]+\/agents\/[^/]+\/start$/.test(requestPath);
-    if (request.method !== "GET" && request.method !== "PATCH" && !isAgentStart) {
+    const isAgentLifecycle = request.method === "POST"
+      && /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop)$/.test(requestPath);
+    if (request.method !== "GET" && request.method !== "PATCH" && !isAgentLifecycle) {
       response.setHeader("allow", "GET, PATCH");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
@@ -414,6 +499,26 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
         );
         json(response, 201, { agent }, origin);
+        return;
+      }
+      const agentReplaceMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/replace$/);
+      if (agentReplaceMatch && browserSession && request.method === "POST") {
+        const agent = await options.service.replaceChannelAgent(
+          decodeURIComponent(agentReplaceMatch[1]!),
+          decodeURIComponent(agentReplaceMatch[2]!),
+          browserSession.identityId,
+        );
+        json(response, 200, { agent }, origin);
+        return;
+      }
+      const agentStopMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/stop$/);
+      if (agentStopMatch && browserSession && request.method === "POST") {
+        const agent = await options.service.stopChannelAgent(
+          decodeURIComponent(agentStopMatch[1]!),
+          decodeURIComponent(agentStopMatch[2]!),
+          browserSession.identityId,
+        );
+        json(response, 200, { agent }, origin);
         return;
       }
       const match = path.match(/^\/local\/channels\/([^/]+)\/agents$/);

@@ -59,6 +59,24 @@ export class LocalControlClient {
     return response.agent;
   }
 
+  async replaceChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
+    const response = await this.request<{ agent: LocalChannelAgent }>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/replace`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+    return response.agent;
+  }
+
+  async stopChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
+    const response = await this.request<{ agent: LocalChannelAgent }>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/stop`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+    return response.agent;
+  }
+
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {
     return this.get<LocalWorkspaceConfigurationSummary>(
       `/local/workspaces/${encodeURIComponent(workspaceId)}/config`,

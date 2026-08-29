@@ -28,7 +28,7 @@ To run the same product flow with genuine Pi execution, use the current local po
 pnpm dev:live -- --cwd /absolute/path/to/workspace
 ```
 
-This builds the sibling MinuRuntime repository, seeds private root/persona/Runtime configuration, and exposes an explicit **Start** action for `@builder`. Starting creates a new Pi session isolated to that Channel and advances its cursor past historical messages; Pi does not execute until a later addressed message arrives. Responses return through Relay and normal Channel delivery. Shutdown stops sessions started by this disposable live composition. `pnpm app:live` is the explicit alias. The sibling-repository lookup is development scaffolding until MinuRuntime packages are published.
+This builds the sibling MinuRuntime repository, seeds private root/persona/Runtime configuration, and exposes explicit **Start**, **Replace**, and **Stop** actions for `@builder`. Starting creates a Pi session isolated to that Channel and advances its cursor past historical messages; Pi does not execute until a later addressed message arrives. Replace generation-fences the old binding, starts a fresh session with current configuration, skips work accepted before replacement, and stops the old owned Runtime when reachable. Stop fences delivery before terminating the Runtime; tool and filesystem effects are not rolled back. Responses return through Relay and normal Channel delivery. Shutdown stops sessions started by this disposable live composition. `pnpm app:live` is the explicit alias. The sibling-repository lookup is development scaffolding until MinuRuntime packages are published.
 
 ## Packages
 
@@ -71,6 +71,8 @@ GET   /local/health
 GET   /local/capabilities
 GET   /local/channels/:id/agents
 POST  /local/channels/:id/agents/:identityId/start
+POST  /local/channels/:id/agents/:identityId/replace
+POST  /local/channels/:id/agents/:identityId/stop
 GET   /local/workspaces/:id/config
 PATCH /local/workspaces/:id/config
 PATCH /local/workspaces/:id/agents/:identityId/config

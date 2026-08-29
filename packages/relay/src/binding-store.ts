@@ -87,6 +87,11 @@ export interface RelayBindingStore extends ChannelCursorStore {
     runtimeSessionId: string,
     updatedAt: string,
   ): Promise<ChannelAgentBindingRecord | undefined>;
+  disableBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    updatedAt: string,
+  ): Promise<ChannelAgentBindingRecord | undefined>;
   close?(): Promise<void> | void;
 }
 
@@ -279,6 +284,22 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
     const key = `${channelId}:${participantId}`;
     this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, sequence));
+  }
+
+  async disableBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    updatedAt: string,
+  ): Promise<ChannelAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration) return undefined;
+    binding.generation += 1;
+    binding.state = "disabled";
+    delete binding.leaseOwner;
+    delete binding.leaseExpiresAt;
+    delete binding.lastVerifiedAt;
+    binding.updatedAt = updatedAt;
+    return copyBinding(binding);
   }
 
   async close(): Promise<void> {}

@@ -1,6 +1,6 @@
 import type { LocalChannelAgent } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
-import { LoaderCircle, Play } from "lucide-react";
+import { LoaderCircle, Play, RotateCcw, Square } from "lucide-react";
 import { participantLabel } from "../lib/participants";
 import { shortId } from "../lib/messages";
 import { DrawerCloseButton } from "./ui/drawer";
@@ -11,14 +11,18 @@ export function MemberRoster({
   localStatus = "loading",
   drawer = false,
   onStartAgent,
-  startingAgentId,
+  onReplaceAgent,
+  onStopAgent,
+  pendingAgentAction,
 }: {
   participants: Participant[];
   localAgents?: ReadonlyMap<string, LocalChannelAgent>;
   localStatus?: "loading" | "available" | "unavailable";
   drawer?: boolean;
   onStartAgent?(identityId: string): void;
-  startingAgentId?: string;
+  onReplaceAgent?(identityId: string): void;
+  onStopAgent?(identityId: string): void;
+  pendingAgentAction?: { action: "start" | "replace" | "stop"; identityId: string };
 }) {
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-l border-[var(--border)] bg-[var(--panel)] lg:w-72">
@@ -66,15 +70,45 @@ export function MemberRoster({
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
-                        disabled={startingAgentId !== undefined}
+                        disabled={pendingAgentAction !== undefined}
                         onClick={() => onStartAgent(participant.id)}
                         aria-label={`Start ${participantLabel(participant, participant.id)}`}
                         title="Start an isolated Runtime session for this Channel"
                       >
-                        {startingAgentId === participant.id
+                        {pendingAgentAction?.action === "start" && pendingAgentAction.identityId === participant.id
                           ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
                           : <Play className="h-2.5 w-2.5" />}
                         Start
+                      </button>
+                    ) : null}
+                    {localAgent?.capabilities.replace && onReplaceAgent ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
+                        disabled={pendingAgentAction !== undefined}
+                        onClick={() => onReplaceAgent(participant.id)}
+                        aria-label={`Replace ${participantLabel(participant, participant.id)} session`}
+                        title="Start a fresh Runtime session with current Workspace configuration"
+                      >
+                        {pendingAgentAction?.action === "replace" && pendingAgentAction.identityId === participant.id
+                          ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
+                          : <RotateCcw className="h-2.5 w-2.5" />}
+                        Replace
+                      </button>
+                    ) : null}
+                    {localAgent?.capabilities.stop && onStopAgent ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--danger)] hover:bg-[var(--hover)] disabled:opacity-50"
+                        disabled={pendingAgentAction !== undefined}
+                        onClick={() => onStopAgent(participant.id)}
+                        aria-label={`Stop ${participantLabel(participant, participant.id)}`}
+                        title="Fence this binding and stop its Runtime process"
+                      >
+                        {pendingAgentAction?.action === "stop" && pendingAgentAction.identityId === participant.id
+                          ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
+                          : <Square className="h-2.5 w-2.5" />}
+                        Stop
                       </button>
                     ) : null}
                   </div>

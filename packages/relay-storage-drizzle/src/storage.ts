@@ -270,6 +270,25 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return rows[0] ? binding(rows[0]) : undefined;
   }
 
+  async disableBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    updatedAt: string,
+  ): Promise<ChannelAgentBindingRecord | undefined> {
+    const rows = await this.database.update(schema.channelAgentBindings).set({
+      generation: expectedGeneration + 1,
+      state: "disabled",
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      lastVerifiedAt: null,
+      updatedAt,
+    }).where(and(
+      eq(schema.channelAgentBindings.id, bindingId),
+      eq(schema.channelAgentBindings.generation, expectedGeneration),
+    )).returning();
+    return rows[0] ? binding(rows[0]) : undefined;
+  }
+
   async getCursor(channelId: string, participantId: string): Promise<number> {
     const row = await this.database.query.agentHostCursors.findFirst({
       where: and(
