@@ -113,6 +113,19 @@ Extract Relay/agent-host as an independent product only when evidence exists:
 
 Potential future consumers such as MCP, Slack, Cowork, or other services are not sufficient by themselves to justify a generic abstraction now.
 
+## MVP implementation guardrail
+
+The lifecycle vertical slice is complete. From this point, prefer documenting future behavior over implementing it. MVP implementation is limited to:
+
+1. one reliable product command for startup, status/log visibility, and shutdown;
+2. basic reusable identity and Workspace-member creation/administration;
+3. Channel rename; and
+4. defects or usability problems that block review, installation, or the core collaboration flow.
+
+Do not expand the MVP with richer supervision policy, optional first-mention auto-start, pagination/virtualization, worktrees or Git automation, attachment infrastructure, hosted deployment/authentication, additional Runtime adapters, desktop packaging, TUI, advanced activity renderers, or new steering/interruption UI. Keep their intended contracts and safety constraints in documentation, but require evidence from real usage before implementation. This is a scope rule, not a rejection of those future capabilities.
+
+Architecture consolidation is allowed only when required to ship the items above; it is not an independent MVP project. New lifecycle edge cases should generally be documented unless they expose data loss, duplicate execution, authorization failure, secret leakage, stale output, or inability to recover the shipped flow.
+
 ## Immediate implementation sequence
 
 1. ~~Bind the browser session to the current human and remove per-message author selection.~~ Implemented with a presentation-safe `/local/session` projection; public Channels authorization remains future work.
@@ -122,4 +135,5 @@ Potential future consumers such as MCP, Slack, Cowork, or other services are not
 5. ~~Start and bind a live Pi Runtime session from the product.~~ Implemented through authenticated explicit start, private launch configuration, Channel-isolated binding, durable cursor, lease, and Relay lifecycle.
 6. ~~Prove `UI → Channels → agent host → MinuRuntime → Channels → UI` with a genuine response.~~ Verified through the authenticated product start endpoint with Pi returning `LIVE_PI_PRODUCT_FLOW_OK` as Channel sequence 5 through the normal response commit path.
 7. ~~Add explicit session replacement and stop with generation fencing, confirmation, and recovery-safe cursor behavior.~~ Implemented through protocol-v4 owner/admin lifecycle commands and verified against genuine Pi.
-8. Package persistent local startup behind one product supervisor; add identity/member creation before hosted authentication.
+8. Package persistent local startup behind one product supervisor; add basic identity/member administration and Channel rename.
+9. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.

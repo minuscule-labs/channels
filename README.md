@@ -1,5 +1,7 @@
 # MinuChannels
 
+> **MVP scope:** Remaining feature work is limited to one-command product supervision, basic identity/Workspace-member administration, Channel rename, and release-blocking fixes. Richer supervision, hosted auth/deployment, worktrees, additional adapters, advanced controls, pagination, desktop/TUI work, and similar ideas are documented future work—not current implementation tasks. See [`docs/product-boundary.md`](docs/product-boundary.md#mvp-implementation-guardrail).
+
 MinuChannels is one complete collaboration product for humans and agents, from responsive UI through isolated agent execution. A Channel is the sole conversation primitive; a direct conversation is simply a two-member Channel.
 
 The public Channels core remains communication-only and does not import Runtime or execute agents. The MinuChannels product composes that core with an internal agent host (the current Relay, private binding storage, and control packages), while independently reusable MinuRuntime executes agent sessions. See [`docs/product-boundary.md`](docs/product-boundary.md) for the accepted MVP ownership and extraction strategy.
