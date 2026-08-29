@@ -45,6 +45,8 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
     `/app/workspaces/${workspaceId}/channels/${channelId}`,
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
+  await expect(page.getByText("Workspace: Browser Test", { exact: false })).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
   await expect(page.getByTitle("Local Runtime: idle")).toBeVisible();
   await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
@@ -58,6 +60,14 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("log").getByText("@builder Browser reply.", { exact: true })).toBeVisible();
   expect(idempotencyKeys[0]).toBeTruthy();
   await expect(composer).toHaveValue("");
+
+  await composer.fill("First line");
+  await composer.press("Control+Enter");
+  await expect(composer).toHaveValue("First line\n");
+  await composer.pressSequentially("Second line");
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("");
+  await expect(page.getByRole("log").getByText(/First line\s+Second line/)).toBeVisible();
 
   const update = await request.patch(
     `${channelsBase}/workspaces/${workspaceId}/members/${agent.identityId}`,
@@ -100,7 +110,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await page.getByRole("button", { name: "Open navigation" }).click();
   const navigation = page.getByRole("dialog", { name: "Navigation" });
   await expect(navigation).toBeVisible();
-  await navigation.getByRole("link", { name: new RegExp(channelId.slice(0, 8)) }).click();
+  await navigation.getByRole("link", { name: /browser-collaboration/ }).click();
   await expect(navigation).toBeHidden();
   await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/channels/${channelId}$`));
 

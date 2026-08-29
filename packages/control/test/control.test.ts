@@ -22,6 +22,7 @@ import {
 const channel: ChannelMetadata = {
   id: "channel-1",
   workspaceId: "workspace-1",
+  name: "Control Test",
   rosterRevision: 1,
   createdAt: "2026-08-28T00:00:00.000Z",
   participants: [
@@ -261,6 +262,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
       id: app.workspaceId,
       name: "MinuChannels Review",
     }]);
+    assert.equal((await client.listWorkspaceChannels(app.workspaceId))[0]?.name, "product-review");
     const messages = await client.listMessages(app.channelId);
     assert.deepEqual(messages.map(({ sequence, body }) => ({ sequence, body })), [
       {

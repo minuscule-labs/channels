@@ -233,6 +233,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       await transaction.insert(schema.channels).values({
         id: channel.id,
         workspaceId: channel.workspaceId,
+        name: channel.name,
         createdAt: channel.createdAt,
         nextSequence: 1,
         rosterRevision: channel.rosterRevision,
@@ -283,6 +284,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     return {
       id: channel.id,
       workspaceId: channel.workspaceId ?? "legacy-default-workspace",
+      name: channel.name,
       createdAt: channel.createdAt,
       rosterRevision: channel.rosterRevision,
       participants: participants.map((participant) => ({
@@ -317,6 +319,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     return {
       id: channel.id,
       workspaceId: channel.workspaceId ?? "legacy-default-workspace",
+      name: channel.name,
       createdAt: channel.createdAt,
       rosterRevision: channel.rosterRevision,
       participants: participants.map((participant) => ({

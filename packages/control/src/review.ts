@@ -137,6 +137,7 @@ export async function createLocalReviewApp(
     ]);
     const channel = await client.createChannel({
       workspaceId: workspace.id,
+      name: "product-review",
       participantIds: [human.id, builder.id, reviewer.id],
     });
     await client.postMessage(channel.id, {

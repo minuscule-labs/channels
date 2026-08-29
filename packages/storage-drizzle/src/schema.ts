@@ -50,6 +50,7 @@ export const workspaceMembers = sqliteTable(
 export const channels = sqliteTable("channels", {
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id").references(() => workspaces.id),
+  name: text("name").notNull().default("Untitled Channel"),
   createdAt: text("created_at").notNull(),
   nextSequence: integer("next_sequence").notNull().default(1),
   rosterRevision: integer("roster_revision").notNull().default(1),

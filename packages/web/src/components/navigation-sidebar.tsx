@@ -1,7 +1,6 @@
 import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
 import { Hash, MessageSquare, X } from "lucide-react";
-import { shortId } from "../lib/messages";
 
 export interface WorkspaceNavigationItem {
   workspace: Workspace;
@@ -40,11 +39,14 @@ export function NavigationSidebar({
         <div className="space-y-5">
           {items.map(({ workspace, channels, loading }) => (
             <section key={workspace.id}>
-              <div className="mb-1 flex items-center justify-between px-2">
-                <h2 className="truncate text-xs font-semibold uppercase tracking-[0.12em] text-[var(--muted)]">
-                  {workspace.name}
-                </h2>
-                <span className="status-dot" data-status={workspace.status} title={workspace.status} />
+              <div className="mb-1 flex items-end justify-between gap-2 px-2">
+                <div className="min-w-0">
+                  <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Workspace</p>
+                  <h2 className="truncate text-sm font-semibold text-[var(--text)]" title={workspace.name}>
+                    {workspace.name}
+                  </h2>
+                </div>
+                <span className="status-dot mb-1" data-status={workspace.status} title={workspace.status} />
               </div>
               {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Channels…</p> : null}
               <ul className="space-y-1">
@@ -64,7 +66,7 @@ export function NavigationSidebar({
                         aria-current={active ? "page" : undefined}
                       >
                         <Hash className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate font-mono">{shortId(channel.id)}</span>
+                        <span className="truncate">{channel.name}</span>
                         <span className="ml-auto text-[10px] tabular-nums">{channel.participants.length}</span>
                       </Link>
                     </li>

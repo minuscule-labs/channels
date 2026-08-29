@@ -19,6 +19,10 @@ export function ChannelPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearEndRef = useRef(true);
   const previousMessageCountRef = useRef(0);
+  const workspace = useQuery({
+    queryKey: queryKeys.workspace(workspaceId),
+    queryFn: () => channels.getWorkspace(workspaceId),
+  });
   const metadata = useQuery({
     queryKey: queryKeys.channel(channelId),
     queryFn: () => channels.getChannel(channelId),
@@ -77,13 +81,13 @@ export function ChannelPage() {
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 className="truncate font-mono text-sm font-semibold">#{shortId(channelId)}</h1>
+              <h1 className="truncate text-sm font-semibold" title={metadata.data.name}>#{metadata.data.name}</h1>
               <span className={`connection-pill ${connection}`} aria-label={`Live updates ${connection}`}>
                 <span className="status-dot" /> {connection}
               </span>
             </div>
             <p className="truncate text-[11px] text-[var(--muted)]">
-              Workspace {shortId(workspaceId)} · roster {metadata.data.rosterRevision}
+              Workspace: {workspace.data?.name ?? shortId(workspaceId)} · Channel ID {shortId(channelId)} · roster {metadata.data.rosterRevision}
             </p>
           </div>
           {connection === "disconnected" ? (

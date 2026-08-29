@@ -177,6 +177,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
       .map((channel) => ({
         id: channel.id,
         workspaceId: channel.workspaceId,
+        name: channel.name,
         createdAt: channel.createdAt,
         rosterRevision: channel.rosterRevision,
         participants: channel.participants.map((participant) => ({ ...participant })),
@@ -194,6 +195,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     return {
       id: channel.id,
       workspaceId: channel.workspaceId,
+      name: channel.name,
       createdAt: channel.createdAt,
       rosterRevision: channel.rosterRevision,
       participants: channel.participants.map((participant) => ({ ...participant })),

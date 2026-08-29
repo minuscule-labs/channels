@@ -125,6 +125,18 @@ export function ChannelComposer({
     }
   };
 
+  const insertLineBreak = () => {
+    const start = textareaRef.current?.selectionStart ?? cursor;
+    const end = textareaRef.current?.selectionEnd ?? start;
+    const nextBody = `${body.slice(0, start)}\n${body.slice(end)}`;
+    const nextCursor = start + 1;
+    updateBody(nextBody, nextCursor);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  };
+
   const insertMention = (suggestion: MentionSuggestion) => {
     if (!mentionQuery) return;
     const next = replaceMention(body, mentionQuery, suggestion.handle);
@@ -218,7 +230,12 @@ export function ChannelComposer({
                   return;
                 }
               }
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSubmit) {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                insertLineBreak();
+                return;
+              }
+              if (event.key === "Enter" && !event.shiftKey && canSubmit) {
                 event.preventDefault();
                 submit();
               }
@@ -250,7 +267,7 @@ export function ChannelComposer({
                 ))}
               </select>
             </label>
-            <span className="text-[10px] text-[var(--muted)]">@mention wakes an agent · ⌘/Ctrl + Enter to send</span>
+            <span className="text-[10px] text-[var(--muted)]">Enter sends · Shift or ⌘/Ctrl + Enter adds a line · @mention wakes an agent</span>
             <div className="ml-auto flex items-center gap-2">
               <span className={`font-mono text-[10px] ${bodyTooLarge ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}>
                 {bodyBytes.toLocaleString()} / {MAX_MESSAGE_BYTES.toLocaleString()} B

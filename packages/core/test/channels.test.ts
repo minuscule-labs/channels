@@ -33,6 +33,7 @@ async function createTestChannel(endpoint: string) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      name: "build-and-review",
       participants: [
         {
           id: "agent-a",
@@ -52,22 +53,25 @@ async function createTestChannel(endpoint: string) {
     }),
   });
   assert.equal(result.response.status, 201);
-  return result.body.channel as { id: string; participants: unknown[]; messages: unknown[] };
+  return result.body.channel as { id: string; name: string; participants: unknown[]; messages: unknown[] };
 }
 
 test("creates a channel and starts with no messages", async () => {
   const server = await createChannelHttpServer();
   try {
     const channel = await createTestChannel(server.endpoint);
+    assert.equal(channel.name, "build-and-review");
     assert.equal(channel.participants.length, 2);
     assert.deepEqual(channel.messages, []);
 
     const fetched = await jsonRequest(server.endpoint, `/channels/${channel.id}`);
     assert.equal(fetched.response.status, 200);
     const fetchedChannel = fetched.body.channel as {
+      name: string;
       participants: Array<{ id: string; role?: string; profile?: string }>;
       messages?: unknown;
     };
+    assert.equal(fetchedChannel.name, "build-and-review");
     assert.equal("messages" in fetchedChannel, false);
     assert.deepEqual(fetchedChannel.participants[0], {
       id: "agent-a",
@@ -138,9 +142,11 @@ test("registers reusable identities and Workspace-local handles for Channel rout
 
     const channel = await client.createChannel({
       workspaceId: workspace.id,
+      name: "runtime-work",
       participantIds: [human.id, builder.id],
     });
     assert.equal(channel.workspaceId, workspace.id);
+    assert.equal(channel.name, "runtime-work");
     assert.deepEqual(
       channel.participants.map((participant) => [participant.id, participant.handle]),
       [[human.id, "david"], [builder.id, "builder"]],
@@ -154,6 +160,15 @@ test("registers reusable identities and Workspace-local handles for Channel rout
     assert.equal((await client.listIdentities()).length, 3);
     assert.equal((await client.listWorkspaceMembers(workspace.id)).length, 2);
     assert.equal((await client.listWorkspaceChannels(workspace.id))[0]?.id, channel.id);
+    assert.equal((await client.listWorkspaceChannels(workspace.id))[0]?.name, "runtime-work");
+    await assert.rejects(
+      client.createChannel({ workspaceId: workspace.id, name: "   ", participantIds: [human.id] }),
+      /name must be a non-empty string/i,
+    );
+    await assert.rejects(
+      client.createChannel({ workspaceId: workspace.id, name: "x".repeat(101), participantIds: [human.id] }),
+      /at most 100 characters/i,
+    );
     await assert.rejects(
       client.createChannel({ workspaceId: workspace.id, participantIds: [outsider.id] }),
       /not an active Workspace member/,

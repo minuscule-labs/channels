@@ -95,6 +95,7 @@ export interface ChannelMessage {
 export interface ChannelMetadata {
   id: string;
   workspaceId: string;
+  name: string;
   participants: Participant[];
   rosterRevision: number;
   createdAt: string;
@@ -124,6 +125,7 @@ export type ChannelEvent = MessageCreatedEvent | RosterUpdatedEvent;
 
 export interface CreateChannelInput {
   workspaceId?: string;
+  name?: string;
   participantIds?: string[];
   /** @deprecated Compatibility path for pre-Workspace callers. */
   participants?: Participant[];

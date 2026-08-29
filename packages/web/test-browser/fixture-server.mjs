@@ -27,7 +27,11 @@ await service.addWorkspaceMember(workspace.id, {
   roleLabel: "builder",
   profileOverride: "Implements features and verifies changes.",
 });
-const channel = await service.createChannel({ workspaceId: workspace.id, participantIds: [human.id, agent.id] });
+const channel = await service.createChannel({
+  workspaceId: workspace.id,
+  name: "browser-collaboration",
+  participantIds: [human.id, agent.id],
+});
 await service.createMessage(channel.id, {
   participantId: human.id,
   body: "@builder Verify the browser collaboration flow.",

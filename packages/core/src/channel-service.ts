@@ -382,6 +382,13 @@ export class ChannelService {
     if (input.participantIds !== undefined && input.participants !== undefined) {
       throw new ChannelValidationError("participantIds and legacy participants are mutually exclusive");
     }
+    if (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim())) {
+      throw new ChannelValidationError("Channel name must be a non-empty string");
+    }
+    const requestedName = input.name?.trim();
+    if (requestedName && requestedName.length > 100) {
+      throw new ChannelValidationError("Channel name must be at most 100 characters");
+    }
     let workspaceId = input.workspaceId;
     let participants: Participant[];
     if (input.participantIds !== undefined) {
@@ -466,9 +473,11 @@ export class ChannelService {
         participants.push({ ...participant, handle: mentionHandle });
       }
     }
+    const channelId = randomUUID();
     return await this.storage.createChannel({
-      id: randomUUID(),
+      id: channelId,
       workspaceId: workspaceId!,
+      name: requestedName ?? `Channel ${channelId.slice(0, 8)}`,
       participants,
       messages: [],
       rosterRevision: 1,

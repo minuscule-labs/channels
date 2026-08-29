@@ -31,12 +31,14 @@ The browser must never open `relay.db`, receive Runtime credentials, or import R
 - React, TanStack Router, TanStack Query, Tailwind, and Vite.
 - Radix Dialog for accessible mobile drawers, matching the proven MinuNotes primitive approach.
 - MinuNotes-inspired responsive sidebar shell and flat technical visual language.
-- Workspace and Channel navigation.
+- Explicitly labeled Workspace sections and names in navigation and Channel headers.
+- Durable Channel names as primary labels; opaque ids remain routing details.
 - Channel timeline ordered by monotonic sequence.
 - Race-free SSE startup: subscribe, wait for `ready`, refetch, then merge by message id.
 - Revision-aware roster refresh.
 - Human author selection stored locally.
 - Plain-text composer with mention suggestions and structured targets.
+- Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
 - Explicit connecting/live/disconnected state and manual retry.
 

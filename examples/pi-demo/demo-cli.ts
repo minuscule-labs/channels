@@ -157,6 +157,7 @@ async function main(): Promise<void> {
   ]);
   const channel = await client.createChannel({
     workspaceId: workspace.id,
+    name: "pi-collaboration",
     participantIds: [human!.id, agentA!.id, agentB!.id],
   });
   const relayDirectory = new LocalRelayDirectory(client, relayStorage);

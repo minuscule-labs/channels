@@ -43,6 +43,13 @@
       "when": 1787936620783,
       "tag": "0005_revisioned_rosters",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788004609371,
+      "tag": "0006_channel_names",
+      "breakpoints": true
     }
   ]
 }

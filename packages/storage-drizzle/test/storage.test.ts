@@ -37,6 +37,7 @@ test("initial migration adopts the previous raw SQLite schema", async () => {
     const channel = await storage.getChannel("legacy-channel");
     assert.equal(channel?.id, "legacy-channel");
     assert.equal(channel?.workspaceId, "legacy-default-workspace");
+    assert.equal(channel?.name, "Channel legacy-c");
     assert.equal(channel?.participants[0]?.id, "legacy-agent");
     assert.equal(channel?.participants[0]?.handle, "legacy-agent");
     assert.equal((await storage.listWorkspaces())[0]?.id, "legacy-default-workspace");
@@ -72,6 +73,7 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
     });
     const channel = await first.createChannel({
       workspaceId: workspace.id,
+      name: "durable-work",
       participantIds: [human.id, agent.id],
     });
     await first.createMessage(channel.id, {
@@ -91,6 +93,7 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
     assert.equal((await second.listWorkspaceMembers(workspace.id))[1]?.mentionHandle, "implementer");
     const restored = await second.getChannel(channel.id);
     assert.equal(restored.workspaceId, workspace.id);
+    assert.equal(restored.name, "durable-work");
     assert.equal(restored.participants[1]?.id, agent.id);
     assert.equal(restored.rosterRevision, 2);
     assert.equal(restored.participants[1]?.handle, "implementer");
