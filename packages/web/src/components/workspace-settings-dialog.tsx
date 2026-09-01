@@ -97,7 +97,16 @@ function AgentConfigurationForm({
 }) {
   const queryClient = useQueryClient();
   const [runtimeAdapter, setRuntimeAdapter] = useState("");
+  const [selectedModelKey, setSelectedModelKey] = useState("");
+  const [reasoningLevel, setReasoningLevel] = useState("");
   const [personaPrompt, setPersonaPrompt] = useState("");
+  const runtimeOptions = useQuery({
+    queryKey: queryKeys.agentRuntimeOptions(workspaceId, agent.identityId),
+    queryFn: () => localControl.getAgentRuntimeOptions(workspaceId, agent.identityId),
+    enabled: agent.runtimeConfigured,
+    retry: false,
+    staleTime: 60_000,
+  });
   const [status, setStatus] = useState<"active" | "disabled">(
     agent.status === "disabled" ? "disabled" : "active",
   );
@@ -105,13 +114,23 @@ function AgentConfigurationForm({
     setStatus(agent.status === "disabled" ? "disabled" : "active");
   }, [agent.status]);
   const statusChanged = agent.status !== "unconfigured" && status !== agent.status;
-  const hasUpdate = Boolean(runtimeAdapter.trim() || personaPrompt.trim() || statusChanged);
+  const selectedModel = runtimeOptions.data?.models.find(
+    (model) => JSON.stringify([model.provider, model.id]) === selectedModelKey,
+  );
+  const hasUpdate = Boolean(
+    runtimeAdapter.trim() || selectedModel || reasoningLevel || personaPrompt.trim() || statusChanged,
+  );
   const mutation = useMutation({
     mutationFn: (input: UpdateLocalWorkspaceAgentConfigurationInput) =>
       localControl.updateWorkspaceAgentConfiguration(workspaceId, agent.identityId, input),
     onSuccess: (next) => {
       queryClient.setQueryData(queryKeys.workspaceConfiguration(workspaceId), next);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agentRuntimeOptions(workspaceId, agent.identityId),
+      });
       setRuntimeAdapter("");
+      setSelectedModelKey("");
+      setReasoningLevel("");
       setPersonaPrompt("");
     },
   });
@@ -120,6 +139,11 @@ function AgentConfigurationForm({
     if (!hasUpdate || mutation.isPending) return;
     const input: UpdateLocalWorkspaceAgentConfigurationInput = {};
     if (runtimeAdapter.trim()) input.runtimeAdapter = runtimeAdapter.trim();
+    if (selectedModel) {
+      input.modelProvider = selectedModel.provider;
+      input.modelId = selectedModel.id;
+    }
+    if (reasoningLevel) input.reasoningLevel = reasoningLevel as UpdateLocalWorkspaceAgentConfigurationInput["reasoningLevel"];
     if (personaPrompt.trim()) input.personaPrompt = personaPrompt;
     if (statusChanged || agent.status === "unconfigured") input.status = status;
     mutation.mutate(input);
@@ -141,6 +165,8 @@ function AgentConfigurationForm({
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
         <ConfigurationState configured={agent.runtimeConfigured} label="Runtime" />
+        <ConfigurationState configured={agent.modelConfigured} label="Model" />
+        <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
         <ConfigurationState configured={agent.personaConfigured} label="Persona" />
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -167,6 +193,53 @@ function AgentConfigurationForm({
           </select>
         </label>
       </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="block text-xs font-medium">
+          {agent.modelConfigured ? "Replace model" : "Model"}
+          <select
+            value={selectedModelKey}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSelectedModelKey(value);
+              const model = runtimeOptions.data?.models.find(
+                (candidate) => JSON.stringify([candidate.provider, candidate.id]) === value,
+              );
+              if (model && !model.reasoning) setReasoningLevel("off");
+            }}
+            className="settings-input mt-1.5"
+            disabled={!runtimeOptions.data?.models.length}
+          >
+            <option value="">{agent.modelConfigured ? "Keep configured model" : "Use Runtime default"}</option>
+            {runtimeOptions.data?.models.map((model) => (
+              <option
+                key={`${model.provider}/${model.id}`}
+                value={JSON.stringify([model.provider, model.id])}
+              >
+                {model.name} · {model.provider}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-xs font-medium">
+          {agent.reasoningConfigured ? "Replace reasoning" : "Reasoning"}
+          <select
+            value={reasoningLevel}
+            onChange={(event) => setReasoningLevel(event.target.value)}
+            className="settings-input mt-1.5"
+            disabled={!runtimeOptions.data}
+          >
+            <option value="">{agent.reasoningConfigured ? "Keep configured level" : "Use model default"}</option>
+            {runtimeOptions.data?.reasoningLevels.map((level) => (
+              <option key={level} value={level}>{level}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {runtimeOptions.isPending ? (
+        <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured Runtime models…</p>
+      ) : runtimeOptions.error ? (
+        <p className="mt-1.5 text-[10px] text-[var(--danger)]">Runtime model discovery unavailable.</p>
+      ) : null}
       <label className="mt-3 block text-xs font-medium">
         {agent.personaConfigured ? "Replace persona" : "Persona"}
         <textarea

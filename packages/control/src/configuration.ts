@@ -4,6 +4,7 @@ import {
   type RelayBindingStore,
 } from "@minu/channels-relay";
 import type {
+  LocalAgentRuntimeOptions,
   LocalWorkspaceAgentConfigurationSummary,
   LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
@@ -14,6 +15,8 @@ const MAX_ROOT_URI_BYTES = 8 * 1024;
 const MAX_NOTES_FOLDER_ID_BYTES = 255;
 const MAX_PERSONA_PROMPT_BYTES = 64 * 1024;
 const MAX_RUNTIME_ADAPTER_BYTES = 100;
+const MAX_MODEL_PROVIDER_BYTES = 100;
+const MAX_MODEL_ID_BYTES = 300;
 
 export class LocalConfigurationRequestError extends Error {
   constructor(
@@ -30,6 +33,12 @@ export interface LocalAgentHostConfigurationOptions {
   client: ChannelClient;
   store: RelayBindingStore;
   now?: () => Date;
+  runtimes?: Readonly<Record<string, {
+    capabilities?(config?: { cwd?: string }): Promise<{
+      models: LocalAgentRuntimeOptions["models"];
+      reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+    }>;
+  }>>;
   onAudit?(event: LocalControlAuditEvent): void;
 }
 
@@ -73,6 +82,10 @@ function optionalNullableString(
 export class LocalAgentHostConfiguration {
   private readonly directory: LocalRelayDirectory;
   private readonly now: () => Date;
+  private readonly runtimeOptions = new Map<string, Promise<{
+    models: LocalAgentRuntimeOptions["models"];
+    reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+  }>>();
 
   constructor(private readonly options: LocalAgentHostConfigurationOptions) {
     this.now = options.now ?? (() => new Date());
@@ -107,6 +120,8 @@ export class LocalAgentHostConfiguration {
           configured: Boolean(config),
           personaConfigured: Boolean(config?.personaPrompt || config?.personaRef),
           runtimeConfigured: Boolean(config?.runtimeAdapter),
+          modelConfigured: Boolean(config?.modelProvider && config?.modelId),
+          reasoningConfigured: Boolean(config?.reasoningLevel),
           status: config?.status ?? "unconfigured",
           boundChannelCount: boundChannels.size,
           changesApplyToNewSessions: true,
@@ -119,6 +134,39 @@ export class LocalAgentHostConfiguration {
       notesFolderConfigured: Boolean(workspaceConfig?.notesFolderId),
       agents,
     };
+  }
+
+  async getAgentRuntimeOptions(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalAgentRuntimeOptions> {
+    await this.authorize(workspaceId, actorIdentityId);
+    const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, agentIdentityId);
+    const runtime = config?.runtimeAdapter
+      ? this.options.runtimes?.[config.runtimeAdapter]
+      : undefined;
+    if (!config || !runtime?.capabilities) {
+      throw new LocalConfigurationRequestError("Agent Runtime options are unavailable", 409, "unavailable");
+    }
+    try {
+      let pending = this.runtimeOptions.get(config.runtimeAdapter!);
+      if (!pending) {
+        pending = runtime.capabilities();
+        this.runtimeOptions.set(config.runtimeAdapter!, pending);
+        void pending.catch(() => this.runtimeOptions.delete(config.runtimeAdapter!));
+      }
+      const capabilities = await pending;
+      return {
+        protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+        workspaceId,
+        identityId: agentIdentityId,
+        models: capabilities.models,
+        reasoningLevels: capabilities.reasoningLevels,
+      };
+    } catch {
+      throw new LocalConfigurationRequestError("Agent Runtime options are unavailable", 409, "unavailable");
+    }
   }
 
   async updateWorkspaceConfiguration(
@@ -163,7 +211,9 @@ export class LocalAgentHostConfiguration {
     try {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Agent configuration");
-      rejectUnknown(input, ["personaPrompt", "runtimeAdapter", "status"]);
+      rejectUnknown(input, [
+        "personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "status",
+      ]);
       if (Object.keys(input).length === 0) {
         throw new LocalConfigurationRequestError("Agent configuration update is empty", 400, "invalid");
       }
@@ -180,6 +230,26 @@ export class LocalAgentHostConfiguration {
       if (runtimeAdapter && !/^[a-zA-Z0-9._-]+$/.test(runtimeAdapter)) {
         throw new LocalConfigurationRequestError("runtimeAdapter has invalid characters", 400, "invalid");
       }
+      const modelProvider = optionalNullableString(
+        input.modelProvider,
+        "modelProvider",
+        MAX_MODEL_PROVIDER_BYTES,
+      );
+      const modelId = optionalNullableString(input.modelId, "modelId", MAX_MODEL_ID_BYTES);
+      if ((modelProvider === null) !== (modelId === null)
+        || (typeof modelProvider === "string") !== (typeof modelId === "string")) {
+        throw new LocalConfigurationRequestError(
+          "modelProvider and modelId must be configured together",
+          400,
+          "invalid",
+        );
+      }
+      const reasoningLevel = input.reasoningLevel;
+      const reasoningLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+      if (reasoningLevel !== undefined && reasoningLevel !== null
+        && !reasoningLevels.includes(String(reasoningLevel))) {
+        throw new LocalConfigurationRequestError("reasoningLevel is invalid", 400, "invalid");
+      }
       const status = input.status;
       if (status !== undefined && status !== "active" && status !== "disabled") {
         throw new LocalConfigurationRequestError("status must be active or disabled", 400, "invalid");
@@ -189,6 +259,9 @@ export class LocalAgentHostConfiguration {
         agentIdentityId,
         personaPrompt,
         runtimeAdapter,
+        modelProvider,
+        modelId,
+        reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null | undefined,
         status,
       });
       this.audit({

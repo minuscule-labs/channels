@@ -47,6 +47,23 @@ const browserSessions = new LocalControlBrowserSessions({
   currentHumanIdentityId: human.id,
 });
 const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
+const fixtureRuntime = {
+  async status() { return "idle"; },
+  async capabilities() {
+    return {
+      models: [
+        { provider: "openai", id: "gpt-browser-fast", name: "Browser Fast", reasoning: true },
+        { provider: "openai", id: "gpt-browser-deep", name: "Browser Deep", reasoning: true },
+      ],
+      reasoningLevels: ["off", "low", "medium", "high"],
+    };
+  },
+};
+const fixtureRuntimes = {
+  "browser-test": fixtureRuntime,
+  "pi-private-browser": fixtureRuntime,
+  pi: fixtureRuntime,
+};
 const localControl = await createLocalControlHttpServer({
   port: controlPort,
   allowedOrigins: [browserSessions.browserOrigin],
@@ -66,7 +83,7 @@ const localControl = await createLocalControlHttpServer({
         }];
       },
     },
-    runtimes: { "browser-test": { async status() { return "idle"; } } },
+    runtimes: fixtureRuntimes,
     lifecycle: {
       available: true,
       async startChannelAgent(channelId, identityId) {
@@ -82,7 +99,11 @@ const localControl = await createLocalControlHttpServer({
         agentBindings.set(`${channelId}:${identityId}`, "disabled");
       },
     },
-    configuration: new LocalAgentHostConfiguration({ client: channelClient, store: privateStore }),
+    configuration: new LocalAgentHostConfiguration({
+      client: channelClient,
+      store: privateStore,
+      runtimes: fixtureRuntimes,
+    }),
   }),
 });
 

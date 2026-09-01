@@ -1,6 +1,6 @@
 # Execution Configuration
 
-**Status:** Accepted direction; Channel working scopes and Runtime launch profiles are documented future work.
+**Status:** Workspace-agent model/reasoning launch profiles are implemented; named shared profiles, Channel overrides, and Channel working scopes remain future work.
 
 ## BLUF
 
@@ -59,7 +59,7 @@ Cross-Workspace identity reuse or cloning remains deferred. If added, each Works
 
 ## Runtime launch profiles
 
-The UI should eventually configure reusable launch profiles rather than ask users to “build a Runtime.” A profile may describe:
+The UI configures a reusable launch profile on each Workspace agent rather than asking users to “build a Runtime.” A future profile library may name and share the same launch specification across several agents. An agent profile may describe:
 
 ```text
 Name: Pi Deep Review
@@ -79,7 +79,7 @@ Review Agent  → Pi Deep + reviewer persona
 Builder Agent → Pi Fast + builder persona
 ```
 
-Profiles belong to restricted Workspace execution configuration. The likely selection hierarchy is:
+Profiles belong to restricted Workspace execution configuration. The current and future selection hierarchy is:
 
 1. host-registered Runtime adapter and its advertised capabilities;
 2. reusable Workspace launch profile;
@@ -95,21 +95,23 @@ Configuration changes apply only to new or **Start fresh** sessions. Existing se
 The current product supports:
 
 - one private Workspace source root;
-- one write-only persona per Workspace agent;
-- a Runtime adapter identifier per Workspace agent; and
+- one write-only persona and launch profile per reusable Workspace agent;
+- a Runtime adapter identifier per Workspace agent;
+- authenticated adapter model discovery;
+- validated provider/model and reasoning-level selection;
+- redacted configured-state summaries;
+- application of profile changes only to new or **Start fresh** sessions; and
 - isolated Runtime sessions per Channel-agent binding.
+
+MinuRuntime's start contract accepts structured provider/model and reasoning selections in addition to `cwd`, `systemPrompt`, and `appendSystemPrompt`. The Pi adapter discovers configured models through RPC, verifies exact selections, checks the selected model's available thinking levels, and fails before registration rather than silently falling back. The complete product flow has been proved with `openai-codex/gpt-5.6-sol`, low reasoning, and genuine output `CHANNEL_PROFILE_OK`.
 
 It does **not** yet support:
 
 - Channel working-directory scopes;
-- named reusable launch profiles;
-- adapter capability discovery;
-- model selection;
-- reasoning-level selection;
-- provider-option schemas; or
+- separately named profiles shared by several Workspace agents;
+- arbitrary provider-option schemas;
+- credential management in the profile UI; or
 - per-Channel launch-profile overrides.
-
-MinuRuntime's current start contract accepts `cwd`, `systemPrompt`, and `appendSystemPrompt`; model and reasoning are not currently part of that contract. Adding UI fields before Runtime and adapter capability contracts exist would create settings that cannot be reliably honored.
 
 ## Ownership boundary
 
@@ -120,9 +122,9 @@ MinuRuntime's current start contract accepts `cwd`, `systemPrompt`, and `appendS
 
 ## Promotion rule
 
-Do not implement Channel scopes or profile builders merely because they are plausible. Promote them when local usage demonstrates one of these concrete needs:
+Workspace-agent model/reasoning profiles were promoted after local usage demonstrated a need for materially different model cost and reasoning behavior and Pi exposed a stable RPC capability/selection contract. Do not promote the remaining Channel scopes, named shared profile libraries, provider-option forms, or binding overrides merely because they are plausible. Require evidence such as:
 
 - the Workspace root is too broad for safe or useful agent execution;
-- users repeatedly maintain the same adapter/model/reasoning combinations;
-- different agents require materially different model cost or reasoning behavior; or
-- an adapter exposes a stable capability schema that the UI can validate and preserve.
+- users repeatedly duplicate the same profile across several agents;
+- an additional adapter exposes a stable option schema that the UI can validate; or
+- one agent demonstrably needs different launch behavior in different Channels.

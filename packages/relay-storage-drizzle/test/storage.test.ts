@@ -26,6 +26,9 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     personaRef: "persona:builder:v1",
     personaPrompt: "Build carefully and verify every change.",
     runtimeAdapter: "pi",
+    modelProvider: "openai",
+    modelId: "gpt-test",
+    reasoningLevel: "high",
     status: "active",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -125,6 +128,9 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     assert.equal(reopenedConfig?.personaRef, "persona:builder:v1");
     assert.equal(reopenedConfig?.personaPrompt, "Build carefully and verify every change.");
     assert.equal(reopenedConfig?.runtimeAdapter, "pi");
+    assert.equal(reopenedConfig?.modelProvider, "openai");
+    assert.equal(reopenedConfig?.modelId, "gpt-test");
+    assert.equal(reopenedConfig?.reasoningLevel, "high");
     assert.equal((await reopened.listWorkspaceAgentConfigs(config.workspaceId)).length, 1);
     assert.equal((await reopened.listWorkspaceBindings(config.workspaceId)).length, 1);
     const persisted = await reopened.getBinding(record.id);

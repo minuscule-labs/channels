@@ -13,6 +13,7 @@ export {
 } from "./session.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
+  type LocalAgentRuntimeOptions,
   type LocalChannelAgent,
   type LocalChannelAgentsResponse,
   type LocalControlCapabilities,
@@ -66,6 +67,11 @@ export interface LocalControlConfigurationPort {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<LocalWorkspaceConfigurationSummary>;
+  getAgentRuntimeOptions(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalAgentRuntimeOptions>;
   updateWorkspaceConfiguration(
     workspaceId: string,
     actorIdentityId: string,
@@ -120,6 +126,7 @@ export class LocalControlService {
         workspaceConfigRead: Boolean(this.options.configuration),
         workspaceConfigWrite: Boolean(this.options.configuration),
         agentCreate: false,
+        agentRuntimeOptions: Boolean(this.options.configuration),
         agentStart: Boolean(this.options.lifecycle?.available),
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),
@@ -138,6 +145,21 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
     }
     return this.options.configuration.getWorkspaceConfiguration(workspaceId, actorIdentityId);
+  }
+
+  async getAgentRuntimeOptions(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalAgentRuntimeOptions> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAgentRuntimeOptions(
+      workspaceId,
+      agentIdentityId,
+      actorIdentityId,
+    );
   }
 
   async updateWorkspaceConfiguration(
@@ -477,6 +499,18 @@ export async function createLocalControlHttpServer(
             browserSession.identityId,
             await readJson(request),
           );
+        json(response, 200, result, origin);
+        return;
+      }
+      const agentRuntimeOptionsMatch = path.match(
+        /^\/local\/workspaces\/([^/]+)\/agents\/([^/]+)\/runtime-options$/,
+      );
+      if (agentRuntimeOptionsMatch && browserSession && request.method === "GET") {
+        const result = await options.service.getAgentRuntimeOptions(
+          decodeURIComponent(agentRuntimeOptionsMatch[1]!),
+          decodeURIComponent(agentRuntimeOptionsMatch[2]!),
+          browserSession.identityId,
+        );
         json(response, 200, result, origin);
         return;
       }

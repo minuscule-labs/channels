@@ -1,4 +1,5 @@
 import type {
+  LocalAgentRuntimeOptions,
   LocalChannelAgent,
   LocalChannelAgentsResponse,
   LocalControlCapabilities,
@@ -80,6 +81,15 @@ export class LocalControlClient {
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {
     return this.get<LocalWorkspaceConfigurationSummary>(
       `/local/workspaces/${encodeURIComponent(workspaceId)}/config`,
+    );
+  }
+
+  async getAgentRuntimeOptions(
+    workspaceId: string,
+    agentIdentityId: string,
+  ): Promise<LocalAgentRuntimeOptions> {
+    return this.get<LocalAgentRuntimeOptions>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentIdentityId)}/runtime-options`,
     );
   }
 

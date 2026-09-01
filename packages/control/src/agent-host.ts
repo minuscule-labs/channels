@@ -14,11 +14,14 @@ import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import type { LocalControlRuntimePort } from "./server.ts";
+import type { LocalAgentRuntimeOptions, LocalReasoningLevel } from "./contracts.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
 export interface ManagedRuntimeStartConfig {
   cwd: string;
   appendSystemPrompt?: string;
+  model?: { provider: string; id: string };
+  reasoningLevel?: LocalReasoningLevel;
 }
 
 export interface ManagedRuntimeSession {
@@ -27,6 +30,7 @@ export interface ManagedRuntimeSession {
 
 export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partial<Omit<AgentRuntimePort, "status">> {
   start?(config: ManagedRuntimeStartConfig): Promise<ManagedRuntimeSession>;
+  capabilities?(config?: { cwd?: string }): Promise<Omit<LocalAgentRuntimeOptions, "protocolVersion" | "workspaceId" | "identityId">>;
   stop?(sessionId: string): Promise<void>;
 }
 
@@ -55,6 +59,13 @@ function executableRuntime(runtime: LocalManagedRuntimePort | undefined): runtim
 
 function launchableRuntime(runtime: LocalManagedRuntimePort | undefined): runtime is AgentRuntimePort & LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">> {
   return executableRuntime(runtime) && typeof runtime.start === "function";
+}
+
+function launchFailureMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : "";
+  return /model|reasoning|thinking/i.test(message)
+    ? "Configured agent model or reasoning is unavailable; update the launch profile and retry"
+    : fallback;
 }
 
 async function workspaceDirectory(rootUri: string): Promise<string> {
@@ -192,6 +203,10 @@ export class LocalAgentHost {
           session = await runtime.start({
             cwd,
             appendSystemPrompt: agentConfig.personaPrompt,
+            ...(agentConfig.modelProvider && agentConfig.modelId
+              ? { model: { provider: agentConfig.modelProvider, id: agentConfig.modelId } }
+              : {}),
+            ...(agentConfig.reasoningLevel ? { reasoningLevel: agentConfig.reasoningLevel } : {}),
           });
           const messages = await this.options.client.listMessages(channelId);
           await this.options.store.setCursor(
@@ -223,7 +238,11 @@ export class LocalAgentHost {
           }
           if (session && runtime.stop) await runtime.stop(session.id).catch(() => undefined);
           if (error instanceof LocalConfigurationRequestError) throw error;
-          throw new LocalConfigurationRequestError("Agent session could not be started", 409, "unavailable");
+          throw new LocalConfigurationRequestError(
+            launchFailureMessage(error, "Agent session could not be started"),
+            409,
+            "unavailable",
+          );
         }
         this.audit({
           action: "agent.session.started",
@@ -279,6 +298,12 @@ export class LocalAgentHost {
         session = await runtime.start({
           cwd: context.cwd,
           appendSystemPrompt: context.agentConfig.personaPrompt,
+          ...(context.agentConfig.modelProvider && context.agentConfig.modelId
+            ? { model: { provider: context.agentConfig.modelProvider, id: context.agentConfig.modelId } }
+            : {}),
+          ...(context.agentConfig.reasoningLevel
+            ? { reasoningLevel: context.agentConfig.reasoningLevel }
+            : {}),
         });
         const replaced = await this.directory.replaceSession({
           bindingId: previous.id,
@@ -327,7 +352,11 @@ export class LocalAgentHost {
           targetIdentityId: agentIdentityId,
         });
         if (error instanceof LocalConfigurationRequestError) throw error;
-        throw new LocalConfigurationRequestError("Agent session could not be replaced", 409, "unavailable");
+        throw new LocalConfigurationRequestError(
+          launchFailureMessage(error, "Agent session could not be replaced"),
+          409,
+          "unavailable",
+        );
       }
     });
   }

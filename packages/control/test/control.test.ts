@@ -81,6 +81,13 @@ class ManagedFakeRuntime {
   private readonly transcripts = new Map<string, Array<{ role: "user" | "assistant"; content: string }>>();
   private readonly statuses = new Map<string, "idle" | "working">();
 
+  async capabilities() {
+    return {
+      models: [{ provider: "openai", id: "gpt-managed", name: "Managed GPT", reasoning: true }],
+      reasoningLevels: ["off", "medium", "high"] as Array<"off" | "medium" | "high">,
+    };
+  }
+
   async start(config: ManagedRuntimeStartConfig): Promise<{ id: string }> {
     const sessionId = `managed-session-${this.starts.length + 1}`;
     this.starts.push({ sessionId, config: { ...config } });
@@ -216,7 +223,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 4 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 5 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -299,7 +306,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 4, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 5, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -374,7 +381,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 4,
+      protocolVersion: 5,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -556,6 +563,9 @@ test("private configuration authorizes current humans and returns only redacted 
       {
         personaPrompt: "PRIVATE PERSONA: build and verify carefully",
         runtimeAdapter: "pi-owned",
+        modelProvider: "openai-private",
+        modelId: "gpt-private",
+        reasoningLevel: "high",
       },
     );
 
@@ -565,6 +575,8 @@ test("private configuration authorizes current humans and returns only redacted 
       configured: true,
       personaConfigured: true,
       runtimeConfigured: true,
+      modelConfigured: true,
+      reasoningConfigured: true,
       status: "active",
       boundChannelCount: 0,
       changesApplyToNewSessions: true,
@@ -573,10 +585,13 @@ test("private configuration authorizes current humans and returns only redacted 
     const storedAgent = await store.getWorkspaceAgentConfig(workspace.id, agent.id);
     assert.equal(storedAgent?.personaPrompt, "PRIVATE PERSONA: build and verify carefully");
     assert.equal(storedAgent?.runtimeAdapter, "pi-owned");
+    assert.equal(storedAgent?.modelProvider, "openai-private");
+    assert.equal(storedAgent?.modelId, "gpt-private");
+    assert.equal(storedAgent?.reasoningLevel, "high");
     const presented = JSON.stringify(summary);
     assert.doesNotMatch(
       presented,
-      /private\/source|private-notes-folder|PRIVATE PERSONA|pi-owned|personaPrompt|runtimeAdapter|rootUri/,
+      /private\/source|private-notes-folder|PRIVATE PERSONA|pi-owned|openai-private|gpt-private|personaPrompt|runtimeAdapter|modelProvider|modelId|reasoningLevel|rootUri/,
     );
     assert.doesNotMatch(
       JSON.stringify(audit),
@@ -639,6 +654,9 @@ test("agent host starts isolated Channel sessions with private roots and persona
     await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
       personaPrompt: "PRIVATE MANAGED PERSONA",
       runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+      reasoningLevel: "high",
     });
     await client.postMessage(channelA.id, {
       participantId: owner.id,
@@ -658,8 +676,18 @@ test("agent host starts isolated Channel sessions with private roots and persona
     await host.startChannelAgent(channelA.id, agent.id, owner.id);
     await host.startChannelAgent(channelB.id, agent.id, owner.id);
     assert.deepEqual(runtime.starts.map(({ config }) => config), [
-      { cwd: sourceDirectory, appendSystemPrompt: "PRIVATE MANAGED PERSONA" },
-      { cwd: sourceDirectory, appendSystemPrompt: "PRIVATE MANAGED PERSONA" },
+      {
+        cwd: sourceDirectory,
+        appendSystemPrompt: "PRIVATE MANAGED PERSONA",
+        model: { provider: "openai", id: "gpt-managed" },
+        reasoningLevel: "high",
+      },
+      {
+        cwd: sourceDirectory,
+        appendSystemPrompt: "PRIVATE MANAGED PERSONA",
+        model: { provider: "openai", id: "gpt-managed" },
+        reasoningLevel: "high",
+      },
     ]);
     assert.notEqual(runtime.starts[0]?.sessionId, runtime.starts[1]?.sessionId);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
@@ -831,6 +859,17 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
             return "idle";
           },
         },
+        "pi-owned-private": {
+          async status() {
+            return "offline";
+          },
+          async capabilities() {
+            return {
+              models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true }],
+              reasoningLevels: ["off", "medium", "high"] as Array<"off" | "medium" | "high">,
+            };
+          },
+        },
       },
       onAudit: (event) => audit.push(event),
     });
@@ -863,6 +902,18 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       },
     );
     assert.equal(agentUpdate.status, 200);
+    const runtimeOptionsResponse = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
+      { headers: requestHeaders },
+    );
+    assert.equal(runtimeOptionsResponse.status, 200);
+    assert.deepEqual(await runtimeOptionsResponse.json(), {
+      protocolVersion: 5,
+      workspaceId: workspace.id,
+      identityId: agent.id,
+      models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true }],
+      reasoningLevels: ["off", "medium", "high"],
+    });
     const configurationResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/config`,
       { headers: { cookie, origin: "http://127.0.0.1:5174" } },
@@ -878,6 +929,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       configured: true,
       personaConfigured: true,
       runtimeConfigured: true,
+      modelConfigured: false,
+      reasoningConfigured: false,
       status: "active",
       boundChannelCount: 1,
       changesApplyToNewSessions: true,

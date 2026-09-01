@@ -152,6 +152,23 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(agentForm.getByLabel("Replace Runtime preference", { exact: true })).toHaveValue("");
   await expect(agentForm.getByLabel("Replace persona", { exact: true })).toHaveValue("");
   await expect(dialog.getByText(personaValue, { exact: true })).toHaveCount(0);
+
+  const modelSelect = dialog.getByRole("combobox", { name: "Model", exact: true });
+  const reasoningSelect = dialog.getByRole("combobox", { name: "Reasoning", exact: true });
+  await expect(modelSelect).toBeEnabled({ timeout: 10_000 });
+  await modelSelect.selectOption({ label: "Browser Deep · openai" });
+  await reasoningSelect.selectOption("high");
+  const launchProfileResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PATCH"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await agentForm.getByRole("button", { name: "Save agent" }).click();
+  const launchProfileResponse = await launchProfileResponsePromise;
+  expect(launchProfileResponse.ok()).toBe(true);
+  const launchProfileBody = await launchProfileResponse.text();
+  expect(launchProfileBody).not.toContain("gpt-browser-deep");
+  expect(launchProfileBody).not.toContain("high");
+  await expect(agentForm.getByText("Model: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByText("Reasoning: configured", { exact: true })).toBeVisible();
 });
 
 test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {

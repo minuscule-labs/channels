@@ -15,6 +15,11 @@ export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
   personaRef: text("persona_ref"),
   personaPrompt: text("persona_prompt"),
   runtimeAdapter: text("runtime_adapter"),
+  modelProvider: text("model_provider"),
+  modelId: text("model_id"),
+  reasoningLevel: text("reasoning_level", {
+    enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  }),
   status: text("status", { enum: ["active", "disabled"] }).notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

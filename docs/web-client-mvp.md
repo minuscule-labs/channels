@@ -33,7 +33,7 @@ The browser must never open private storage, receive Runtime credentials/session
 - Race-free SSE startup: subscribe, wait for `ready`, refetch, then merge by message id.
 - Revision-aware roster refresh.
 - Authenticated browser session bound to one stable current-human identity; composer authorship is automatic and offers no impersonation selector.
-- Workspace configuration dialog with redacted state, write-only source/persona/Runtime replacement forms, owner/admin enforcement, and new-session lifecycle guidance.
+- Workspace configuration dialog with redacted state; write-only source/persona/Runtime/model/reasoning replacement forms; authenticated Runtime model discovery; owner/admin enforcement; and new-session lifecycle guidance.
 - Owner/admin participant creation inside Manage Channel participants with human, agent, or service type; suggested/paste-safe handle; display name; public role; and inline Runtime/persona setup for execution identities.
 - Named Channel creation from selected active Workspace members.
 - Existing-Channel participant administration with optimistic roster revisions and conflict recovery.
@@ -92,7 +92,7 @@ Private configuration writes and their administration UI are implemented. Forms 
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
 - Runtime steering, interruption, and reconnect controls beyond the implemented start/replace/stop operations.
-- Adapter-capability-driven launch-profile UI for model, reasoning, provider options, and optional Channel working scopes; see [`execution-configuration.md`](execution-configuration.md).
+- Separately named launch profiles shared across agents, arbitrary provider-option schemas, and optional Channel working scopes beyond the implemented per-Workspace-agent model/reasoning profile; see [`execution-configuration.md`](execution-configuration.md).
 - Reusing an existing global identity in another Workspace; Workspace member editing, disablement, role changes, and hosted authorization beyond the implemented Channel-focused creation flow.
 - Channel rename.
 - Threads, reactions, attachments, search, unread state, and notifications.

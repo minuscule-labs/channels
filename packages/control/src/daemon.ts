@@ -86,6 +86,7 @@ export async function createLocalControlDaemon(
       configuration: new LocalAgentHostConfiguration({
         client,
         store,
+        runtimes: options.runtimes ?? {},
         now: options.now,
         onAudit: options.onAudit,
       }),

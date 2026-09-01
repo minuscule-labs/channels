@@ -131,7 +131,7 @@ async function main(): Promise<void> {
     console.log(`  Data:     ${app.dataDirectory}`);
     console.log(`  Workspace: ${workspaceRoot}`);
     console.log(`  Setup:    ${app.initialized ? "created a fresh local Workspace" : "reopened existing local data"}`);
-    console.log("  Agent:    click Start for @builder, then mention it for a live Pi response");
+    console.log("  Agent:    click Start for @builder, then send a message for a live Pi response");
     if (options.open) {
       await openBrowser(launchUrl);
       console.log("\nOpened the authenticated local Workspace in your browser.");

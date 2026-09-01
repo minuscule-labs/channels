@@ -17,6 +17,7 @@ POST  /local/channels/:channelId/agents/:identityId/stop
 GET   /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/agents/:identityId/config
+GET   /local/workspaces/:workspaceId/agents/:identityId/runtime-options
 ```
 
 It combines the public Channel roster with private binding and Runtime reachability internally, then returns only UI-safe state:
@@ -28,7 +29,7 @@ It combines the public Channel roster with private binding and Runtime reachabil
 - disabled steering, interruption, and reconnect capability flags;
 - last verification timestamp when available.
 
-Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, and Runtime adapter are write-only inputs: they are persisted in private local storage but never returned. It never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
+Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, Runtime adapter, and saved model/reasoning selections are write-only inputs: they are persisted in private local storage but never returned. Protocol v5 adds an authenticated agent-specific Runtime-options endpoint that discovers currently available model labels and reasoning choices from the configured adapter; it does not reveal which saved selection is active. Control never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
 
 ## Exports and executable
 
@@ -83,7 +84,7 @@ For the disposable genuine Pi vertical slice:
 pnpm dev:live -- --cwd /absolute/path/to/workspace
 ```
 
-The current development command builds the sibling MinuRuntime repository, loads `PiAgentRuntime`, and seeds write-only root, persona, and `pi` adapter configuration without creating a session. The owner explicitly clicks **Start** for `@builder`; the agent host then starts Pi with the configured directory and `appendSystemPrompt`, persists and leases the private binding, advances the new binding past historical Channel messages, and starts Relay. A later `@builder` message produces a genuine response through Channels. **Replace** starts a fresh session from current private configuration only when Channel agent work is idle, compare-and-swaps the binding generation, advances recovery to the current head, rebuilds Relay, and best-effort stops the prior Runtime. **Stop** first increments the generation and disables the binding so stale output is fenced, then stops the process and removes it from Relay. Both actions require confirmation because transcripts do not carry over and filesystem effects remain. `pnpm app:live` is the explicit alias. Disposable live shutdown stops sessions created by that composition.
+The current development command builds the sibling MinuRuntime repository, loads `PiAgentRuntime`, and seeds write-only root, persona, and `pi` adapter configuration without creating a session. Workspace settings discover Pi models and persist optional provider/model plus reasoning selections as the reusable agent's launch profile. The owner explicitly clicks **Start** for `@builder`; the agent host then starts Pi with the configured directory, `appendSystemPrompt`, model, and reasoning level; persists and leases the private binding; advances the new binding past historical Channel messages; and starts Relay. A later `@builder` message produces a genuine response through Channels. **Replace** starts a fresh session from current private configuration only when Channel agent work is idle, compare-and-swaps the binding generation, advances recovery to the current head, rebuilds Relay, and best-effort stops the prior Runtime. **Stop** first increments the generation and disables the binding so stale output is fenced, then stops the process and removes it from Relay. Both actions require confirmation because transcripts do not carry over and filesystem effects remain. `pnpm app:live` is the explicit alias. Disposable live shutdown stops sessions created by that composition.
 
 ## Run services individually
 

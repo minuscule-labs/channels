@@ -1,4 +1,21 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 4 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 5 as const;
+
+export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface LocalRuntimeModelOption {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+}
+
+export interface LocalAgentRuntimeOptions {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  workspaceId: string;
+  identityId: string;
+  models: LocalRuntimeModelOption[];
+  reasoningLevels: LocalReasoningLevel[];
+}
 
 export interface LocalCurrentSession {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
@@ -15,6 +32,8 @@ export interface LocalWorkspaceAgentConfigurationSummary {
   configured: boolean;
   personaConfigured: boolean;
   runtimeConfigured: boolean;
+  modelConfigured: boolean;
+  reasoningConfigured: boolean;
   status: "active" | "disabled" | "unconfigured";
   boundChannelCount: number;
   changesApplyToNewSessions: true;
@@ -36,6 +55,9 @@ export interface UpdateLocalWorkspaceConfigurationInput {
 export interface UpdateLocalWorkspaceAgentConfigurationInput {
   personaPrompt?: string | null;
   runtimeAdapter?: string | null;
+  modelProvider?: string | null;
+  modelId?: string | null;
+  reasoningLevel?: LocalReasoningLevel | null;
   status?: "active" | "disabled";
 }
 
@@ -47,6 +69,7 @@ export interface LocalControlCapabilities {
     workspaceConfigRead: boolean;
     workspaceConfigWrite: boolean;
     agentCreate: boolean;
+    agentRuntimeOptions: boolean;
     agentStart: boolean;
     agentReplace: boolean;
     agentStop: boolean;

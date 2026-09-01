@@ -17,6 +17,9 @@ export interface WorkspaceAgentConfig {
   personaRef?: string;
   personaPrompt?: string;
   runtimeAdapter?: string;
+  modelProvider?: string;
+  modelId?: string;
+  reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   status: "active" | "disabled";
   createdAt: string;
   updatedAt: string;
@@ -338,6 +341,9 @@ export class LocalRelayDirectory {
     personaRef?: string | null;
     personaPrompt?: string | null;
     runtimeAdapter?: string | null;
+    modelProvider?: string | null;
+    modelId?: string | null;
+    reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
     status?: "active" | "disabled";
   }): Promise<WorkspaceAgentConfig> {
     const [identity, members, workspaceConfig] = await Promise.all([
@@ -361,11 +367,21 @@ export class LocalRelayDirectory {
     const runtimeAdapter = input.runtimeAdapter === undefined
       ? existing?.runtimeAdapter
       : input.runtimeAdapter ?? undefined;
+    const modelProvider = input.modelProvider === undefined
+      ? existing?.modelProvider
+      : input.modelProvider ?? undefined;
+    const modelId = input.modelId === undefined ? existing?.modelId : input.modelId ?? undefined;
+    const reasoningLevel = input.reasoningLevel === undefined
+      ? existing?.reasoningLevel
+      : input.reasoningLevel ?? undefined;
     if (personaPrompt !== undefined && !personaPrompt.trim()) {
       throw new Error("Persona prompt must not be empty");
     }
     if (runtimeAdapter !== undefined && !runtimeAdapter.trim()) {
       throw new Error("Runtime adapter must not be empty");
+    }
+    if (Boolean(modelProvider) !== Boolean(modelId)) {
+      throw new Error("Model provider and id must be configured together");
     }
     const timestamp = this.now().toISOString();
     return this.store.putAgentConfig({
@@ -377,6 +393,9 @@ export class LocalRelayDirectory {
         : input.personaRef ?? undefined,
       personaPrompt,
       runtimeAdapter,
+      modelProvider,
+      modelId,
+      reasoningLevel,
       status: input.status ?? existing?.status ?? "active",
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,

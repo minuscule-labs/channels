@@ -41,6 +41,9 @@ function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): Wor
     personaRef: row.personaRef ?? undefined,
     personaPrompt: row.personaPrompt ?? undefined,
     runtimeAdapter: row.runtimeAdapter ?? undefined,
+    modelProvider: row.modelProvider ?? undefined,
+    modelId: row.modelId ?? undefined,
+    reasoningLevel: row.reasoningLevel ?? undefined,
   };
 }
 
@@ -104,6 +107,9 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         personaRef: config.personaRef ?? null,
         personaPrompt: config.personaPrompt ?? null,
         runtimeAdapter: config.runtimeAdapter ?? null,
+        modelProvider: config.modelProvider ?? null,
+        modelId: config.modelId ?? null,
+        reasoningLevel: config.reasoningLevel ?? null,
         status: config.status,
         updatedAt: config.updatedAt,
       },
