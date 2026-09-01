@@ -190,7 +190,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const replaceResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/replace`));
-  await page.getByRole("button", { name: "Replace Builder Agent session" }).click();
+  await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
   expect((await replaceResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: idle")).toBeVisible();
 
@@ -203,7 +203,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await expect(page.getByTitle("Runtime: disabled")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Replace Builder Agent session" }).click();
+  await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
   await expect(page.getByTitle("Runtime: idle")).toBeVisible();
 
   const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {

@@ -4,6 +4,7 @@ import { Fragment, useMemo } from "react";
 import { shortId } from "../lib/messages";
 import { participantHandle, participantLabel } from "../lib/participants";
 import { projectTimeline, type TimelineRow } from "../lib/timeline";
+import { MessageMarkdown } from "./message-markdown";
 
 function bodyParts(body: string) {
   return body.split(/(https?:\/\/[^\s]+)/g).map((part, index) =>
@@ -66,9 +67,15 @@ function MessageRow({
             </div>
           ) : null}
           {targets.length ? <p className={`${continuation ? "" : "mt-1"} text-[11px] text-[var(--muted)]`}>to {targets.join(", ")}</p> : null}
-          <p className={`${continuation || targets.length ? "mt-1" : "mt-2"} whitespace-pre-wrap break-words text-sm leading-6`}>
-            {bodyParts(message.body)}
-          </p>
+          {author?.type === "agent" ? (
+            <div className={continuation || targets.length ? "mt-1" : "mt-2"}>
+              <MessageMarkdown body={message.body} />
+            </div>
+          ) : (
+            <p className={`${continuation || targets.length ? "mt-1" : "mt-2"} whitespace-pre-wrap break-words text-sm leading-6`}>
+              {bodyParts(message.body)}
+            </p>
+          )}
         </div>
       </div>
     </article>

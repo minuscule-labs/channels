@@ -87,13 +87,13 @@ export function MemberRoster({
                         className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
                         disabled={pendingAgentAction !== undefined}
                         onClick={() => onReplaceAgent(participant.id)}
-                        aria-label={`Replace ${participantLabel(participant, participant.id)} session`}
-                        title="Start a fresh Runtime session with current Workspace configuration"
+                        aria-label={`Start fresh with ${participantLabel(participant, participant.id)}`}
+                        title="Start a new session with current Workspace configuration and an empty Runtime transcript"
                       >
                         {pendingAgentAction?.action === "replace" && pendingAgentAction.identityId === participant.id
                           ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
                           : <RotateCcw className="h-2.5 w-2.5" />}
-                        Replace
+                        Start fresh
                       </button>
                     ) : null}
                     {localAgent?.capabilities.stop && onStopAgent ? (

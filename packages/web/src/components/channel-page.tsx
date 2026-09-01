@@ -162,7 +162,7 @@ export function ChannelPage() {
               drawer
               onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
               onReplaceAgent={(identityId) => {
-                if (window.confirm("Replace this agent session? The existing Runtime transcript will not carry over, and filesystem effects remain.")) {
+                if (window.confirm("Start a fresh agent session? The current Runtime transcript will not carry over. Channel history and filesystem effects remain.")) {
                   agentAction.mutate({ action: "replace", identityId });
                 }
               }}
@@ -221,7 +221,7 @@ export function ChannelPage() {
           localStatus={localStatus}
           onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
           onReplaceAgent={(identityId) => {
-            if (window.confirm("Replace this agent session? The existing Runtime transcript will not carry over, and filesystem effects remain.")) {
+            if (window.confirm("Start a fresh agent session? The current Runtime transcript will not carry over. Channel history and filesystem effects remain.")) {
               agentAction.mutate({ action: "replace", identityId });
             }
           }}
