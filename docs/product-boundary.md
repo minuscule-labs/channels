@@ -120,7 +120,7 @@ Potential future consumers such as MCP, Slack, Cowork, or other services are not
 The lifecycle vertical slice is complete. From this point, prefer documenting future behavior over implementing it. MVP implementation is limited to:
 
 1. one reliable foreground product command for startup, status/log visibility, and shutdown;
-2. basic reusable identity and Workspace-member creation/administration;
+2. basic reusable identity and Workspace-member creation;
 3. Channel rename; and
 4. defects or usability problems that block review, installation, or the core collaboration flow.
 
@@ -138,5 +138,6 @@ Architecture consolidation is allowed only when required to ship the items above
 6. ~~Prove `UI → Channels → agent host → MinuRuntime → Channels → UI` with a genuine response.~~ Verified through the authenticated product start endpoint with Pi returning `LIVE_PI_PRODUCT_FLOW_OK` as Channel sequence 5 through the normal response commit path.
 7. ~~Add explicit session replacement and stop with generation fencing, confirmation, and recovery-safe cursor behavior.~~ Implemented through protocol-v4 owner/admin lifecycle commands and verified against genuine Pi.
 8. ~~Promote the working demo composition into persistent fresh local startup.~~ `pnpm local -- --cwd <path>` now initializes an empty local Workspace once, persists collaboration and private execution state under `~/.minu/channels`, reopens stable identities and Channels, runs live Pi only after explicit Start, serves the production web build through one loopback product URL, logs in the foreground, and shuts down with Ctrl-C. Replacing the sibling Runtime build/lookup with an installed package remains distribution work.
-9. Add basic identity/member administration and Channel rename.
-10. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.
+9. ~~Add basic identity/Workspace-member creation.~~ Owners/admins can create reusable humans, agents, or services with stable handles and public roles; new agents flow into existing restricted configuration and Channel assignment UI. Member editing and disablement remain deferred.
+10. Add Channel rename.
+11. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.

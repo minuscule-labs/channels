@@ -1,6 +1,6 @@
 # MinuChannels
 
-> **MVP scope:** Remaining feature work is limited to basic identity/Workspace-member administration, Channel rename, packaging the proven local command for distribution, and release-blocking fixes. Richer supervision, hosted auth/deployment, worktrees, additional adapters, advanced controls, pagination, desktop/TUI work, and similar ideas are documented future work—not current implementation tasks. See [`docs/product-boundary.md`](docs/product-boundary.md#mvp-implementation-guardrail).
+> **MVP scope:** Remaining feature work is limited to Channel rename, packaging the proven local command for distribution, and release-blocking fixes. Richer member administration, supervision, hosted auth/deployment, worktrees, additional adapters, advanced controls, pagination, desktop/TUI work, and similar ideas are documented future work—not current implementation tasks. See [`docs/product-boundary.md`](docs/product-boundary.md#mvp-implementation-guardrail).
 
 MinuChannels is one complete collaboration product for humans and agents, from responsive UI through isolated agent execution. A Channel is the sole conversation primitive; a direct conversation is simply a two-member Channel.
 
@@ -14,7 +14,7 @@ From this repository, start a persistent local Workspace with live Pi execution:
 pnpm local -- --cwd /absolute/path/to/workspace
 ```
 
-On first launch, MinuChannels creates one local human (`@you`), one configured but unstarted agent (`@builder`), one Workspace named after the source directory, and an empty **General** Channel. It does not create sample messages or execute the model automatically. Click **Start** and then mention `@builder` when ready.
+On first launch, MinuChannels creates one local human (`@you`), one configured but unstarted agent (`@builder`), one Workspace named after the source directory, and an empty **General** Channel. It does not create sample messages or execute the model automatically. Click **Start** and then mention `@builder` when ready. Workspace configuration lets an owner/admin create additional human, agent, or service identities with stable handles and public roles; new agents are configured there and then explicitly assigned through Channel participant management.
 
 Collaboration data, private agent-host state, and the stable local-human profile persist under `~/.minu/channels/` with owner-only permissions. Re-running the command reopens the same identities, Workspace, Channel, messages, configuration, bindings, and recovery cursors. `--cwd` initializes the private Workspace root on first launch; later changes should use Workspace settings. Press Ctrl-C to stop the foreground product services. Use `--data-dir /other/path` for an independent local installation or fresh test without touching the default data.
 
