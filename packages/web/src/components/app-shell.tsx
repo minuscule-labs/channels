@@ -19,6 +19,7 @@ export function AppShell() {
     })),
   });
   const activeChannelId = pathname.match(/\/channels\/([^/]+)/)?.[1];
+  const activeAgentsWorkspaceId = pathname.match(/\/workspaces\/([^/]+)\/agents$/)?.[1];
   const navigationItems = useMemo<WorkspaceNavigationItem[]>(
     () =>
       (workspaces.data ?? []).map((workspace, index) => ({
@@ -51,7 +52,11 @@ export function AppShell() {
   return (
     <div className="flex h-screen min-h-0 overflow-hidden bg-[var(--bg)] text-[var(--text)]">
       <div className="hidden md:block">
-        <NavigationSidebar items={navigationItems} activeChannelId={activeChannelId} />
+        <NavigationSidebar
+          items={navigationItems}
+          activeChannelId={activeChannelId}
+          activeAgentsWorkspaceId={activeAgentsWorkspaceId}
+        />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Drawer
@@ -73,6 +78,7 @@ export function AppShell() {
           <NavigationSidebar
             items={navigationItems}
             activeChannelId={activeChannelId}
+            activeAgentsWorkspaceId={activeAgentsWorkspaceId}
             onNavigate={() => setNavigationOpen(false)}
             onClose={() => setNavigationOpen(false)}
           />

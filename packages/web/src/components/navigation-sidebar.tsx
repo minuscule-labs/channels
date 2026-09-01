@@ -1,6 +1,6 @@
 import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
-import { Hash, MessageSquare, X } from "lucide-react";
+import { Bot, Hash, MessageSquare, X } from "lucide-react";
 import { CreateChannelDialog } from "./channel-administration-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
 
@@ -13,11 +13,13 @@ export interface WorkspaceNavigationItem {
 export function NavigationSidebar({
   items,
   activeChannelId,
+  activeAgentsWorkspaceId,
   onNavigate,
   onClose,
 }: {
   items: WorkspaceNavigationItem[];
   activeChannelId?: string;
+  activeAgentsWorkspaceId?: string;
   onNavigate?(): void;
   onClose?(): void;
 }) {
@@ -54,6 +56,20 @@ export function NavigationSidebar({
                   <WorkspaceSettingsDialog workspace={workspace} />
                 </div>
               </div>
+              <Link
+                to="/app/workspaces/$workspaceId/agents"
+                params={{ workspaceId: workspace.id }}
+                onClick={onNavigate}
+                className={`mb-1 flex min-h-9 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
+                  activeAgentsWorkspaceId === workspace.id
+                    ? "bg-[var(--selected)] text-[var(--text)]"
+                    : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
+                }`}
+                aria-current={activeAgentsWorkspaceId === workspace.id ? "page" : undefined}
+              >
+                <Bot className="h-3.5 w-3.5 shrink-0" />
+                <span>Agents</span>
+              </Link>
               {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Channels…</p> : null}
               <ul className="space-y-1">
                 {channels.map((channel) => {

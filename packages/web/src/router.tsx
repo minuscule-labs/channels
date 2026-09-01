@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { MessageSquare } from "lucide-react";
+import { AgentManagementPage } from "./components/agent-management-page";
 import { AppShell } from "./components/app-shell";
 import { ChannelPage } from "./components/channel-page";
 
@@ -19,13 +20,19 @@ const indexRoute = createRoute({
   ),
 });
 
+const agentManagementRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/app/workspaces/$workspaceId/agents",
+  component: AgentManagementPage,
+});
+
 const channelRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/channels/$channelId",
   component: ChannelPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, channelRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, agentManagementRoute, channelRoute]);
 export const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
