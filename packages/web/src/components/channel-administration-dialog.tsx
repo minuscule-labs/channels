@@ -11,6 +11,7 @@ import { Check, LoaderCircle, Plus, UserRoundCog, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
 
 interface WorkspaceParticipant {
   identity: Identity;
@@ -312,10 +313,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
       )}
     >
       <QueryState pending={data.pending} error={data.error} canAdminister={data.canAdminister}>
-        <form className="space-y-5" onSubmit={(event) => {
-          event.preventDefault();
-          if (selected.size > 0 && data.session.data && !mutation.isPending) mutation.mutate();
-        }}>
+        <div className="space-y-5">
           <ParticipantChoices
             participants={data.participants}
             selected={selected}
@@ -325,6 +323,11 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
               else next.add(identityId);
               return next;
             })}
+          />
+          <AddWorkspaceParticipantForm
+            workspaceId={channel.workspaceId}
+            existingMembers={data.members.data ?? []}
+            onCreated={(identity) => setSelected((current) => new Set([...current, identity.id]))}
           />
           <div className="flex flex-wrap items-center justify-end gap-2">
             {mutation.error ? (
@@ -344,12 +347,19 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
             ) : null}
             {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
             <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>
-            <button className="button-primary" type="submit" disabled={selected.size === 0 || mutation.isPending}>
+            <button
+              className="button-primary"
+              type="button"
+              disabled={selected.size === 0 || mutation.isPending}
+              onClick={() => {
+                if (selected.size > 0 && data.session.data && !mutation.isPending) mutation.mutate();
+              }}
+            >
               {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
               Save participants
             </button>
           </div>
-        </form>
+        </div>
       </QueryState>
     </AdministrationDialog>
   );

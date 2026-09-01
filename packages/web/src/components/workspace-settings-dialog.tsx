@@ -6,7 +6,7 @@ import type {
 import type { Identity, Workspace, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Check, LoaderCircle, Settings, UserPlus, X } from "lucide-react";
+import { Check, LoaderCircle, Settings, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
@@ -192,141 +192,6 @@ function AgentConfigurationForm({
   );
 }
 
-function AddWorkspaceParticipantForm({
-  workspaceId,
-  existingMembers,
-}: {
-  workspaceId: string;
-  existingMembers: WorkspaceMember[];
-}) {
-  const queryClient = useQueryClient();
-  const [type, setType] = useState<Identity["type"]>("agent");
-  const [displayName, setDisplayName] = useState("");
-  const [mentionHandle, setMentionHandle] = useState("");
-  const [roleLabel, setRoleLabel] = useState("");
-  const normalizedHandle = mentionHandle.trim().toLowerCase();
-  const handleValid = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(mentionHandle.trim());
-  const handleAvailable = !existingMembers.some(
-    (member) => member.mentionHandle.toLowerCase() === normalizedHandle,
-  );
-  const canSubmit = Boolean(displayName.trim() && handleValid && handleAvailable);
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const identity = await channels.createIdentity({
-        type,
-        displayName: displayName.trim(),
-      });
-      const member = await channels.addWorkspaceMember(workspaceId, {
-        identityId: identity.id,
-        mentionHandle: normalizedHandle,
-        roleLabel: roleLabel.trim() || undefined,
-      });
-      return { identity, member };
-    },
-    onSuccess: ({ identity, member }) => {
-      queryClient.setQueryData<Identity[]>(queryKeys.identities(), (current = []) => [
-        ...current.filter(({ id }) => id !== identity.id),
-        identity,
-      ]);
-      queryClient.setQueryData<WorkspaceMember[]>(queryKeys.workspaceMembers(workspaceId), (current = []) => [
-        ...current.filter(({ identityId }) => identityId !== member.identityId),
-        member,
-      ]);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
-      setDisplayName("");
-      setMentionHandle("");
-      setRoleLabel("");
-      setType("agent");
-    },
-  });
-
-  return (
-    <form
-      className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (canSubmit && !mutation.isPending) mutation.mutate();
-      }}
-    >
-      <div className="flex items-start gap-3">
-        <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
-        <div>
-          <h2 className="text-sm font-semibold">Add a Workspace participant</h2>
-          <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
-            Create a reusable identity. Add it to individual Channels through Manage participants.
-          </p>
-        </div>
-      </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <label className="block text-xs font-medium">
-          Participant type
-          <select
-            value={type}
-            onChange={(event) => setType(event.target.value as Identity["type"])}
-            className="settings-input mt-1.5"
-          >
-            <option value="agent">Agent</option>
-            <option value="human">Human</option>
-            <option value="service">Service</option>
-          </select>
-        </label>
-        <label className="block text-xs font-medium">
-          Display name
-          <input
-            value={displayName}
-            onChange={(event) => setDisplayName(event.target.value)}
-            maxLength={200}
-            placeholder={type === "agent" ? "Reviewer" : "Name"}
-            className="settings-input mt-1.5"
-          />
-        </label>
-        <label className="block text-xs font-medium">
-          Mention handle
-          <div className="relative mt-1.5">
-            <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-xs text-[var(--muted)]">@</span>
-            <input
-              value={mentionHandle}
-              onChange={(event) => setMentionHandle(event.target.value)}
-              maxLength={63}
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder="reviewer"
-              className="settings-input pl-7 font-mono"
-            />
-          </div>
-          {mentionHandle && (!handleValid || !handleAvailable) ? (
-            <span className="mt-1 block text-[10px] text-[var(--danger)]">
-              {handleAvailable ? "Use letters, numbers, underscores, or hyphens." : "That handle is already in use."}
-            </span>
-          ) : null}
-        </label>
-        <label className="block text-xs font-medium">
-          Public role <span className="font-normal text-[var(--muted)]">(optional)</span>
-          <input
-            value={roleLabel}
-            onChange={(event) => setRoleLabel(event.target.value)}
-            maxLength={100}
-            placeholder={type === "agent" ? "reviewer" : "member"}
-            className="settings-input mt-1.5"
-          />
-        </label>
-      </div>
-      <p className="mt-3 text-[10px] leading-4 text-[var(--muted)]">
-        New agents must be configured below before they can start. Additional humans cannot sign in through the local single-human session yet.
-      </p>
-      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
-        {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Participant added</span> : null}
-        <button className="button-primary" type="submit" disabled={!canSubmit || mutation.isPending}>
-          {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5" />}
-          Add participant
-        </button>
-      </div>
-    </form>
-  );
-}
-
 export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace }) {
   const [open, setOpen] = useState(false);
   const session = useQuery({
@@ -382,7 +247,7 @@ export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace })
             <div>
               <Dialog.Title className="text-base font-semibold">{workspace.name} configuration</Dialog.Title>
               <Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">
-                Add participants and configure agent startup without placing restricted configuration in conversations.
+                Configure Workspace source and agent startup without placing restricted configuration in conversations.
               </Dialog.Description>
             </div>
             <Dialog.Close className="icon-button inline-flex" aria-label="Close Workspace configuration">
@@ -411,7 +276,6 @@ export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace })
               </div>
             ) : configuration.data ? (
               <div className="space-y-4">
-                <AddWorkspaceParticipantForm workspaceId={workspace.id} existingMembers={members.data ?? []} />
                 <WorkspaceRootForm workspaceId={workspace.id} summary={configuration.data} />
                 <section>
                   <div className="mb-2">

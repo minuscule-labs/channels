@@ -121,22 +121,6 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("Signed in as @david · owner");
 
-  const participantForm = dialog.locator("form").filter({ hasText: "Add a Workspace participant" });
-  await participantForm.getByLabel("Participant type").selectOption("agent");
-  await participantForm.getByLabel("Display name").fill("Reviewer Agent");
-  await participantForm.getByLabel("Mention handle").fill("reviewer");
-  await participantForm.getByLabel("Public role (optional)").fill("reviewer");
-  const identityResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "POST" && response.url().endsWith("/identities"));
-  const memberResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "POST" && response.url().endsWith(`/workspaces/${workspace.id}/members`));
-  await participantForm.getByRole("button", { name: "Add participant" }).click();
-  expect((await identityResponsePromise).ok()).toBe(true);
-  expect((await memberResponsePromise).ok()).toBe(true);
-  await expect(participantForm.getByText("Participant added", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("Reviewer Agent", { exact: true })).toBeVisible();
-  await expect(dialog.locator("form").filter({ hasText: "Reviewer Agent" })).toContainText("unconfigured");
-
   const rootValue = "file:///secret/browser-review-root";
   await dialog.getByLabel("Source location", { exact: true }).fill(rootValue);
   const rootResponsePromise = page.waitForResponse((response) =>
@@ -231,6 +215,26 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await page.getByRole("button", { name: "Manage Channel participants" }).click();
   let rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
+  const participantForm = rosterDialog.locator("form").filter({ hasText: "Create a participant" });
+  await participantForm.getByLabel("Participant type").selectOption("agent");
+  await participantForm.getByLabel("Display name").fill("Reviewer Agent");
+  await expect(participantForm.getByLabel("Mention handle")).toHaveValue("reviewer-agent");
+  await participantForm.getByLabel("Mention handle").fill("@reviewer");
+  await expect(participantForm.getByLabel("Mention handle")).toHaveValue("reviewer");
+  await participantForm.getByLabel("Public role (optional)").fill("reviewer");
+  await participantForm.getByLabel("Persona (optional)").fill("Review work for correctness and report concrete findings.");
+  const identityResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/identities"));
+  const memberResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith(`/workspaces/${workspace.id}/members`));
+  const configurationResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PATCH" && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await participantForm.getByRole("button", { name: "Create participant" }).click();
+  expect((await identityResponsePromise).ok()).toBe(true);
+  expect((await memberResponsePromise).ok()).toBe(true);
+  expect((await configurationResponsePromise).ok()).toBe(true);
+  await expect(participantForm.getByText("Participant created and selected", { exact: true })).toBeVisible();
+  await expect(rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ })).toBeChecked();
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).uncheck();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();
