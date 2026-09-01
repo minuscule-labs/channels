@@ -70,7 +70,7 @@ Channels core owns durable communication only. It does not import Runtime or exe
 
 ## Private configuration
 
-Private personas, local roots, credentials, Runtime session ids, adapters, leases, and recovery metadata are product-owned but are not public Channel data. They must not appear in public Workspace/Channel metadata, messages, SSE payloads, or browser bundles.
+Private personas, local roots, credentials, Runtime session ids, adapters, leases, and recovery metadata are product-owned but are not public Channel data. They must not appear in public Workspace/Channel metadata, messages, SSE payloads, or browser bundles. [`execution-configuration.md`](execution-configuration.md) is the canonical future contract for Workspace source roots, optional relative Channel working scopes, reusable Workspace agents, and adapter-capability-driven Runtime launch profiles.
 
 The product may store them in local private storage for a local deployment or an authenticated secrets/configuration service for a hosted deployment. The agent host receives them through an internal launch specification and passes persona instructions to Runtime with `appendSystemPrompt` by default.
 
@@ -124,7 +124,7 @@ The lifecycle vertical slice is complete. From this point, prefer documenting fu
 3. Channel rename; and
 4. defects or usability problems that block review, installation, or the core collaboration flow.
 
-Do not expand the MVP with richer supervision policy, optional first-mention auto-start, pagination/virtualization, worktrees or Git automation, attachment infrastructure, hosted deployment/authentication, additional Runtime adapters, desktop packaging, TUI, advanced activity renderers, or new steering/interruption UI. Keep their intended contracts and safety constraints in documentation, but require evidence from real usage before implementation. This is a scope rule, not a rejection of those future capabilities. [`distribution.md`](distribution.md) is the canonical record for foreground npm/pnpm-dlx packaging, GitHub distribution choices, and the deferred T3-style background-service pattern.
+Do not expand the MVP with richer supervision policy, optional first-mention auto-start, Channel working scopes, Runtime launch-profile builders, model/reasoning controls, pagination/virtualization, worktrees or Git automation, attachment infrastructure, hosted deployment/authentication, additional Runtime adapters, desktop packaging, TUI, advanced activity renderers, or new steering/interruption UI. Keep their intended contracts and safety constraints in documentation, but require evidence from real usage before implementation. This is a scope rule, not a rejection of those future capabilities. [`distribution.md`](distribution.md) is the canonical record for foreground npm/pnpm-dlx packaging, GitHub distribution choices, and the deferred T3-style background-service pattern.
 
 Architecture consolidation is allowed only when required to ship the items above; it is not an independent MVP project. New lifecycle edge cases should generally be documented unless they expose data loss, duplicate execution, authorization failure, secret leakage, stale output, or inability to recover the shipped flow.
 

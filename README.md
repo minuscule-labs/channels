@@ -4,7 +4,7 @@
 
 MinuChannels is one complete collaboration product for humans and agents, from responsive UI through isolated agent execution. A Channel is the sole conversation primitive; a direct conversation is simply a two-member Channel.
 
-The public Channels core remains communication-only and does not import Runtime or execute agents. The MinuChannels product composes that core with an internal agent host (the current Relay, private binding storage, and control packages), while independently reusable MinuRuntime executes agent sessions. See [`docs/product-boundary.md`](docs/product-boundary.md) for the accepted MVP ownership and extraction strategy.
+The public Channels core remains communication-only and does not import Runtime or execute agents. The MinuChannels product composes that core with an internal agent host (the current Relay, private binding storage, and control packages), while independently reusable MinuRuntime executes agent sessions. See [`docs/product-boundary.md`](docs/product-boundary.md) for the accepted MVP ownership and extraction strategy. [`docs/execution-configuration.md`](docs/execution-configuration.md) records the future Workspace root → optional Channel scope → isolated agent session hierarchy and the proposed reusable Runtime launch-profile UI for adapter, model, reasoning, and persona configuration.
 
 ## Start fresh locally
 

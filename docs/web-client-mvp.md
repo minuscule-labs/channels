@@ -92,6 +92,7 @@ Private configuration writes and their administration UI are implemented. Forms 
 
 - Authentication and hosted deployment. Do not add a client-only login facade while Channels requests remain unauthenticated. When server authentication is introduced, reuse the MinuNotes Better Auth email-OTP/session pattern and bind the authenticated account to a Channels human identity.
 - Runtime steering, interruption, and reconnect controls beyond the implemented start/replace/stop operations.
+- Adapter-capability-driven launch-profile UI for model, reasoning, provider options, and optional Channel working scopes; see [`execution-configuration.md`](execution-configuration.md).
 - Reusing an existing global identity in another Workspace; Workspace member editing, disablement, role changes, and hosted authorization beyond the implemented Channel-focused creation flow.
 - Channel rename.
 - Threads, reactions, attachments, search, unread state, and notifications.
