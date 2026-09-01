@@ -40,7 +40,7 @@ The browser must never open private storage, receive Runtime credentials/session
 - Explicit Start, Start fresh (generation-fenced replacement), and Stop actions with confirmation, bounded pending/error state, and redacted status refresh.
 - Safe Markdown/GFM rendering for agent-authored responses only; human-authored messages remain plain text for now. Raw HTML and remote image loading are disabled.
 - Historical timeline attribution resolved from stable Workspace identities after roster removal.
-- Plain-text composer with mention suggestions and structured targets.
+- Plain-text composer with mention suggestions and structured targets. In a two-participant human-agent Channel, an ordinary human message implicitly targets the sole bound agent; larger Channels require a mention.
 - Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
 - Explicit connecting/live/disconnected state and manual retry.
@@ -107,4 +107,5 @@ The implemented hardening slice builds OpenCode-style client/service seams with 
 - Cursor-aware, keyboard-accessible mention suggestions with IME-safe submission.
 - Deterministic timeline projection with day boundaries and compatible-message grouping.
 - Automatic bounded SSE reconnect with authoritative ready/refetch/merge recovery.
+- Bounded Channel history in every triggered turn, including older context that precedes the agent binding cursor; the cursor suppresses replay but does not hide conversation context.
 - Playwright coverage against a real seeded Channels server for message send, Workspace participant creation, named Channel creation, optimistic participant replacement, historical attribution, Runtime start/replace/stop confirmations, roster revision, disconnect catch-up, stable retry keys, and accessible mobile drawers.

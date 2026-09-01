@@ -42,7 +42,7 @@ UI ⇄ Channels Server ⇄ Agent Host / Relay ⇄ Runtime sessions
 
 1. The current human sends a Channel message or explicit command.
 2. Channels durably stores and emits the shared intent.
-3. The internal agent host consumes addressed work and resolves the Workspace, Channel, agent, persona, and isolated Runtime binding.
+3. The internal agent host consumes addressed work and resolves the Workspace, Channel, agent, persona, and isolated Runtime binding. A human message in a two-participant human-agent Channel is implicitly addressed to that sole agent; larger Channels require structured or textual mentions.
 4. MinuRuntime executes the turn.
 5. The agent host commits the sanitized response or command result through Channels.
 6. Channels delivers it to every participant through the normal event stream.

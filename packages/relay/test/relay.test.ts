@@ -536,6 +536,76 @@ test("relay catches up on addressed messages using a persisted cursor", async ()
   }
 });
 
+test("two-participant Channels implicitly wake the sole agent for human messages", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new FakeRuntime();
+  const channel = await client.createChannel({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  });
+
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "Create the query without requiring a mention",
+    });
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    assert.equal(runtime.prompts.get("session-a")?.length, 1);
+    assert.match(
+      runtime.prompts.get("session-a")![0]!,
+      /implicitly addressed you in this two-participant Channel/,
+    );
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("an addressed turn includes bounded Channel history from before the binding cursor", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint);
+  const runtime = new FakeRuntime();
+  const cursors = new InMemoryChannelStorage();
+  const channel = await client.createChannel({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+      { id: "observer", type: "human" },
+    ],
+  });
+  await client.postMessage(channel.id, {
+    participantId: "user",
+    body: "Historical record needed by the next request",
+  });
+  await cursors.setCursor(channel.id, "agent-a", 1);
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: cursors,
+  });
+
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a see above" });
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 3);
+    assert.match(runtime.prompts.get("session-a")![0]!, /Historical record needed by the next request/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /@agent-a see above/);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("relay suppresses an active result after its private binding lease is lost", async () => {
   const storage = new InMemoryChannelStorage();
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
