@@ -68,8 +68,7 @@ function AgentIdentityForm({
       </div>
       <label className="mt-3 block text-xs font-medium">
         Mention handle
-        <div className="relative mt-1.5">
-          <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 font-mono text-xs text-[var(--muted)]">@</span>
+        <div className="mt-1.5">
           <input
             value={mentionHandle}
             onChange={(event) => setMentionHandle(event.target.value.replace(/^@+/, ""))}
@@ -77,7 +76,7 @@ function AgentIdentityForm({
             autoCorrect="off"
             spellCheck={false}
             maxLength={63}
-            className="settings-input pl-7 font-mono"
+            className="settings-input font-mono"
           />
         </div>
       </label>
@@ -156,8 +155,10 @@ function AgentLaunchProfileForm({
       void queryClient.invalidateQueries({
         predicate: ({ queryKey }) => queryKey[0] === "workspace"
           && queryKey[1] === workspaceId
-          && queryKey.at(-1) === "runtime-options"
-          && queryKey[3] !== agent.identityId,
+          && ((queryKey[2] === "agent"
+            && queryKey.at(-1) === "runtime-options"
+            && queryKey[3] !== agent.identityId)
+            || (queryKey[2] === "runtime" && queryKey.at(-1) === "options")),
       });
     },
   });
