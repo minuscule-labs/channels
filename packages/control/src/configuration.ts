@@ -5,6 +5,8 @@ import {
 } from "@minu/channels-relay";
 import type {
   LocalAgentRuntimeOptions,
+  LocalRuntimeModelOption,
+  LocalRuntimeOptions,
   LocalWorkspaceAgentConfigurationSummary,
   LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
@@ -35,7 +37,7 @@ export interface LocalAgentHostConfigurationOptions {
   now?: () => Date;
   runtimes?: Readonly<Record<string, {
     capabilities?(config?: { cwd?: string }): Promise<{
-      models: LocalAgentRuntimeOptions["models"];
+      models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
     }>;
   }>>;
@@ -83,7 +85,7 @@ export class LocalAgentHostConfiguration {
   private readonly directory: LocalRelayDirectory;
   private readonly now: () => Date;
   private readonly runtimeOptions = new Map<string, Promise<{
-    models: LocalAgentRuntimeOptions["models"];
+    models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
     reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
   }>>();
 
@@ -136,6 +138,18 @@ export class LocalAgentHostConfiguration {
     };
   }
 
+  async getWorkspaceRuntimeOptions(
+    workspaceId: string,
+    runtimeAdapter: string,
+    actorIdentityId: string,
+  ): Promise<LocalRuntimeOptions> {
+    await this.authorize(workspaceId, actorIdentityId);
+    if (!runtimeAdapter.trim() || !/^[a-zA-Z0-9._-]+$/.test(runtimeAdapter)) {
+      throw new LocalConfigurationRequestError("Runtime adapter is invalid", 400, "invalid");
+    }
+    return this.resolveRuntimeOptions(workspaceId, runtimeAdapter);
+  }
+
   async getAgentRuntimeOptions(
     workspaceId: string,
     agentIdentityId: string,
@@ -143,29 +157,63 @@ export class LocalAgentHostConfiguration {
   ): Promise<LocalAgentRuntimeOptions> {
     await this.authorize(workspaceId, actorIdentityId);
     const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, agentIdentityId);
-    const runtime = config?.runtimeAdapter
-      ? this.options.runtimes?.[config.runtimeAdapter]
-      : undefined;
-    if (!config || !runtime?.capabilities) {
+    if (!config?.runtimeAdapter) {
       throw new LocalConfigurationRequestError("Agent Runtime options are unavailable", 409, "unavailable");
     }
+    return {
+      ...(await this.resolveRuntimeOptions(workspaceId, config.runtimeAdapter)),
+      identityId: agentIdentityId,
+    };
+  }
+
+  async updateAgentRuntimeModelPolicy(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    value: unknown,
+  ): Promise<LocalAgentRuntimeOptions> {
     try {
-      let pending = this.runtimeOptions.get(config.runtimeAdapter!);
-      if (!pending) {
-        pending = runtime.capabilities();
-        this.runtimeOptions.set(config.runtimeAdapter!, pending);
-        void pending.catch(() => this.runtimeOptions.delete(config.runtimeAdapter!));
+      await this.authorize(workspaceId, actorIdentityId);
+      const input = object(value, "Runtime model policy");
+      rejectUnknown(input, ["enabledModels"]);
+      if (!Array.isArray(input.enabledModels) || input.enabledModels.length > 500) {
+        throw new LocalConfigurationRequestError("enabledModels must be an array of at most 500 models", 400, "invalid");
       }
-      const capabilities = await pending;
-      return {
-        protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, agentIdentityId);
+      if (!config?.runtimeAdapter) {
+        throw new LocalConfigurationRequestError("Agent Runtime options are unavailable", 409, "unavailable");
+      }
+      const runtimeOptions = await this.getAgentRuntimeOptions(workspaceId, agentIdentityId, actorIdentityId);
+      const available = new Set(runtimeOptions.models.map((model) => JSON.stringify([model.provider, model.id])));
+      const seen = new Set<string>();
+      const models = input.enabledModels.map((entry) => {
+        const model = object(entry, "Enabled model");
+        rejectUnknown(model, ["provider", "id"]);
+        const provider = requiredString(model.provider, "provider", MAX_MODEL_PROVIDER_BYTES);
+        const id = requiredString(model.id, "id", MAX_MODEL_ID_BYTES);
+        const key = JSON.stringify([provider, id]);
+        if (!available.has(key) || seen.has(key)) {
+          throw new LocalConfigurationRequestError("enabledModels contains an unavailable or duplicate model", 400, "invalid");
+        }
+        seen.add(key);
+        return { provider, id };
+      });
+      await this.directory.configureRuntimeModelPolicy({
         workspaceId,
-        identityId: agentIdentityId,
-        models: capabilities.models,
-        reasoningLevels: capabilities.reasoningLevels,
-      };
-    } catch {
-      throw new LocalConfigurationRequestError("Agent Runtime options are unavailable", 409, "unavailable");
+        runtimeAdapter: config.runtimeAdapter,
+        models,
+      });
+      this.audit({
+        action: "runtime.models.updated",
+        outcome: "accepted",
+        actorIdentityId,
+        workspaceId,
+        targetIdentityId: agentIdentityId,
+      });
+      return this.getAgentRuntimeOptions(workspaceId, agentIdentityId, actorIdentityId);
+    } catch (error) {
+      this.auditFailure("runtime.models.updated", actorIdentityId, workspaceId, agentIdentityId, error);
+      throw error;
     }
   }
 
@@ -244,6 +292,22 @@ export class LocalAgentHostConfiguration {
           "invalid",
         );
       }
+      const existingConfig = await this.options.store.getWorkspaceAgentConfig(workspaceId, agentIdentityId);
+      const resolvedAdapter = runtimeAdapter === undefined
+        ? existingConfig?.runtimeAdapter
+        : runtimeAdapter ?? undefined;
+      const resolvedProvider = modelProvider === undefined
+        ? existingConfig?.modelProvider
+        : modelProvider ?? undefined;
+      const resolvedModelId = modelId === undefined ? existingConfig?.modelId : modelId ?? undefined;
+      const workspaceConfig = await this.options.store.getWorkspaceConfig(workspaceId);
+      const modelPolicy = resolvedAdapter
+        ? workspaceConfig?.runtimeModelPolicies?.[resolvedAdapter]
+        : undefined;
+      if (modelPolicy && resolvedProvider && resolvedModelId
+        && !modelPolicy.some((model) => model.provider === resolvedProvider && model.id === resolvedModelId)) {
+        throw new LocalConfigurationRequestError("Selected model is disabled for this Runtime", 409, "unavailable");
+      }
       const reasoningLevel = input.reasoningLevel;
       const reasoningLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
       if (reasoningLevel !== undefined && reasoningLevel !== null
@@ -278,6 +342,43 @@ export class LocalAgentHostConfiguration {
     }
   }
 
+  private async resolveRuntimeOptions(
+    workspaceId: string,
+    runtimeAdapter: string,
+  ): Promise<LocalRuntimeOptions> {
+    const runtime = this.options.runtimes?.[runtimeAdapter];
+    if (!runtime?.capabilities) {
+      throw new LocalConfigurationRequestError("Runtime options are unavailable", 409, "unavailable");
+    }
+    try {
+      let pending = this.runtimeOptions.get(runtimeAdapter);
+      if (!pending) {
+        pending = runtime.capabilities();
+        this.runtimeOptions.set(runtimeAdapter, pending);
+        void pending.catch(() => this.runtimeOptions.delete(runtimeAdapter));
+      }
+      const capabilities = await pending;
+      const workspaceConfig = await this.options.store.getWorkspaceConfig(workspaceId);
+      const policy = workspaceConfig?.runtimeModelPolicies?.[runtimeAdapter];
+      const enabled = policy
+        ? new Set(policy.map((model) => JSON.stringify([model.provider, model.id])))
+        : undefined;
+      return {
+        protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+        workspaceId,
+        models: capabilities.models.map((model) => ({
+          ...model,
+          enabled: enabled?.has(JSON.stringify([model.provider, model.id])) ?? true,
+        })),
+        reasoningLevels: capabilities.reasoningLevels,
+        modelPolicyConfigured: Boolean(policy),
+      };
+    } catch (error) {
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      throw new LocalConfigurationRequestError("Runtime options are unavailable", 409, "unavailable");
+    }
+  }
+
   private async authorize(workspaceId: string, actorIdentityId: string) {
     let members;
     let actor;
@@ -305,7 +406,7 @@ export class LocalAgentHostConfiguration {
   }
 
   private auditFailure(
-    action: "workspace.config.updated" | "agent.config.updated",
+    action: "workspace.config.updated" | "runtime.models.updated" | "agent.config.updated",
     actorIdentityId: string,
     workspaceId: string,
     targetIdentityId: string | undefined,

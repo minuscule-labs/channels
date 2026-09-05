@@ -24,6 +24,7 @@ export type {
   Channel,
   ChannelCursorStore,
   ChannelEvent,
+  ChannelUpdatedEvent,
   ChannelMessage,
   ChannelMetadata,
   CreateChannelInput,
@@ -44,6 +45,7 @@ export type {
   WorkspaceMember,
   WorkspaceMemberStatus,
   WorkspaceStatus,
+  UpdateChannelInput,
   UpdateChannelParticipantsInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";

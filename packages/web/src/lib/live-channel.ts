@@ -36,7 +36,9 @@ export function useLiveChannel(channelId: string) {
           (messages) => mergeMessages(messages, [action.message]),
         );
       } else if (action.type === "refresh-metadata") {
-        highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
+        if (action.rosterRevision !== undefined) {
+          highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
+        }
         void queryClient.invalidateQueries({ queryKey: queryKeys.channel(channelId), exact: true });
         if (current) {
           void queryClient.invalidateQueries({

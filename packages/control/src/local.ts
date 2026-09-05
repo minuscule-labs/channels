@@ -37,6 +37,8 @@ export interface LocalProductAppOptions {
   channelsPort?: number;
   controlPort?: number;
   webUrl?: string;
+  channelsMigrationsFolder?: string;
+  relayMigrationsFolder?: string;
   runtimeAdapter: string;
   runtime: LocalManagedRuntimePort;
   personaPrompt?: string;
@@ -123,6 +125,7 @@ async function initializeProfile(
   relayDatabasePath: string,
   runtimeAdapter: string,
   personaPrompt: string,
+  relayMigrationsFolder?: string,
 ): Promise<LocalProfile> {
   if ((await client.listWorkspaces()).length > 0 || (await client.listIdentities()).length > 0) {
     throw new Error(
@@ -159,7 +162,10 @@ async function initializeProfile(
   });
 
   const timestamp = new Date().toISOString();
-  const relayStore = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(relayDatabasePath) });
+  const relayStore = await DrizzleLibSqlRelayStorage.open({
+    url: localRelayLibSqlUrl(relayDatabasePath),
+    migrationsFolder: relayMigrationsFolder,
+  });
   try {
     await relayStore.putWorkspaceConfig({
       workspaceId: workspace.id,
@@ -205,6 +211,7 @@ export async function createLocalProductApp(
 
   const storage = await DrizzleLibSqlChannelStorage.open({
     url: localChannelLibSqlUrl(channelsDatabasePath),
+    migrationsFolder: options.channelsMigrationsFolder,
   });
   let channelsServer: ChannelHttpServer | undefined;
   let controlDaemon: LocalControlDaemon | undefined;
@@ -227,6 +234,7 @@ export async function createLocalProductApp(
         relayDatabasePath,
         options.runtimeAdapter,
         options.personaPrompt ?? DEFAULT_PERSONA,
+        options.relayMigrationsFolder,
       );
     }
     await secureDatabaseFiles(relayDatabasePath);
@@ -235,6 +243,7 @@ export async function createLocalProductApp(
       currentHumanIdentityId: profile.currentHumanIdentityId,
       channelsEndpoint: channelsServer.endpoint,
       relayDatabasePath,
+      relayMigrationsFolder: options.relayMigrationsFolder,
       webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
       port: options.controlPort ?? 4311,
       runtimes: { [options.runtimeAdapter]: options.runtime },

@@ -136,21 +136,17 @@ test("configures Workspace agent startup without reflecting saved values", async
   await dialog.getByRole("button", { name: "Close Workspace configuration" }).click();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expect(page.getByRole("heading", { name: `${workspace.name} agents` })).toBeVisible();
+  await page.getByRole("link", { name: /Builder Agent/ }).click();
+  await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 1 })).toBeVisible();
   const agentCard = page.locator("article").filter({ hasText: "Builder Agent" });
-  const publicProfileForm = agentCard.locator("form").filter({ hasText: "Public Workspace profile" });
-  await expect(publicProfileForm.getByLabel("Delegation guidance")).toHaveValue("Implements features and verifies changes.");
-  await publicProfileForm.getByLabel("Delegation guidance").fill("Implementation-focused local coding agent.");
-  const publicProfileResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "PATCH" && /\/workspaces\/[^/]+\/members\//.test(response.url()));
-  await publicProfileForm.getByRole("button", { name: "Save public profile" }).click();
-  expect((await publicProfileResponsePromise).ok()).toBe(true);
-  await expect(publicProfileForm.getByText("Public profile saved", { exact: true })).toBeVisible();
+  const identityForm = agentCard.locator("form").filter({ hasText: "The name identifies the agent" });
+  await expect(identityForm.getByLabel("Mention handle")).toHaveValue("builder");
 
   const agentForm = agentCard.locator("form").filter({ hasText: "Private launch profile" });
   const runtimeValue = "pi-private-browser";
   const personaValue = "SECRET BROWSER PERSONA";
-  await agentForm.getByLabel("Runtime preference", { exact: true }).fill(runtimeValue);
-  await agentForm.getByLabel("Persona", { exact: true }).fill(personaValue);
+  await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
+  await agentForm.getByLabel("Agent instructions", { exact: true }).fill(personaValue);
   const agentResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
@@ -160,16 +156,26 @@ test("configures Workspace agent startup without reflecting saved values", async
   const agentResponseBody = await agentResponse.text();
   expect(agentResponseBody).not.toContain(runtimeValue);
   expect(agentResponseBody).not.toContain(personaValue);
-  await expect(agentForm.getByText("Runtime: configured", { exact: true })).toBeVisible();
-  await expect(agentForm.getByText("Persona: configured", { exact: true })).toBeVisible();
-  await expect(agentForm.getByLabel("Replace Runtime preference", { exact: true })).toHaveValue("");
-  await expect(agentForm.getByLabel("Replace persona", { exact: true })).toHaveValue("");
+  await expect(agentForm.getByText("Harness: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByLabel("Replace harness", { exact: true })).toHaveValue("");
+  await expect(agentForm.getByLabel("Replace agent instructions", { exact: true })).toHaveValue("");
   await expect(page.getByText(personaValue, { exact: true })).toHaveCount(0);
 
+  const providerSelect = agentCard.getByRole("combobox", { name: "Provider", exact: true });
   const modelSelect = agentCard.getByRole("combobox", { name: "Model", exact: true });
   const reasoningSelect = agentCard.getByRole("combobox", { name: "Reasoning", exact: true });
-  await expect(modelSelect).toBeEnabled({ timeout: 10_000 });
-  await modelSelect.selectOption({ label: "Browser Deep · openai" });
+  await expect(providerSelect).toBeEnabled({ timeout: 10_000 });
+  await agentForm.getByText("Manage available provider models", { exact: true }).click();
+  await agentForm.getByLabel("Enable Browser Fast").uncheck();
+  const modelPolicyResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PUT"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await agentForm.getByRole("button", { name: "Save available models" }).click();
+  expect((await modelPolicyResponsePromise).ok()).toBe(true);
+  await providerSelect.selectOption("openai");
+  await expect(modelSelect.getByRole("option", { name: "Browser Fast" })).toHaveCount(0);
+  await modelSelect.selectOption({ label: "Browser Deep" });
   await reasoningSelect.selectOption("high");
   const launchProfileResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
@@ -182,6 +188,32 @@ test("configures Workspace agent startup without reflecting saved values", async
   expect(launchProfileBody).not.toContain("high");
   await expect(agentForm.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+});
+
+test("lists agents, opens a detail page, and adds an agent", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces[0]!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+
+  await expect(page.getByRole("link", { name: /Builder Agent/ })).toBeVisible();
+  await page.getByRole("button", { name: "Add agent" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add Workspace agent" });
+  await expect(dialog.getByLabel("Mention handle")).toHaveCount(0);
+  await dialog.getByLabel("Display name").fill("Browser Review Agent");
+  await dialog.getByRole("combobox", { name: "Provider", exact: true }).selectOption("openai");
+  await dialog.getByRole("combobox", { name: "Model", exact: true }).selectOption({ label: "Browser Deep" });
+  await dialog.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("high");
+  await dialog.getByLabel("Agent instructions").fill("Review proposed plans carefully.");
+  await dialog.getByRole("button", { name: "Create agent" }).click();
+
+  await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "All agents" }).click();
+  await expect(page.getByRole("link", { name: /Browser Review Agent/ })).toBeVisible();
 });
 
 test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {
@@ -245,6 +277,13 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await page.getByRole("button", { name: "Manage Channel participants" }).click();
   let rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
+  await rosterDialog.getByLabel("Channel name").fill("delivery-room");
+  const renameResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PATCH" && response.url().endsWith(`/channels/${channel.id}`));
+  await rosterDialog.getByRole("button", { name: "Save name" }).click();
+  expect((await renameResponsePromise).ok()).toBe(true);
+  await expect(page.getByRole("heading", { name: "#delivery-room" })).toBeVisible();
+  rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
   const participantForm = rosterDialog.locator("form").filter({ hasText: "Create a participant" });
   await participantForm.getByLabel("Participant type").selectOption("agent");
   await participantForm.getByLabel("Display name").fill("Reviewer Agent");
@@ -252,7 +291,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await participantForm.getByLabel("Mention handle").fill("@reviewer");
   await expect(participantForm.getByLabel("Mention handle")).toHaveValue("reviewer");
   await participantForm.getByLabel("Public role (optional)").fill("reviewer");
-  await participantForm.getByLabel("Persona (optional)").fill("Review work for correctness and report concrete findings.");
+  await participantForm.getByLabel("Agent instructions (optional)").fill("Review work for correctness and report concrete findings.");
   const identityResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/identities"));
   const memberResponsePromise = page.waitForResponse((response) =>
@@ -272,7 +311,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await expect(page.getByRole("log").getByText("Builder Agent", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Manage Channel participants" }).click();
-  rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
+  rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();

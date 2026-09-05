@@ -5,7 +5,9 @@ import type {
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
+  LocalRuntimeOptions,
   LocalWorkspaceConfigurationSummary,
+  UpdateLocalRuntimeModelPolicyInput,
   UpdateLocalWorkspaceAgentConfigurationInput,
   UpdateLocalWorkspaceConfigurationInput,
 } from "./contracts.ts";
@@ -84,12 +86,32 @@ export class LocalControlClient {
     );
   }
 
+  async getWorkspaceRuntimeOptions(
+    workspaceId: string,
+    runtimeAdapter: string,
+  ): Promise<LocalRuntimeOptions> {
+    return this.get<LocalRuntimeOptions>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/runtime-options?adapter=${encodeURIComponent(runtimeAdapter)}`,
+    );
+  }
+
   async getAgentRuntimeOptions(
     workspaceId: string,
     agentIdentityId: string,
   ): Promise<LocalAgentRuntimeOptions> {
     return this.get<LocalAgentRuntimeOptions>(
       `/local/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentIdentityId)}/runtime-options`,
+    );
+  }
+
+  async updateAgentRuntimeModelPolicy(
+    workspaceId: string,
+    agentIdentityId: string,
+    input: UpdateLocalRuntimeModelPolicyInput,
+  ): Promise<LocalAgentRuntimeOptions> {
+    return this.request<LocalAgentRuntimeOptions>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentIdentityId)}/runtime-options`,
+      { method: "PUT", body: JSON.stringify(input) },
     );
   }
 

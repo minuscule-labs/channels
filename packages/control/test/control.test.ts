@@ -223,7 +223,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 5 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 6 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -306,7 +306,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 5, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 6, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -381,7 +381,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 5,
+      protocolVersion: 6,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -902,18 +902,83 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       },
     );
     assert.equal(agentUpdate.status, 200);
+    const workspaceRuntimeOptionsResponse = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/runtime-options?adapter=pi-owned-private`,
+      { headers: requestHeaders },
+    );
+    assert.equal(workspaceRuntimeOptionsResponse.status, 200);
+    assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
+      protocolVersion: 6,
+      workspaceId: workspace.id,
+      models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
+      reasoningLevels: ["off", "medium", "high"],
+      modelPolicyConfigured: false,
+    });
     const runtimeOptionsResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
       { headers: requestHeaders },
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 5,
+      protocolVersion: 6,
       workspaceId: workspace.id,
       identityId: agent.id,
-      models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true }],
+      models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
+      modelPolicyConfigured: false,
     });
+    const policyResponse = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
+      {
+        method: "PUT",
+        headers: requestHeaders,
+        body: JSON.stringify({ enabledModels: [] }),
+      },
+    );
+    assert.equal(policyResponse.status, 200);
+    const policy = await policyResponse.json() as {
+      modelPolicyConfigured: boolean;
+      models: Array<{ enabled: boolean }>;
+    };
+    assert.equal(policy.modelPolicyConfigured, true);
+    assert.deepEqual(policy.models.map((model) => model.enabled), [false]);
+    const unavailablePolicyResponse = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
+      {
+        method: "PUT",
+        headers: requestHeaders,
+        body: JSON.stringify({ enabledModels: [{ provider: "unknown", id: "missing" }] }),
+      },
+    );
+    assert.equal(unavailablePolicyResponse.status, 400);
+    const disabledModelUpdate = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/config`,
+      {
+        method: "PATCH",
+        headers: requestHeaders,
+        body: JSON.stringify({ modelProvider: "openai", modelId: "gpt-private" }),
+      },
+    );
+    assert.equal(disabledModelUpdate.status, 409);
+    const workspaceUpdateAfterPolicy = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/config`,
+      {
+        method: "PATCH",
+        headers: requestHeaders,
+        body: JSON.stringify({ rootUri: "file:///newer/private/root" }),
+      },
+    );
+    assert.equal(workspaceUpdateAfterPolicy.status, 200);
+    const policyAfterWorkspaceUpdate = await fetch(
+      `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
+      { headers: requestHeaders },
+    );
+    const preservedPolicy = await policyAfterWorkspaceUpdate.json() as {
+      modelPolicyConfigured: boolean;
+      models: Array<{ enabled: boolean }>;
+    };
+    assert.equal(preservedPolicy.modelPolicyConfigured, true);
+    assert.deepEqual(preservedPolicy.models.map((model) => model.enabled), [false]);
     const configurationResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/config`,
       { headers: { cookie, origin: "http://127.0.0.1:5174" } },

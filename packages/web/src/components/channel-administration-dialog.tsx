@@ -273,9 +273,24 @@ export function CreateChannelDialog({
 
 export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMetadata }) {
   const [open, setOpen] = useState(false);
+  const [name, setName] = useState(channel.name);
   const [selected, setSelected] = useState<Set<string>>(new Set(channel.participants.map(({ id }) => id)));
   const data = useWorkspaceParticipants(channel.workspaceId, open);
   const queryClient = useQueryClient();
+  const renameMutation = useMutation({
+    mutationFn: () => channels.updateChannel(channel.id, {
+      actorIdentityId: data.session.data!.identityId,
+      name: name.trim(),
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.channel(channel.id), updated);
+      queryClient.setQueryData<ChannelMetadata[]>(
+        queryKeys.workspaceChannels(channel.workspaceId),
+        (current = []) => current.map((candidate) => candidate.id === updated.id ? updated : candidate),
+      );
+      setName(updated.name);
+    },
+  });
   const mutation = useMutation({
     mutationFn: () => channels.updateChannelParticipants(channel.id, {
       actorIdentityId: data.session.data!.identityId,
@@ -295,7 +310,9 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen);
     if (nextOpen) {
+      setName(channel.name);
       setSelected(new Set(channel.participants.filter(({ status }) => status === "active").map(({ id }) => id)));
+      renameMutation.reset();
       mutation.reset();
     }
   };
@@ -314,6 +331,37 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
     >
       <QueryState pending={data.pending} error={data.error} canAdminister={data.canAdminister}>
         <div className="space-y-5">
+          <form
+            className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (name.trim() && name.trim() !== channel.name && data.session.data && !renameMutation.isPending) {
+                renameMutation.mutate();
+              }
+            }}
+          >
+            <label className="block text-xs font-medium">
+              Channel name
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                maxLength={100}
+                className="settings-input mt-1.5"
+              />
+            </label>
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              {renameMutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{renameMutation.error.message}</span> : null}
+              {renameMutation.isSuccess && name === channel.name ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Name saved</span> : null}
+              <button
+                className="button-secondary"
+                type="submit"
+                disabled={!name.trim() || name.trim() === channel.name || renameMutation.isPending}
+              >
+                {renameMutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                Save name
+              </button>
+            </div>
+          </form>
           <ParticipantChoices
             participants={data.participants}
             selected={selected}

@@ -8,6 +8,7 @@ export {
   type LocalWorkspaceConfig,
   type RelayBindingStore,
   type RestoreChannelBindingsOptions,
+  type RuntimeModelRef,
   type WorkspaceAgentConfig,
 } from "./binding-store.ts";
 export {

@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@8.15.5",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "tsc -b",
     "check": "tsc -b --pretty false",
@@ -19,6 +21,9 @@
     "web:test": "pnpm --filter @minu/channels-web test",
     "web:test:browser": "pnpm build && pnpm --filter @minu/channels-web test:browser",
     "web:build": "pnpm --filter @minu/channels-web build",
+    "release:build": "pnpm --dir ../runtime build && pnpm build && pnpm web:build && node scripts/build-release-package.mjs",
+    "release:pack": "pnpm release:build && rm -rf release/artifacts && mkdir -p release/artifacts && cd release/package && npm pack --pack-destination ../artifacts && cd ../.. && node scripts/checksum-release.mjs",
+    "release:smoke": "node scripts/smoke-release-package.mjs",
     "serve": "node packages/storage-drizzle/dist/src/cli.js",
     "control": "node packages/control/dist/src/cli.js",
     "app:review": "pnpm build && node packages/control/dist/src/review-cli.js",
@@ -27,6 +32,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "drizzle-kit": "^0.31.10",
+    "esbuild": "^0.25.0",
     "typescript": "^5.9.0"
   }
 }

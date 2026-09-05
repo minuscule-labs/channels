@@ -121,8 +121,11 @@ The lifecycle vertical slice is complete. From this point, prefer documenting fu
 
 1. one reliable foreground product command for startup, status/log visibility, and shutdown;
 2. basic reusable identity and Workspace-member creation;
-3. Channel rename; and
-4. defects or usability problems that block review, installation, or the core collaboration flow.
+3. harness-discovered, per-agent skill selection applied to new or **Start fresh** sessions;
+4. Channel rename; and
+5. defects or usability problems that block review, installation, or the core collaboration flow.
+
+[`skills.md`](skills.md) defines the narrow MVP skill contract and records slash invocation, dynamic session mutation, Channels-authored skills, executable skills, and installation as fast follows.
 
 Do not expand the MVP with richer supervision policy, optional first-mention auto-start, Channel working scopes, separately named launch profiles shared across agents, arbitrary provider-option schemas, pagination/virtualization, worktrees or Git automation, attachment infrastructure, hosted deployment/authentication, additional Runtime adapters, desktop packaging, TUI, advanced activity renderers, or new steering/interruption UI. Keep their intended contracts and safety constraints in documentation, but require evidence from real usage before implementation. This is a scope rule, not a rejection of those future capabilities. [`distribution.md`](distribution.md) is the canonical record for foreground npm/pnpm-dlx packaging, GitHub distribution choices, and the deferred T3-style background-service pattern.
 
@@ -139,6 +142,7 @@ Architecture consolidation is allowed only when required to ship the items above
 7. ~~Add explicit session replacement and stop with generation fencing, confirmation, and recovery-safe cursor behavior.~~ Implemented through protocol-v4 owner/admin lifecycle commands and verified against genuine Pi.
 8. ~~Promote the working demo composition into persistent fresh local startup.~~ `pnpm local -- --cwd <path>` now initializes an empty local Workspace once, persists collaboration and private execution state under `~/.minu/channels`, reopens stable identities and Channels, runs live Pi only after explicit Start, serves the production web build through one loopback product URL, logs in the foreground, and shuts down with Ctrl-C. Replacing the sibling Runtime build/lookup with an installed package remains distribution work.
 9. ~~Add basic identity/Workspace-member creation.~~ Owners/admins create reusable humans, agents, or services from Manage Channel participants, with stable handles, public roles, and inline restricted Runtime/persona setup for execution identities; the new member is selected for that Channel in the same flow. Identities remain globally stable records and handles remain Workspace-local. A dedicated Workspace Agents page now supports Workspace-local agent handle, public role, and delegation-guidance editing alongside private launch configuration. Cross-Workspace reuse/template cloning, global identity editing, human/service administration beyond this agent-focused page, access-role changes, and membership disablement remain deferred.
-10. ~~Add Workspace-agent model/reasoning launch profiles.~~ Protocol v5 discovers configured adapter models through authenticated private control, persists write-only model/reasoning selections, passes them into new/Start fresh sessions, and fails closed on unsupported Pi selections. Genuine product proof returned `CHANNEL_PROFILE_OK` from `openai-codex/gpt-5.6-sol` with low reasoning.
-11. Add Channel rename.
-12. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.
+10. ~~Add Workspace-agent model/reasoning launch profiles.~~ Protocol v5 discovers configured adapter models through authenticated private control, persists write-only model/reasoning selections, passes them into new/Start fresh sessions, and fails closed on unsupported Pi selections. Protocol v6 adds a persisted, adapter-scoped Workspace allowlist so administrators can limit model choices without moving harness credentials into Channels. Genuine product proof returned `CHANNEL_PROFILE_OK` from `openai-codex/gpt-5.6-sol` with low reasoning.
+11. Add harness-discovered, per-agent skill selection as defined in [`skills.md`](skills.md).
+12. ~~Add Channel rename.~~ Implemented through the owner/admin-governed Channel endpoint and management dialog, with live metadata refresh for connected clients.
+13. Freeze MVP feature work after the items above, fix release blockers, and validate the product with real use before promoting documented future capabilities into implementation.

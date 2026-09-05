@@ -21,6 +21,7 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  UpdateChannelInput,
   UpdateChannelParticipantsInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
@@ -513,6 +514,33 @@ export class ChannelService {
       rosterRevision: 1,
       createdAt: new Date().toISOString(),
     });
+  }
+
+  async updateChannel(channelId: string, input: UpdateChannelInput): Promise<ChannelMetadata> {
+    if (!input || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+      throw new ChannelValidationError("actorIdentityId is required");
+    }
+    if (typeof input.name !== "string" || !input.name.trim()) {
+      throw new ChannelValidationError("Channel name must be a non-empty string");
+    }
+    const name = input.name.trim();
+    if (name.length > 100) {
+      throw new ChannelValidationError("Channel name must be at most 100 characters");
+    }
+    const channel = await this.getChannelMetadata(channelId);
+    const workspace = await this.getWorkspace(channel.workspaceId);
+    if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
+    await this.assertWorkspaceAdministrator(channel.workspaceId, input.actorIdentityId);
+    const updated = await this.storage.updateChannelName(channelId, name);
+    if (!updated) throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
+    const event: ChannelEvent = {
+      id: randomUUID(),
+      type: "channel.updated",
+      channelId,
+      createdAt: new Date().toISOString(),
+    };
+    for (const listener of this.listeners.get(channelId) ?? []) listener(event);
+    return updated;
   }
 
   async updateChannelParticipants(

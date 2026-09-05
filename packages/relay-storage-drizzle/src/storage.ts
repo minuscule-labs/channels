@@ -4,6 +4,7 @@ import type {
   ChannelAgentBindingState,
   LocalWorkspaceConfig,
   RelayBindingStore,
+  RuntimeModelRef,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { and, asc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
@@ -32,7 +33,19 @@ export function localRelayLibSqlUrl(path: string): string {
 }
 
 function workspaceConfig(row: typeof schema.localWorkspaceConfigs.$inferSelect): LocalWorkspaceConfig {
-  return { ...row, notesFolderId: row.notesFolderId ?? undefined };
+  let runtimeModelPolicies: Record<string, RuntimeModelRef[]> | undefined;
+  if (row.runtimeModelPolicies) {
+    const parsed: unknown = JSON.parse(row.runtimeModelPolicies);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Stored Runtime model policies are invalid");
+    }
+    runtimeModelPolicies = parsed as Record<string, RuntimeModelRef[]>;
+  }
+  return {
+    ...row,
+    notesFolderId: row.notesFolderId ?? undefined,
+    runtimeModelPolicies,
+  };
 }
 
 function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): WorkspaceAgentConfig {
@@ -79,11 +92,19 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   }
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
-    await this.database.insert(schema.localWorkspaceConfigs).values(config).onConflictDoUpdate({
+    await this.database.insert(schema.localWorkspaceConfigs).values({
+      ...config,
+      runtimeModelPolicies: config.runtimeModelPolicies
+        ? JSON.stringify(config.runtimeModelPolicies)
+        : null,
+    }).onConflictDoUpdate({
       target: schema.localWorkspaceConfigs.workspaceId,
       set: {
         rootUri: config.rootUri,
         notesFolderId: config.notesFolderId ?? null,
+        runtimeModelPolicies: config.runtimeModelPolicies
+          ? JSON.stringify(config.runtimeModelPolicies)
+          : null,
         updatedAt: config.updatedAt,
       },
     });

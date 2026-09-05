@@ -52,6 +52,9 @@ test("private relay storage preserves configs and arbitrates binding leases acro
       workspaceId: config.workspaceId,
       rootUri: "file:///private/workspace",
       notesFolderId: "folder-private",
+      runtimeModelPolicies: {
+        pi: [{ provider: "openai", id: "gpt-test" }],
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -123,7 +126,11 @@ test("private relay storage preserves configs and arbitrates binding leases acro
 
   const reopened = await DrizzleLibSqlRelayStorage.open({ url });
   try {
-    assert.equal((await reopened.getWorkspaceConfig(config.workspaceId))?.rootUri, "file:///private/workspace");
+    const reopenedWorkspace = await reopened.getWorkspaceConfig(config.workspaceId);
+    assert.equal(reopenedWorkspace?.rootUri, "file:///private/workspace");
+    assert.deepEqual(reopenedWorkspace?.runtimeModelPolicies, {
+      pi: [{ provider: "openai", id: "gpt-test" }],
+    });
     const reopenedConfig = await reopened.getAgentConfig(config.id);
     assert.equal(reopenedConfig?.personaRef, "persona:builder:v1");
     assert.equal(reopenedConfig?.personaPrompt, "Build carefully and verify every change.");

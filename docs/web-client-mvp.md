@@ -57,6 +57,7 @@ POST /workspaces/:id/members
 GET /workspaces/:id/channels
 POST /channels
 GET /channels/:id
+PATCH /channels/:id
 PATCH /channels/:id/participants
 GET /channels/:id/messages
 POST /channels/:id/messages
@@ -94,7 +95,6 @@ Private configuration writes and their administration UI are implemented. Agent 
 - Runtime steering, interruption, and reconnect controls beyond the implemented start/replace/stop operations.
 - Separately named launch profiles shared across agents, arbitrary provider-option schemas, and optional Channel working scopes beyond the implemented per-Workspace-agent model/reasoning profile; see [`execution-configuration.md`](execution-configuration.md).
 - Reusing an existing global identity in another Workspace; Workspace member editing, disablement, role changes, and hosted authorization beyond the implemented Channel-focused creation flow.
-- Channel rename.
 - Threads, reactions, attachments, search, unread state, and notifications.
 - TUI parity.
 

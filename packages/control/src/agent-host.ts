@@ -5,8 +5,10 @@ import {
   restoreChannelBindings,
   type AgentRuntimePort,
   type ChannelAgentBindingRecord,
+  type LocalWorkspaceConfig,
   type RelayBindingStore,
   type RestoredChannelBindings,
+  type WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
@@ -30,7 +32,10 @@ export interface ManagedRuntimeSession {
 
 export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partial<Omit<AgentRuntimePort, "status">> {
   start?(config: ManagedRuntimeStartConfig): Promise<ManagedRuntimeSession>;
-  capabilities?(config?: { cwd?: string }): Promise<Omit<LocalAgentRuntimeOptions, "protocolVersion" | "workspaceId" | "identityId">>;
+  capabilities?(config?: { cwd?: string }): Promise<{
+    models: Array<Omit<LocalAgentRuntimeOptions["models"][number], "enabled">>;
+    reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+  }>;
   stop?(sessionId: string): Promise<void>;
 }
 
@@ -66,6 +71,23 @@ function launchFailureMessage(error: unknown, fallback: string): string {
   return /model|reasoning|thinking/i.test(message)
     ? "Configured agent model or reasoning is unavailable; update the launch profile and retry"
     : fallback;
+}
+
+function assertModelPolicy(
+  workspaceConfig: LocalWorkspaceConfig,
+  agentConfig: WorkspaceAgentConfig,
+): void {
+  if (!agentConfig.runtimeAdapter || !agentConfig.modelProvider || !agentConfig.modelId) return;
+  const policy = workspaceConfig.runtimeModelPolicies?.[agentConfig.runtimeAdapter];
+  if (policy && !policy.some(
+    (model) => model.provider === agentConfig.modelProvider && model.id === agentConfig.modelId,
+  )) {
+    throw new LocalConfigurationRequestError(
+      "Configured agent model is disabled for this Runtime",
+      409,
+      "unavailable",
+    );
+  }
 }
 
 async function workspaceDirectory(rootUri: string): Promise<string> {
@@ -187,6 +209,7 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
+        assertModelPolicy(workspaceConfig, agentConfig);
         const runtime = this.options.runtimes[agentConfig.runtimeAdapter];
         if (!launchableRuntime(runtime)) {
           throw new LocalConfigurationRequestError(
@@ -282,6 +305,7 @@ export class LocalAgentHost {
         if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.configuredContext(channelId, agentIdentityId, actorIdentityId);
         workspaceId = context.channel.workspaceId;
+        assertModelPolicy(context.workspaceConfig, context.agentConfig);
         const matches = context.bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
         if (matches.length !== 1) {
           throw new LocalConfigurationRequestError(
@@ -517,6 +541,7 @@ export class LocalAgentHost {
     }
     return {
       ...context,
+      workspaceConfig,
       agentConfig,
       runtime,
       cwd: await workspaceDirectory(workspaceConfig.rootUri),

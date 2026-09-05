@@ -2,10 +2,16 @@ import type { ChannelClient, ChannelCursorStore } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
 import type { AgentChannelBinding, AgentRuntimePort, WakePolicy } from "./relay.ts";
 
+export interface RuntimeModelRef {
+  provider: string;
+  id: string;
+}
+
 export interface LocalWorkspaceConfig {
   workspaceId: string;
   rootUri: string;
   notesFolderId?: string;
+  runtimeModelPolicies?: Record<string, RuntimeModelRef[]>;
   createdAt: string;
   updatedAt: string;
 }
@@ -98,6 +104,18 @@ export interface RelayBindingStore extends ChannelCursorStore {
   close?(): Promise<void> | void;
 }
 
+function copyWorkspaceConfig(config: LocalWorkspaceConfig): LocalWorkspaceConfig {
+  return {
+    ...config,
+    runtimeModelPolicies: config.runtimeModelPolicies
+      ? Object.fromEntries(Object.entries(config.runtimeModelPolicies).map(([adapter, models]) => [
+        adapter,
+        models.map((model) => ({ ...model })),
+      ]))
+      : undefined,
+  };
+}
+
 function copyBinding(binding: ChannelAgentBindingRecord): ChannelAgentBindingRecord {
   return { ...binding };
 }
@@ -109,13 +127,13 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly cursors = new Map<string, number>();
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
-    this.workspaceConfigs.set(config.workspaceId, { ...config });
-    return { ...config };
+    this.workspaceConfigs.set(config.workspaceId, copyWorkspaceConfig(config));
+    return copyWorkspaceConfig(config);
   }
 
   async getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined> {
     const config = this.workspaceConfigs.get(workspaceId);
-    return config ? { ...config } : undefined;
+    return config ? copyWorkspaceConfig(config) : undefined;
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {
@@ -330,7 +348,27 @@ export class LocalRelayDirectory {
       notesFolderId: input.notesFolderId === undefined
         ? existing?.notesFolderId
         : input.notesFolderId ?? undefined,
+      runtimeModelPolicies: existing?.runtimeModelPolicies,
       createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp,
+    });
+  }
+
+  async configureRuntimeModelPolicy(input: {
+    workspaceId: string;
+    runtimeAdapter: string;
+    models: RuntimeModelRef[];
+  }): Promise<LocalWorkspaceConfig> {
+    const existing = await this.store.getWorkspaceConfig(input.workspaceId);
+    if (!existing) throw new Error("Private Workspace configuration is required");
+    if (!input.runtimeAdapter.trim()) throw new Error("Runtime adapter is required");
+    const timestamp = this.now().toISOString();
+    return this.store.putWorkspaceConfig({
+      ...existing,
+      runtimeModelPolicies: {
+        ...(existing.runtimeModelPolicies ?? {}),
+        [input.runtimeAdapter]: input.models.map((model) => ({ ...model })),
+      },
       updatedAt: timestamp,
     });
   }

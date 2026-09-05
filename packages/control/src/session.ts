@@ -10,6 +10,7 @@ export type LocalControlAuditAction =
   | "launch.rejected"
   | "session.rejected"
   | "workspace.config.updated"
+  | "runtime.models.updated"
   | "agent.config.updated"
   | "agent.session.started"
   | "agent.session.replaced"

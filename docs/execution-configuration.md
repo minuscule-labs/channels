@@ -1,6 +1,6 @@
 # Execution Configuration
 
-**Status:** Workspace-agent model/reasoning launch profiles are implemented; named shared profiles, Channel overrides, and Channel working scopes remain future work.
+**Status:** Workspace-agent model/reasoning launch profiles and adapter-scoped model allowlists are implemented; named shared profiles, Channel overrides, and Channel working scopes remain future work.
 
 ## BLUF
 
@@ -88,7 +88,21 @@ Profiles belong to restricted Workspace execution configuration. The current and
 
 Model names, reasoning levels, and provider options must come from adapter capabilities or validated adapter schemas. MinuChannels should not hard-code Pi-specific controls into the collaboration domain. Credentials remain write-only and must never enter collaboration data, messages, SSE, audit values, or ordinary browser responses.
 
-Configuration changes apply only to new or **Start fresh** sessions. Existing sessions retain the launch specification with which they were created.
+### Runtime and harness extensibility
+
+Model management is scoped to a Runtime adapter, not to Pi or to one global model catalog. The durable identity of a selectable model is the tuple `(runtimeAdapter, provider, modelId)`, so identical provider/model labels exposed by different harnesses cannot collide. Each registered adapter owns:
+
+- capability discovery and user-facing model labels;
+- authentication and remote-entitlement checks where the harness supports them;
+- translation of the generic launch selection into harness-specific arguments;
+- launch-time revalidation; and
+- sanitized unavailable states that do not expose credentials or provider errors.
+
+The model allowlist enables models per Runtime adapter and filters the adapter's discovered catalog for every Workspace agent using that adapter. Channels shows enabled and disabled state, but it does not store provider credentials or infer access merely because a model exists in a static catalog. New and **Start fresh** sessions fail closed when their configured model has since been disabled.
+
+A native Codex harness should register as its own MinuRuntime adapter and implement the same capability/start contract. This remains distinct from selecting an `openai-codex` provider through the Pi adapter. Other harnesses can expose the common model and reasoning fields, omit unsupported capabilities, and later contribute capability-defined options without changing Channels core or the collaboration schema.
+
+Configuration changes apply only to new or **Start fresh** sessions. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Channels-authored skill options.
 
 ## Current implementation
 
@@ -98,6 +112,7 @@ The current product supports:
 - one write-only persona and launch profile per reusable Workspace agent;
 - a Runtime adapter identifier per Workspace agent;
 - authenticated adapter model discovery;
+- a persisted Workspace allowlist scoped by Runtime adapter;
 - validated provider/model and reasoning-level selection;
 - redacted configured-state summaries;
 - application of profile changes only to new or **Start fresh** sessions; and

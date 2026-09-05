@@ -63,6 +63,12 @@ describe("Channel event reduction", () => {
     expect(channelCacheAction(roster(3), 3)).toEqual({ type: "ignore" });
     expect(channelCacheAction(roster(4), 3)).toEqual({ type: "refresh-metadata", rosterRevision: 4 });
     expect(channelCacheAction(roster(1), undefined)).toEqual({ type: "refresh-metadata", rosterRevision: 1 });
+    expect(channelCacheAction({
+      id: "event-name",
+      type: "channel.updated",
+      channelId: "channel",
+      createdAt: "2026-08-28T12:01:00.000Z",
+    }, 4)).toEqual({ type: "refresh-metadata" });
   });
 });
 

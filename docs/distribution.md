@@ -1,6 +1,6 @@
 # MinuChannels Distribution and Startup
 
-**Status:** MVP distribution direction; implementation is intentionally limited to the existing foreground local product command.
+**Status:** The foreground product command and self-contained GitHub-release package build are implemented. Repository release automation and a genuine Pi clean-machine proof remain.
 
 ## BLUF
 
@@ -25,7 +25,9 @@ pnpm local -- --cwd /absolute/path/to/workspace
 
 This provides persistent local collaboration data, restricted agent-host state, browser bootstrap, live Pi startup, terminal logs, and clean foreground supervision. The dedicated `minu-channels` entry point serves the production web build and proxies Channels, control, and SSE traffic through one loopback product URL; Vite is no longer part of persistent local startup.
 
-The remaining self-contained-package blocker is MinuRuntime: the source command still builds and loads `../runtime`. Before advertising a one-repository clone or package-tarball flow, replace that sibling lookup with an installed Runtime package. Until public GitHub repository URLs exist, documentation must not invent clone commands or repository locations.
+The source-workspace command still builds and loads `../runtime`, but the release build now bundles Runtime core, the Pi adapter, and its owned worker into one product artifact. The installed artifact has no sibling-repository lookup. `pnpm release:pack` builds both source workspaces, assembles the production web client and both migration trees, rejects common secret/local-data artifacts, creates an npm-compatible tarball, and emits `SHA256SUMS`. `pnpm release:smoke` installs that exact tarball in a temporary directory and proves both first launch and persistent reopen.
+
+The remaining release blockers are a genuine Pi response from the installed artifact, clean-account macOS/Linux validation, and tag-triggered automation once real private GitHub repository coordinates and cross-repository checkout credentials exist. [`local-release.md`](local-release.md) documents installation, upgrades, backup, reset, and uninstall without inventing repository or release URLs before they exist.
 
 ## Recommended public package
 
@@ -127,11 +129,18 @@ GitHub Releases could later contain signed platform executables or installers. T
 
 ## Local package proof before publishing
 
-Never use the public registry as the first packaging test. Build the exact artifact and install it from a clean temporary environment:
+Never use the public registry as the first packaging test. Build and smoke-test the exact artifact:
 
 ```bash
-pnpm pack
-HOME="$(mktemp -d)" pnpm dlx ./minu-channels-0.1.0.tgz --data-dir "$(mktemp -d)" .
+pnpm release:pack
+pnpm release:smoke
+```
+
+The generated tarball and checksum are written beneath the ignored `release/artifacts/` directory. To test the installation manually:
+
+```bash
+npm install -g ./release/artifacts/minu-channels-<version>.tgz
+minu-channels --data-dir "$(mktemp -d)" --no-open .
 ```
 
 The release check must prove:
@@ -204,4 +213,4 @@ Before the first public release:
 
 ## MVP decision
 
-Implement only the self-contained foreground package path now. Document GitHub tarballs, direct GitHub execution, npm publication, the optional umbrella CLI, database adapters, native releases, and T3-style background services without building them until the foreground artifact is proven.
+Use an npm-compatible tarball attached to a private GitHub Release as the initial distribution, matching the established Minu product pattern. The artifact bundles private Channels internals and the required MinuRuntime Pi implementation; source package boundaries do not become public product boundaries. Keep npm publication, direct repository execution, the optional umbrella CLI, database adapters, native releases, and T3-style background services deferred until the foreground artifact is proven in use.

@@ -301,6 +301,14 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     };
   }
 
+  async updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined> {
+    const updated = await this.database.update(schema.channels)
+      .set({ name })
+      .where(eq(schema.channels.id, channelId))
+      .returning({ id: schema.channels.id });
+    return updated[0] ? await this.getChannelMetadata(channelId) : undefined;
+  }
+
   async replaceChannelParticipants(
     channelId: string,
     participants: Participant[],

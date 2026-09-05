@@ -47,6 +47,7 @@ export interface ChannelStorage extends ChannelCursorStore {
   listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]>;
   getChannel(channelId: string): Promise<Channel | undefined>;
   getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
+  updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined>;
   replaceChannelParticipants(
     channelId: string,
     participants: Participant[],
@@ -211,6 +212,13 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
       rosterRevision: channel.rosterRevision,
       participants: channel.participants.map((participant) => ({ ...participant })),
     };
+  }
+
+  async updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined> {
+    const channel = this.channels.get(channelId);
+    if (!channel) return undefined;
+    channel.name = name;
+    return await this.getChannelMetadata(channelId);
   }
 
   async replaceChannelParticipants(

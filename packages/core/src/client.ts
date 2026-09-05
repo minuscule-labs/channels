@@ -13,6 +13,7 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  UpdateChannelInput,
   UpdateChannelParticipantsInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
@@ -109,6 +110,15 @@ export class ChannelClient {
       body: JSON.stringify(input),
     });
     return ((await response.json()) as { channel: Channel }).channel;
+  }
+
+  async updateChannel(channelId: string, input: UpdateChannelInput): Promise<ChannelMetadata> {
+    const response = await this.request(`/channels/${channelId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { channel: ChannelMetadata }).channel;
   }
 
   async updateChannelParticipants(

@@ -121,7 +121,14 @@ export interface RosterUpdatedEvent {
   createdAt: string;
 }
 
-export type ChannelEvent = MessageCreatedEvent | RosterUpdatedEvent;
+export interface ChannelUpdatedEvent {
+  id: string;
+  type: "channel.updated";
+  channelId: string;
+  createdAt: string;
+}
+
+export type ChannelEvent = MessageCreatedEvent | RosterUpdatedEvent | ChannelUpdatedEvent;
 
 export interface CreateChannelInput {
   workspaceId?: string;
@@ -131,6 +138,12 @@ export interface CreateChannelInput {
   actorIdentityId?: string;
   /** @deprecated Compatibility path for pre-Workspace callers. */
   participants?: Participant[];
+}
+
+export interface UpdateChannelInput {
+  /** Advisory product policy until requests are authenticated. */
+  actorIdentityId: string;
+  name: string;
 }
 
 export interface UpdateChannelParticipantsInput {

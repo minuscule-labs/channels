@@ -18,6 +18,7 @@ import {
   type LocalChannelAgentsResponse,
   type LocalControlCapabilities,
   type LocalControlHealth,
+  type LocalRuntimeOptions,
   type LocalWakePolicy,
   type LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
@@ -67,10 +68,21 @@ export interface LocalControlConfigurationPort {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<LocalWorkspaceConfigurationSummary>;
+  getWorkspaceRuntimeOptions(
+    workspaceId: string,
+    runtimeAdapter: string,
+    actorIdentityId: string,
+  ): Promise<LocalRuntimeOptions>;
   getAgentRuntimeOptions(
     workspaceId: string,
     agentIdentityId: string,
     actorIdentityId: string,
+  ): Promise<LocalAgentRuntimeOptions>;
+  updateAgentRuntimeModelPolicy(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    input: unknown,
   ): Promise<LocalAgentRuntimeOptions>;
   updateWorkspaceConfiguration(
     workspaceId: string,
@@ -147,6 +159,21 @@ export class LocalControlService {
     return this.options.configuration.getWorkspaceConfiguration(workspaceId, actorIdentityId);
   }
 
+  async getWorkspaceRuntimeOptions(
+    workspaceId: string,
+    runtimeAdapter: string,
+    actorIdentityId: string,
+  ): Promise<LocalRuntimeOptions> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getWorkspaceRuntimeOptions(
+      workspaceId,
+      runtimeAdapter,
+      actorIdentityId,
+    );
+  }
+
   async getAgentRuntimeOptions(
     workspaceId: string,
     agentIdentityId: string,
@@ -159,6 +186,23 @@ export class LocalControlService {
       workspaceId,
       agentIdentityId,
       actorIdentityId,
+    );
+  }
+
+  async updateAgentRuntimeModelPolicy(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalAgentRuntimeOptions> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Runtime model configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.updateAgentRuntimeModelPolicy(
+      workspaceId,
+      agentIdentityId,
+      actorIdentityId,
+      input,
     );
   }
 
@@ -436,8 +480,8 @@ export async function createLocalControlHttpServer(
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAgentLifecycle = request.method === "POST"
       && /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop)$/.test(requestPath);
-    if (request.method !== "GET" && request.method !== "PATCH" && !isAgentLifecycle) {
-      response.setHeader("allow", "GET, PATCH");
+    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAgentLifecycle) {
+      response.setHeader("allow", "GET, PATCH, PUT");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
     }
@@ -502,15 +546,37 @@ export async function createLocalControlHttpServer(
         json(response, 200, result, origin);
         return;
       }
+      const workspaceRuntimeOptionsMatch = path.match(
+        /^\/local\/workspaces\/([^/]+)\/runtime-options$/,
+      );
+      if (workspaceRuntimeOptionsMatch && browserSession && request.method === "GET") {
+        const result = await options.service.getWorkspaceRuntimeOptions(
+          decodeURIComponent(workspaceRuntimeOptionsMatch[1]!),
+          url.searchParams.get("adapter") ?? "",
+          browserSession.identityId,
+        );
+        json(response, 200, result, origin);
+        return;
+      }
       const agentRuntimeOptionsMatch = path.match(
         /^\/local\/workspaces\/([^/]+)\/agents\/([^/]+)\/runtime-options$/,
       );
-      if (agentRuntimeOptionsMatch && browserSession && request.method === "GET") {
-        const result = await options.service.getAgentRuntimeOptions(
-          decodeURIComponent(agentRuntimeOptionsMatch[1]!),
-          decodeURIComponent(agentRuntimeOptionsMatch[2]!),
-          browserSession.identityId,
-        );
+      if (agentRuntimeOptionsMatch && browserSession
+        && (request.method === "GET" || request.method === "PUT")) {
+        const workspaceId = decodeURIComponent(agentRuntimeOptionsMatch[1]!);
+        const agentIdentityId = decodeURIComponent(agentRuntimeOptionsMatch[2]!);
+        const result = request.method === "GET"
+          ? await options.service.getAgentRuntimeOptions(
+            workspaceId,
+            agentIdentityId,
+            browserSession.identityId,
+          )
+          : await options.service.updateAgentRuntimeModelPolicy(
+            workspaceId,
+            agentIdentityId,
+            browserSession.identityId,
+            await readJson(request),
+          );
         json(response, 200, result, origin);
         return;
       }

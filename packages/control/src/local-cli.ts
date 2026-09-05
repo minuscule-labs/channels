@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,8 +31,18 @@ function repositoryRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 }
 
+function packagedPath(...segments: string[]): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", ...segments);
+}
+
 function defaultWebDirectory(): string {
-  return resolve(repositoryRoot(), "packages/web/dist");
+  const packaged = packagedPath("assets", "web");
+  return existsSync(packaged) ? packaged : resolve(repositoryRoot(), "packages/web/dist");
+}
+
+function defaultMigrationsFolder(kind: "channels" | "agent-host"): string | undefined {
+  const packaged = packagedPath("assets", "migrations", kind);
+  return existsSync(packaged) ? packaged : undefined;
 }
 
 function moduleSpecifier(value: string): string {
@@ -42,7 +53,9 @@ function moduleSpecifier(value: string): string {
 }
 
 async function loadPiRuntime(specifier?: string): Promise<LocalManagedRuntimePort> {
-  const defaultModule = resolve(repositoryRoot(), "../runtime/packages/pi/dist/src/index.js");
+  const packagedModule = packagedPath("bin", "runtime-pi.js");
+  const developmentModule = resolve(repositoryRoot(), "../runtime/packages/pi/dist/src/index.js");
+  const defaultModule = existsSync(packagedModule) ? packagedModule : developmentModule;
   const loaded = await import(moduleSpecifier(specifier ?? defaultModule)) as Record<string, unknown>;
   const Constructor = loaded.PiAgentRuntime;
   if (typeof Constructor !== "function") {
@@ -106,6 +119,8 @@ async function main(): Promise<void> {
     dataDirectory: options.dataDir,
     runtimeAdapter: "pi",
     runtime,
+    channelsMigrationsFolder: defaultMigrationsFolder("channels"),
+    relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
     onAudit(event) {
       process.stderr.write(`${JSON.stringify({ source: "minu-channels", ...event })}\n`);
     },

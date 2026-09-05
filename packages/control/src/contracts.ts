@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 5 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 6 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -7,14 +7,28 @@ export interface LocalRuntimeModelOption {
   id: string;
   name: string;
   reasoning: boolean;
+  enabled: boolean;
 }
 
-export interface LocalAgentRuntimeOptions {
+export interface LocalRuntimeModelRef {
+  provider: string;
+  id: string;
+}
+
+export interface LocalRuntimeOptions {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   workspaceId: string;
-  identityId: string;
   models: LocalRuntimeModelOption[];
   reasoningLevels: LocalReasoningLevel[];
+  modelPolicyConfigured: boolean;
+}
+
+export interface LocalAgentRuntimeOptions extends LocalRuntimeOptions {
+  identityId: string;
+}
+
+export interface UpdateLocalRuntimeModelPolicyInput {
+  enabledModels: LocalRuntimeModelRef[];
 }
 
 export interface LocalCurrentSession {

@@ -22,6 +22,7 @@ export interface LocalControlDaemonOptions {
   currentHumanIdentityId: string;
   channelsEndpoint?: string;
   relayDatabasePath?: string;
+  relayMigrationsFolder?: string;
   webUrl?: string;
   host?: "127.0.0.1" | "::1";
   port?: number;
@@ -51,7 +52,10 @@ export async function createLocalControlDaemon(
   const databasePath = resolve(options.relayDatabasePath ?? defaultRelayDatabasePath());
   await mkdir(dirname(databasePath), { recursive: true, mode: 0o700 });
   if (usesDefaultDatabase) await chmod(dirname(databasePath), 0o700);
-  const store = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(databasePath) });
+  const store = await DrizzleLibSqlRelayStorage.open({
+    url: localRelayLibSqlUrl(databasePath),
+    migrationsFolder: options.relayMigrationsFolder,
+  });
   let server: LocalControlHttpServer | undefined;
   let agentHost: LocalAgentHost | undefined;
   try {

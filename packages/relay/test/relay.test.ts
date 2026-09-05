@@ -1016,7 +1016,7 @@ test("relay wakes only addressed agents and posts responses without reply loops"
     );
     assert.match(
       runtime.prompts.get("session-a")![0]!,
-      /Delegation guidance: Reviews correctness and regressions\./,
+      /Role: Reviews correctness and regressions\./,
     );
     assert.match(runtime.prompts.get("session-a")![0]!, /Mentions wake agents and consume compute/);
     assert.match(runtime.prompts.get("session-a")![0]!, /TRIGGER/);

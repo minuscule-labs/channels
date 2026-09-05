@@ -17,7 +17,9 @@ POST  /local/channels/:channelId/agents/:identityId/stop
 GET   /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/config
 PATCH /local/workspaces/:workspaceId/agents/:identityId/config
+GET   /local/workspaces/:workspaceId/runtime-options?adapter=:adapterId
 GET   /local/workspaces/:workspaceId/agents/:identityId/runtime-options
+PUT   /local/workspaces/:workspaceId/agents/:identityId/runtime-options
 ```
 
 It combines the public Channel roster with private binding and Runtime reachability internally, then returns only UI-safe state:
@@ -29,7 +31,7 @@ It combines the public Channel roster with private binding and Runtime reachabil
 - disabled steering, interruption, and reconnect capability flags;
 - last verification timestamp when available.
 
-Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, Runtime adapter, and saved model/reasoning selections are write-only inputs: they are persisted in private local storage but never returned. Protocol v5 adds an authenticated agent-specific Runtime-options endpoint that discovers currently available model labels and reasoning choices from the configured adapter; it does not reveal which saved selection is active. Control never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
+Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, Runtime adapter, and saved model/reasoning selections are write-only inputs: they are persisted in private local storage but never returned. Protocol v5 added an authenticated agent-specific Runtime-options endpoint that discovers currently available model labels and reasoning choices from the configured adapter; it does not reveal which saved selection is active. Protocol v6 adds a persisted Workspace model allowlist scoped to that adapter, filters agent selectors, and rejects newly configured or launched models that have been disabled. Control never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
 
 ## Exports and executable
 

@@ -310,6 +310,18 @@ test("owner-governed Channel roster replacement is revisioned and preserves mess
     const unsubscribe = await server.service.subscribe(channel.id, (event) => events.push(event));
 
     await assert.rejects(
+      client.updateChannel(channel.id, { actorIdentityId: builder.id, name: "delivery" }),
+      /owner or admin is required/,
+    );
+    const renamed = await client.updateChannel(channel.id, {
+      actorIdentityId: owner.id,
+      name: "  delivery  ",
+    });
+    assert.equal(renamed.name, "delivery");
+    assert.equal((await client.getChannel(channel.id)).name, "delivery");
+    assert.equal(events[0]?.type, "channel.updated");
+
+    await assert.rejects(
       client.updateChannelParticipants(channel.id, {
         actorIdentityId: builder.id,
         participantIds: [owner.id, reviewer.id],
@@ -324,8 +336,8 @@ test("owner-governed Channel roster replacement is revisioned and preserves mess
     });
     assert.equal(revised.rosterRevision, 2);
     assert.deepEqual(revised.participants.map(({ id }) => id), [owner.id, reviewer.id]);
-    assert.equal(events[0]?.type, "roster.updated");
-    if (events[0]?.type === "roster.updated") assert.equal(events[0].rosterRevision, 2);
+    assert.equal(events[1]?.type, "roster.updated");
+    if (events[1]?.type === "roster.updated") assert.equal(events[1].rosterRevision, 2);
     assert.equal((await client.listMessages(channel.id))[0]?.participantId, builder.id);
     assert.equal(await server.service.storage.getCursor(channel.id, builder.id), 1);
     await assert.rejects(

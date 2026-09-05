@@ -19,7 +19,7 @@ export function AppShell() {
     })),
   });
   const activeChannelId = pathname.match(/\/channels\/([^/]+)/)?.[1];
-  const activeAgentsWorkspaceId = pathname.match(/\/workspaces\/([^/]+)\/agents$/)?.[1];
+  const activeAgentsWorkspaceId = pathname.match(/\/workspaces\/([^/]+)\/agents(?:\/|$)/)?.[1];
   const navigationItems = useMemo<WorkspaceNavigationItem[]>(
     () =>
       (workspaces.data ?? []).map((workspace, index) => ({

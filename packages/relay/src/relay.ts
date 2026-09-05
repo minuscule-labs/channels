@@ -104,7 +104,7 @@ function participantRoster(participants: Participant[], connectedAgents: Set<str
       }
       const profile = participant.profile?.replace(/\s+/g, " ").trim();
       return `- @${participant.handle ?? participant.id} — ${details.join(" — ")}${
-        profile ? `\n  Delegation guidance: ${profile}` : ""
+        profile ? `\n  Role: ${profile}` : ""
       }`;
     })
     .join("\n");
@@ -326,6 +326,10 @@ export class ChannelRuntimeRelay {
       onReady,
     })) {
       await this.rosterReady;
+      if (event.type === "channel.updated") {
+        this.roster = await this.options.client.getChannel(this.options.channelId);
+        continue;
+      }
       if (event.type === "roster.updated") {
         if (!this.roster || event.rosterRevision > this.roster.rosterRevision) {
           this.roster = await this.options.client.getChannel(this.options.channelId);
