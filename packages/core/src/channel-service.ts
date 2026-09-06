@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { createResourceId } from "./ids.ts";
 import {
   InMemoryChannelStorage,
   type ChannelStorage,
@@ -147,7 +148,7 @@ export class ChannelService {
     }
     const timestamp = new Date().toISOString();
     return await this.storage.createIdentity({
-      id: randomUUID(),
+      id: createResourceId("identity"),
       type: input.type,
       displayName,
       publicProfile,
@@ -183,7 +184,7 @@ export class ChannelService {
     }
     const timestamp = new Date().toISOString();
     return await this.storage.createWorkspace({
-      id: randomUUID(),
+      id: createResourceId("workspace"),
       slug: input.slug,
       name: input.name.trim(),
       description,
@@ -361,7 +362,7 @@ export class ChannelService {
     if (!result) throw new ChannelConflictError("Workspace membership changed; reload and retry");
     for (const roster of result.rosters) {
       const event: ChannelEvent = {
-        id: randomUUID(),
+        id: createResourceId("event"),
         type: "roster.updated",
         channelId: roster.channelId,
         rosterRevision: roster.rosterRevision,
@@ -504,11 +505,11 @@ export class ChannelService {
         participants.push({ ...participant, handle: mentionHandle });
       }
     }
-    const channelId = randomUUID();
+    const channelId = createResourceId("channel");
     return await this.storage.createChannel({
       id: channelId,
       workspaceId: workspaceId!,
-      name: requestedName ?? `Channel ${channelId.slice(0, 8)}`,
+      name: requestedName ?? `Channel ${channelId.slice("channel_".length, "channel_".length + 8)}`,
       participants,
       messages: [],
       rosterRevision: 1,
@@ -534,7 +535,7 @@ export class ChannelService {
     const updated = await this.storage.updateChannelName(channelId, name);
     if (!updated) throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
     const event: ChannelEvent = {
-      id: randomUUID(),
+      id: createResourceId("event"),
       type: "channel.updated",
       channelId,
       createdAt: new Date().toISOString(),
@@ -573,7 +574,7 @@ export class ChannelService {
     );
     if (!result) throw new ChannelConflictError("Channel roster changed; reload and retry");
     const event: ChannelEvent = {
-      id: randomUUID(),
+      id: createResourceId("event"),
       type: "roster.updated",
       channelId,
       rosterRevision: result.channel.rosterRevision,
@@ -640,7 +641,7 @@ export class ChannelService {
       (target) => this.assertActiveWorkspaceIdentity(channel, target),
     ));
     const pendingMessage: NewChannelMessage = {
-      id: randomUUID(),
+      id: createResourceId("message"),
       channelId,
       participantId,
       to,
@@ -661,7 +662,7 @@ export class ChannelService {
     const message = result.message;
     if (result.outcome === "created") {
       const event: ChannelEvent = {
-        id: randomUUID(),
+        id: createResourceId("event"),
         type: "message.created",
         channelId,
         message: { ...message, to: [...message.to] },
@@ -712,7 +713,7 @@ export class ChannelService {
     ));
     const result = await this.storage.commitResponse(
       {
-        id: randomUUID(),
+        id: createResourceId("message"),
         channelId,
         participantId: input.participantId,
         to,
@@ -724,7 +725,7 @@ export class ChannelService {
     );
     if (result.created) {
       const event: ChannelEvent = {
-        id: randomUUID(),
+        id: createResourceId("event"),
         type: "message.created",
         channelId,
         message: { ...result.message, to: [...result.message.to] },

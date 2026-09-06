@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ChannelClient } from "../src/client.ts";
 import { createChannelHttpServer } from "../src/http-server.ts";
+import { createResourceId, isResourceId, RESOURCE_ID_PREFIXES } from "../src/ids.ts";
 import type { ChannelEvent } from "../src/types.ts";
 
 async function jsonRequest(endpoint: string, path: string, init?: RequestInit) {
@@ -27,6 +28,18 @@ async function readSseFrame(
     state.buffer += decoder.decode(next.value, { stream: true });
   }
 }
+
+test("creates typed resource ids with UUID-strength random payloads", () => {
+  for (const prefix of RESOURCE_ID_PREFIXES) {
+    const first = createResourceId(prefix);
+    const second = createResourceId(prefix);
+    assert.equal(isResourceId(first, prefix), true);
+    assert.equal(isResourceId(first), true);
+    assert.notEqual(first, second);
+  }
+  assert.equal(isResourceId("550e8400-e29b-41d4-a716-446655440000"), false);
+  assert.equal(isResourceId("channel_not-random", "channel"), false);
+});
 
 async function createTestChannel(endpoint: string) {
   const result = await jsonRequest(endpoint, "/channels", {
@@ -60,6 +73,7 @@ test("creates a channel and starts with no messages", async () => {
   const server = await createChannelHttpServer();
   try {
     const channel = await createTestChannel(server.endpoint);
+    assert.equal(isResourceId(channel.id, "channel"), true);
     assert.equal(channel.name, "build-and-review");
     assert.equal(channel.participants.length, 2);
     assert.deepEqual(channel.messages, []);
@@ -103,6 +117,9 @@ test("registers reusable identities and Workspace-local handles for Channel rout
     });
     const outsider = await client.createIdentity({ type: "agent", displayName: "Outsider" });
     const workspace = await client.createWorkspace({ slug: "runtime", name: "Runtime" });
+    assert.equal(isResourceId(human.id, "identity"), true);
+    assert.equal(isResourceId(builder.id, "identity"), true);
+    assert.equal(isResourceId(workspace.id, "workspace"), true);
     await client.addWorkspaceMember(workspace.id, {
       identityId: human.id,
       mentionHandle: "David",
@@ -165,6 +182,8 @@ test("registers reusable identities and Workspace-local handles for Channel rout
       participantId: human.id,
       body: "Background. @builder please implement this",
     });
+    assert.equal(isResourceId(channel.id, "channel"), true);
+    assert.equal(isResourceId(message.id, "message"), true);
     assert.deepEqual(message.to, [builder.id]);
     assert.equal((await client.listWorkspaces()).length, 2);
     assert.equal((await client.listIdentities()).length, 3);

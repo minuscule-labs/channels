@@ -25,5 +25,7 @@ export function structuredTargets(body: string, participants: Participant[]): st
 }
 
 export function shortId(id: string): string {
+  const typed = /^([a-z]+)_([0-9a-f]{32})$/.exec(id);
+  if (typed) return `${typed[1]}_${typed[2]!.slice(0, 8)}…`;
   return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 }
