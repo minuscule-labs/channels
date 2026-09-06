@@ -16,6 +16,7 @@ import type {
   CreateWorkspaceInput,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateIdentityInput,
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
@@ -88,6 +89,13 @@ export async function createChannelHttpServer(
       const identityMatch = url.pathname.match(/^\/identities\/([^/]+)$/);
       if (identityMatch && request.method === "GET") {
         json(response, 200, { identity: await service.getIdentity(identityMatch[1]!) });
+        return;
+      }
+      if (identityMatch && request.method === "PATCH") {
+        json(response, 200, { identity: await service.updateIdentity(
+          identityMatch[1]!,
+          (await readJson(request)) as UpdateIdentityInput,
+        ) });
         return;
       }
 

@@ -30,25 +30,42 @@ function ConfigurationState({ configured, label }: { configured: boolean; label:
 function AgentIdentityForm({
   workspaceId,
   actorIdentityId,
+  identity,
   member,
 }: {
   workspaceId: string;
   actorIdentityId: string;
+  identity: Identity;
   member: WorkspaceMember;
 }) {
   const queryClient = useQueryClient();
+  const [displayName, setDisplayName] = useState(identity.displayName ?? "");
   const [mentionHandle, setMentionHandle] = useState(member.mentionHandle);
+  useEffect(() => setDisplayName(identity.displayName ?? ""), [identity.displayName]);
   useEffect(() => setMentionHandle(member.mentionHandle), [member.mentionHandle]);
+  const normalizedName = displayName.trim();
   const normalizedHandle = mentionHandle.trim().replace(/^@+/, "").toLowerCase();
-  const changed = normalizedHandle !== member.mentionHandle;
+  const nameChanged = normalizedName !== (identity.displayName ?? "");
+  const handleChanged = normalizedHandle !== member.mentionHandle;
+  const changed = nameChanged || handleChanged;
   const mutation = useMutation({
-    mutationFn: () => channels.updateWorkspaceMember(workspaceId, member.identityId, {
-      actorIdentityId,
-      mentionHandle: normalizedHandle,
-    }),
-    onSuccess: (updated) => {
+    mutationFn: async () => {
+      const updatedIdentity = nameChanged
+        ? await channels.updateIdentity(identity.id, { workspaceId, actorIdentityId, displayName: normalizedName })
+        : identity;
+      const updatedMember = handleChanged
+        ? await channels.updateWorkspaceMember(workspaceId, member.identityId, {
+            actorIdentityId,
+            mentionHandle: normalizedHandle,
+          })
+        : member;
+      return { updatedIdentity, updatedMember };
+    },
+    onSuccess: ({ updatedIdentity, updatedMember }) => {
+      queryClient.setQueryData<Identity[]>(queryKeys.identities(), (current = []) =>
+        current.map((candidate) => candidate.id === updatedIdentity.id ? updatedIdentity : candidate));
       queryClient.setQueryData<WorkspaceMember[]>(queryKeys.workspaceMembers(workspaceId), (current = []) =>
-        current.map((candidate) => candidate.identityId === updated.identityId ? updated : candidate));
+        current.map((candidate) => candidate.identityId === updatedMember.identityId ? updatedMember : candidate));
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceChannels(workspaceId) });
     },
   });
@@ -58,14 +75,19 @@ function AgentIdentityForm({
       className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
       onSubmit={(event) => {
         event.preventDefault();
-        if (changed && normalizedHandle && !mutation.isPending) mutation.mutate();
+        if (changed && normalizedName && normalizedHandle && !mutation.isPending) mutation.mutate();
       }}
     >
       <div>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Identity</h3>
         <p className="mt-1 text-[11px] leading-5 text-[var(--muted)]">The name identifies the agent; the handle is used for mentions.</p>
       </div>
-      <label className="mt-3 block text-xs font-medium">
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <label className="block text-xs font-medium">
+        Name
+        <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
+      </label>
+      <label className="block text-xs font-medium">
         Mention handle
         <div className="mt-1.5">
           <input
@@ -79,10 +101,11 @@ function AgentIdentityForm({
           />
         </div>
       </label>
+      </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
         {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Identity saved</span> : null}
-        <button className="button-primary" type="submit" disabled={!changed || !normalizedHandle || mutation.isPending}>
+        <button className="button-primary" type="submit" disabled={!changed || !normalizedName || !normalizedHandle || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
           Save identity
         </button>
@@ -614,7 +637,7 @@ export function AgentDetailPage() {
                 ? assignedChannels.map((channel) => <span key={channel.id} className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">#{channel.name}</span>)
                 : <span className="text-[11px] text-[var(--muted)]">Not assigned to a Channel</span>}
             </div>
-            <AgentIdentityForm workspaceId={workspaceId} actorIdentityId={data.session.data.identityId} member={agent.member} />
+            <AgentIdentityForm workspaceId={workspaceId} actorIdentityId={data.session.data.identityId} identity={agent.identity} member={agent.member} />
             <AgentLaunchProfileForm workspaceId={workspaceId} agent={agent.config} />
           </article>
         </div>

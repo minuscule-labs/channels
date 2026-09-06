@@ -196,6 +196,23 @@ test("registers reusable identities and Workspace-local handles for Channel rout
     assert.equal(isResourceId(channel.id, "channel"), true);
     assert.equal(isResourceId(message.id, "message"), true);
     assert.deepEqual(message.to, [builder.id]);
+    await assert.rejects(
+      client.updateIdentity(builder.id, {
+        workspaceId: workspace.id,
+        actorIdentityId: builder.id,
+        displayName: "Unauthorized Builder",
+      }),
+      /owner or admin is required/,
+    );
+    const renamedBuilder = await client.updateIdentity(builder.id, {
+      workspaceId: workspace.id,
+      actorIdentityId: human.id,
+      displayName: "Lead Builder",
+    });
+    assert.equal(renamedBuilder.displayName, "Lead Builder");
+    const renamedChannel = await client.getChannel(channel.id);
+    assert.equal(renamedChannel.participants[1]?.displayName, "Lead Builder");
+    assert.equal(renamedChannel.rosterRevision, channel.rosterRevision + 1);
     assert.equal((await client.listWorkspaces()).length, 2);
     assert.equal((await client.listIdentities()).length, 3);
     assert.equal((await client.listWorkspaceMembers(workspace.id)).length, 2);

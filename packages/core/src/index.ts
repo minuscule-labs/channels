@@ -10,6 +10,7 @@ export {
   InMemoryChannelStorage,
   type ChannelStorage,
   type ChannelRosterUpdateResult,
+  type IdentityUpdateResult,
   type MessageCommitResult,
   type NewChannelMessage,
   type NewResponseMessage,
@@ -48,6 +49,7 @@ export type {
   WorkspaceStatus,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateIdentityInput,
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";

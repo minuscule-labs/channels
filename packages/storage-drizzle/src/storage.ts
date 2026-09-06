@@ -7,6 +7,7 @@ import type {
   ChannelRosterUpdateResult,
   ChannelStorage,
   Identity,
+  IdentityUpdateResult,
   MessageCommitResult,
   NewChannelMessage,
   NewResponseMessage,
@@ -72,6 +73,41 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
   async createIdentity(identity: Identity): Promise<Identity> {
     await this.database.insert(schema.identities).values(identity);
     return { ...identity };
+  }
+
+  async updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined> {
+    return await this.database.transaction(async (transaction) => {
+      const [updated] = await transaction.update(schema.identities).set({
+        displayName: identity.displayName,
+        publicProfile: identity.publicProfile,
+        status: identity.status,
+        updatedAt: identity.updatedAt,
+      }).where(eq(schema.identities.id, identity.id)).returning();
+      if (!updated) return undefined;
+      const affected = await transaction.select({ channelId: schema.participants.channelId })
+        .from(schema.participants)
+        .where(eq(schema.participants.id, identity.id));
+      await transaction.update(schema.participants).set({
+        displayName: identity.displayName,
+      }).where(eq(schema.participants.id, identity.id));
+      const rosters: IdentityUpdateResult["rosters"] = [];
+      for (const { channelId } of affected) {
+        const [channel] = await transaction.update(schema.channels).set({
+          rosterRevision: sql`${schema.channels.rosterRevision} + 1`,
+        }).where(eq(schema.channels.id, channelId)).returning({
+          rosterRevision: schema.channels.rosterRevision,
+        });
+        rosters.push({ channelId, rosterRevision: channel!.rosterRevision });
+      }
+      return {
+        identity: {
+          ...updated,
+          displayName: updated.displayName ?? undefined,
+          publicProfile: updated.publicProfile ?? undefined,
+        },
+        rosters,
+      };
+    }, { behavior: "immediate" });
   }
 
   async getIdentity(identityId: string): Promise<Identity | undefined> {

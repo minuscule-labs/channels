@@ -140,6 +140,7 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 1 })).toBeVisible();
   const agentCard = page.locator("article").filter({ hasText: "Builder Agent" });
   const identityForm = agentCard.locator("form").filter({ hasText: "The name identifies the agent" });
+  await expect(identityForm.getByLabel("Name", { exact: true })).toHaveValue("Builder Agent");
   await expect(identityForm.getByLabel("Mention handle")).toHaveValue("builder");
 
   const agentForm = agentCard.locator("form").filter({ hasText: "Private launch profile" });
@@ -222,8 +223,12 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Skills (1): configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
+  const createdIdentityForm = page.locator("form").filter({ hasText: "The name identifies the agent" });
+  await createdIdentityForm.getByLabel("Name", { exact: true }).fill("Browser Lead Review Agent");
+  await createdIdentityForm.getByRole("button", { name: "Save identity" }).click();
+  await expect(page.getByRole("heading", { name: "Browser Lead Review Agent", exact: true, level: 1 })).toBeVisible();
   await page.getByRole("link", { name: "All agents" }).click();
-  await expect(page.getByRole("link", { name: /Browser Review Agent/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Browser Lead Review Agent/ })).toBeVisible();
 });
 
 test("creates and renames a Workspace with a private source path", async ({ page, request }) => {

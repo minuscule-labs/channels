@@ -18,6 +18,11 @@ export interface MessageCommitResult {
   outcome: "created" | "replayed" | "conflict";
 }
 
+export interface IdentityUpdateResult {
+  identity: Identity;
+  rosters: Array<{ channelId: string; rosterRevision: number }>;
+}
+
 export interface WorkspaceMemberUpdateResult {
   member: WorkspaceMember;
   rosters: Array<{ channelId: string; rosterRevision: number }>;
@@ -30,6 +35,7 @@ export interface ChannelRosterUpdateResult {
 
 export interface ChannelStorage extends ChannelCursorStore {
   createIdentity(identity: Identity): Promise<Identity>;
+  updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined>;
   getIdentity(identityId: string): Promise<Identity | undefined>;
   listIdentities(): Promise<Identity[]>;
   createWorkspace(workspace: Workspace): Promise<Workspace>;
@@ -93,6 +99,20 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   async createIdentity(identity: Identity): Promise<Identity> {
     this.identities.set(identity.id, { ...identity });
     return { ...identity };
+  }
+
+  async updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined> {
+    if (!this.identities.has(identity.id)) return undefined;
+    this.identities.set(identity.id, { ...identity });
+    const rosters: IdentityUpdateResult["rosters"] = [];
+    for (const channel of this.channels.values()) {
+      const participant = channel.participants.find(({ id }) => id === identity.id);
+      if (!participant) continue;
+      participant.displayName = identity.displayName;
+      channel.rosterRevision += 1;
+      rosters.push({ channelId: channel.id, rosterRevision: channel.rosterRevision });
+    }
+    return { identity: { ...identity }, rosters };
   }
 
   async getIdentity(identityId: string): Promise<Identity | undefined> {
