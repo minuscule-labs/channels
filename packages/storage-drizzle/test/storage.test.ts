@@ -89,18 +89,25 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
       actorIdentityId: human.id,
       name: "Renamed Channels",
     });
+    await first.updateIdentity(agent.id, {
+      workspaceId: workspace.id,
+      actorIdentityId: human.id,
+      displayName: "Lead Builder",
+    });
     await first.close();
 
     const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
     const second = new ChannelService(secondStorage);
     assert.equal((await second.listIdentities()).length, 2);
+    assert.equal((await second.getIdentity(agent.id)).displayName, "Lead Builder");
     assert.equal((await second.getWorkspace(workspace.id)).name, "Renamed Channels");
     assert.equal((await second.listWorkspaceMembers(workspace.id))[1]?.mentionHandle, "implementer");
     const restored = await second.getChannel(channel.id);
     assert.equal(restored.workspaceId, workspace.id);
     assert.equal(restored.name, "durable-work");
     assert.equal(restored.participants[1]?.id, agent.id);
-    assert.equal(restored.rosterRevision, 2);
+    assert.equal(restored.participants[1]?.displayName, "Lead Builder");
+    assert.equal(restored.rosterRevision, 3);
     assert.equal(restored.participants[1]?.handle, "implementer");
     assert.equal(restored.participants[1]?.role, "builder");
     assert.deepEqual(restored.messages[0]?.to, [agent.id]);

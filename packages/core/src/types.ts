@@ -21,6 +21,14 @@ export interface CreateIdentityInput {
   publicProfile?: string;
 }
 
+export interface UpdateIdentityInput {
+  /** Workspace used to authorize this global identity update. */
+  workspaceId: string;
+  /** Advisory product policy until requests are authenticated. */
+  actorIdentityId: string;
+  displayName: string;
+}
+
 export interface Workspace {
   id: string;
   slug: string;

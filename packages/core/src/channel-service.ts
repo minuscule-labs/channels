@@ -24,6 +24,7 @@ import type {
   WorkspaceMember,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateIdentityInput,
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
@@ -157,6 +158,43 @@ export class ChannelService {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+  }
+
+  async updateIdentity(identityId: string, input: UpdateIdentityInput): Promise<Identity> {
+    const identity = await this.getIdentity(identityId);
+    if (!input || typeof input.workspaceId !== "string" || !input.workspaceId.trim()) {
+      throw new ChannelValidationError("workspaceId is required");
+    }
+    if (typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+      throw new ChannelValidationError("actorIdentityId is required");
+    }
+    if (typeof input.displayName !== "string" || !input.displayName.trim() || input.displayName.trim().length > 200) {
+      throw new ChannelValidationError("identity displayName must be a non-empty string up to 200 characters");
+    }
+    if (identity.type !== "agent" && identity.type !== "service") {
+      throw new ChannelValidationError("Only agent and service names may be updated");
+    }
+    const target = await this.storage.getWorkspaceMember(input.workspaceId, identityId);
+    if (!target) throw new ChannelNotFoundError(`Workspace member not found: ${identityId}`);
+    await this.assertWorkspaceAdministrator(input.workspaceId, input.actorIdentityId);
+    const updatedAt = new Date(Math.max(Date.now(), Date.parse(identity.updatedAt) + 1)).toISOString();
+    const result = await this.storage.updateIdentity({
+      ...identity,
+      displayName: input.displayName.trim(),
+      updatedAt,
+    });
+    if (!result) throw new ChannelNotFoundError(`Identity not found: ${identityId}`);
+    for (const roster of result.rosters) {
+      const event: ChannelEvent = {
+        id: createResourceId("event"),
+        type: "roster.updated",
+        channelId: roster.channelId,
+        rosterRevision: roster.rosterRevision,
+        createdAt: updatedAt,
+      };
+      for (const listener of this.listeners.get(roster.channelId) ?? []) listener(event);
+    }
+    return result.identity;
   }
 
   async getIdentity(identityId: string): Promise<Identity> {
