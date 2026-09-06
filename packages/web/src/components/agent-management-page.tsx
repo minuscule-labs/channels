@@ -5,8 +5,7 @@ import type {
 import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import * as Dialog from "@radix-ui/react-dialog";
-import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
@@ -100,7 +99,7 @@ function AgentLaunchProfileForm({
   agent: LocalWorkspaceAgentConfigurationSummary;
 }) {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"instructions" | "skills" | "runtime">("instructions");
+  const [activeTab, setActiveTab] = useState<"general" | "skills" | "runtime">("general");
   const [runtimeAdapter, setRuntimeAdapter] = useState("");
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModelKey, setSelectedModelKey] = useState("");
@@ -225,7 +224,7 @@ function AgentLaunchProfileForm({
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
       <div className="mt-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Launch profile settings">
-        {(["instructions", "skills", "runtime"] as const).map((tab) => (
+        {(["general", "skills", "runtime"] as const).map((tab) => (
           <button
             key={tab}
             type="button"
@@ -236,7 +235,7 @@ function AgentLaunchProfileForm({
             onKeyDown={(event) => {
               if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
               event.preventDefault();
-              const tabs = ["instructions", "skills", "runtime"] as const;
+              const tabs = ["general", "skills", "runtime"] as const;
               const offset = event.key === "ArrowRight" ? 1 : tabs.length - 1;
               const nextIndex = (tabs.indexOf(tab) + offset) % tabs.length;
               setActiveTab(tabs[nextIndex]!);
@@ -250,7 +249,7 @@ function AgentLaunchProfileForm({
           </button>
         ))}
       </div>
-      {activeTab === "instructions" ? (
+      {activeTab === "general" ? (
         <div className="mt-4" role="tabpanel">
           <label className="block text-xs font-medium">
             Configuration status
@@ -464,41 +463,11 @@ function AgentPageError({ error }: { error: unknown }) {
   );
 }
 
-function AddAgentDialog({ workspaceId, members }: { workspaceId: string; members: WorkspaceMember[] }) {
-  const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
+function AddAgentLink({ workspaceId }: { workspaceId: string }) {
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <button type="button" className="button-primary"><Plus className="h-3.5 w-3.5" /> Add agent</button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(44rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
-          <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
-            <div>
-              <Dialog.Title className="text-base font-semibold">Add Workspace agent</Dialog.Title>
-              <Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">Create an agent or service, then configure it from its detail page.</Dialog.Description>
-            </div>
-            <Dialog.Close className="icon-button inline-flex" aria-label="Close Add Workspace agent"><X className="h-4 w-4" /></Dialog.Close>
-          </header>
-          <div className="minu-scroll min-h-0 flex-1 overflow-y-auto p-5">
-            <AddWorkspaceParticipantForm
-              workspaceId={workspaceId}
-              existingMembers={members}
-              mode="agent"
-              onCreated={(identity) => {
-                setOpen(false);
-                void navigate({
-                  to: "/app/workspaces/$workspaceId/agents/$agentId",
-                  params: { workspaceId, agentId: identity.id },
-                });
-              }}
-            />
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <Link to="/app/workspaces/$workspaceId/agents/new" params={{ workspaceId }} className="button-primary">
+      <Plus className="h-3.5 w-3.5" /> Add agent
+    </Link>
   );
 }
 
@@ -524,7 +493,7 @@ export function AgentManagementPage() {
               <h2 className="text-lg font-semibold">Workspace agents</h2>
               <p className="mt-1 text-sm leading-6 text-[var(--muted)]">Select an agent to view or edit its instructions and harness configuration.</p>
             </div>
-            <AddAgentDialog workspaceId={workspaceId} members={data.members.data ?? []} />
+            <AddAgentLink workspaceId={workspaceId} />
           </div>
           {data.agents.length ? (
             <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
@@ -555,8 +524,50 @@ export function AgentManagementPage() {
               })}
             </div>
           ) : (
-            <div className="empty-state"><p>No agents belong to this Workspace yet.</p><AddAgentDialog workspaceId={workspaceId} members={data.members.data ?? []} /></div>
+            <div className="empty-state"><p>No agents belong to this Workspace yet.</p><AddAgentLink workspaceId={workspaceId} /></div>
           )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function AgentCreatePage() {
+  const { workspaceId } = useParams({ from: "/app/workspaces/$workspaceId/agents/new" });
+  const navigate = useNavigate();
+  const data = useAgentManagementData(workspaceId);
+  if (data.pending) return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading agent editor…</div>;
+  if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
+
+  return (
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
+        <Bot className="hidden h-4 w-4 text-[var(--accent)] sm:block" />
+        <div className="min-w-0">
+          <h1 className="truncate text-sm font-semibold">Add agent</h1>
+          <p className="truncate text-[11px] text-[var(--muted)]">{data.workspace.data.name}</p>
+        </div>
+      </header>
+      <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
+        <div className="mx-auto max-w-5xl space-y-5">
+          <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"><ArrowLeft className="h-3.5 w-3.5" /> All agents</Link>
+          <article className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 md:p-5">
+            <div>
+              <h2 className="text-lg font-semibold">New Workspace agent</h2>
+              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">Configure the agent using the same settings available after creation.</p>
+            </div>
+            <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+              <AddWorkspaceParticipantForm
+                workspaceId={workspaceId}
+                existingMembers={data.members.data ?? []}
+                mode="agent"
+                onCreated={(identity) => void navigate({
+                  to: "/app/workspaces/$workspaceId/agents/$agentId",
+                  params: { workspaceId, agentId: identity.id },
+                })}
+              />
+            </div>
+          </article>
         </div>
       </div>
     </section>
