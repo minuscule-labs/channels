@@ -21,6 +21,7 @@ export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
   reasoningLevel: text("reasoning_level", {
     enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
   }),
+  skillIds: text("skill_ids"),
   status: text("status", { enum: ["active", "disabled"] }).notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

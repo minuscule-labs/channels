@@ -139,6 +139,7 @@ export class LocalControlService {
         workspaceConfigWrite: Boolean(this.options.configuration),
         agentCreate: false,
         agentRuntimeOptions: Boolean(this.options.configuration),
+        agentSkills: Boolean(this.options.configuration),
         agentStart: Boolean(this.options.lifecycle?.available),
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),

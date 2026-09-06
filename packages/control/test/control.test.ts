@@ -85,6 +85,7 @@ class ManagedFakeRuntime {
     return {
       models: [{ provider: "openai", id: "gpt-managed", name: "Managed GPT", reasoning: true }],
       reasoningLevels: ["off", "medium", "high"] as Array<"off" | "medium" | "high">,
+      skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
     };
   }
 
@@ -223,7 +224,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 6 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 7 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -306,7 +307,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 6, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 7, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -381,7 +382,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 6,
+      protocolVersion: 7,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -577,6 +578,8 @@ test("private configuration authorizes current humans and returns only redacted 
       runtimeConfigured: true,
       modelConfigured: true,
       reasoningConfigured: true,
+      skillsConfigured: false,
+      selectedSkillCount: 0,
       status: "active",
       boundChannelCount: 0,
       changesApplyToNewSessions: true,
@@ -647,7 +650,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
         participantIds: [owner.id, agent.id],
       }),
     ]);
-    const configuration = new LocalAgentHostConfiguration({ client, store });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
       rootUri: sourceDirectory,
     });
@@ -657,6 +660,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
       modelProvider: "openai",
       modelId: "gpt-managed",
       reasoningLevel: "high",
+      skillIds: ["skill:review"],
     });
     await client.postMessage(channelA.id, {
       participantId: owner.id,
@@ -681,12 +685,14 @@ test("agent host starts isolated Channel sessions with private roots and persona
         appendSystemPrompt: "PRIVATE MANAGED PERSONA",
         model: { provider: "openai", id: "gpt-managed" },
         reasoningLevel: "high",
+        skillIds: ["skill:review"],
       },
       {
         cwd: sourceDirectory,
         appendSystemPrompt: "PRIVATE MANAGED PERSONA",
         model: { provider: "openai", id: "gpt-managed" },
         reasoningLevel: "high",
+        skillIds: ["skill:review"],
       },
     ]);
     assert.notEqual(runtime.starts[0]?.sessionId, runtime.starts[1]?.sessionId);
@@ -867,6 +873,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
             return {
               models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true }],
               reasoningLevels: ["off", "medium", "high"] as Array<"off" | "medium" | "high">,
+              skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
             };
           },
         },
@@ -908,11 +915,12 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 6,
+      protocolVersion: 7,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
       modelPolicyConfigured: false,
+      skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
     });
     const runtimeOptionsResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
@@ -920,12 +928,15 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 6,
+      protocolVersion: 7,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
       modelPolicyConfigured: false,
+      skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
+      skillSelectionConfigured: false,
+      selectedSkillIds: [],
     });
     const policyResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
@@ -996,6 +1007,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       runtimeConfigured: true,
       modelConfigured: false,
       reasoningConfigured: false,
+      skillsConfigured: false,
+      selectedSkillCount: 0,
       status: "active",
       boundChannelCount: 1,
       changesApplyToNewSessions: true,

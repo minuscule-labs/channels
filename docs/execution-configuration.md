@@ -114,6 +114,7 @@ The current product supports:
 - authenticated adapter model discovery;
 - a persisted Workspace allowlist scoped by Runtime adapter;
 - validated provider/model and reasoning-level selection;
+- harness-discovered, validated per-agent skill selection;
 - redacted configured-state summaries;
 - application of profile changes only to new or **Start fresh** sessions; and
 - isolated Runtime sessions per Channel-agent binding.

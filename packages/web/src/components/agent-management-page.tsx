@@ -5,8 +5,7 @@ import type {
 import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import * as Dialog from "@radix-ui/react-dialog";
-import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
@@ -100,11 +99,13 @@ function AgentLaunchProfileForm({
   agent: LocalWorkspaceAgentConfigurationSummary;
 }) {
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<"general" | "skills" | "runtime">("general");
   const [runtimeAdapter, setRuntimeAdapter] = useState("");
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [reasoningLevel, setReasoningLevel] = useState("");
   const [personaPrompt, setPersonaPrompt] = useState("");
+  const [skillIds, setSkillIds] = useState<string[] | null>(null);
   const [enabledModelKeys, setEnabledModelKeys] = useState<string[] | null>(null);
   const [status, setStatus] = useState<"active" | "disabled">(
     agent.status === "disabled" ? "disabled" : "active",
@@ -128,12 +129,20 @@ function AgentLaunchProfileForm({
   useEffect(() => {
     if (configuredRuntimeOptions.data) {
       setEnabledModelKeys(configuredRuntimeOptions.data.models.filter((model) => model.enabled).map(modelKey));
+      setSkillIds(configuredRuntimeOptions.data.skillSelectionConfigured
+        ? [...configuredRuntimeOptions.data.selectedSkillIds]
+        : null);
     }
   }, [configuredRuntimeOptions.data]);
   const savedEnabledModelKeys = configuredRuntimeOptions.data?.models.filter((model) => model.enabled).map(modelKey) ?? [];
   const modelPolicyChanged = enabledModelKeys !== null
     && JSON.stringify([...enabledModelKeys].sort()) !== JSON.stringify([...savedEnabledModelKeys].sort());
   const statusChanged = agent.status !== "unconfigured" && status !== agent.status;
+  const savedSkillIds = configuredRuntimeOptions.data?.skillSelectionConfigured
+    ? configuredRuntimeOptions.data.selectedSkillIds
+    : configuredRuntimeOptions.data?.skills.map(({ id }) => id) ?? [];
+  const skillsChanged = skillIds !== null && configuredRuntimeOptions.data !== undefined
+    && JSON.stringify([...skillIds].sort()) !== JSON.stringify([...savedSkillIds].sort());
   const providers = [...new Set(runtimeOptions.data?.models
     .filter((model) => model.enabled)
     .map((model) => model.provider) ?? [])].sort();
@@ -142,7 +151,7 @@ function AgentLaunchProfileForm({
       && JSON.stringify([model.provider, model.id]) === selectedModelKey,
   );
   const hasUpdate = Boolean(
-    runtimeAdapter.trim() || selectedModel || reasoningLevel || personaPrompt.trim() || statusChanged,
+    runtimeAdapter.trim() || selectedModel || reasoningLevel || personaPrompt.trim() || statusChanged || skillsChanged,
   );
   const modelPolicyMutation = useMutation({
     mutationFn: () => localControl.updateAgentRuntimeModelPolicy(workspaceId, agent.identityId, {
@@ -189,6 +198,9 @@ function AgentLaunchProfileForm({
       input.reasoningLevel = reasoningLevel as UpdateLocalWorkspaceAgentConfigurationInput["reasoningLevel"];
     }
     if (personaPrompt.trim()) input.personaPrompt = personaPrompt;
+    if (runtimeAdapter.trim() && replacementRuntimeOptions.data) {
+      input.skillIds = skillIds ?? replacementRuntimeOptions.data.skills.map(({ id }) => id);
+    } else if (skillsChanged && skillIds) input.skillIds = skillIds;
     if (statusChanged || agent.status === "unconfigured") input.status = status;
     mutation.mutate(input);
   };
@@ -208,8 +220,51 @@ function AgentLaunchProfileForm({
         <ConfigurationState configured={agent.runtimeConfigured} label="Harness" />
         <ConfigurationState configured={agent.modelConfigured} label="Model" />
         <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
+        <ConfigurationState configured={agent.skillsConfigured} label={`Skills (${agent.selectedSkillCount})`} />
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
+      <div className="mt-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Launch profile settings">
+        {(["general", "skills", "runtime"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
+            tabIndex={activeTab === tab ? 0 : -1}
+            onClick={() => setActiveTab(tab)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const tabs = ["general", "skills", "runtime"] as const;
+              const offset = event.key === "ArrowRight" ? 1 : tabs.length - 1;
+              const nextIndex = (tabs.indexOf(tab) + offset) % tabs.length;
+              setActiveTab(tabs[nextIndex]!);
+              (event.currentTarget.parentElement?.children[nextIndex] as HTMLElement | undefined)?.focus();
+            }}
+            className={`border-b-2 px-3 py-2 text-xs font-medium capitalize ${activeTab === tab
+              ? "border-[var(--accent)] text-[var(--text)]"
+              : "border-transparent text-[var(--muted)] hover:text-[var(--text)]"}`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      {activeTab === "general" ? (
+        <div className="mt-4" role="tabpanel">
+          <label className="block text-xs font-medium">
+            Configuration status
+            <select value={status} onChange={(event) => setStatus(event.target.value as "active" | "disabled")} className="settings-input mt-1.5 max-w-xs">
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
+          <label className="mt-3 block text-xs font-medium">
+            {agent.personaConfigured ? "Replace agent instructions" : "Agent instructions"}
+            <textarea value={personaPrompt} onChange={(event) => setPersonaPrompt(event.target.value)} rows={7} placeholder="Private responsibilities, behavior, and working style" className="settings-input mt-1.5 resize-y leading-5" />
+          </label>
+        </div>
+      ) : null}
+      {activeTab === "runtime" ? <div role="tabpanel">
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className="block text-xs font-medium">
           {agent.runtimeConfigured ? "Replace harness" : "Harness"}
@@ -220,19 +275,13 @@ function AgentLaunchProfileForm({
               setSelectedProvider("");
               setSelectedModelKey("");
               setReasoningLevel("");
+              setSkillIds(null);
             }}
             autoComplete="off"
             spellCheck={false}
             placeholder="pi"
             className="settings-input mt-1.5 font-mono"
           />
-        </label>
-        <label className="block text-xs font-medium">
-          Configuration status
-          <select value={status} onChange={(event) => setStatus(event.target.value as "active" | "disabled")} className="settings-input mt-1.5">
-            <option value="active">Active</option>
-            <option value="disabled">Disabled</option>
-          </select>
         </label>
         <label className="block text-xs font-medium">
           {agent.modelConfigured ? "Replace provider" : "Provider"}
@@ -281,9 +330,44 @@ function AgentLaunchProfileForm({
           </select>
         </label>
       </div>
-      {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness providers and models…</p> : null}
-      {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">Harness model discovery unavailable.</p> : null}
-      {configuredRuntimeOptions.data ? (
+        {runtimeOptions.isPending ? <p className="mt-2 text-[10px] text-[var(--muted)]">Discovering harness providers and models…</p> : null}
+        {runtimeOptions.error ? <p className="mt-2 text-[10px] text-[var(--danger)]">Harness discovery unavailable.</p> : null}
+      </div> : null}
+      {activeTab === "skills" ? (
+        <div className="mt-4" role="tabpanel">
+        {runtimeOptions.data?.skills.length ? (
+        <fieldset>
+          <legend className="text-xs font-medium">Skills</legend>
+          <p className="mt-1 text-[10px] text-[var(--muted)]">Changes apply when starting fresh.</p>
+          <div className="mt-2 grid max-h-48 gap-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 sm:grid-cols-2">
+            {runtimeOptions.data.skills.map((skill) => (
+              <label key={skill.id} className="flex items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--hover)]">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={skillIds?.includes(skill.id) ?? (runtimeAdapter.trim() || !configuredRuntimeOptions.data?.skillSelectionConfigured
+                    ? true
+                    : configuredRuntimeOptions.data.selectedSkillIds.includes(skill.id))}
+                  onChange={(event) => setSkillIds((current) => {
+                    const selected = current ?? (runtimeAdapter.trim()
+                      ? runtimeOptions.data!.skills.map(({ id }) => id)
+                      : savedSkillIds);
+                    return event.target.checked
+                      ? [...new Set([...selected, skill.id])]
+                      : selected.filter((id) => id !== skill.id);
+                  })}
+                />
+                <span><span className="block font-medium">{skill.name}</span><span className="block text-[10px] leading-4 text-[var(--muted)]">{skill.description}</span></span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        ) : <p className="text-xs text-[var(--muted)]">No skills were discovered for this harness.</p>}
+        {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness skills…</p> : null}
+        {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">Harness skill discovery unavailable.</p> : null}
+        </div>
+      ) : null}
+      {activeTab === "runtime" && configuredRuntimeOptions.data ? (
         <details className="mt-3 rounded-md border border-[var(--border)] bg-[var(--panel)] p-3">
           <summary className="cursor-pointer text-xs font-medium">Manage available provider models</summary>
           <p className="mt-2 text-[10px] leading-4 text-[var(--muted)]">
@@ -317,11 +401,7 @@ function AgentLaunchProfileForm({
           </div>
         </details>
       ) : null}
-      <label className="mt-3 block text-xs font-medium">
-        {agent.personaConfigured ? "Replace agent instructions" : "Agent instructions"}
-        <textarea value={personaPrompt} onChange={(event) => setPersonaPrompt(event.target.value)} rows={4} placeholder="Private responsibilities, behavior, and working style" className="settings-input mt-1.5 resize-y leading-5" />
-      </label>
-      <p className="mt-1.5 text-[10px] leading-4 text-[var(--muted)]">
+      <p className="mt-3 text-[10px] leading-4 text-[var(--muted)]">
         Changes apply only when starting or explicitly replacing a session.
       </p>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
@@ -383,41 +463,11 @@ function AgentPageError({ error }: { error: unknown }) {
   );
 }
 
-function AddAgentDialog({ workspaceId, members }: { workspaceId: string; members: WorkspaceMember[] }) {
-  const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
+function AddAgentLink({ workspaceId }: { workspaceId: string }) {
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <button type="button" className="button-primary"><Plus className="h-3.5 w-3.5" /> Add agent</button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(38rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
-          <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
-            <div>
-              <Dialog.Title className="text-base font-semibold">Add Workspace agent</Dialog.Title>
-              <Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">Create an agent or service, then configure it from its detail page.</Dialog.Description>
-            </div>
-            <Dialog.Close className="icon-button inline-flex" aria-label="Close Add Workspace agent"><X className="h-4 w-4" /></Dialog.Close>
-          </header>
-          <div className="minu-scroll min-h-0 flex-1 overflow-y-auto p-5">
-            <AddWorkspaceParticipantForm
-              workspaceId={workspaceId}
-              existingMembers={members}
-              mode="agent"
-              onCreated={(identity) => {
-                setOpen(false);
-                void navigate({
-                  to: "/app/workspaces/$workspaceId/agents/$agentId",
-                  params: { workspaceId, agentId: identity.id },
-                });
-              }}
-            />
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <Link to="/app/workspaces/$workspaceId/agents/new" params={{ workspaceId }} className="button-primary">
+      <Plus className="h-3.5 w-3.5" /> Add agent
+    </Link>
   );
 }
 
@@ -443,7 +493,7 @@ export function AgentManagementPage() {
               <h2 className="text-lg font-semibold">Workspace agents</h2>
               <p className="mt-1 text-sm leading-6 text-[var(--muted)]">Select an agent to view or edit its instructions and harness configuration.</p>
             </div>
-            <AddAgentDialog workspaceId={workspaceId} members={data.members.data ?? []} />
+            <AddAgentLink workspaceId={workspaceId} />
           </div>
           {data.agents.length ? (
             <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
@@ -474,8 +524,50 @@ export function AgentManagementPage() {
               })}
             </div>
           ) : (
-            <div className="empty-state"><p>No agents belong to this Workspace yet.</p><AddAgentDialog workspaceId={workspaceId} members={data.members.data ?? []} /></div>
+            <div className="empty-state"><p>No agents belong to this Workspace yet.</p><AddAgentLink workspaceId={workspaceId} /></div>
           )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function AgentCreatePage() {
+  const { workspaceId } = useParams({ from: "/app/workspaces/$workspaceId/agents/new" });
+  const navigate = useNavigate();
+  const data = useAgentManagementData(workspaceId);
+  if (data.pending) return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading agent editor…</div>;
+  if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
+
+  return (
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
+        <Bot className="hidden h-4 w-4 text-[var(--accent)] sm:block" />
+        <div className="min-w-0">
+          <h1 className="truncate text-sm font-semibold">Add agent</h1>
+          <p className="truncate text-[11px] text-[var(--muted)]">{data.workspace.data.name}</p>
+        </div>
+      </header>
+      <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
+        <div className="mx-auto max-w-5xl space-y-5">
+          <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"><ArrowLeft className="h-3.5 w-3.5" /> All agents</Link>
+          <article className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 md:p-5">
+            <div>
+              <h2 className="text-lg font-semibold">New Workspace agent</h2>
+              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">Configure the agent using the same settings available after creation.</p>
+            </div>
+            <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+              <AddWorkspaceParticipantForm
+                workspaceId={workspaceId}
+                existingMembers={data.members.data ?? []}
+                mode="agent"
+                onCreated={(identity) => void navigate({
+                  to: "/app/workspaces/$workspaceId/agents/$agentId",
+                  params: { workspaceId, agentId: identity.id },
+                })}
+              />
+            </div>
+          </article>
         </div>
       </div>
     </section>
@@ -504,7 +596,7 @@ export function AgentDetailPage() {
         </div>
       </header>
       <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
-        <div className="mx-auto max-w-4xl space-y-5">
+        <div className="mx-auto max-w-5xl space-y-5">
           <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"><ArrowLeft className="h-3.5 w-3.5" /> All agents</Link>
           <article className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 md:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">

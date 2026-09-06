@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 6 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 7 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -15,16 +15,25 @@ export interface LocalRuntimeModelRef {
   id: string;
 }
 
+export interface LocalRuntimeSkillOption {
+  id: string;
+  name: string;
+  description: string;
+}
+
 export interface LocalRuntimeOptions {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   workspaceId: string;
   models: LocalRuntimeModelOption[];
   reasoningLevels: LocalReasoningLevel[];
   modelPolicyConfigured: boolean;
+  skills: LocalRuntimeSkillOption[];
 }
 
 export interface LocalAgentRuntimeOptions extends LocalRuntimeOptions {
   identityId: string;
+  skillSelectionConfigured: boolean;
+  selectedSkillIds: string[];
 }
 
 export interface UpdateLocalRuntimeModelPolicyInput {
@@ -48,6 +57,8 @@ export interface LocalWorkspaceAgentConfigurationSummary {
   runtimeConfigured: boolean;
   modelConfigured: boolean;
   reasoningConfigured: boolean;
+  skillsConfigured: boolean;
+  selectedSkillCount: number;
   status: "active" | "disabled" | "unconfigured";
   boundChannelCount: number;
   changesApplyToNewSessions: true;
@@ -72,6 +83,7 @@ export interface UpdateLocalWorkspaceAgentConfigurationInput {
   modelProvider?: string | null;
   modelId?: string | null;
   reasoningLevel?: LocalReasoningLevel | null;
+  skillIds?: string[];
   status?: "active" | "disabled";
 }
 
@@ -84,6 +96,7 @@ export interface LocalControlCapabilities {
     workspaceConfigWrite: boolean;
     agentCreate: boolean;
     agentRuntimeOptions: boolean;
+    agentSkills: boolean;
     agentStart: boolean;
     agentReplace: boolean;
     agentStop: boolean;

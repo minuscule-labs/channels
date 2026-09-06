@@ -1,6 +1,6 @@
 # Agent Skills
 
-**Status:** Harness discovery and per-agent selection are MVP work. Explicit invocation, Channels-authored skills, and dynamic session mutation are fast follows.
+**Status:** Harness discovery, per-agent selection, persistence, and new/Start fresh session loading are implemented. Explicit invocation, Channels-authored skills, and dynamic session mutation are fast follows.
 
 ## BLUF
 

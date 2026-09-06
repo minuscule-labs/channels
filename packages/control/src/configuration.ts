@@ -7,6 +7,7 @@ import type {
   LocalAgentRuntimeOptions,
   LocalRuntimeModelOption,
   LocalRuntimeOptions,
+  LocalRuntimeSkillOption,
   LocalWorkspaceAgentConfigurationSummary,
   LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
@@ -19,6 +20,7 @@ const MAX_PERSONA_PROMPT_BYTES = 64 * 1024;
 const MAX_RUNTIME_ADAPTER_BYTES = 100;
 const MAX_MODEL_PROVIDER_BYTES = 100;
 const MAX_MODEL_ID_BYTES = 300;
+const MAX_SKILL_ID_BYTES = 200;
 
 export class LocalConfigurationRequestError extends Error {
   constructor(
@@ -39,6 +41,7 @@ export interface LocalAgentHostConfigurationOptions {
     capabilities?(config?: { cwd?: string }): Promise<{
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+      skills: LocalRuntimeSkillOption[];
     }>;
   }>>;
   onAudit?(event: LocalControlAuditEvent): void;
@@ -87,6 +90,7 @@ export class LocalAgentHostConfiguration {
   private readonly runtimeOptions = new Map<string, Promise<{
     models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
     reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+    skills: LocalRuntimeSkillOption[];
   }>>();
 
   constructor(private readonly options: LocalAgentHostConfigurationOptions) {
@@ -124,6 +128,8 @@ export class LocalAgentHostConfiguration {
           runtimeConfigured: Boolean(config?.runtimeAdapter),
           modelConfigured: Boolean(config?.modelProvider && config?.modelId),
           reasoningConfigured: Boolean(config?.reasoningLevel),
+          skillsConfigured: config?.skillIds !== undefined,
+          selectedSkillCount: config?.skillIds?.length ?? 0,
           status: config?.status ?? "unconfigured",
           boundChannelCount: boundChannels.size,
           changesApplyToNewSessions: true,
@@ -163,6 +169,8 @@ export class LocalAgentHostConfiguration {
     return {
       ...(await this.resolveRuntimeOptions(workspaceId, config.runtimeAdapter)),
       identityId: agentIdentityId,
+      skillSelectionConfigured: config.skillIds !== undefined,
+      selectedSkillIds: [...(config.skillIds ?? [])],
     };
   }
 
@@ -260,7 +268,7 @@ export class LocalAgentHostConfiguration {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Agent configuration");
       rejectUnknown(input, [
-        "personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "status",
+        "personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "skillIds", "status",
       ]);
       if (Object.keys(input).length === 0) {
         throw new LocalConfigurationRequestError("Agent configuration update is empty", 400, "invalid");
@@ -314,6 +322,27 @@ export class LocalAgentHostConfiguration {
         && !reasoningLevels.includes(String(reasoningLevel))) {
         throw new LocalConfigurationRequestError("reasoningLevel is invalid", 400, "invalid");
       }
+      let skillIds: string[] | undefined;
+      if (input.skillIds !== undefined) {
+        if (!Array.isArray(input.skillIds) || input.skillIds.length > 100) {
+          throw new LocalConfigurationRequestError("skillIds must be an array of at most 100 skills", 400, "invalid");
+        }
+        skillIds = input.skillIds.map((value) => requiredString(value, "skill id", MAX_SKILL_ID_BYTES));
+        if (new Set(skillIds).size !== skillIds.length) {
+          throw new LocalConfigurationRequestError("skillIds must be unique", 400, "invalid");
+        }
+      }
+      const resolvedSkillIds = skillIds ?? existingConfig?.skillIds;
+      if (resolvedSkillIds !== undefined) {
+        if (!resolvedAdapter) {
+          throw new LocalConfigurationRequestError("A Runtime is required to configure skills", 409, "unavailable");
+        }
+        const options = await this.resolveRuntimeOptions(workspaceId, resolvedAdapter);
+        const available = new Set(options.skills.map(({ id }) => id));
+        if (resolvedSkillIds.some((id) => !available.has(id))) {
+          throw new LocalConfigurationRequestError("A selected skill is unavailable for this Runtime", 409, "unavailable");
+        }
+      }
       const status = input.status;
       if (status !== undefined && status !== "active" && status !== "disabled") {
         throw new LocalConfigurationRequestError("status must be active or disabled", 400, "invalid");
@@ -326,6 +355,7 @@ export class LocalAgentHostConfiguration {
         modelProvider,
         modelId,
         reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null | undefined,
+        skillIds,
         status,
       });
       this.audit({
@@ -372,6 +402,7 @@ export class LocalAgentHostConfiguration {
         })),
         reasoningLevels: capabilities.reasoningLevels,
         modelPolicyConfigured: Boolean(policy),
+        skills: capabilities.skills.map((skill) => ({ ...skill })),
       };
     } catch (error) {
       if (error instanceof LocalConfigurationRequestError) throw error;

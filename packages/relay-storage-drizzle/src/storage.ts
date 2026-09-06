@@ -49,6 +49,11 @@ function workspaceConfig(row: typeof schema.localWorkspaceConfigs.$inferSelect):
 }
 
 function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): WorkspaceAgentConfig {
+  const parsedSkillIds: unknown = row.skillIds ? JSON.parse(row.skillIds) : undefined;
+  if (parsedSkillIds !== undefined && (!Array.isArray(parsedSkillIds)
+    || parsedSkillIds.some((id) => typeof id !== "string"))) {
+    throw new Error("Stored agent skill ids are invalid");
+  }
   return {
     ...row,
     personaRef: row.personaRef ?? undefined,
@@ -57,6 +62,7 @@ function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): Wor
     modelProvider: row.modelProvider ?? undefined,
     modelId: row.modelId ?? undefined,
     reasoningLevel: row.reasoningLevel ?? undefined,
+    skillIds: parsedSkillIds as string[] | undefined,
   };
 }
 
@@ -119,7 +125,8 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {
-    await this.database.insert(schema.workspaceAgentConfigs).values(config).onConflictDoUpdate({
+    const values = { ...config, skillIds: config.skillIds ? JSON.stringify(config.skillIds) : null };
+    await this.database.insert(schema.workspaceAgentConfigs).values(values).onConflictDoUpdate({
       target: [
         schema.workspaceAgentConfigs.workspaceId,
         schema.workspaceAgentConfigs.agentIdentityId,
@@ -131,6 +138,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         modelProvider: config.modelProvider ?? null,
         modelId: config.modelId ?? null,
         reasoningLevel: config.reasoningLevel ?? null,
+        skillIds: config.skillIds ? JSON.stringify(config.skillIds) : null,
         status: config.status,
         updatedAt: config.updatedAt,
       },

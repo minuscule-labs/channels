@@ -145,8 +145,9 @@ test("configures Workspace agent startup without reflecting saved values", async
   const agentForm = agentCard.locator("form").filter({ hasText: "Private launch profile" });
   const runtimeValue = "pi-private-browser";
   const personaValue = "SECRET BROWSER PERSONA";
-  await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
   await agentForm.getByLabel("Agent instructions", { exact: true }).fill(personaValue);
+  await agentForm.getByRole("tab", { name: "Runtime" }).click();
+  await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
   const agentResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
@@ -159,8 +160,10 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(agentForm.getByText("Harness: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByLabel("Replace harness", { exact: true })).toHaveValue("");
+  await agentForm.getByRole("tab", { name: "General" }).click();
   await expect(agentForm.getByLabel("Replace agent instructions", { exact: true })).toHaveValue("");
   await expect(page.getByText(personaValue, { exact: true })).toHaveCount(0);
+  await agentForm.getByRole("tab", { name: "Runtime" }).click();
 
   const providerSelect = agentCard.getByRole("combobox", { name: "Provider", exact: true });
   const modelSelect = agentCard.getByRole("combobox", { name: "Model", exact: true });
@@ -188,6 +191,8 @@ test("configures Workspace agent startup without reflecting saved values", async
   expect(launchProfileBody).not.toContain("high");
   await expect(agentForm.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await agentForm.getByRole("tab", { name: "Skills" }).click();
+  await expect(agentForm.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
 });
 
 test("lists agents, opens a detail page, and adds an agent", async ({ page, request }) => {
@@ -198,19 +203,24 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
 
   await expect(page.getByRole("link", { name: /Builder Agent/ })).toBeVisible();
-  await page.getByRole("button", { name: "Add agent" }).click();
-  const dialog = page.getByRole("dialog", { name: "Add Workspace agent" });
-  await expect(dialog.getByLabel("Mention handle")).toHaveCount(0);
-  await dialog.getByLabel("Display name").fill("Browser Review Agent");
-  await dialog.getByRole("combobox", { name: "Provider", exact: true }).selectOption("openai");
-  await dialog.getByRole("combobox", { name: "Model", exact: true }).selectOption({ label: "Browser Deep" });
-  await dialog.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("high");
-  await dialog.getByLabel("Agent instructions").fill("Review proposed plans carefully.");
-  await dialog.getByRole("button", { name: "Create agent" }).click();
+  await page.getByRole("link", { name: "Add agent" }).click();
+  await expect(page.getByRole("heading", { name: "New Workspace agent" })).toBeVisible();
+  await expect(page.getByLabel("Mention handle")).toHaveCount(0);
+  await page.getByLabel("Display name").fill("Browser Review Agent");
+  await page.getByLabel("Agent instructions").fill("Review proposed plans carefully.");
+  await page.getByRole("tab", { name: "Runtime" }).click();
+  await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("openai");
+  await page.getByRole("combobox", { name: "Model", exact: true }).selectOption({ label: "Browser Deep" });
+  await page.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("high");
+  await page.getByRole("tab", { name: "Skills" }).click();
+  await expect(page.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
+  await page.getByRole("checkbox", { name: /handoff Prepare a concise handoff/ }).uncheck();
+  await page.getByRole("button", { name: "Create agent" }).click();
 
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
   await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Skills (1): configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "All agents" }).click();
   await expect(page.getByRole("link", { name: /Browser Review Agent/ })).toBeVisible();

@@ -26,6 +26,7 @@ export function AddWorkspaceParticipantForm({
   const queryClient = useQueryClient();
   const [type, setType] = useState<Identity["type"]>("agent");
   const agentMode = mode === "agent";
+  const [activeTab, setActiveTab] = useState<"general" | "skills" | "runtime">("general");
   const [displayName, setDisplayName] = useState("");
   const [mentionHandle, setMentionHandle] = useState("");
   const [handleCustomized, setHandleCustomized] = useState(false);
@@ -35,6 +36,7 @@ export function AddWorkspaceParticipantForm({
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [reasoningLevel, setReasoningLevel] = useState("");
   const [personaPrompt, setPersonaPrompt] = useState("");
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[] | null>(null);
   const normalizedHandle = mentionHandle.trim().replace(/^@+/, "").toLowerCase();
   const handleValid = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(normalizedHandle);
   const handleAvailable = !existingMembers.some(
@@ -79,6 +81,7 @@ export function AddWorkspaceParticipantForm({
             ...(selectedModel ? { modelProvider: selectedModel.provider, modelId: selectedModel.id } : {}),
             ...(reasoningLevel ? { reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" } : {}),
             ...(personaPrompt.trim() ? { personaPrompt: personaPrompt.trim() } : {}),
+            ...(runtimeOptions.data ? { skillIds: selectedSkillIds ?? runtimeOptions.data.skills.map(({ id }) => id) } : {}),
             status: "active",
           });
         } catch (error) {
@@ -107,6 +110,7 @@ export function AddWorkspaceParticipantForm({
       setSelectedModelKey("");
       setReasoningLevel("");
       setPersonaPrompt("");
+      setSelectedSkillIds(null);
       setType("agent");
     },
   });
@@ -128,7 +132,35 @@ export function AddWorkspaceParticipantForm({
           </div>
         </div>
       ) : null}
-      <div className={`${agentMode ? "" : "mt-4"} grid gap-3 sm:grid-cols-2`}>
+      {agentMode ? (
+        <div className="mb-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Agent settings">
+          {(["general", "skills", "runtime"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              tabIndex={activeTab === tab ? 0 : -1}
+              onClick={() => setActiveTab(tab)}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                event.preventDefault();
+                const tabs = ["general", "skills", "runtime"] as const;
+                const offset = event.key === "ArrowRight" ? 1 : tabs.length - 1;
+                const nextIndex = (tabs.indexOf(tab) + offset) % tabs.length;
+                setActiveTab(tabs[nextIndex]!);
+                (event.currentTarget.parentElement?.children[nextIndex] as HTMLElement | undefined)?.focus();
+              }}
+              className={`border-b-2 px-3 py-2 text-xs font-medium capitalize ${activeTab === tab
+                ? "border-[var(--accent)] text-[var(--text)]"
+                : "border-transparent text-[var(--muted)] hover:text-[var(--text)]"}`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div className={`${agentMode && activeTab !== "general" ? "hidden " : ""}${agentMode ? "" : "mt-4"} grid gap-3 sm:grid-cols-2`}>
         {!agentMode ? (
           <label className="block text-xs font-medium">
             Participant type
@@ -194,7 +226,7 @@ export function AddWorkspaceParticipantForm({
         ) : null}
       </div>
       {agentMode ? (
-        <label className="mt-3 block text-xs font-medium">
+        <label className={`${activeTab === "general" ? "" : "hidden "}mt-3 block text-xs font-medium`}>
           Agent instructions <span className="font-normal text-[var(--muted)]">(optional)</span>
           <textarea
             value={personaPrompt}
@@ -207,10 +239,10 @@ export function AddWorkspaceParticipantForm({
         </label>
       ) : null}
       {executionIdentity ? (
-        <div className="mt-4 border-t border-[var(--border-subtle)] pt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Harness</h3>
+        <div className={`${agentMode && activeTab === "general" ? "hidden " : ""}mt-4 border-t border-[var(--border-subtle)] pt-4`}>
+          <h3 className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}text-xs font-semibold uppercase tracking-wide text-[var(--muted)]`}>Harness</h3>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-          <label className="block text-xs font-medium">
+          <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
             Harness
             <input
               value={runtimeAdapter}
@@ -219,6 +251,7 @@ export function AddWorkspaceParticipantForm({
                 setSelectedProvider("");
                 setSelectedModelKey("");
                 setReasoningLevel("");
+                setSelectedSkillIds(null);
               }}
               autoComplete="off"
               spellCheck={false}
@@ -226,7 +259,7 @@ export function AddWorkspaceParticipantForm({
               className="settings-input mt-1.5 font-mono"
             />
           </label>
-          <label className="block text-xs font-medium">
+          <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
             Provider
             <select
               value={selectedProvider}
@@ -242,7 +275,7 @@ export function AddWorkspaceParticipantForm({
               {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
             </select>
           </label>
-          <label className="block text-xs font-medium">
+          <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
             Model
             <select
               value={selectedModelKey}
@@ -264,14 +297,40 @@ export function AddWorkspaceParticipantForm({
               ))}
             </select>
           </label>
-          <label className="block text-xs font-medium">
+          <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
             Reasoning
             <select value={reasoningLevel} onChange={(event) => setReasoningLevel(event.target.value)} className="settings-input mt-1.5" disabled={!runtimeOptions.data}>
               <option value="">Use model default</option>
               {runtimeOptions.data?.reasoningLevels.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           </label>
-          {runtimeOptions.isPending ? <p className="text-[10px] text-[var(--muted)] sm:col-span-2">Discovering harness providers and models…</p> : null}
+          {runtimeOptions.data?.skills.length ? (
+            <fieldset className={`${agentMode && activeTab !== "skills" ? "hidden " : ""}sm:col-span-2`}>
+              <legend className="text-xs font-medium">Skills</legend>
+              <p className="mt-1 text-[10px] text-[var(--muted)]">Enabled skills are available when this agent starts.</p>
+              <div className="mt-2 grid max-h-44 gap-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 sm:grid-cols-2">
+                {runtimeOptions.data.skills.map((skill) => (
+                  <label key={skill.id} className="flex items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--hover)]">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={selectedSkillIds?.includes(skill.id) ?? true}
+                      onChange={(event) => setSelectedSkillIds((current) => {
+                        const selected = current ?? runtimeOptions.data!.skills.map(({ id }) => id);
+                        return event.target.checked
+                          ? [...new Set([...selected, skill.id])]
+                          : selected.filter((id) => id !== skill.id);
+                      })}
+                    />
+                    <span><span className="block font-medium">{skill.name}</span><span className="block text-[10px] leading-4 text-[var(--muted)]">{skill.description}</span></span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ) : agentMode && activeTab === "skills" && !runtimeOptions.isPending ? (
+            <p className="text-xs text-[var(--muted)] sm:col-span-2">No skills were discovered for this harness.</p>
+          ) : null}
+          {runtimeOptions.isPending ? <p className="text-[10px] text-[var(--muted)] sm:col-span-2">Discovering harness providers, models, and skills…</p> : null}
           {runtimeOptions.error ? <p className="text-[10px] text-[var(--danger)] sm:col-span-2">Harness model discovery unavailable.</p> : null}
           {!agentMode ? (
             <label className="block text-xs font-medium sm:col-span-2">

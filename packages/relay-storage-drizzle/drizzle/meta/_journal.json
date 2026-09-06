@@ -36,6 +36,13 @@
       "when": 1788368400000,
       "tag": "0004_runtime_model_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788627600000,
+      "tag": "0005_agent_skills",
+      "breakpoints": true
     }
   ]
 }
