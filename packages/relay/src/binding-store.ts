@@ -26,6 +26,7 @@ export interface WorkspaceAgentConfig {
   modelProvider?: string;
   modelId?: string;
   reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  skillIds?: string[];
   status: "active" | "disabled";
   createdAt: string;
   updatedAt: string;
@@ -143,13 +144,14 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
         && candidate.agentIdentityId === config.agentIdentityId,
     );
     if (duplicate) throw new Error("Workspace agent configuration already exists");
-    this.agentConfigs.set(config.id, { ...config });
-    return { ...config };
+    const stored = { ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined };
+    this.agentConfigs.set(config.id, stored);
+    return { ...stored, skillIds: stored.skillIds ? [...stored.skillIds] : undefined };
   }
 
   async getAgentConfig(configId: string): Promise<WorkspaceAgentConfig | undefined> {
     const config = this.agentConfigs.get(configId);
-    return config ? { ...config } : undefined;
+    return config ? { ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined } : undefined;
   }
 
   async getWorkspaceAgentConfig(
@@ -160,13 +162,13 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       (candidate) => candidate.workspaceId === workspaceId
         && candidate.agentIdentityId === agentIdentityId,
     );
-    return config ? { ...config } : undefined;
+    return config ? { ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined } : undefined;
   }
 
   async listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]> {
     return [...this.agentConfigs.values()]
       .filter((config) => config.workspaceId === workspaceId)
-      .map((config) => ({ ...config }));
+      .map((config) => ({ ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined }));
   }
 
   async putBinding(binding: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord> {
@@ -382,6 +384,7 @@ export class LocalRelayDirectory {
     modelProvider?: string | null;
     modelId?: string | null;
     reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
+    skillIds?: string[];
     status?: "active" | "disabled";
   }): Promise<WorkspaceAgentConfig> {
     const [identity, members, workspaceConfig] = await Promise.all([
@@ -412,6 +415,7 @@ export class LocalRelayDirectory {
     const reasoningLevel = input.reasoningLevel === undefined
       ? existing?.reasoningLevel
       : input.reasoningLevel ?? undefined;
+    const skillIds = input.skillIds === undefined ? existing?.skillIds : [...input.skillIds];
     if (personaPrompt !== undefined && !personaPrompt.trim()) {
       throw new Error("Persona prompt must not be empty");
     }
@@ -434,6 +438,7 @@ export class LocalRelayDirectory {
       modelProvider,
       modelId,
       reasoningLevel,
+      skillIds,
       status: input.status ?? existing?.status ?? "active",
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,

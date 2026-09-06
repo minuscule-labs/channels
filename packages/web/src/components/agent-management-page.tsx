@@ -105,6 +105,7 @@ function AgentLaunchProfileForm({
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [reasoningLevel, setReasoningLevel] = useState("");
   const [personaPrompt, setPersonaPrompt] = useState("");
+  const [skillIds, setSkillIds] = useState<string[] | null>(null);
   const [enabledModelKeys, setEnabledModelKeys] = useState<string[] | null>(null);
   const [status, setStatus] = useState<"active" | "disabled">(
     agent.status === "disabled" ? "disabled" : "active",
@@ -128,12 +129,20 @@ function AgentLaunchProfileForm({
   useEffect(() => {
     if (configuredRuntimeOptions.data) {
       setEnabledModelKeys(configuredRuntimeOptions.data.models.filter((model) => model.enabled).map(modelKey));
+      setSkillIds(configuredRuntimeOptions.data.skillSelectionConfigured
+        ? [...configuredRuntimeOptions.data.selectedSkillIds]
+        : null);
     }
   }, [configuredRuntimeOptions.data]);
   const savedEnabledModelKeys = configuredRuntimeOptions.data?.models.filter((model) => model.enabled).map(modelKey) ?? [];
   const modelPolicyChanged = enabledModelKeys !== null
     && JSON.stringify([...enabledModelKeys].sort()) !== JSON.stringify([...savedEnabledModelKeys].sort());
   const statusChanged = agent.status !== "unconfigured" && status !== agent.status;
+  const savedSkillIds = configuredRuntimeOptions.data?.skillSelectionConfigured
+    ? configuredRuntimeOptions.data.selectedSkillIds
+    : configuredRuntimeOptions.data?.skills.map(({ id }) => id) ?? [];
+  const skillsChanged = skillIds !== null && configuredRuntimeOptions.data !== undefined
+    && JSON.stringify([...skillIds].sort()) !== JSON.stringify([...savedSkillIds].sort());
   const providers = [...new Set(runtimeOptions.data?.models
     .filter((model) => model.enabled)
     .map((model) => model.provider) ?? [])].sort();
@@ -142,7 +151,7 @@ function AgentLaunchProfileForm({
       && JSON.stringify([model.provider, model.id]) === selectedModelKey,
   );
   const hasUpdate = Boolean(
-    runtimeAdapter.trim() || selectedModel || reasoningLevel || personaPrompt.trim() || statusChanged,
+    runtimeAdapter.trim() || selectedModel || reasoningLevel || personaPrompt.trim() || statusChanged || skillsChanged,
   );
   const modelPolicyMutation = useMutation({
     mutationFn: () => localControl.updateAgentRuntimeModelPolicy(workspaceId, agent.identityId, {
@@ -189,6 +198,9 @@ function AgentLaunchProfileForm({
       input.reasoningLevel = reasoningLevel as UpdateLocalWorkspaceAgentConfigurationInput["reasoningLevel"];
     }
     if (personaPrompt.trim()) input.personaPrompt = personaPrompt;
+    if (runtimeAdapter.trim() && replacementRuntimeOptions.data) {
+      input.skillIds = skillIds ?? replacementRuntimeOptions.data.skills.map(({ id }) => id);
+    } else if (skillsChanged && skillIds) input.skillIds = skillIds;
     if (statusChanged || agent.status === "unconfigured") input.status = status;
     mutation.mutate(input);
   };
@@ -208,6 +220,7 @@ function AgentLaunchProfileForm({
         <ConfigurationState configured={agent.runtimeConfigured} label="Harness" />
         <ConfigurationState configured={agent.modelConfigured} label="Model" />
         <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
+        <ConfigurationState configured={agent.skillsConfigured} label={`Skills (${agent.selectedSkillCount})`} />
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -220,6 +233,7 @@ function AgentLaunchProfileForm({
               setSelectedProvider("");
               setSelectedModelKey("");
               setReasoningLevel("");
+              setSkillIds(null);
             }}
             autoComplete="off"
             spellCheck={false}
@@ -281,7 +295,35 @@ function AgentLaunchProfileForm({
           </select>
         </label>
       </div>
-      {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness providers and models…</p> : null}
+      {runtimeOptions.data?.skills.length ? (
+        <fieldset className="mt-3">
+          <legend className="text-xs font-medium">Skills</legend>
+          <p className="mt-1 text-[10px] text-[var(--muted)]">Changes apply when starting fresh.</p>
+          <div className="mt-2 grid max-h-48 gap-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 sm:grid-cols-2">
+            {runtimeOptions.data.skills.map((skill) => (
+              <label key={skill.id} className="flex items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--hover)]">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={skillIds?.includes(skill.id) ?? (runtimeAdapter.trim() || !configuredRuntimeOptions.data?.skillSelectionConfigured
+                    ? true
+                    : configuredRuntimeOptions.data.selectedSkillIds.includes(skill.id))}
+                  onChange={(event) => setSkillIds((current) => {
+                    const selected = current ?? (runtimeAdapter.trim()
+                      ? runtimeOptions.data!.skills.map(({ id }) => id)
+                      : savedSkillIds);
+                    return event.target.checked
+                      ? [...new Set([...selected, skill.id])]
+                      : selected.filter((id) => id !== skill.id);
+                  })}
+                />
+                <span><span className="block font-medium">{skill.name}</span><span className="block text-[10px] leading-4 text-[var(--muted)]">{skill.description}</span></span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ) : null}
+      {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness providers, models, and skills…</p> : null}
       {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">Harness model discovery unavailable.</p> : null}
       {configuredRuntimeOptions.data ? (
         <details className="mt-3 rounded-md border border-[var(--border)] bg-[var(--panel)] p-3">

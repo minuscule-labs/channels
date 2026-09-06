@@ -56,6 +56,10 @@ const fixtureRuntime = {
         { provider: "openai", id: "gpt-browser-deep", name: "Browser Deep", reasoning: true },
       ],
       reasoningLevels: ["off", "low", "medium", "high"],
+      skills: [
+        { id: "skill:review", name: "review", description: "Review changes for correctness" },
+        { id: "skill:handoff", name: "handoff", description: "Prepare a concise handoff" },
+      ],
     };
   },
 };

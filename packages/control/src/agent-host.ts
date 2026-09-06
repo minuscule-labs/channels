@@ -24,6 +24,7 @@ export interface ManagedRuntimeStartConfig {
   appendSystemPrompt?: string;
   model?: { provider: string; id: string };
   reasoningLevel?: LocalReasoningLevel;
+  skillIds?: string[];
 }
 
 export interface ManagedRuntimeSession {
@@ -35,6 +36,7 @@ export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partia
   capabilities?(config?: { cwd?: string }): Promise<{
     models: Array<Omit<LocalAgentRuntimeOptions["models"][number], "enabled">>;
     reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+    skills: LocalAgentRuntimeOptions["skills"];
   }>;
   stop?(sessionId: string): Promise<void>;
 }
@@ -68,8 +70,8 @@ function launchableRuntime(runtime: LocalManagedRuntimePort | undefined): runtim
 
 function launchFailureMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : "";
-  return /model|reasoning|thinking/i.test(message)
-    ? "Configured agent model or reasoning is unavailable; update the launch profile and retry"
+  return /model|reasoning|thinking|skill/i.test(message)
+    ? "Configured agent model, reasoning, or skill is unavailable; update the launch profile and retry"
     : fallback;
 }
 
@@ -230,6 +232,7 @@ export class LocalAgentHost {
               ? { model: { provider: agentConfig.modelProvider, id: agentConfig.modelId } }
               : {}),
             ...(agentConfig.reasoningLevel ? { reasoningLevel: agentConfig.reasoningLevel } : {}),
+            ...(agentConfig.skillIds !== undefined ? { skillIds: [...agentConfig.skillIds] } : {}),
           });
           const messages = await this.options.client.listMessages(channelId);
           await this.options.store.setCursor(
@@ -327,6 +330,9 @@ export class LocalAgentHost {
             : {}),
           ...(context.agentConfig.reasoningLevel
             ? { reasoningLevel: context.agentConfig.reasoningLevel }
+            : {}),
+          ...(context.agentConfig.skillIds !== undefined
+            ? { skillIds: [...context.agentConfig.skillIds] }
             : {}),
         });
         const replaced = await this.directory.replaceSession({

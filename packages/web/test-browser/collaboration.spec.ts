@@ -206,11 +206,14 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await dialog.getByRole("combobox", { name: "Model", exact: true }).selectOption({ label: "Browser Deep" });
   await dialog.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("high");
   await dialog.getByLabel("Agent instructions").fill("Review proposed plans carefully.");
+  await expect(dialog.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
+  await dialog.getByRole("checkbox", { name: /handoff Prepare a concise handoff/ }).uncheck();
   await dialog.getByRole("button", { name: "Create agent" }).click();
 
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
   await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Skills (1): configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "All agents" }).click();
   await expect(page.getByRole("link", { name: /Browser Review Agent/ })).toBeVisible();

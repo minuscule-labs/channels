@@ -29,6 +29,7 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     modelProvider: "openai",
     modelId: "gpt-test",
     reasoningLevel: "high",
+    skillIds: ["skill:review"],
     status: "active",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -138,6 +139,7 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     assert.equal(reopenedConfig?.modelProvider, "openai");
     assert.equal(reopenedConfig?.modelId, "gpt-test");
     assert.equal(reopenedConfig?.reasoningLevel, "high");
+    assert.deepEqual(reopenedConfig?.skillIds, ["skill:review"]);
     assert.equal((await reopened.listWorkspaceAgentConfigs(config.workspaceId)).length, 1);
     assert.equal((await reopened.listWorkspaceBindings(config.workspaceId)).length, 1);
     const persisted = await reopened.getBinding(record.id);

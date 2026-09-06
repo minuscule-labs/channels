@@ -35,6 +35,7 @@ export function AddWorkspaceParticipantForm({
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [reasoningLevel, setReasoningLevel] = useState("");
   const [personaPrompt, setPersonaPrompt] = useState("");
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[] | null>(null);
   const normalizedHandle = mentionHandle.trim().replace(/^@+/, "").toLowerCase();
   const handleValid = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(normalizedHandle);
   const handleAvailable = !existingMembers.some(
@@ -79,6 +80,7 @@ export function AddWorkspaceParticipantForm({
             ...(selectedModel ? { modelProvider: selectedModel.provider, modelId: selectedModel.id } : {}),
             ...(reasoningLevel ? { reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" } : {}),
             ...(personaPrompt.trim() ? { personaPrompt: personaPrompt.trim() } : {}),
+            ...(runtimeOptions.data ? { skillIds: selectedSkillIds ?? runtimeOptions.data.skills.map(({ id }) => id) } : {}),
             status: "active",
           });
         } catch (error) {
@@ -107,6 +109,7 @@ export function AddWorkspaceParticipantForm({
       setSelectedModelKey("");
       setReasoningLevel("");
       setPersonaPrompt("");
+      setSelectedSkillIds(null);
       setType("agent");
     },
   });
@@ -219,6 +222,7 @@ export function AddWorkspaceParticipantForm({
                 setSelectedProvider("");
                 setSelectedModelKey("");
                 setReasoningLevel("");
+                setSelectedSkillIds(null);
               }}
               autoComplete="off"
               spellCheck={false}
@@ -271,7 +275,31 @@ export function AddWorkspaceParticipantForm({
               {runtimeOptions.data?.reasoningLevels.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           </label>
-          {runtimeOptions.isPending ? <p className="text-[10px] text-[var(--muted)] sm:col-span-2">Discovering harness providers and models…</p> : null}
+          {runtimeOptions.data?.skills.length ? (
+            <fieldset className="sm:col-span-2">
+              <legend className="text-xs font-medium">Skills</legend>
+              <p className="mt-1 text-[10px] text-[var(--muted)]">Enabled skills are available when this agent starts.</p>
+              <div className="mt-2 grid max-h-44 gap-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 sm:grid-cols-2">
+                {runtimeOptions.data.skills.map((skill) => (
+                  <label key={skill.id} className="flex items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--hover)]">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={selectedSkillIds?.includes(skill.id) ?? true}
+                      onChange={(event) => setSelectedSkillIds((current) => {
+                        const selected = current ?? runtimeOptions.data!.skills.map(({ id }) => id);
+                        return event.target.checked
+                          ? [...new Set([...selected, skill.id])]
+                          : selected.filter((id) => id !== skill.id);
+                      })}
+                    />
+                    <span><span className="block font-medium">{skill.name}</span><span className="block text-[10px] leading-4 text-[var(--muted)]">{skill.description}</span></span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ) : null}
+          {runtimeOptions.isPending ? <p className="text-[10px] text-[var(--muted)] sm:col-span-2">Discovering harness providers, models, and skills…</p> : null}
           {runtimeOptions.error ? <p className="text-[10px] text-[var(--danger)] sm:col-span-2">Harness model discovery unavailable.</p> : null}
           {!agentMode ? (
             <label className="block text-xs font-medium sm:col-span-2">
