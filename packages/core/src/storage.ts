@@ -33,6 +33,7 @@ export interface ChannelStorage extends ChannelCursorStore {
   getIdentity(identityId: string): Promise<Identity | undefined>;
   listIdentities(): Promise<Identity[]>;
   createWorkspace(workspace: Workspace): Promise<Workspace>;
+  updateWorkspace(workspace: Workspace): Promise<Workspace | undefined>;
   getWorkspace(workspaceId: string): Promise<Workspace | undefined>;
   listWorkspaces(): Promise<Workspace[]>;
   addWorkspaceMember(member: WorkspaceMember): Promise<WorkspaceMember>;
@@ -104,6 +105,12 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   }
 
   async createWorkspace(workspace: Workspace): Promise<Workspace> {
+    this.workspaces.set(workspace.id, { ...workspace });
+    return { ...workspace };
+  }
+
+  async updateWorkspace(workspace: Workspace): Promise<Workspace | undefined> {
+    if (!this.workspaces.has(workspace.id)) return undefined;
     this.workspaces.set(workspace.id, { ...workspace });
     return { ...workspace };
   }

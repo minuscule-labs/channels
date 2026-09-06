@@ -48,5 +48,6 @@ export type {
   WorkspaceStatus,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";

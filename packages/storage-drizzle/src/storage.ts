@@ -95,6 +95,16 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     return { ...workspace };
   }
 
+  async updateWorkspace(workspace: Workspace): Promise<Workspace | undefined> {
+    const [updated] = await this.database.update(schema.workspaces).set({
+      name: workspace.name,
+      description: workspace.description,
+      status: workspace.status,
+      updatedAt: workspace.updatedAt,
+    }).where(eq(schema.workspaces.id, workspace.id)).returning();
+    return updated ? { ...updated, description: updated.description ?? undefined } : undefined;
+  }
+
   async getWorkspace(workspaceId: string): Promise<Workspace | undefined> {
     const workspace = await this.database.query.workspaces.findFirst({
       where: eq(schema.workspaces.id, workspaceId),

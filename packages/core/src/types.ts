@@ -37,6 +37,12 @@ export interface CreateWorkspaceInput {
   description?: string;
 }
 
+export interface UpdateWorkspaceInput {
+  /** Advisory product policy until requests are authenticated. */
+  actorIdentityId: string;
+  name: string;
+}
+
 export interface WorkspaceMember {
   workspaceId: string;
   identityId: string;

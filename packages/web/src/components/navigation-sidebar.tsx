@@ -2,6 +2,7 @@ import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
 import { Bot, Hash, MessageSquare, X } from "lucide-react";
 import { CreateChannelDialog } from "./channel-administration-dialog";
+import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
 
 export interface WorkspaceNavigationItem {
@@ -30,11 +31,14 @@ export function NavigationSidebar({
           <MessageSquare className="h-4 w-4 text-[var(--accent)]" />
           MinuChannels
         </Link>
-        {onClose ? (
-          <button className="icon-button inline-flex md:hidden" type="button" onClick={onClose} aria-label="Close navigation">
-            <X className="h-4 w-4" />
-          </button>
-        ) : null}
+        <div className="flex items-center gap-1">
+          <WorkspaceCreateDialog onNavigate={onNavigate} />
+          {onClose ? (
+            <button className="icon-button inline-flex md:hidden" type="button" onClick={onClose} aria-label="Close navigation">
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
       </div>
       <nav className="minu-scroll min-h-0 flex-1 overflow-y-auto p-3" aria-label="Workspaces and Channels">
         {items.length === 0 ? (
