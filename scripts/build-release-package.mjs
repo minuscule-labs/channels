@@ -1,14 +1,32 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const runtimeRoot = resolve(root, "../runtime");
+const runtimeRoot = resolve(process.env.MINU_RUNTIME_ROOT ?? resolve(root, "../runtime"));
 const output = resolve(root, "release/package");
 const binDirectory = join(output, "dist/bin");
 const assetsDirectory = join(output, "dist/assets");
 const external = ["@libsql/client", "@libsql/client/*", "drizzle-orm", "drizzle-orm/*"];
+const execFile = promisify(execFileCallback);
+
+async function git(directory, ...args) {
+  return (await execFile("git", args, { cwd: directory, encoding: "utf8" })).stdout.trim();
+}
+
+const [channelsStatus, runtimeStatus, channelsCommit, runtimeCommit] = await Promise.all([
+  git(root, "status", "--porcelain", "--untracked-files=all"),
+  git(runtimeRoot, "status", "--porcelain", "--untracked-files=all"),
+  git(root, "rev-parse", "HEAD"),
+  git(runtimeRoot, "rev-parse", "HEAD"),
+]);
+if (process.env.MINU_ALLOW_DIRTY_RELEASE !== "1" && (channelsStatus || runtimeStatus)) {
+  throw new Error("Release builds require clean Channels and Runtime repositories. Commit or remove local changes first.");
+}
 
 await rm(output, { recursive: true, force: true });
 await mkdir(binDirectory, { recursive: true });
@@ -49,6 +67,13 @@ await Promise.all([
 
 const workspacePackage = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const storagePackage = JSON.parse(await readFile(resolve(root, "packages/storage-drizzle/package.json"), "utf8"));
+const releaseMetadata = {
+  channelsCommit,
+  runtimeCommit,
+  builtAt: new Date().toISOString(),
+};
+await writeFile(join(output, "dist/release.json"), `${JSON.stringify(releaseMetadata, null, 2)}\n`);
+
 const manifest = {
   name: "@minu/channels",
   version: workspacePackage.version,
@@ -62,6 +87,10 @@ const manifest = {
     "@libsql/client": storagePackage.dependencies["@libsql/client"],
     "drizzle-orm": storagePackage.dependencies["drizzle-orm"],
   },
+  minuRelease: {
+    channelsCommit,
+    runtimeCommit,
+  },
 };
 await writeFile(join(output, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -74,13 +103,15 @@ async function releaseFiles(directory) {
   return nested.flat();
 }
 
+const forbiddenLocalPaths = [...new Set([homedir(), root, runtimeRoot].filter((path) => path.length > 1))]
+  .map((path) => Buffer.from(path));
 for (const path of await releaseFiles(output)) {
   const relative = path.slice(output.length + 1);
   if (/(^|\/)(\.env(?:\..*)?|local-profile\.json)$|\.(?:db|sqlite|sqlite3)$/i.test(relative)) {
     throw new Error(`Forbidden release file: ${relative}`);
   }
   const content = await readFile(path);
-  if (content.includes(Buffer.from("/Users/davidkennedy"))
+  if (forbiddenLocalPaths.some((localPath) => content.includes(localPath))
     || /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/.test(content.toString("utf8"))
     || /\bsk-[A-Za-z0-9_-]{16,}\b/.test(content.toString("utf8"))) {
     throw new Error(`Potential local path or secret in release file: ${relative}`);

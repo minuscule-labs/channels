@@ -36,6 +36,7 @@ async function startAndStop(expectedSetup, portBase) {
       workspace,
     ], { env: { ...process.env, HOME: join(temporary, "home") } });
     let output = "";
+    let stopping = false;
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
       reject(new Error(`Timed out waiting for packaged startup\n${output}`));
@@ -43,7 +44,19 @@ async function startAndStop(expectedSetup, portBase) {
     const capture = (chunk) => {
       output += chunk.toString();
       process.stdout.write(chunk);
-      if (output.includes(expectedSetup)) setTimeout(() => child.kill("SIGINT"), 100);
+      if (output.includes(expectedSetup) && !stopping) {
+        stopping = true;
+        void fetch(`http://127.0.0.1:${portBase + 2}/`).then(async (response) => {
+          const html = await response.text();
+          if (!response.ok || !html.includes("<title>MinuChannels</title>")) {
+            throw new Error("Packaged web application is unavailable");
+          }
+          child.kill("SIGINT");
+        }).catch((error) => {
+          child.kill("SIGTERM");
+          reject(error);
+        });
+      }
     };
     child.stdout.on("data", capture);
     child.stderr.on("data", capture);
