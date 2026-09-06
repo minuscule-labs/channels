@@ -14,6 +14,11 @@ import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
 import { createLocalProductApp } from "../src/local.ts";
+import {
+  acquireChannelsDataDirectoryLock,
+  prepareChannelsDataDirectory,
+  resolveChannelsDataDirectory,
+} from "../src/local-paths.ts";
 import { createLocalWebServer } from "../src/local-web-server.ts";
 import { createLocalReviewApp } from "../src/review.ts";
 import {
@@ -451,6 +456,39 @@ test("local production web server serves the SPA and proxies product APIs", asyn
   }
 });
 
+test("resolves isolated Channels data paths and arbitrates product-directory locks", async () => {
+  assert.equal(resolveChannelsDataDirectory({
+    explicit: "~/explicit-channels",
+    env: { MINU_CHANNELS_HOME: "/ignored-product", MINU_HOME: "/ignored-minu" },
+    homeDirectory: "/home/tester",
+  }), "/home/tester/explicit-channels");
+  assert.equal(resolveChannelsDataDirectory({
+    env: { MINU_CHANNELS_HOME: "/product-home", MINU_HOME: "/ignored-minu" },
+    homeDirectory: "/home/tester",
+  }), "/product-home");
+  assert.equal(resolveChannelsDataDirectory({
+    env: { MINU_HOME: "/shared-minu" },
+    homeDirectory: "/home/tester",
+  }), "/shared-minu/channels");
+  assert.equal(resolveChannelsDataDirectory({ env: {}, homeDirectory: "/home/tester" }), "/home/tester/.minu/channels");
+
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-paths-"));
+  try {
+    await prepareChannelsDataDirectory(dataDirectory);
+    const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
+    assert.equal((await stat(dataDirectory)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(dataDirectory, "run"))).mode & 0o777, 0o700);
+    assert.equal((await stat(lock.path)).mode & 0o777, 0o600);
+    await assert.rejects(acquireChannelsDataDirectoryLock(dataDirectory), /already using data directory/);
+    await lock.release();
+    await writeFile(join(dataDirectory, "run", "instance.lock"), '{"pid":999999,"token":"stale"}\n');
+    const replacement = await acquireChannelsDataDirectoryLock(dataDirectory);
+    await replacement.release();
+  } finally {
+    await rm(dataDirectory, { recursive: true, force: true });
+  }
+});
+
 test("local product initializes once and reopens persistent collaboration data", async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-product-"));
   const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-local-workspace-"));
@@ -473,6 +511,16 @@ test("local product initializes once and reopens persistent collaboration data",
     assert.equal((await firstClient.listWorkspaces()).length, 1);
     assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId)).length, 1);
     assert.deepEqual(await firstClient.listMessages(first.channelId), []);
+    assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o600);
+    await assert.rejects(createLocalProductApp({
+      dataDirectory,
+      workspaceRoot,
+      channelsPort: 0,
+      controlPort: 0,
+      webUrl: "http://127.0.0.1:5199/",
+      runtimeAdapter: "managed-test",
+      runtime,
+    }), /already using data directory/);
     const original = {
       humanIdentityId: first.humanIdentityId,
       workspaceId: first.workspaceId,

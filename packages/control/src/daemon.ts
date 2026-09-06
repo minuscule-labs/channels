@@ -4,10 +4,10 @@ import {
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
 import { chmod, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { LocalAgentHost, type LocalManagedRuntimePort } from "./agent-host.ts";
 import { LocalAgentHostConfiguration } from "./configuration.ts";
+import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import {
   createLocalControlHttpServer,
   LocalControlService,
@@ -42,7 +42,7 @@ export interface LocalControlDaemon {
 }
 
 export function defaultRelayDatabasePath(): string {
-  return join(homedir(), ".minu", "channels", "relay.db");
+  return join(resolveChannelsDataDirectory(), "relay.db");
 }
 
 export async function createLocalControlDaemon(

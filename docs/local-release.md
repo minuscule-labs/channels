@@ -41,11 +41,13 @@ Database migrations run during startup. Downgrading an already-migrated data dir
 
 ## Back up and restore
 
-The default data directory is:
+The default data directory is product-isolated from other Minu applications:
 
 ```text
 ~/.minu/channels/
 ```
+
+Channels never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private `run/instance.lock` prevents multiple Channels servers from opening the same data directory; use a distinct `--data-dir` for an independent concurrent installation.
 
 Stop MinuChannels before copying it so the collaboration and private execution databases represent one consistent checkpoint.
 
