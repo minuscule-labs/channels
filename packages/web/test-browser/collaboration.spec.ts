@@ -145,8 +145,9 @@ test("configures Workspace agent startup without reflecting saved values", async
   const agentForm = agentCard.locator("form").filter({ hasText: "Private launch profile" });
   const runtimeValue = "pi-private-browser";
   const personaValue = "SECRET BROWSER PERSONA";
-  await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
   await agentForm.getByLabel("Agent instructions", { exact: true }).fill(personaValue);
+  await agentForm.getByRole("tab", { name: "Runtime" }).click();
+  await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
   const agentResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
@@ -159,8 +160,10 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(agentForm.getByText("Harness: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByLabel("Replace harness", { exact: true })).toHaveValue("");
+  await agentForm.getByRole("tab", { name: "Instructions" }).click();
   await expect(agentForm.getByLabel("Replace agent instructions", { exact: true })).toHaveValue("");
   await expect(page.getByText(personaValue, { exact: true })).toHaveCount(0);
+  await agentForm.getByRole("tab", { name: "Runtime" }).click();
 
   const providerSelect = agentCard.getByRole("combobox", { name: "Provider", exact: true });
   const modelSelect = agentCard.getByRole("combobox", { name: "Model", exact: true });
@@ -188,6 +191,8 @@ test("configures Workspace agent startup without reflecting saved values", async
   expect(launchProfileBody).not.toContain("high");
   await expect(agentForm.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await agentForm.getByRole("tab", { name: "Skills" }).click();
+  await expect(agentForm.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
 });
 
 test("lists agents, opens a detail page, and adds an agent", async ({ page, request }) => {

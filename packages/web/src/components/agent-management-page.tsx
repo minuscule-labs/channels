@@ -100,6 +100,7 @@ function AgentLaunchProfileForm({
   agent: LocalWorkspaceAgentConfigurationSummary;
 }) {
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<"instructions" | "skills" | "runtime">("instructions");
   const [runtimeAdapter, setRuntimeAdapter] = useState("");
   const [selectedProvider, setSelectedProvider] = useState("");
   const [selectedModelKey, setSelectedModelKey] = useState("");
@@ -223,6 +224,48 @@ function AgentLaunchProfileForm({
         <ConfigurationState configured={agent.skillsConfigured} label={`Skills (${agent.selectedSkillCount})`} />
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
+      <div className="mt-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Launch profile settings">
+        {(["instructions", "skills", "runtime"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
+            tabIndex={activeTab === tab ? 0 : -1}
+            onClick={() => setActiveTab(tab)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const tabs = ["instructions", "skills", "runtime"] as const;
+              const offset = event.key === "ArrowRight" ? 1 : tabs.length - 1;
+              const nextIndex = (tabs.indexOf(tab) + offset) % tabs.length;
+              setActiveTab(tabs[nextIndex]!);
+              (event.currentTarget.parentElement?.children[nextIndex] as HTMLElement | undefined)?.focus();
+            }}
+            className={`border-b-2 px-3 py-2 text-xs font-medium capitalize ${activeTab === tab
+              ? "border-[var(--accent)] text-[var(--text)]"
+              : "border-transparent text-[var(--muted)] hover:text-[var(--text)]"}`}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      {activeTab === "instructions" ? (
+        <div className="mt-4" role="tabpanel">
+          <label className="block text-xs font-medium">
+            Configuration status
+            <select value={status} onChange={(event) => setStatus(event.target.value as "active" | "disabled")} className="settings-input mt-1.5 max-w-xs">
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
+          <label className="mt-3 block text-xs font-medium">
+            {agent.personaConfigured ? "Replace agent instructions" : "Agent instructions"}
+            <textarea value={personaPrompt} onChange={(event) => setPersonaPrompt(event.target.value)} rows={7} placeholder="Private responsibilities, behavior, and working style" className="settings-input mt-1.5 resize-y leading-5" />
+          </label>
+        </div>
+      ) : null}
+      {activeTab === "runtime" ? <div role="tabpanel">
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className="block text-xs font-medium">
           {agent.runtimeConfigured ? "Replace harness" : "Harness"}
@@ -240,13 +283,6 @@ function AgentLaunchProfileForm({
             placeholder="pi"
             className="settings-input mt-1.5 font-mono"
           />
-        </label>
-        <label className="block text-xs font-medium">
-          Configuration status
-          <select value={status} onChange={(event) => setStatus(event.target.value as "active" | "disabled")} className="settings-input mt-1.5">
-            <option value="active">Active</option>
-            <option value="disabled">Disabled</option>
-          </select>
         </label>
         <label className="block text-xs font-medium">
           {agent.modelConfigured ? "Replace provider" : "Provider"}
@@ -295,8 +331,13 @@ function AgentLaunchProfileForm({
           </select>
         </label>
       </div>
-      {runtimeOptions.data?.skills.length ? (
-        <fieldset className="mt-3">
+        {runtimeOptions.isPending ? <p className="mt-2 text-[10px] text-[var(--muted)]">Discovering harness providers and models…</p> : null}
+        {runtimeOptions.error ? <p className="mt-2 text-[10px] text-[var(--danger)]">Harness discovery unavailable.</p> : null}
+      </div> : null}
+      {activeTab === "skills" ? (
+        <div className="mt-4" role="tabpanel">
+        {runtimeOptions.data?.skills.length ? (
+        <fieldset>
           <legend className="text-xs font-medium">Skills</legend>
           <p className="mt-1 text-[10px] text-[var(--muted)]">Changes apply when starting fresh.</p>
           <div className="mt-2 grid max-h-48 gap-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 sm:grid-cols-2">
@@ -322,10 +363,12 @@ function AgentLaunchProfileForm({
             ))}
           </div>
         </fieldset>
+        ) : <p className="text-xs text-[var(--muted)]">No skills were discovered for this harness.</p>}
+        {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness skills…</p> : null}
+        {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">Harness skill discovery unavailable.</p> : null}
+        </div>
       ) : null}
-      {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness providers, models, and skills…</p> : null}
-      {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">Harness model discovery unavailable.</p> : null}
-      {configuredRuntimeOptions.data ? (
+      {activeTab === "runtime" && configuredRuntimeOptions.data ? (
         <details className="mt-3 rounded-md border border-[var(--border)] bg-[var(--panel)] p-3">
           <summary className="cursor-pointer text-xs font-medium">Manage available provider models</summary>
           <p className="mt-2 text-[10px] leading-4 text-[var(--muted)]">
@@ -359,11 +402,7 @@ function AgentLaunchProfileForm({
           </div>
         </details>
       ) : null}
-      <label className="mt-3 block text-xs font-medium">
-        {agent.personaConfigured ? "Replace agent instructions" : "Agent instructions"}
-        <textarea value={personaPrompt} onChange={(event) => setPersonaPrompt(event.target.value)} rows={4} placeholder="Private responsibilities, behavior, and working style" className="settings-input mt-1.5 resize-y leading-5" />
-      </label>
-      <p className="mt-1.5 text-[10px] leading-4 text-[var(--muted)]">
+      <p className="mt-3 text-[10px] leading-4 text-[var(--muted)]">
         Changes apply only when starting or explicitly replacing a session.
       </p>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
@@ -435,7 +474,7 @@ function AddAgentDialog({ workspaceId, members }: { workspaceId: string; members
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(38rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(44rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
           <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
             <div>
               <Dialog.Title className="text-base font-semibold">Add Workspace agent</Dialog.Title>
@@ -546,7 +585,7 @@ export function AgentDetailPage() {
         </div>
       </header>
       <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
-        <div className="mx-auto max-w-4xl space-y-5">
+        <div className="mx-auto max-w-5xl space-y-5">
           <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"><ArrowLeft className="h-3.5 w-3.5" /> All agents</Link>
           <article className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 md:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
