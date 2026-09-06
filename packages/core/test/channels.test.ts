@@ -158,6 +158,17 @@ test("registers reusable identities and Workspace-local handles for Channel rout
     );
 
     await assert.rejects(
+      client.updateWorkspace(workspace.id, { actorIdentityId: builder.id, name: "Unauthorized" }),
+      /owner or admin is required/,
+    );
+    const renamedWorkspace = await client.updateWorkspace(workspace.id, {
+      actorIdentityId: human.id,
+      name: "Runtime Platform",
+    });
+    assert.equal(renamedWorkspace.name, "Runtime Platform");
+    assert.equal((await client.getWorkspace(workspace.id)).name, "Runtime Platform");
+
+    await assert.rejects(
       client.createChannel({
         workspaceId: workspace.id,
         name: "member-created",

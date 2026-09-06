@@ -24,6 +24,7 @@ import type {
   WorkspaceMember,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 
@@ -192,6 +193,24 @@ export class ChannelService {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
+  }
+
+  async updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput): Promise<Workspace> {
+    const workspace = await this.getWorkspace(workspaceId);
+    if (!input || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+      throw new ChannelValidationError("actorIdentityId is required");
+    }
+    if (typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 200) {
+      throw new ChannelValidationError("workspace name must be a non-empty string up to 200 characters");
+    }
+    await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+    const updated = await this.storage.updateWorkspace({
+      ...workspace,
+      name: input.name.trim(),
+      updatedAt: new Date(Math.max(Date.now(), Date.parse(workspace.updatedAt) + 1)).toISOString(),
+    });
+    if (!updated) throw new ChannelNotFoundError(`Workspace not found: ${workspaceId}`);
+    return updated;
   }
 
   async getWorkspace(workspaceId: string): Promise<Workspace> {

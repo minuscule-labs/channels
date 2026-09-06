@@ -19,6 +19,37 @@ function ConfigurationState({ configured, label }: { configured: boolean; label:
   );
 }
 
+function WorkspaceNameForm({ workspace, actorIdentityId }: { workspace: Workspace; actorIdentityId: string }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(workspace.name);
+  const mutation = useMutation({
+    mutationFn: () => channels.updateWorkspace(workspace.id, { actorIdentityId, name: name.trim() }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.workspace(workspace.id), updated);
+      queryClient.setQueryData<Workspace[]>(queryKeys.workspaces(), (current = []) =>
+        current.map((candidate) => candidate.id === updated.id ? updated : candidate));
+    },
+  });
+  const changed = name.trim() !== workspace.name;
+  return (
+    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" onSubmit={(event) => {
+      event.preventDefault();
+      if (changed && name.trim() && !mutation.isPending) mutation.mutate();
+    }}>
+      <h3 className="text-sm font-semibold">Workspace name</h3>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">Shown in navigation and Workspace headings.</p>
+      <label className="mt-3 block text-xs font-medium">Name
+        <input value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
+      </label>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.isSuccess && !changed ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
+        <button className="button-primary" type="submit" disabled={!changed || !name.trim() || mutation.isPending}>Save name</button>
+      </div>
+    </form>
+  );
+}
+
 function WorkspaceRootForm({
   workspaceId,
   summary,
@@ -144,8 +175,11 @@ export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace })
                   void members.refetch();
                 }}>Retry</button>
               </div>
-            ) : configuration.data ? (
-              <WorkspaceRootForm workspaceId={workspace.id} summary={configuration.data} />
+            ) : configuration.data && session.data ? (
+              <div className="space-y-4">
+                <WorkspaceNameForm workspace={workspace} actorIdentityId={session.data.identityId} />
+                <WorkspaceRootForm workspaceId={workspace.id} summary={configuration.data} />
+              </div>
             ) : null}
           </div>
         </Dialog.Content>

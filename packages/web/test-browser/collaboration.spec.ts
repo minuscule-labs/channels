@@ -226,6 +226,24 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByRole("link", { name: /Browser Review Agent/ })).toBeVisible();
 });
 
+test("creates and renames a Workspace with a private source path", async ({ page, request }) => {
+  await launchAuthenticated(page, request, "/");
+  await page.getByRole("button", { name: "Add Workspace" }).click();
+  const createDialog = page.getByRole("dialog", { name: "Add Workspace" });
+  await createDialog.getByLabel("Name", { exact: true }).fill("Browser Workspace");
+  await createDialog.getByLabel("Source folder", { exact: true }).fill("/tmp/browser-workspace");
+  await createDialog.getByRole("button", { name: "Create Workspace" }).click();
+
+  await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();
+  await expect(page.getByText("Browser Workspace", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Configure Workspace Browser Workspace" }).click();
+  const settings = page.getByRole("dialog", { name: "Browser Workspace configuration" });
+  await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
+  await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
+  await settings.getByRole("button", { name: "Save name" }).click();
+  await expect(page.getByText("Renamed Workspace", { exact: true })).toBeVisible();
+});
+
 test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;

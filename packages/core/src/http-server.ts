@@ -16,6 +16,7 @@ import type {
   CreateWorkspaceInput,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 
@@ -102,6 +103,13 @@ export async function createChannelHttpServer(
       const workspaceMatch = url.pathname.match(/^\/workspaces\/([^/]+)$/);
       if (workspaceMatch && request.method === "GET") {
         json(response, 200, { workspace: await service.getWorkspace(workspaceMatch[1]!) });
+        return;
+      }
+      if (workspaceMatch && request.method === "PATCH") {
+        json(response, 200, { workspace: await service.updateWorkspace(
+          workspaceMatch[1]!,
+          (await readJson(request)) as UpdateWorkspaceInput,
+        ) });
         return;
       }
       const workspaceMembersMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/members$/);

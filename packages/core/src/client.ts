@@ -15,6 +15,7 @@ import type {
   WorkspaceMember,
   UpdateChannelInput,
   UpdateChannelParticipantsInput,
+  UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 
@@ -52,6 +53,15 @@ export class ChannelClient {
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
     const response = await this.request("/workspaces", {
       method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { workspace: Workspace }).workspace;
+  }
+
+  async updateWorkspace(workspaceId: string, input: UpdateWorkspaceInput): Promise<Workspace> {
+    const response = await this.request(`/workspaces/${workspaceId}`, {
+      method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
