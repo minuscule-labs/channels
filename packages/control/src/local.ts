@@ -12,12 +12,16 @@ import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { chmod, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
+import {
+  acquireChannelsDataDirectoryLock,
+  prepareChannelsDataDirectory,
+  resolveChannelsDataDirectory,
+} from "./local-paths.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
 const PROFILE_VERSION = 1;
@@ -58,7 +62,7 @@ export interface LocalProductApp {
 }
 
 export function defaultLocalDataDirectory(): string {
-  return join(homedir(), ".minu", "channels");
+  return resolveChannelsDataDirectory();
 }
 
 function workspaceSlug(name: string): string {
@@ -201,18 +205,24 @@ async function initializeProfile(
 export async function createLocalProductApp(
   options: LocalProductAppOptions,
 ): Promise<LocalProductApp> {
-  const dataDirectory = resolve(options.dataDirectory ?? defaultLocalDataDirectory());
+  const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDirectory });
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const channelsDatabasePath = join(dataDirectory, "channels.db");
   const relayDatabasePath = join(dataDirectory, "relay.db");
   const profilePath = join(dataDirectory, "local-profile.json");
-  await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
-  await chmod(dataDirectory, 0o700);
+  await prepareChannelsDataDirectory(dataDirectory);
+  const dataDirectoryLock = await acquireChannelsDataDirectoryLock(dataDirectory);
 
-  const storage = await DrizzleLibSqlChannelStorage.open({
-    url: localChannelLibSqlUrl(channelsDatabasePath),
-    migrationsFolder: options.channelsMigrationsFolder,
-  });
+  let storage: DrizzleLibSqlChannelStorage;
+  try {
+    storage = await DrizzleLibSqlChannelStorage.open({
+      url: localChannelLibSqlUrl(channelsDatabasePath),
+      migrationsFolder: options.channelsMigrationsFolder,
+    });
+  } catch (error) {
+    await dataDirectoryLock.release();
+    throw error;
+  }
   let channelsServer: ChannelHttpServer | undefined;
   let controlDaemon: LocalControlDaemon | undefined;
   try {
@@ -266,12 +276,20 @@ export async function createLocalProductApp(
         if (closed) return;
         closed = true;
         await Promise.allSettled([controlDaemon!.close(), channelsServer!.close()]);
-        await storage.close();
+        try {
+          await storage.close();
+        } finally {
+          await dataDirectoryLock.release();
+        }
       },
     };
   } catch (error) {
     await Promise.allSettled([controlDaemon?.close(), channelsServer?.close()]);
-    await storage.close();
+    try {
+      await storage.close();
+    } finally {
+      await dataDirectoryLock.release();
+    }
     throw error;
   }
 }
