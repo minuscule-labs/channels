@@ -1,5 +1,4 @@
-import type { ChannelClient, ChannelCursorStore } from "@minu/channels-core";
-import { randomUUID } from "node:crypto";
+import { createResourceId, type ChannelClient, type ChannelCursorStore } from "@minu/channels-core";
 import type { AgentChannelBinding, AgentRuntimePort, WakePolicy } from "./relay.ts";
 
 export interface RuntimeModelRef {
@@ -423,7 +422,7 @@ export class LocalRelayDirectory {
     }
     const timestamp = this.now().toISOString();
     return this.store.putAgentConfig({
-      id: existing?.id ?? randomUUID(),
+      id: existing?.id ?? createResourceId("config"),
       workspaceId: input.workspaceId,
       agentIdentityId: input.agentIdentityId,
       personaRef: input.personaRef === undefined
@@ -467,7 +466,7 @@ export class LocalRelayDirectory {
     if (existing) throw new Error("Channel agent binding already exists; replace it explicitly");
     const timestamp = this.now().toISOString();
     return this.store.putBinding({
-      id: randomUUID(),
+      id: createResourceId("binding"),
       workspaceAgentConfigId: config.id,
       workspaceId: channel.workspaceId,
       channelId: input.channelId,

@@ -5,6 +5,7 @@ import {
   ChannelService,
   createChannelHttpServer,
   InMemoryChannelStorage,
+  isResourceId,
   type CreateResponseInput,
   type ResponseResult,
 } from "@minu/channels-core";
@@ -366,7 +367,7 @@ test("private bindings isolate Channel sessions and restore them under generatio
     workspaceId: workspace.id,
     rootUri: "file:///workspace",
   });
-  await Promise.all([
+  const [agentConfig] = await Promise.all([
     directory.configureAgent({
       workspaceId: workspace.id,
       agentIdentityId: agent.id,
@@ -376,12 +377,14 @@ test("private bindings isolate Channel sessions and restore them under generatio
       agentIdentityId: reviewer.id,
     }),
   ]);
+  assert.equal(isResourceId(agentConfig.id, "config"), true);
   const bindingA = await directory.bindAgent({
     channelId: channelA.id,
     agentIdentityId: agent.id,
     runtimeAdapter: "fake",
     runtimeSessionId: "session-channel-a",
   });
+  assert.equal(isResourceId(bindingA.id, "binding"), true);
   await Promise.all([
     directory.bindAgent({
       channelId: channelB.id,
