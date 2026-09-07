@@ -42,3 +42,49 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @minu/channels-web exec playwright install --with-deps chromium
       - run: pnpm web:test:browser
+
+  release-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: channels
+      - name: Read pinned Runtime source
+        id: runtime_source
+        working-directory: channels
+        run: |
+          repository="$(node -p 'require("./runtime-source.json").repository')"
+          commit="$(node -p 'require("./runtime-source.json").commit')"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.runtime_source.outputs.repository }}
+          ref: ${{ steps.runtime_source.outputs.commit }}
+          path: runtime
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            channels/pnpm-lock.yaml
+            runtime/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: runtime
+      - run: pnpm install --frozen-lockfile
+        working-directory: channels
+      - run: pnpm check
+        working-directory: runtime
+      - run: pnpm test
+        working-directory: runtime
+      - name: Build release artifact and checksums
+        working-directory: channels
+        env:
+          MINU_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+        run: pnpm release:pack
+      - name: Smoke-test packaged installation
+        working-directory: channels
+        run: pnpm release:smoke

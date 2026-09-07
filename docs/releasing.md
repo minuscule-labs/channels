@@ -1,6 +1,6 @@
 # Releasing MinuChannels
 
-Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is required: pushing the tag triggers `.github/workflows/release.yml`, which builds, smoke-tests, checksums, and publishes the GitHub Release.
+Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is required: pushing the tag triggers `.github/workflows/release.yml`, which tests the pinned Runtime, builds, smoke-tests, checksums, and publishes the GitHub Release. Pull-request CI runs the same package and smoke path on Ubuntu so release-only failures are caught before tagging.
 
 ## Prepare
 
@@ -24,7 +24,7 @@ This runs type checks, workspace and web tests, release packaging, checksum gene
 pnpm release:tag:push
 ```
 
-The command creates and pushes the annotated tag only after validation. GitHub Actions verifies that the tag matches `package.json`, checks out the pinned Runtime commit, rebuilds from source, smoke-tests the artifact, and publishes the `.tgz` plus `SHA256SUMS`.
+The command creates and pushes the annotated tag only after validation. GitHub Actions verifies that the tag matches `package.json`, checks out and tests the pinned Runtime commit, rebuilds from source, smoke-tests the artifact, and publishes the `.tgz` plus `SHA256SUMS`.
 
 If you create the tag without `--push`, publish it later with:
 

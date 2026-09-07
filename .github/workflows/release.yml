@@ -19,8 +19,10 @@ jobs:
         id: runtime_source
         working-directory: channels
         run: |
-          echo "repository=$(node -p 'require(\"./runtime-source.json\").repository')" >> "$GITHUB_OUTPUT"
-          echo "commit=$(node -p 'require(\"./runtime-source.json\").commit')" >> "$GITHUB_OUTPUT"
+          repository="$(node -p 'require("./runtime-source.json").repository')"
+          commit="$(node -p 'require("./runtime-source.json").commit')"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: ${{ steps.runtime_source.outputs.repository }}
@@ -45,6 +47,10 @@ jobs:
         working-directory: runtime
       - run: pnpm install --frozen-lockfile
         working-directory: channels
+      - run: pnpm check
+        working-directory: runtime
+      - run: pnpm test
+        working-directory: runtime
       - run: pnpm check
         working-directory: channels
       - run: pnpm test
