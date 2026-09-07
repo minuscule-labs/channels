@@ -10,6 +10,7 @@ import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalProductApp } from "./local.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
+import { confirmStoppedChannels } from "./update-confirmation.ts";
 import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
 
 interface LocalCliOptions {
@@ -124,9 +125,11 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   }
   if (command !== "paths" && command !== "doctor" && command !== "update") return false;
   const utility = new Command().name(`minu-channels ${command}`).option("--data-dir <path>").option("--json");
-  if (command === "update") utility.option("--check");
+  if (command === "update") {
+    utility.option("--check").option("-y, --yes", "confirm MinuChannels has been stopped");
+  }
   utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
-  const options = utility.opts<{ dataDir?: string; json?: boolean; check?: boolean }>();
+  const options = utility.opts<{ dataDir?: string; json?: boolean; check?: boolean; yes?: boolean }>();
   const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
   if (command === "paths") {
     const paths = { dataDirectory, channelsDatabase: join(dataDirectory, "channels.db"), relayDatabase: join(dataDirectory, "relay.db"), profile: join(dataDirectory, "local-profile.json"), lock: join(dataDirectory, "run", "instance.lock") };
@@ -153,10 +156,12 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   }
   const update = await checkForUpdate({ currentVersion: await currentVersion() });
   if (options.check || !update.updateAvailable) printUpdate(update, Boolean(options.json));
-  else {
+  else if (await confirmStoppedChannels({ assumeYes: Boolean(options.yes), json: Boolean(options.json) })) {
     const installed = await installUpdate(update);
     if (options.json) console.log(JSON.stringify(installed));
     else console.log(`Updated MinuChannels from ${installed.previousVersion} to ${installed.version}.`);
+  } else {
+    console.log("Update cancelled. Stop MinuChannels before trying again.");
   }
   return true;
 }
