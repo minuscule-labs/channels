@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.2
+
+First installable local-alpha release.
+
+- Fix the GitHub Release workflow so it checks out the configured pinned Runtime source.
+- Validate the complete package and install/reopen smoke path on pull requests before tagging.
+- Test the pinned Runtime before release packaging.
+- Ask users to confirm MinuChannels is stopped before self-update while retaining mandatory active-instance checks.
+- Use the canonical public Runtime repository and streamline release installation guidance.
+
 ## 0.0.1
 
 Initial local-alpha release.
