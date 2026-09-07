@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: minuscule-labs/minu-runtime
-          ref: bed327e8744e1959d621b5d58b3d1758c30194e1
+          ref: 86a5f2245a934761e59942846b2e4b304b2881ad
           path: runtime
       - uses: pnpm/action-setup@v4
         with:
