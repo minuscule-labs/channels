@@ -4,8 +4,8 @@ import { defineConfig, loadEnv } from "vite";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const target = env.VITE_CHANNELS_PROXY_TARGET ?? "http://127.0.0.1:4310";
-  const controlTarget = env.VITE_CHANNELS_CONTROL_PROXY_TARGET ?? "http://127.0.0.1:4311";
+  const target = env.VITE_CHANNELS_PROXY_TARGET ?? "http://127.0.0.1:47410";
+  const controlTarget = env.VITE_CHANNELS_CONTROL_PROXY_TARGET ?? "http://127.0.0.1:47411";
   const serviceToken = env.MINU_CHANNELS_SERVICE_TOKEN;
   const channelProxy = {
     target,
@@ -18,6 +18,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react(), tailwindcss()],
     server: {
+      allowedHosts: ["minu-channels.localhost"],
       proxy: {
         "/channels": channelProxy,
         "/workspaces": channelProxy,

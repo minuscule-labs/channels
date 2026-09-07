@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   const program = new Command()
     .name("minu-channels-server")
     .description("Run the MinuChannels HTTP and SSE service")
-    .option("--port <number>", "HTTP port", parsePort, 4310)
+    .option("--port <number>", "HTTP port", parsePort, 47410)
     .addOption(new Option("--db <path>", "local libSQL database path").conflicts("dbUrl"))
     .addOption(new Option("--db-url <url>", "libSQL or Turso database URL").conflicts("db"))
     .option("--auth-token <token>", "Turso authentication token")

@@ -249,6 +249,10 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   assert.equal(forbiddenOrigin.status, 403);
 
   assert.equal(
+    await requestStatus(`${server.endpoint}/local/health`, { host: "minu-channels.localhost:47411" }),
+    200,
+  );
+  assert.equal(
     await requestStatus(`${server.endpoint}/local/health`, { host: "attacker.example" }),
     403,
   );
@@ -286,11 +290,6 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
 
   const unauthenticated = await fetch(`${server.endpoint}/local/health`);
   assert.equal(unauthenticated.status, 401);
-  assert.throws(
-    () => sessions.issueLaunchUrl("http://localhost:4311"),
-    /same loopback hostname/,
-  );
-
   const launchUrl = sessions.issueLaunchUrl(server.endpoint, "/app/workspaces/workspace-1/channels/channel-1");
   const bootstrap = await fetch(launchUrl, { redirect: "manual" });
   assert.equal(bootstrap.status, 303);
@@ -332,6 +331,18 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
     { action: "launch.rejected", outcome: "rejected", reason: "expired" },
   ]);
   assert.doesNotMatch(JSON.stringify(audit), /minu_local_session|code=|runtime-session-secret/);
+});
+
+test("advertises the product-specific localhost name across control and browser ports", () => {
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://minu-channels.localhost:47412/",
+    currentHumanIdentityId: "human-product-host",
+  });
+  const launchUrl = new URL(sessions.issueLaunchUrl("http://127.0.0.1:47411"));
+  assert.equal(launchUrl.origin, "http://minu-channels.localhost:47411");
+  const exchange = sessions.exchangeLaunchCode(launchUrl.searchParams.get("code")!);
+  assert.equal(exchange?.redirectUrl, "http://minu-channels.localhost:47412/");
+  assert.match(exchange?.cookie ?? "", /minu_local_session=/);
 });
 
 test("authenticated folder selection supports root paths and cancellation", async () => {
@@ -469,6 +480,9 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     authenticateBrowser: () => browserAuthenticated ? { identityId: "human-web-test" } : undefined,
   });
   try {
+    assert.equal(await requestStatus(`${web.endpoint}/`, {
+      host: "minu-channels.localhost:47412",
+    }), 200);
     const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/channels/channel`);
     assert.equal(spa.status, 200);
     assert.match(await spa.text(), /MinuChannels production/);

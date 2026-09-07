@@ -51,10 +51,10 @@ The daemon opens the private Relay database, connects to the public Channels end
 The launcher creates a 256-bit, one-time launch code with a 60-second default lifetime. Redeeming it at the loopback bootstrap endpoint:
 
 1. consumes the code exactly once;
-2. issues a separate random browser session bound to the configured stable human identity in an `HttpOnly`, `SameSite=Strict`, `/local` cookie;
+2. issues a separate random browser session bound to the configured stable human identity in an `HttpOnly`, `SameSite=Strict` cookie;
 3. redirects to the clean configured web URL with `Referrer-Policy: no-referrer`.
 
-`GET /local/session` returns only the bound public identity id. The composer verifies that it is an active human participant and uses it automatically; arbitrary `Send as` selection is unavailable. The browser session credential is never placed in a URL. It expires after eight hours by default and is kept only in daemon memory, so daemon restart revokes it. The browser and daemon must use the same loopback hostname because cookies do not cross `localhost`, `127.0.0.1`, and `[::1]` aliases.
+`GET /local/session` returns only the bound public identity id. The composer verifies that it is an active human participant and uses it automatically; arbitrary `Send as` selection is unavailable. The browser session credential is never placed in a URL. It expires after eight hours by default and is kept only in daemon memory, so daemon restart revokes it. The product advertises the reserved `minu-channels.localhost` hostname on both bootstrap and web URLs so its cookies are isolated from unrelated local development apps. Explicit `localhost`, `127.0.0.1`, and `[::1]` configurations remain accepted, but cookies do not cross those hostname aliases.
 
 Session lifecycle events are emitted through a sanitized audit hook. Events record action, outcome, timestamp, and a bounded rejection reason—never launch codes, cookies, Runtime identifiers, or private configuration.
 
@@ -104,9 +104,9 @@ pnpm control --human-identity-id <stable-human-id> \
 The default composition uses:
 
 ```text
-Channels: http://127.0.0.1:4310
-Web:      http://127.0.0.1:5174/
-Control:  http://127.0.0.1:4311
+Channels: http://127.0.0.1:47410
+Web:      http://minu-channels.localhost:47412/
+Control:  http://127.0.0.1:47411
 Relay DB: ~/.minu/channels/relay.db
 ```
 

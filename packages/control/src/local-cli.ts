@@ -8,6 +8,7 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalProductApp } from "./local.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
 import { confirmStoppedChannels } from "./update-confirmation.ts";
@@ -174,9 +175,9 @@ async function main(): Promise<void> {
     .name("minu-channels")
     .description("Start the persistent local MinuChannels product")
     .argument("[directory]", "Workspace source directory (required on first non-interactive launch)")
-    .option("--channels-port <number>", "internal Channels API port", port, 4310)
-    .option("--control-port <number>", "internal authenticated control port", port, 4311)
-    .option("--web-port <number>", "local product web port", port, 5174)
+    .option("--channels-port <number>", "internal Channels API port", port, DEFAULT_CHANNELS_PORT)
+    .option("--control-port <number>", "internal authenticated control port", port, DEFAULT_CONTROL_PORT)
+    .option("--web-port <number>", "local product web port", port, DEFAULT_WEB_PORT)
     .option("--data-dir <path>", "persistent local data directory")
     .option("--cwd <path>", "Workspace source directory (legacy alias)")
     .option("--workspace-name <name>", "name for a newly created Workspace")
@@ -214,7 +215,7 @@ async function main(): Promise<void> {
   if (new Set([options.channelsPort, options.controlPort, options.webPort]).size !== 3) {
     throw new Error("Channels, control, and web ports must be distinct");
   }
-  const webUrl = `http://127.0.0.1:${options.webPort}/`;
+  const webUrl = localChannelsUrl(options.webPort);
   const runtime = await loadPiRuntime(options.runtimeModule);
   const installationInstance = await registerInstallationInstance();
   let app: Awaited<ReturnType<typeof createLocalProductApp>>;
@@ -259,7 +260,7 @@ async function main(): Promise<void> {
     });
     const launchUrl = app.issueBrowserLaunchUrl();
     console.log("\nMinuChannels is ready");
-    console.log(`  Web:      ${web.endpoint}/`);
+    console.log(`  Web:      ${webUrl}`);
     console.log(`  Data:     ${app.dataDirectory}`);
     console.log(`  Workspace: ${workspaceRoot}`);
     console.log(`  Setup:    ${app.initialized ? "created a fresh local Workspace" : "reopened existing local data"}`);

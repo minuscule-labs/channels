@@ -753,6 +753,14 @@ test("direct collaboration HTTP requires its service credential and rejects brow
       request.end();
     });
     assert.equal(hostileHostStatus, 403);
+    const productHostStatus = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(`${server.endpoint}/identities`, {
+        headers: { authorization: `Bearer ${server.serviceToken}`, host: "minu-channels.localhost:47410" },
+      }, (response) => { response.resume(); resolve(response.statusCode ?? 0); });
+      request.once("error", reject);
+      request.end();
+    });
+    assert.equal(productHostStatus, 200);
     const wrongType = await fetch(`${server.endpoint}/identities`, {
       method: "POST",
       headers: { authorization: `Bearer ${server.serviceToken}`, "content-type": "text/plain" },
