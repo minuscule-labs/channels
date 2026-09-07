@@ -21,6 +21,7 @@ import {
 export interface LocalControlDaemonOptions {
   currentHumanIdentityId: string;
   channelsEndpoint?: string;
+  channelsServiceToken?: string;
   relayDatabasePath?: string;
   relayMigrationsFolder?: string;
   webUrl?: string;
@@ -38,6 +39,7 @@ export interface LocalControlDaemonOptions {
 export interface LocalControlDaemon {
   endpoint: string;
   issueBrowserLaunchUrl(destinationPath?: string): string;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
   close(): Promise<void>;
 }
 
@@ -72,7 +74,9 @@ export async function createLocalControlDaemon(
       now: options.now,
       onAudit: options.onAudit,
     });
-    const client = new ChannelClient(options.channelsEndpoint ?? "http://127.0.0.1:4310");
+    const client = new ChannelClient(options.channelsEndpoint ?? "http://127.0.0.1:4310", {
+      serviceToken: options.channelsServiceToken,
+    });
     agentHost = new LocalAgentHost({
       client,
       store,
@@ -107,6 +111,7 @@ export async function createLocalControlDaemon(
       endpoint: server.endpoint,
       issueBrowserLaunchUrl: (destinationPath) =>
         browserSessions.issueLaunchUrl(server!.endpoint, destinationPath),
+      authenticateBrowser: (cookieHeader) => browserSessions.authenticate(cookieHeader),
       async close() {
         await server!.close();
         await agentHost!.close();

@@ -24,6 +24,8 @@ export interface LocalWebServerOptions {
   webDirectory: string;
   host?: "127.0.0.1" | "::1";
   port?: number;
+  channelsServiceToken: string;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
 }
 
 export interface LocalWebServer {
@@ -43,16 +45,19 @@ function proxy(
   request: IncomingMessage,
   response: ServerResponse,
   target: string,
+  headers: Record<string, string> = {},
 ): void {
   const incoming = new URL(request.url ?? "/", "http://minu.local");
   const destination = new URL(target);
   destination.pathname = incoming.pathname;
   destination.search = incoming.search;
+  const { origin: _origin, cookie: _cookie, ...forwardedHeaders } = request.headers;
   const upstream = proxyRequest(destination, {
     method: request.method,
     headers: {
-      ...request.headers,
+      ...forwardedHeaders,
       host: destination.host,
+      ...headers,
     },
   }, (upstreamResponse) => {
     response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
@@ -125,6 +130,20 @@ async function serveStatic(
   else createReadStream(path).pipe(response);
 }
 
+function loopbackRequestHost(request: IncomingMessage): boolean {
+  try {
+    const hostname = new URL(`http://${request.headers.host ?? ""}`).hostname;
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
+  } catch { return false; }
+}
+
+function sameRequestOrigin(request: IncomingMessage): boolean {
+  if (typeof request.headers.origin !== "string") return true;
+  try {
+    return new URL(request.headers.origin).host === request.headers.host;
+  } catch { return false; }
+}
+
 export async function createLocalWebServer(
   options: LocalWebServerOptions,
 ): Promise<LocalWebServer> {
@@ -136,9 +155,30 @@ export async function createLocalWebServer(
   const sockets = new Set<Socket>();
   const server = createServer((request, response) => {
     void (async () => {
+      if (!loopbackRequestHost(request)) {
+        response.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Forbidden host\n");
+        return;
+      }
+      if (!sameRequestOrigin(request)) {
+        response.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Forbidden origin\n");
+        return;
+      }
       const url = new URL(request.url ?? "/", "http://minu.local");
       const target = targetFor(url.pathname, options);
-      if (target) proxy(request, response, target);
+      if (target === options.channelsEndpoint) {
+        const session = options.authenticateBrowser(request.headers.cookie);
+        if (!session) {
+          response.writeHead(401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(`${JSON.stringify({ error: "Local browser session required" })}\n`);
+          return;
+        }
+        proxy(request, response, target, {
+          authorization: `Bearer ${options.channelsServiceToken}`,
+          "x-minu-actor-id": session.identityId,
+        });
+      } else if (target) proxy(request, response, target);
       else await serveStatic(request, response, webDirectory, url.pathname);
     })().catch((error) => {
       if (response.headersSent) response.destroy(error as Error);

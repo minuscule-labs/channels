@@ -52,14 +52,22 @@ const branch = run("git", ["branch", "--show-current"], true).trim();
 console.log(`release: validating ${tag} from ${branch || "detached HEAD"}`);
 run("pnpm", ["release:check"]);
 
+if (run("git", ["status", "--porcelain", "--untracked-files=all"], true).trim()) {
+  fail("validation changed the working tree; refusing to tag moving release input.");
+}
+const head = run("git", ["rev-parse", "HEAD"], true).trim();
+run("git", ["fetch", "origin", "main", "--quiet"]);
+if (run("git", ["rev-parse", "HEAD"], true).trim() !== head) {
+  fail("HEAD changed during release validation.");
+}
+const originMain = run("git", ["rev-parse", "origin/main"], true).trim();
+if (head !== originMain) fail("release input must exactly match the freshly fetched origin/main.");
+
 if (dryRun) {
   console.log(`release: dry run complete. ${tag} was not created.`);
   process.exit(0);
 }
 if (branch !== "main") fail("release tags must be created from main.");
-const head = run("git", ["rev-parse", "HEAD"], true).trim();
-const originMain = run("git", ["rev-parse", "origin/main"], true).trim();
-if (head !== originMain) fail("main must exactly match origin/main before tagging.");
 
 run("git", ["tag", "-a", tag, "-m", `MinuChannels ${tag}`]);
 if (push) {

@@ -78,11 +78,13 @@ export interface LocalReviewAppOptions {
 
 export interface LocalReviewApp {
   channelsEndpoint: string;
+  channelsServiceToken: string;
   controlEndpoint: string;
   workspaceId: string;
   channelId: string;
   humanIdentityId: string;
   issueBrowserLaunchUrl(): string;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
   close(): Promise<void>;
 }
 
@@ -99,7 +101,7 @@ export async function createLocalReviewApp(
       port: options.channelsPort ?? 4310,
       service: new ChannelService(new InMemoryChannelStorage()),
     });
-    const client = new ChannelClient(channelsServer.endpoint);
+    const client = new ChannelClient(channelsServer.endpoint, { serviceToken: channelsServer.serviceToken });
     const [human, builder, reviewer] = await Promise.all([
       client.createIdentity({
         type: "human",
@@ -211,6 +213,7 @@ export async function createLocalReviewApp(
     controlDaemon = await createLocalControlDaemon({
       currentHumanIdentityId: human.id,
       channelsEndpoint: channelsServer.endpoint,
+      channelsServiceToken: channelsServer.serviceToken,
       relayDatabasePath,
       webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
       port: options.controlPort ?? 4311,
@@ -236,6 +239,7 @@ export async function createLocalReviewApp(
     let closed = false;
     return {
       channelsEndpoint: channelsServer.endpoint,
+      channelsServiceToken: channelsServer.serviceToken,
       controlEndpoint: controlDaemon.endpoint,
       workspaceId: workspace.id,
       channelId: channel.id,
@@ -243,6 +247,7 @@ export async function createLocalReviewApp(
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
         `/app/workspaces/${workspace.id}/channels/${channel.id}`,
       ),
+      authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
       async close() {
         if (closed) return;
         closed = true;

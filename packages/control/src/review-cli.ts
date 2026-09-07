@@ -181,6 +181,7 @@ async function main(): Promise<void> {
       env: {
         ...process.env,
         VITE_CHANNELS_PROXY_TARGET: app.channelsEndpoint,
+        MINU_CHANNELS_SERVICE_TOKEN: app.channelsServiceToken,
         VITE_CHANNELS_CONTROL_PROXY_TARGET: app.controlEndpoint,
       },
       stdio: "inherit",

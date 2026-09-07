@@ -16,7 +16,7 @@ pnpm local -- --cwd /absolute/path/to/workspace
 
 On an interactive first launch without a directory argument, MinuChannels asks for the Workspace source folder and name. `minu-channels .` selects the current directory non-interactively, and `--workspace-name` overrides its inferred name. MinuChannels then creates one local human (`@you`), one configured but unstarted agent (`@builder`), the confirmed Workspace, and an empty **General** Channel. It does not create sample messages or execute the model automatically. Click **Start** when ready. In a two-participant human-agent Channel, ordinary human messages implicitly address and wake the bound agent; larger Channels require an explicit mention. Every turn receives bounded Channel history through its trigger, including context written before the binding cursor, without replaying that older work. **Manage Channel participants** lets an owner/admin select existing Workspace members or create a human, agent, or service inline. Handles are suggested from the display name and accept pasted `@handles`; agent/service creation includes agent instructions plus harness, provider, model, and reasoning configuration, then selects the new participant for the Channel. The dedicated Workspace **Agents** page lists reusable agents and opens each agent on a separate detail route for its effective name and handle alongside private agent instructions, harness, provider, model, reasoning, status, Channel assignments, and binding count. **Add agent** creates an agent or service from the list in a modal and then opens its detail page. Owners/admins can edit Workspace-local handles and replace private launch configuration there; launch changes apply only to new or **Start fresh** sessions. Workspace owners can add another Workspace with a private absolute source path, rename existing Workspaces, and replace source paths from Workspace settings. Existing Runtime sessions retain their original working directory until **Start fresh**.
 
-Collaboration data, private agent-host state, and the stable local-human profile persist under the product-owned `~/.minu/channels/` directory with owner-only permissions. Channels never writes shared files directly beneath `~/.minu/`; `--data-dir`, `MINU_CHANNELS_HOME`, and `$MINU_HOME/channels` override the default in that order. A private `run/instance.lock` prevents two Channels servers from writing the same data directory. Re-running the command reopens the same identities, Workspace, Channel, messages, configuration, bindings, and recovery cursors. The source folder is canonicalized and must be an accessible directory. `--cwd` remains a legacy alias for the first-launch positional directory; later changes should use Workspace settings. Add and settings dialogs offer a native macOS/Linux folder picker when available and retain absolute-path entry as the fallback. Press Ctrl-C to stop the foreground product services. Use `--data-dir /other/path` for an independent local installation or fresh test without touching the default data.
+Collaboration data, private agent-host state, and the stable local-human profile persist under the product-owned `~/.minu/channels/` directory with owner-only permissions. Channels never writes shared files directly beneath `~/.minu/`; `--data-dir`, `MINU_CHANNELS_HOME`, and `$MINU_HOME/channels` override the default in that order. A private, atomically owned `run/instance.lock/` directory prevents two Channels servers from writing the same data directory. Re-running the command reopens the same identities, Workspace, Channel, messages, configuration, bindings, and recovery cursors. The source folder is canonicalized and must be an accessible directory. `--cwd` remains a legacy alias for the first-launch positional directory; later changes should use Workspace settings. Add and settings dialogs offer a native macOS/Linux folder picker when available and retain absolute-path entry as the fallback. Press Ctrl-C to stop the foreground product services. Use `--data-dir /other/path` for an independent local installation or fresh test without touching the default data.
 
 This source-workspace command uses the dedicated `minu-channels` foreground entry point and serves the production web build through one loopback product URL; Vite remains review/development-only. [`docs/local-release.md`](docs/local-release.md) covers private-release installation, upgrades, backup, reset, and uninstall. Source development still builds and loads the sibling MinuRuntime repository. The release build instead bundles Runtime core, the Pi adapter and worker, web assets, and both migration trees into one installable artifact. `pnpm release:pack` creates the tarball and checksum; `pnpm release:smoke` installs it in a temporary environment and proves first launch plus persistent reopen. [`docs/distribution.md`](docs/distribution.md) records the private GitHub Release path and deferred public distribution options.
 
@@ -172,23 +172,27 @@ Install and operate Channels independently:
 ```bash
 pnpm install
 pnpm build
-pnpm serve --port 4310
-pnpm serve --db ./channels.db
+export MINU_CHANNELS_SERVICE_TOKEN="$(openssl rand -hex 32)"
+pnpm serve --port 4310 --service-token "$MINU_CHANNELS_SERVICE_TOKEN"
+pnpm serve --db ./channels.db --service-token "$MINU_CHANNELS_SERVICE_TOKEN"
 pnpm serve \
   --db-url "$TURSO_DATABASE_URL" \
-  --auth-token "$TURSO_AUTH_TOKEN"
+  --auth-token "$TURSO_AUTH_TOKEN" \
+  --service-token "$MINU_CHANNELS_SERVICE_TOKEN"
 ```
 
 Run the loopback-only web client and authenticated local control daemon during local development with:
 
 ```bash
 pnpm web:dev
-pnpm control --human-identity-id <stable-human-id>
+pnpm control --human-identity-id <stable-human-id> \
+  --channels-service-token "$MINU_CHANNELS_SERVICE_TOKEN"
 # Override the default API proxy when Channels is not on port 4310:
 VITE_CHANNELS_PROXY_TARGET=http://127.0.0.1:4400 pnpm web:dev
 
 # Optionally load an independently installed structural Runtime adapter:
-pnpm control --human-identity-id <stable-human-id> --runtime-adapter \
+pnpm control --human-identity-id <stable-human-id> \
+  --channels-service-token "$MINU_CHANNELS_SERVICE_TOKEN" --runtime-adapter \
   'pi=/absolute/path/to/runtime/packages/pi/dist/src/index.js#PiAgentRuntime'
 
 pnpm web:check
@@ -197,7 +201,7 @@ pnpm --filter @minu/channels-web exec playwright install chromium # once per mac
 pnpm web:test:browser
 ```
 
-The browser uses typed product clients and does not depend on whether capabilities run in-process, over loopback, or on a hosted service. Workspace labels are explicit in navigation and Channel headers, while Channel names replace opaque ids as the primary UI label. Workspace settings show redacted configuration state and accept write-only replacement source/persona/Runtime values without reading them back. The composer always authors as the bound active human and offers no `Send as` selector. Enter sends a message; Shift+Enter or Cmd/Ctrl+Enter inserts a line break. The browser never reads internal execution storage or Runtime credentials directly. Current browser binding prevents accidental UI impersonation but does not authenticate Channels message requests or make a forged `actorIdentityId` trustworthy. Server-enforced user authentication remains upcoming; the planned baseline is MinuNotes' Better Auth email-OTP/session pattern rather than a client-only login screen.
+The browser uses typed product clients and does not depend on whether capabilities run in-process, over loopback, or on a hosted service. Workspace labels are explicit in navigation and Channel headers, while Channel names replace opaque ids as the primary UI label. Workspace settings show redacted configuration state and accept write-only replacement source/persona/Runtime values without reading them back. The composer always authors as the bound active human and offers no `Send as` selector. Enter sends a message; Shift+Enter or Cmd/Ctrl+Enter inserts a line break. The browser never reads internal execution storage or Runtime credentials directly. The production local gateway requires the HttpOnly browser session for collaboration requests, validates Host/Origin, supplies the private service credential to the direct listener, and binds actor-bearing writes to the authenticated local human. This secures the single-user loopback alpha against unrelated browser origins and local HTTP callers; hosted multi-user authentication remains a separate future boundary.
 
 An optional separately installed Minu CLI may expose the same server as `minu channels serve`. The Pi collaboration demo lives under `examples/pi-demo` because it composes Channels with MinuRuntime and is not required to build or deploy Channels.
 

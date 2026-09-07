@@ -13,6 +13,8 @@ const binDirectory = join(output, "dist/bin");
 const assetsDirectory = join(output, "dist/assets");
 const external = ["@libsql/client", "@libsql/client/*", "drizzle-orm", "drizzle-orm/*"];
 const execFile = promisify(execFileCallback);
+const runtimeSource = JSON.parse(await readFile(join(root, "runtime-source.json"), "utf8"));
+if (!/^[a-f0-9]{40}$/.test(runtimeSource.commit)) throw new Error("runtime-source.json has an invalid Runtime commit");
 
 async function git(directory, ...args) {
   return (await execFile("git", args, { cwd: directory, encoding: "utf8" })).stdout.trim();
@@ -26,6 +28,9 @@ const [channelsStatus, runtimeStatus, channelsCommit, runtimeCommit] = await Pro
 ]);
 if (process.env.MINU_ALLOW_DIRTY_RELEASE !== "1" && (channelsStatus || runtimeStatus)) {
   throw new Error("Release builds require clean Channels and Runtime repositories. Commit or remove local changes first.");
+}
+if (runtimeCommit !== runtimeSource.commit) {
+  throw new Error(`Runtime checkout ${runtimeCommit} does not match pinned release commit ${runtimeSource.commit}`);
 }
 
 await rm(output, { recursive: true, force: true });

@@ -94,9 +94,11 @@ Build first, start Channels and the web client, then launch control:
 
 ```bash
 pnpm build
-pnpm serve
+export MINU_CHANNELS_SERVICE_TOKEN="$(openssl rand -hex 32)"
+pnpm serve --service-token "$MINU_CHANNELS_SERVICE_TOKEN"
 pnpm web:dev
-pnpm control --human-identity-id <stable-human-id>
+pnpm control --human-identity-id <stable-human-id> \
+  --channels-service-token "$MINU_CHANNELS_SERVICE_TOKEN"
 ```
 
 The default composition uses:
@@ -124,7 +126,8 @@ A loaded export may be a constructible class or an object with `status(sessionId
 - Binds only to `127.0.0.1` or `::1`.
 - Rejects non-loopback `Host` headers.
 - Rejects browser origins unless explicitly allowlisted.
-- Requires an authenticated browser session in the real daemon.
+- Requires a private bearer credential on the direct collaboration listener.
+- Requires an authenticated browser session at the production web gateway and binds the browser actor identity server-side.
 - Limits writes to bounded JSON private-configuration endpoints authorized for the bound active Workspace owner/admin.
 - Uses bounded Runtime/client waits, no-store responses, and sanitized errors.
 - Stores private Relay state only in a local file URL.

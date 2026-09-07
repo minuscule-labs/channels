@@ -230,7 +230,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 7 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 8 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -301,7 +301,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   assert.equal(bootstrap.headers.get("referrer-policy"), "no-referrer");
   const setCookie = bootstrap.headers.get("set-cookie");
   assert.ok(setCookie);
-  assert.match(setCookie, /HttpOnly; SameSite=Strict; Path=\/local/);
+  assert.match(setCookie, /HttpOnly; SameSite=Strict; Path=\/;/);
   const cookie = setCookie.split(";", 1)[0]!;
   assert.doesNotMatch(cookie, /code=/);
 
@@ -313,7 +313,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 7, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 8, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -334,6 +334,37 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   assert.doesNotMatch(JSON.stringify(audit), /minu_local_session|code=|runtime-session-secret/);
 });
 
+test("authenticated folder selection supports root paths and cancellation", async () => {
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/",
+    currentHumanIdentityId: "human-folder-test",
+  });
+  const service = new LocalControlService({
+    channels: { async getChannel() { return channel; } },
+    bindings: { async listChannelBindings() { return []; } },
+    runtimes: {},
+  });
+  let selected: string | undefined = "/";
+  const server = await createLocalControlHttpServer({
+    service,
+    port: 0,
+    allowedOrigins: [sessions.browserOrigin],
+    browserSessions: sessions,
+    selectLocalFolder: async () => selected,
+  });
+  try {
+    const bootstrap = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+    const cookie = bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const headers = { cookie, origin: sessions.browserOrigin };
+    const root = await fetch(`${server.endpoint}/local/folders/select`, { method: "POST", headers });
+    assert.equal(root.status, 200);
+    assert.deepEqual(await root.json(), { path: "/" });
+    selected = undefined;
+    assert.equal((await fetch(`${server.endpoint}/local/folders/select`, { method: "POST", headers })).status, 204);
+    assert.equal((await fetch(`${server.endpoint}/local/folders/select`, { method: "POST" })).status, 401);
+  } finally { await server.close(); }
+});
+
 test("review app seeds a disposable Workspace and authenticated presentation states", async () => {
   const app = await createLocalReviewApp({
     channelsPort: 0,
@@ -341,7 +372,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     webUrl: "http://127.0.0.1:5174/",
   });
   try {
-    const client = new ChannelClient(app.channelsEndpoint);
+    const client = new ChannelClient(app.channelsEndpoint, { serviceToken: app.channelsServiceToken });
     const workspaces = await client.listWorkspaces();
     assert.deepEqual(workspaces.map(({ id, name }) => ({ id, name })), [{
       id: app.workspaceId,
@@ -388,7 +419,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 7,
+      protocolVersion: 8,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -428,11 +459,14 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     listen(channelsBackend),
     listen(controlBackend),
   ]);
+  let browserAuthenticated = true;
   const web = await createLocalWebServer({
     channelsEndpoint,
     controlEndpoint,
     webDirectory,
     port: 0,
+    channelsServiceToken: "web-test-token",
+    authenticateBrowser: () => browserAuthenticated ? { identityId: "human-web-test" } : undefined,
   });
   try {
     const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/channels/channel`);
@@ -443,10 +477,14 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     assert.match(await asset.text(), /console\.log/);
     const channelsResponse = await (await fetch(`${web.endpoint}/identities`)).json() as { source: string };
     assert.equal(channelsResponse.source, "channels");
+    browserAuthenticated = false;
+    assert.equal((await fetch(`${web.endpoint}/identities`)).status, 401);
+    browserAuthenticated = true;
+    assert.equal((await fetch(`${web.endpoint}/identities`, { headers: { origin: "https://hostile.example" } })).status, 403);
     const controlResponse = await (await fetch(`${web.endpoint}/local/health`, {
       headers: { origin: web.endpoint },
     })).json() as { source: string; origin: string };
-    assert.deepEqual(controlResponse, { source: "control", origin: web.endpoint });
+    assert.deepEqual(controlResponse, { source: "control" });
   } finally {
     await web.close();
     await Promise.all([
@@ -479,12 +517,26 @@ test("resolves isolated Channels data paths and arbitrates product-directory loc
     const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
     assert.equal((await stat(dataDirectory)).mode & 0o777, 0o700);
     assert.equal((await stat(join(dataDirectory, "run"))).mode & 0o777, 0o700);
-    assert.equal((await stat(lock.path)).mode & 0o777, 0o600);
+    assert.equal((await stat(lock.path)).mode & 0o777, 0o700);
     await assert.rejects(acquireChannelsDataDirectoryLock(dataDirectory), /already using data directory/);
     await lock.release();
     await writeFile(join(dataDirectory, "run", "instance.lock"), '{"pid":999999,"token":"stale"}\n');
     const replacement = await acquireChannelsDataDirectoryLock(dataDirectory);
     await replacement.release();
+
+    const initializingPath = join(dataDirectory, "run", "instance.lock");
+    await mkdir(initializingPath);
+    await assert.rejects(acquireChannelsDataDirectoryLock(dataDirectory), /already using data directory/);
+    assert.equal((await stat(initializingPath)).isDirectory(), true);
+    await rm(initializingPath, { recursive: true });
+
+    await mkdir(initializingPath);
+    await writeFile(join(initializingPath, "owner.json"), '{"pid":999999,"token":"stale"}\n');
+    const attempts = await Promise.allSettled(Array.from({ length: 4 }, () =>
+      acquireChannelsDataDirectoryLock(dataDirectory)));
+    const winners = attempts.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    assert.equal(winners.length, 1);
+    await winners[0]!.release();
   } finally {
     await rm(dataDirectory, { recursive: true, force: true });
   }
@@ -508,12 +560,12 @@ test("local product initializes once and reopens persistent collaboration data",
       runtime,
     });
     assert.equal(first.initialized, true);
-    const firstClient = new ChannelClient(first.channelsEndpoint);
+    const firstClient = new ChannelClient(first.channelsEndpoint, { serviceToken: first.channelsServiceToken });
     assert.equal((await firstClient.listIdentities()).length, 2);
     assert.deepEqual((await firstClient.listWorkspaces()).map(({ name }) => name), ["Chosen Workspace"]);
     assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId)).length, 1);
     assert.deepEqual(await firstClient.listMessages(first.channelId), []);
-    assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o600);
+    assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o700);
     await assert.rejects(createLocalProductApp({
       dataDirectory,
       workspaceRoot,
@@ -547,7 +599,7 @@ test("local product initializes once and reopens persistent collaboration data",
       workspaceId: reopened.workspaceId,
       channelId: reopened.channelId,
     }, original);
-    const reopenedClient = new ChannelClient(reopened.channelsEndpoint);
+    const reopenedClient = new ChannelClient(reopened.channelsEndpoint, { serviceToken: reopened.channelsServiceToken });
     assert.equal((await reopenedClient.listIdentities()).length, 2);
     assert.equal((await reopenedClient.listWorkspaces()).length, 1);
     assert.equal((await stat(join(dataDirectory, "local-profile.json"))).mode & 0o777, 0o600);
@@ -562,12 +614,107 @@ test("local product initializes once and reopens persistent collaboration data",
   }
 });
 
+test("first-run initialization resumes after private-store setup fails", async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-recovery-"));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-local-recovery-root-"));
+  const options = {
+    dataDirectory,
+    workspaceRoot,
+    workspaceName: "Recoverable Workspace",
+    channelsPort: 0,
+    controlPort: 0,
+    runtimeAdapter: "managed-test",
+    runtime: new ManagedFakeRuntime(),
+  };
+  try {
+    await assert.rejects(createLocalProductApp({
+      ...options,
+      relayMigrationsFolder: join(dataDirectory, "missing-migrations"),
+    }), /journal|migration/i);
+    assert.equal((await stat(join(dataDirectory, "local-profile.json.initializing"))).isFile(), true);
+    const recovered = await createLocalProductApp(options);
+    try {
+      const client = new ChannelClient(recovered.channelsEndpoint, { serviceToken: recovered.channelsServiceToken });
+      assert.equal((await client.listIdentities()).length, 2);
+      assert.equal((await client.listWorkspaces()).length, 1);
+      assert.equal((await client.listWorkspaceChannels(recovered.workspaceId)).length, 1);
+    } finally { await recovered.close(); }
+    await assert.rejects(stat(join(dataDirectory, "local-profile.json.initializing")), /ENOENT/);
+  } finally {
+    await Promise.all([rm(dataDirectory, { recursive: true, force: true }), rm(workspaceRoot, { recursive: true, force: true })]);
+  }
+});
+
+test("Workspace provisioning validates first and resumes idempotently", async () => {
+  const server = await createChannelHttpServer();
+  const root = await mkdtemp(join(tmpdir(), "minu-provision-root-"));
+  try {
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const owner = await client.createIdentity({ type: "human" });
+    const store = new InMemoryRelayBindingStore();
+    const configuration = new LocalAgentHostConfiguration({ client, store });
+    await assert.rejects(configuration.provisionWorkspace(owner.id, {
+      slug: "recoverable-provision", name: "Provisioned", rootUri: join(root, "missing"),
+    }), /unavailable/);
+    assert.equal((await client.listWorkspaces()).length, 0);
+    const first = await configuration.provisionWorkspace(owner.id, {
+      slug: "recoverable-provision", name: "Provisioned", rootUri: root,
+    });
+    const replay = await configuration.provisionWorkspace(owner.id, {
+      slug: "recoverable-provision", name: "Provisioned", rootUri: root,
+    });
+    assert.deepEqual(replay, first);
+    assert.equal((await client.listWorkspaces()).length, 1);
+    assert.equal((await client.listWorkspaceChannels(first.workspaceId)).length, 1);
+    assert.equal((await client.listWorkspaceMembers(first.workspaceId)).length, 1);
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("Runtime discovery is scoped by canonical Workspace source root", async () => {
+  const server = await createChannelHttpServer();
+  const firstRoot = await mkdtemp(join(tmpdir(), "minu-runtime-root-a-"));
+  const secondRoot = await mkdtemp(join(tmpdir(), "minu-runtime-root-b-"));
+  try {
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const owner = await client.createIdentity({ type: "human" });
+    const first = await client.createWorkspace({ slug: "runtime-root-a", name: "A" });
+    const second = await client.createWorkspace({ slug: "runtime-root-b", name: "B" });
+    for (const workspace of [first, second]) {
+      await client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" });
+    }
+    const store = new InMemoryRelayBindingStore();
+    const seen: string[] = [];
+    const configuration = new LocalAgentHostConfiguration({
+      client,
+      store,
+      runtimeOptionsCacheTtlMs: 50,
+      runtimes: { test: { async capabilities({ cwd } = {}) { seen.push(cwd!); return { models: [], reasoningLevels: [], skills: [] }; } } },
+    });
+    await configuration.updateWorkspaceConfiguration(first.id, owner.id, { rootUri: firstRoot });
+    await configuration.updateWorkspaceConfiguration(second.id, owner.id, { rootUri: secondRoot });
+    await configuration.getWorkspaceRuntimeOptions(first.id, "test", owner.id);
+    await configuration.getWorkspaceRuntimeOptions(second.id, "test", owner.id);
+    assert.deepEqual(seen, [await realpath(firstRoot), await realpath(secondRoot)]);
+    await configuration.getWorkspaceRuntimeOptions(first.id, "test", owner.id);
+    assert.equal(seen.length, 2);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await configuration.getWorkspaceRuntimeOptions(first.id, "test", owner.id);
+    assert.equal(seen.length, 3);
+    await configuration.updateWorkspaceConfiguration(first.id, owner.id, { rootUri: secondRoot });
+    await configuration.getWorkspaceRuntimeOptions(first.id, "test", owner.id);
+    assert.deepEqual(seen.at(-1), await realpath(secondRoot));
+  } finally {
+    await server.close();
+    await Promise.all([rm(firstRoot, { recursive: true, force: true }), rm(secondRoot, { recursive: true, force: true })]);
+  }
+});
+
 test("private configuration authorizes current humans and returns only redacted state", async () => {
   const channelServer = await createChannelHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const audit: LocalControlAuditEvent[] = [];
   try {
-    const client = new ChannelClient(channelServer.endpoint);
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
     const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
     const member = await client.createIdentity({ type: "human", displayName: "Member" });
     const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
@@ -672,7 +819,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
   let host: LocalAgentHost | undefined;
   let restoredHost: LocalAgentHost | undefined;
   try {
-    const client = new ChannelClient(channelServer.endpoint);
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
     const [owner, agent] = await Promise.all([
       client.createIdentity({ type: "human", displayName: "Owner" }),
       client.createIdentity({ type: "agent", displayName: "Builder" }),
@@ -852,7 +999,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
   const audit: LocalControlAuditEvent[] = [];
   let daemon: Awaited<ReturnType<typeof createLocalControlDaemon>> | undefined;
   try {
-    const client = new ChannelClient(channelServer.endpoint);
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
     const human = await client.createIdentity({ type: "human", displayName: "Owner" });
     const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
     const workspace = await client.createWorkspace({ slug: "daemon-test", name: "Daemon Test" });
@@ -906,6 +1053,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     daemon = await createLocalControlDaemon({
       currentHumanIdentityId: human.id,
       channelsEndpoint: channelServer.endpoint,
+      channelsServiceToken: channelServer.serviceToken,
       relayDatabasePath: databasePath,
       webUrl: "http://127.0.0.1:5174/",
       port: 0,
@@ -979,7 +1127,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 7,
+      protocolVersion: 8,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -992,7 +1140,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 7,
+      protocolVersion: 8,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

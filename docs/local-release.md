@@ -37,7 +37,7 @@ minu-channels update --check
 
 ## Upgrade
 
-The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. It refuses source checkouts and unsupported package-manager layouts.
+The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. It refuses source checkouts, unsupported package-manager layouts, concurrent updates, and updates while any registered process from the same installation is still running. Interrupted update locks are recovered only after their owner process is confirmed dead.
 
 1. Stop MinuChannels with Ctrl-C.
 2. Back up the data directory.
@@ -63,7 +63,7 @@ The default data directory is product-isolated from other Minu applications:
 ~/.minu/channels/
 ```
 
-Channels never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private `run/instance.lock` prevents multiple Channels servers from opening the same data directory; use a distinct `--data-dir` for an independent concurrent installation.
+Channels never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private, atomically owned `run/instance.lock/` directory prevents multiple Channels servers from opening the same data directory and safely serializes stale-lock recovery; use a distinct `--data-dir` for an independent concurrent installation.
 
 Stop MinuChannels before copying it so the collaboration and private execution databases represent one consistent checkpoint.
 

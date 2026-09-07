@@ -13,6 +13,12 @@ import type {
 export type NewChannelMessage = Omit<ChannelMessage, "sequence">;
 export type NewResponseMessage = NewChannelMessage & { replyTo: string };
 
+export interface MessageListOptions {
+  afterSequence?: number;
+  beforeSequence?: number;
+  limit?: number;
+}
+
 export interface MessageCommitResult {
   message: ChannelMessage;
   outcome: "created" | "replayed" | "conflict";
@@ -54,6 +60,7 @@ export interface ChannelStorage extends ChannelCursorStore {
   listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]>;
   getChannel(channelId: string): Promise<Channel | undefined>;
   getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
+  listMessages(channelId: string, options?: MessageListOptions): Promise<ChannelMessage[] | undefined>;
   updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined>;
   replaceChannelParticipants(
     channelId: string,
@@ -97,6 +104,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   private readonly pendingResponses = new Map<string, Promise<ResponseResult>>();
 
   async createIdentity(identity: Identity): Promise<Identity> {
+    if (this.identities.has(identity.id)) throw new Error(`Identity id already exists: ${identity.id}`);
     this.identities.set(identity.id, { ...identity });
     return { ...identity };
   }
@@ -125,6 +133,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   }
 
   async createWorkspace(workspace: Workspace): Promise<Workspace> {
+    if (this.workspaces.has(workspace.id)) throw new Error(`Workspace id already exists: ${workspace.id}`);
     this.workspaces.set(workspace.id, { ...workspace });
     return { ...workspace };
   }
@@ -206,6 +215,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   }
 
   async createChannel(channel: Channel): Promise<Channel> {
+    if (this.channels.has(channel.id)) throw new Error(`Channel id already exists: ${channel.id}`);
     this.channels.set(channel.id, copyChannel(channel));
     return copyChannel(channel);
   }
@@ -226,6 +236,23 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
   async getChannel(channelId: string): Promise<Channel | undefined> {
     const channel = this.channels.get(channelId);
     return channel ? copyChannel(channel) : undefined;
+  }
+
+  async listMessages(
+    channelId: string,
+    options: MessageListOptions = {},
+  ): Promise<ChannelMessage[] | undefined> {
+    const channel = this.channels.get(channelId);
+    if (!channel) return undefined;
+    let messages = channel.messages.filter((message) =>
+      (options.afterSequence === undefined || message.sequence > options.afterSequence)
+      && (options.beforeSequence === undefined || message.sequence < options.beforeSequence));
+    if (options.limit !== undefined) {
+      messages = options.beforeSequence === undefined
+        ? messages.slice(0, options.limit)
+        : messages.slice(-options.limit);
+    }
+    return messages.map((message) => ({ ...message, to: [...message.to] }));
   }
 
   async getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined> {

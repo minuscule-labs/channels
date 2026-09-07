@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { createResourceId } from "./ids.ts";
+import { createResourceId, isResourceId } from "./ids.ts";
 import {
   InMemoryChannelStorage,
   type ChannelStorage,
+  type MessageListOptions,
   type NewChannelMessage,
   type WorkspaceMemberUpdateResult,
 } from "./storage.ts";
@@ -140,6 +141,12 @@ export class ChannelService {
     if (!input || !["human", "agent", "service"].includes(input.type)) {
       throw new ChannelValidationError("identity type must be human, agent, or service");
     }
+    if (input.id !== undefined && !isResourceId(input.id, "identity")) {
+      throw new ChannelValidationError("identity id must be a typed identity resource id");
+    }
+    if (input.id !== undefined && await this.storage.getIdentity(input.id)) {
+      throw new ChannelConflictError(`Identity id already exists: ${input.id}`);
+    }
     const displayName = input.displayName?.trim() || undefined;
     const publicProfile = input.publicProfile?.trim() || undefined;
     if (displayName && displayName.length > 200) {
@@ -150,7 +157,7 @@ export class ChannelService {
     }
     const timestamp = new Date().toISOString();
     return await this.storage.createIdentity({
-      id: createResourceId("identity"),
+      id: input.id ?? createResourceId("identity"),
       type: input.type,
       displayName,
       publicProfile,
@@ -211,11 +218,18 @@ export class ChannelService {
     if (!input || typeof input.slug !== "string" || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.slug)) {
       throw new ChannelValidationError("workspace slug must use lowercase letters, digits, and hyphens");
     }
+    if (input.id !== undefined && !isResourceId(input.id, "workspace")) {
+      throw new ChannelValidationError("workspace id must be a typed Workspace resource id");
+    }
     if (typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 200) {
       throw new ChannelValidationError("workspace name must be a non-empty string up to 200 characters");
     }
-    if ((await this.storage.listWorkspaces()).some((workspace) => workspace.slug === input.slug)) {
+    const existingWorkspaces = await this.storage.listWorkspaces();
+    if (existingWorkspaces.some((workspace) => workspace.slug === input.slug)) {
       throw new ChannelConflictError(`Workspace slug already exists: ${input.slug}`);
+    }
+    if (input.id !== undefined && existingWorkspaces.some((workspace) => workspace.id === input.id)) {
+      throw new ChannelConflictError(`Workspace id already exists: ${input.id}`);
     }
     const description = input.description?.trim() || undefined;
     if (description && description.length > 1_000) {
@@ -223,7 +237,7 @@ export class ChannelService {
     }
     const timestamp = new Date().toISOString();
     return await this.storage.createWorkspace({
-      id: createResourceId("workspace"),
+      id: input.id ?? createResourceId("workspace"),
       slug: input.slug,
       name: input.name.trim(),
       description,
@@ -482,6 +496,9 @@ export class ChannelService {
     if (!input || (input.participantIds === undefined && input.participants === undefined)) {
       throw new ChannelValidationError("participantIds must be an array");
     }
+    if (input.id !== undefined && !isResourceId(input.id, "channel")) {
+      throw new ChannelValidationError("channel id must be a typed Channel resource id");
+    }
     if (input.participantIds !== undefined && input.participants !== undefined) {
       throw new ChannelValidationError("participantIds and legacy participants are mutually exclusive");
     }
@@ -562,7 +579,10 @@ export class ChannelService {
         participants.push({ ...participant, handle: mentionHandle });
       }
     }
-    const channelId = createResourceId("channel");
+    const channelId = input.id ?? createResourceId("channel");
+    if (input.id !== undefined && await this.storage.getChannelMetadata(input.id)) {
+      throw new ChannelConflictError(`Channel id already exists: ${input.id}`);
+    }
     return await this.storage.createChannel({
       id: channelId,
       workspaceId: workspaceId!,
@@ -653,8 +673,21 @@ export class ChannelService {
     return channel;
   }
 
-  async listMessages(channelId: string): Promise<ChannelMessage[]> {
-    return (await this.getChannel(channelId)).messages;
+  async listMessages(channelId: string, options: MessageListOptions = {}): Promise<ChannelMessage[]> {
+    if (options.afterSequence !== undefined && options.beforeSequence !== undefined) {
+      throw new ChannelValidationError("afterSequence and beforeSequence cannot be combined");
+    }
+    for (const [name, value] of Object.entries(options)) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < (name === "limit" ? 1 : 0))) {
+        throw new ChannelValidationError(`${name} must be a ${name === "limit" ? "positive" : "non-negative"} integer`);
+      }
+    }
+    if (options.limit !== undefined && options.limit > 1_000) {
+      throw new ChannelValidationError("limit must not exceed 1000");
+    }
+    const messages = await this.storage.listMessages(channelId, options);
+    if (!messages) throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
+    return messages;
   }
 
   private async assertActiveWorkspaceIdentity(channel: Channel, identityId: string): Promise<void> {

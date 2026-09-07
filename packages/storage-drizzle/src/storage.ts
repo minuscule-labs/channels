@@ -9,6 +9,7 @@ import type {
   Identity,
   IdentityUpdateResult,
   MessageCommitResult,
+  MessageListOptions,
   NewChannelMessage,
   NewResponseMessage,
   Participant,
@@ -17,7 +18,7 @@ import type {
   WorkspaceMember,
   WorkspaceMemberUpdateResult,
 } from "@minu/channels-core";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { dirname, resolve } from "node:path";
@@ -505,6 +506,37 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         createdAt: message.createdAt,
       })),
     };
+  }
+
+  async listMessages(
+    channelId: string,
+    options: MessageListOptions = {},
+  ): Promise<ChannelMessage[] | undefined> {
+    const channel = await this.database.query.channels.findFirst({
+      columns: { id: true },
+      where: eq(schema.channels.id, channelId),
+    });
+    if (!channel) return undefined;
+    const conditions = [eq(schema.messages.channelId, channelId)];
+    if (options.afterSequence !== undefined) conditions.push(gt(schema.messages.sequence, options.afterSequence));
+    if (options.beforeSequence !== undefined) conditions.push(lt(schema.messages.sequence, options.beforeSequence));
+    const rows = await this.database
+      .select()
+      .from(schema.messages)
+      .where(and(...conditions))
+      .orderBy(options.beforeSequence === undefined ? asc(schema.messages.sequence) : desc(schema.messages.sequence))
+      .limit(options.limit ?? 2_147_483_647);
+    if (options.beforeSequence !== undefined) rows.reverse();
+    return rows.map((message) => ({
+      id: message.id,
+      channelId: message.channelId,
+      sequence: message.sequence,
+      participantId: message.participantId,
+      to: [...message.targets],
+      body: message.body,
+      replyTo: message.replyTo ?? undefined,
+      createdAt: message.createdAt,
+    }));
   }
 
   async appendMessage(message: NewChannelMessage): Promise<ChannelMessage> {

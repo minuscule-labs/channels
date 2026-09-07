@@ -9,6 +9,7 @@ import type {
   LocalRuntimeOptions,
   LocalRuntimeSkillOption,
   LocalWorkspaceAgentConfigurationSummary,
+  ProvisionLocalWorkspaceResult,
   LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
 import { LOCAL_CONTROL_PROTOCOL_VERSION } from "./contracts.ts";
@@ -40,6 +41,7 @@ export interface LocalAgentHostConfigurationOptions {
   client: ChannelClient;
   store: RelayBindingStore;
   now?: () => Date;
+  runtimeOptionsCacheTtlMs?: number;
   runtimes?: Readonly<Record<string, {
     capabilities?(config?: { cwd?: string }): Promise<{
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
@@ -114,15 +116,75 @@ function optionalNullableString(
 export class LocalAgentHostConfiguration {
   private readonly directory: LocalRelayDirectory;
   private readonly now: () => Date;
-  private readonly runtimeOptions = new Map<string, Promise<{
-    models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
-    reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
-    skills: LocalRuntimeSkillOption[];
-  }>>();
+  private readonly runtimeOptions = new Map<string, {
+    expiresAt: number;
+    value: Promise<{
+      models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
+      reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
+      skills: LocalRuntimeSkillOption[];
+    }>;
+  }>();
 
   constructor(private readonly options: LocalAgentHostConfigurationOptions) {
     this.now = options.now ?? (() => new Date());
+    if (options.runtimeOptionsCacheTtlMs !== undefined
+      && (!Number.isSafeInteger(options.runtimeOptionsCacheTtlMs) || options.runtimeOptionsCacheTtlMs < 1)) {
+      throw new RangeError("runtimeOptionsCacheTtlMs must be a positive integer");
+    }
     this.directory = new LocalRelayDirectory(options.client, options.store, this.now);
+  }
+
+  async provisionWorkspace(
+    actorIdentityId: string,
+    value: unknown,
+  ): Promise<ProvisionLocalWorkspaceResult> {
+    const input = object(value, "Workspace");
+    rejectUnknown(input, ["slug", "name", "rootUri"]);
+    const slug = requiredString(input.slug, "slug", 63);
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) {
+      throw new LocalConfigurationRequestError("Workspace slug is invalid", 400, "invalid");
+    }
+    const name = requiredString(input.name, "name", 200).trim();
+    const rootUri = await canonicalWorkspaceRoot(requiredString(input.rootUri, "rootUri", MAX_ROOT_URI_BYTES));
+    const actor = await this.options.client.getIdentity(actorIdentityId).catch(() => undefined);
+    if (actor?.type !== "human" || actor.status !== "active") {
+      throw new LocalConfigurationRequestError("Active local human required", 403, "forbidden");
+    }
+    let workspace = (await this.options.client.listWorkspaces()).find((candidate) => candidate.slug === slug);
+    if (!workspace) workspace = await this.options.client.createWorkspace({ slug, name });
+    if (workspace.status !== "active") {
+      throw new LocalConfigurationRequestError("Workspace is unavailable", 409, "unavailable");
+    }
+    const members = await this.options.client.listWorkspaceMembers(workspace.id);
+    const membership = members.find((member) => member.identityId === actorIdentityId);
+    if (!membership) {
+      if (members.length > 0) throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
+      await this.options.client.addWorkspaceMember(workspace.id, {
+        identityId: actorIdentityId,
+        mentionHandle: "you",
+        accessRole: "owner",
+        roleLabel: "owner",
+      });
+    } else if (membership.status !== "active"
+      || (membership.accessRole !== "owner" && membership.accessRole !== "admin")) {
+      throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
+    }
+    await this.directory.configureWorkspace({ workspaceId: workspace.id, rootUri });
+    let channel = (await this.options.client.listWorkspaceChannels(workspace.id))
+      .find((candidate) => candidate.name === "General");
+    if (!channel) {
+      channel = await this.options.client.createChannel({
+        workspaceId: workspace.id,
+        name: "General",
+        participantIds: [actorIdentityId],
+        actorIdentityId,
+      });
+    }
+    return {
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      workspaceId: workspace.id,
+      channelId: channel.id,
+    };
   }
 
   async getWorkspaceConfiguration(
@@ -274,6 +336,9 @@ export class LocalAgentHostConfiguration {
         rootUri,
         notesFolderId,
       });
+      for (const key of this.runtimeOptions.keys()) {
+        if (key.startsWith(`${workspaceId}\0`)) this.runtimeOptions.delete(key);
+      }
       this.audit({
         action: "workspace.config.updated",
         outcome: "accepted",
@@ -410,14 +475,25 @@ export class LocalAgentHostConfiguration {
       throw new LocalConfigurationRequestError("Runtime options are unavailable", 409, "unavailable");
     }
     try {
-      let pending = this.runtimeOptions.get(runtimeAdapter);
-      if (!pending) {
-        pending = runtime.capabilities();
-        this.runtimeOptions.set(runtimeAdapter, pending);
-        void pending.catch(() => this.runtimeOptions.delete(runtimeAdapter));
-      }
-      const capabilities = await pending;
       const workspaceConfig = await this.options.store.getWorkspaceConfig(workspaceId);
+      if (!workspaceConfig?.rootUri) {
+        throw new LocalConfigurationRequestError("Workspace source folder is unavailable", 409, "unavailable");
+      }
+      let cwd: string;
+      try {
+        cwd = fileURLToPath(workspaceConfig.rootUri);
+      } catch {
+        throw new LocalConfigurationRequestError("Workspace source folder is unavailable", 409, "unavailable");
+      }
+      const cacheKey = `${workspaceId}\0${runtimeAdapter}\0${cwd}`;
+      let cached = this.runtimeOptions.get(cacheKey);
+      if (!cached || cached.expiresAt <= Date.now()) {
+        const pending = runtime.capabilities({ cwd });
+        cached = { value: pending, expiresAt: Date.now() + (this.options.runtimeOptionsCacheTtlMs ?? 5_000) };
+        this.runtimeOptions.set(cacheKey, cached);
+        void pending.catch(() => this.runtimeOptions.delete(cacheKey));
+      }
+      const capabilities = await cached.value;
       const policy = workspaceConfig?.runtimeModelPolicies?.[runtimeAdapter];
       const enabled = policy
         ? new Set(policy.map((model) => JSON.stringify([model.provider, model.id])))

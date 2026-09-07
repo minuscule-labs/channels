@@ -9,6 +9,7 @@ import { createLocalControlDaemon } from "./daemon.ts";
 interface CliOptions {
   port: number;
   channelsUrl: string;
+  channelsServiceToken: string;
   relayDb?: string;
   webUrl: string;
   humanIdentityId: string;
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
     .description("Run the authenticated loopback MinuChannels control daemon")
     .option("--port <number>", "loopback control port", integer, 4311)
     .option("--channels-url <url>", "MinuChannels HTTP endpoint", "http://127.0.0.1:4310")
+    .requiredOption("--channels-service-token <token>", "private Channels service credential", process.env.MINU_CHANNELS_SERVICE_TOKEN)
     .option("--relay-db <path>", "private local Relay database path")
     .option("--web-url <url>", "loopback web client URL", "http://127.0.0.1:5174/")
     .requiredOption("--human-identity-id <id>", "stable human identity bound to the browser session")
@@ -108,6 +110,7 @@ async function main(): Promise<void> {
   const daemon = await createLocalControlDaemon({
     currentHumanIdentityId: options.humanIdentityId,
     channelsEndpoint: options.channelsUrl,
+    channelsServiceToken: options.channelsServiceToken,
     relayDatabasePath: options.relayDb,
     webUrl: options.webUrl,
     port: options.port,

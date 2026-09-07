@@ -10,7 +10,7 @@ import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalProductApp } from "./local.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
-import { checkForUpdate, compareVersions, installUpdate, type UpdateCheck } from "./updater.ts";
+import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
 
 interface LocalCliOptions {
   channelsPort: number;
@@ -211,22 +211,29 @@ async function main(): Promise<void> {
   }
   const webUrl = `http://127.0.0.1:${options.webPort}/`;
   const runtime = await loadPiRuntime(options.runtimeModule);
-  const app = await createLocalProductApp({
-    channelsPort: options.channelsPort,
-    controlPort: options.controlPort,
-    webUrl,
-    workspaceRoot,
-    dataDirectory: dataDirectory,
-    workspaceName,
-    selectWorkspaceRoot: !freshInstallation && directoryArgumentProvided,
-    runtimeAdapter: "pi",
-    runtime,
-    channelsMigrationsFolder: defaultMigrationsFolder("channels"),
-    relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
-    onAudit(event) {
-      process.stderr.write(`${JSON.stringify({ source: "minu-channels", ...event })}\n`);
-    },
-  });
+  const installationInstance = await registerInstallationInstance();
+  let app: Awaited<ReturnType<typeof createLocalProductApp>>;
+  try {
+    app = await createLocalProductApp({
+      channelsPort: options.channelsPort,
+      controlPort: options.controlPort,
+      webUrl,
+      workspaceRoot,
+      dataDirectory: dataDirectory,
+      workspaceName,
+      selectWorkspaceRoot: !freshInstallation && directoryArgumentProvided,
+      runtimeAdapter: "pi",
+      runtime,
+      channelsMigrationsFolder: defaultMigrationsFolder("channels"),
+      relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
+      onAudit(event) {
+        process.stderr.write(`${JSON.stringify({ source: "minu-channels", ...event })}\n`);
+      },
+    });
+  } catch (error) {
+    await installationInstance.close();
+    throw error;
+  }
   let web: Awaited<ReturnType<typeof createLocalWebServer>> | undefined;
   let closing = false;
   const close = async (): Promise<void> => {
@@ -234,10 +241,13 @@ async function main(): Promise<void> {
     closing = true;
     await web?.close().catch(() => undefined);
     await app.close();
+    await installationInstance.close();
   };
   try {
     web = await createLocalWebServer({
       channelsEndpoint: app.channelsEndpoint,
+      channelsServiceToken: app.channelsServiceToken,
+      authenticateBrowser: app.authenticateBrowser,
       controlEndpoint: app.controlEndpoint,
       webDirectory: resolve(options.webDir ?? defaultWebDirectory()),
       port: options.webPort,

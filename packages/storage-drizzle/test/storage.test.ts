@@ -403,6 +403,14 @@ test("Drizzle/libSQL preserves channels, sequences, messages, and cursors", asyn
       (await second.createMessage(channelId, { participantId: "user", body: "third" })).sequence,
       3,
     );
+    assert.deepEqual(
+      (await second.listMessages(channelId, { afterSequence: 1, limit: 1 })).map(({ sequence }) => sequence),
+      [2],
+    );
+    assert.deepEqual(
+      (await second.listMessages(channelId, { beforeSequence: 3, limit: 1 })).map(({ sequence }) => sequence),
+      [2],
+    );
     await second.close();
   } finally {
     await rm(directory, { recursive: true, force: true });

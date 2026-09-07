@@ -16,6 +16,8 @@ export interface Identity {
 }
 
 export interface CreateIdentityInput {
+  /** Caller-stable id used by recoverable local provisioning. */
+  id?: string;
   type: IdentityType;
   displayName?: string;
   publicProfile?: string;
@@ -40,6 +42,8 @@ export interface Workspace {
 }
 
 export interface CreateWorkspaceInput {
+  /** Caller-stable id used by recoverable local provisioning. */
+  id?: string;
   slug: string;
   name: string;
   description?: string;
@@ -145,6 +149,8 @@ export interface ChannelUpdatedEvent {
 export type ChannelEvent = MessageCreatedEvent | RosterUpdatedEvent | ChannelUpdatedEvent;
 
 export interface CreateChannelInput {
+  /** Caller-stable id used by recoverable local provisioning. */
+  id?: string;
   workspaceId?: string;
   name?: string;
   participantIds?: string[];

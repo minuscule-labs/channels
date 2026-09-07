@@ -8,7 +8,7 @@ Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is r
 2. Set the release version in the root `package.json`.
 3. Add the matching `## <version>` section to `CHANGELOG.md`.
 4. Confirm `LICENSE` exists and package metadata names it.
-5. Confirm the Runtime commit pinned in `.github/workflows/release.yml` is intentional and publicly readable or available to Actions.
+5. Confirm the Runtime commit pinned in `runtime-source.json` is intentional and publicly readable or available to Actions. The local packager and GitHub Actions both consume this file and reject another Runtime checkout.
 
 ## Validate without tagging
 
@@ -16,7 +16,7 @@ Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is r
 pnpm release:tag:dry-run
 ```
 
-This runs type checks, workspace and web tests, release packaging, checksum generation, and packaged install/reopen diagnostics. It refuses a dirty tree, duplicate tag, missing license, or missing changelog entry.
+This runs type checks, workspace and web tests, release packaging, checksum generation, and packaged install/reopen diagnostics. It refuses a dirty tree, duplicate tag, missing license, missing changelog entry, or a Runtime checkout that differs from `runtime-source.json`. After validation it fetches `origin/main` again and refuses moving source input.
 
 ## Create and push the release tag
 

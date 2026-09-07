@@ -14,6 +14,7 @@ interface CliOptions {
   db?: string;
   dbUrl?: string;
   authToken?: string;
+  serviceToken: string;
   memory?: boolean;
 }
 
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
     .addOption(new Option("--db <path>", "local libSQL database path").conflicts("dbUrl"))
     .addOption(new Option("--db-url <url>", "libSQL or Turso database URL").conflicts("db"))
     .option("--auth-token <token>", "Turso authentication token")
+    .requiredOption("--service-token <token>", "private HTTP service credential", process.env.MINU_CHANNELS_SERVICE_TOKEN)
     .addOption(
       new Option("--memory", "use disposable in-memory storage").conflicts([
         "db",
@@ -55,6 +57,7 @@ async function main(): Promise<void> {
   const server = await createChannelHttpServer({
     port: options.port,
     service: new ChannelService(storage),
+    serviceToken: options.serviceToken,
   });
   console.log(`MinuChannels listening on ${server.endpoint}`);
   console.log(options.memory ? "Storage: memory" : `Storage: ${databaseUrl}`);
