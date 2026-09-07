@@ -12,6 +12,7 @@ export {
   type ChannelRosterUpdateResult,
   type IdentityUpdateResult,
   type MessageCommitResult,
+  type MessageListOptions,
   type NewChannelMessage,
   type NewResponseMessage,
   type WorkspaceMemberUpdateResult,

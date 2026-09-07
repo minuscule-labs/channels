@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,95 @@ export async function checkForUpdate(options: {
   };
 }
 
+export interface InstallationInstanceRegistration { close(): Promise<void>; }
+
+function coordinationDirectory(packageRoot = defaultPackageRoot()): string {
+  const key = createHash("sha256").update(resolve(packageRoot)).digest("hex").slice(0, 24);
+  return join(tmpdir(), `minu-channels-install-${key}`);
+}
+
+function processIsRunning(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+export async function registerInstallationInstance(packageRoot?: string): Promise<InstallationInstanceRegistration> {
+  const directory = coordinationDirectory(packageRoot);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  const token = randomBytes(16).toString("hex");
+  const marker = join(directory, `instance-${process.pid}-${token}.json`);
+  await writeFile(marker, `${JSON.stringify({ pid: process.pid, token })}\n`, { mode: 0o600 });
+  let closed = false;
+  return { async close() { if (!closed) { closed = true; await rm(marker, { force: true }); } } };
+}
+
+async function acquireUpdateCoordination(packageRoot: string): Promise<() => Promise<void>> {
+  const directory = coordinationDirectory(packageRoot);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const lock = join(directory, "update.lock");
+  let acquired = false;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await mkdir(lock, { mode: 0o700 });
+      acquired = true;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let pid: number | undefined;
+      let observedOwner: string | undefined;
+      try {
+        observedOwner = await readFile(join(lock, "owner.json"), "utf8");
+        const owner = JSON.parse(observedOwner) as { pid?: unknown };
+        if (typeof owner.pid === "number" && Number.isSafeInteger(owner.pid)) pid = owner.pid;
+      } catch {
+        if (Date.now() - (await stat(lock)).mtimeMs < 30_000) {
+          throw new Error("Another MinuChannels update is initializing");
+        }
+      }
+      if (pid !== undefined && processIsRunning(pid)) throw new Error("Another MinuChannels update is already in progress");
+      let claim;
+      try {
+        claim = await open(join(lock, "recovery.claim"), "wx", 0o600);
+        await claim.close();
+      } catch {
+        await claim?.close().catch(() => {});
+        throw new Error("Another MinuChannels update is recovering an interrupted update");
+      }
+      const currentOwner = await readFile(join(lock, "owner.json"), "utf8").catch(() => undefined);
+      if (currentOwner !== observedOwner) {
+        await rm(join(lock, "recovery.claim"), { force: true }).catch(() => {});
+        throw new Error("Another MinuChannels update acquired the installation lock");
+      }
+      const quarantine = `${lock}.stale-${process.pid}-${Date.now()}`;
+      await rename(lock, quarantine);
+      await rm(quarantine, { recursive: true, force: true });
+    }
+  }
+  if (!acquired) throw new Error("Unable to acquire the MinuChannels update lock");
+  try {
+    await writeFile(join(lock, "owner.json"), `${JSON.stringify({ pid: process.pid })}\n`, { mode: 0o600 });
+    for (const name of await readdir(directory)) {
+      if (!/^instance-.*\.json$/.test(name)) continue;
+      const marker = join(directory, name);
+      try {
+        const record = JSON.parse(await readFile(marker, "utf8")) as { pid?: unknown };
+        if (typeof record.pid === "number" && processIsRunning(record.pid)) {
+          throw new Error(`MinuChannels is still running (pid ${record.pid}). Stop it before updating.`);
+        }
+        await rm(marker, { force: true });
+      } catch (error) {
+        if (error instanceof SyntaxError) await rm(marker, { force: true });
+        else throw error;
+      }
+    }
+    return async () => rm(lock, { recursive: true, force: true });
+  } catch (error) {
+    await rm(lock, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 export async function installUpdate(update: UpdateCheck, options: {
   packageRoot?: string;
   npmCommand?: string;
@@ -65,8 +154,10 @@ export async function installUpdate(update: UpdateCheck, options: {
   const npmCommand = options.npmCommand ?? "npm";
   const runCommand = options.runCommand ?? defaultRunCommand;
   await assertGlobalNpmInstall(packageRoot, npmCommand, runCommand, update.latestVersion);
-  const temporaryRoot = await mkdtemp(join(options.temporaryDirectory ?? tmpdir(), "minu-channels-update-"));
+  const releaseUpdate = await acquireUpdateCoordination(packageRoot);
+  let temporaryRoot: string | undefined;
   try {
+    temporaryRoot = await mkdtemp(join(options.temporaryDirectory ?? tmpdir(), "minu-channels-update-"));
     await chmod(temporaryRoot, 0o700);
     const [artifactResponse, checksumResponse] = await Promise.all([
       fetchWithTimeout(options.fetch ?? fetch, update.artifactUrl),
@@ -88,7 +179,8 @@ export async function installUpdate(update: UpdateCheck, options: {
     if (installed.stdout.trim() !== update.latestVersion) throw new Error(`Installed CLI reported ${installed.stdout.trim() || "no version"}; expected ${update.latestVersion}`);
     return { previousVersion: update.currentVersion, version: update.latestVersion };
   } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
+    await releaseUpdate();
   }
 }
 

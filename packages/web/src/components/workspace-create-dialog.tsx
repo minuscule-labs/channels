@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useNavigate } from "@tanstack/react-router";
 import { FolderOpen, FolderPlus, LoaderCircle, X } from "lucide-react";
-import { useState } from "react";
-import { channels, localControl } from "../lib/api";
+import { useRef, useState } from "react";
+import { localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 
 function workspaceSlug(name: string): string {
@@ -15,6 +15,7 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [sourcePath, setSourcePath] = useState("");
+  const provisioningSlug = useRef<string | undefined>(undefined);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const session = useQuery({
@@ -30,39 +31,38 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
   const mutation = useMutation({
     mutationFn: async () => {
       if (!session.data) throw new Error("Local session is unavailable");
-      const workspace = await channels.createWorkspace({ slug: workspaceSlug(name.trim()), name: name.trim() });
-      await channels.addWorkspaceMember(workspace.id, {
-        identityId: session.data.identityId,
-        mentionHandle: "you",
-        accessRole: "owner",
-        roleLabel: "owner",
+      provisioningSlug.current ??= workspaceSlug(name.trim());
+      return localControl.provisionWorkspace({
+        slug: provisioningSlug.current,
+        name: name.trim(),
+        rootUri: sourcePath.trim(),
       });
-      await localControl.updateWorkspaceConfiguration(workspace.id, { rootUri: sourcePath.trim() });
-      const channel = await channels.createChannel({
-        workspaceId: workspace.id,
-        name: "General",
-        participantIds: [session.data.identityId],
-        actorIdentityId: session.data.identityId,
-      });
-      return { workspace, channel };
     },
-    onSuccess: ({ workspace, channel }) => {
+    onSuccess: ({ workspaceId, channelId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces() });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceChannels(workspace.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceChannels(workspaceId) });
       setOpen(false);
       setName("");
       setSourcePath("");
+      provisioningSlug.current = undefined;
       onNavigate?.();
       void navigate({
         to: "/app/workspaces/$workspaceId/channels/$channelId",
-        params: { workspaceId: workspace.id, channelId: channel.id },
+        params: { workspaceId, channelId },
       });
     },
   });
   const valid = Boolean(name.trim() && sourcePath.trim().startsWith("/") && session.data);
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
+    <Dialog.Root open={open} onOpenChange={(next) => {
+      setOpen(next);
+      if (!next) {
+        provisioningSlug.current = undefined;
+        mutation.reset();
+        picker.reset();
+      }
+    }}>
       <Dialog.Trigger asChild>
         <button type="button" className="icon-button inline-flex" aria-label="Add Workspace" title="Add Workspace"><FolderPlus className="h-4 w-4" /></button>
       </Dialog.Trigger>

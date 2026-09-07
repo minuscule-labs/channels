@@ -1,6 +1,7 @@
 import {
   ChannelClient,
   ChannelService,
+  createResourceId,
   createChannelHttpServer,
   type ChannelHttpServer,
 } from "@minu/channels-core";
@@ -12,7 +13,7 @@ import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
-import { chmod, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
@@ -35,6 +36,11 @@ interface LocalProfile {
   builderIdentityId: string;
 }
 
+interface LocalInitializationState extends LocalProfile {
+  workspaceName: string;
+  workspaceSlug: string;
+}
+
 export interface LocalProductAppOptions {
   dataDirectory?: string;
   workspaceRoot?: string;
@@ -53,6 +59,8 @@ export interface LocalProductAppOptions {
 
 export interface LocalProductApp {
   channelsEndpoint: string;
+  /** Process-private credential for the local web gateway and internal services. */
+  channelsServiceToken: string;
   controlEndpoint: string;
   dataDirectory: string;
   workspaceId: string;
@@ -60,6 +68,7 @@ export interface LocalProductApp {
   humanIdentityId: string;
   initialized: boolean;
   issueBrowserLaunchUrl(): string;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
   close(): Promise<void>;
 }
 
@@ -134,38 +143,80 @@ async function initializeProfile(
   personaPrompt: string,
   relayMigrationsFolder?: string,
 ): Promise<LocalProfile> {
-  if ((await client.listWorkspaces()).length > 0 || (await client.listIdentities()).length > 0) {
-    throw new Error(
-      `Local data exists without ${basename(profilePath)}. Move or remove the data directory before starting fresh.`,
-    );
+  const statePath = `${profilePath}.initializing`;
+  let state: LocalInitializationState | undefined;
+  try {
+    const candidate = JSON.parse(await readFile(statePath, "utf8")) as LocalInitializationState;
+    parseProfile(JSON.stringify(candidate));
+    if (typeof candidate.workspaceName !== "string" || typeof candidate.workspaceSlug !== "string") {
+      throw new Error("Local initialization state is invalid");
+    }
+    state = candidate;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const human = await client.createIdentity({ type: "human", displayName: "You" });
-  const builder = await client.createIdentity({
-    type: "agent",
-    displayName: "Builder",
-    publicProfile: "Implementation-focused local coding agent.",
-  });
-  const workspace = await client.createWorkspace({
-    slug: workspaceSlug(workspaceName),
-    name: workspaceName,
-    description: "Local MinuChannels Workspace.",
-  });
-  await client.addWorkspaceMember(workspace.id, {
-    identityId: human.id,
-    mentionHandle: "you",
-    accessRole: "owner",
-    roleLabel: "owner",
-  });
-  await client.addWorkspaceMember(workspace.id, {
-    identityId: builder.id,
-    mentionHandle: "builder",
-    roleLabel: "builder",
-  });
-  const channel = await client.createChannel({
-    workspaceId: workspace.id,
-    name: "General",
-    participantIds: [human.id, builder.id],
-  });
+  if (!state) {
+    if ((await client.listWorkspaces()).length > 0 || (await client.listIdentities()).length > 0) {
+      throw new Error(
+        `Local data exists without ${basename(profilePath)}. Move or remove the data directory before starting fresh.`,
+      );
+    }
+    state = {
+      version: PROFILE_VERSION,
+      currentHumanIdentityId: createResourceId("identity"),
+      builderIdentityId: createResourceId("identity"),
+      workspaceId: createResourceId("workspace"),
+      channelId: createResourceId("channel"),
+      workspaceName,
+      workspaceSlug: workspaceSlug(workspaceName),
+    };
+    await writeProfile(statePath, state);
+  }
+
+  const identities = new Set((await client.listIdentities()).map(({ id }) => id));
+  if (!identities.has(state.currentHumanIdentityId)) {
+    await client.createIdentity({ id: state.currentHumanIdentityId, type: "human", displayName: "You" });
+  }
+  if (!identities.has(state.builderIdentityId)) {
+    await client.createIdentity({
+      id: state.builderIdentityId,
+      type: "agent",
+      displayName: "Builder",
+      publicProfile: "Implementation-focused local coding agent.",
+    });
+  }
+  if (!(await client.listWorkspaces()).some(({ id }) => id === state.workspaceId)) {
+    await client.createWorkspace({
+      id: state.workspaceId,
+      slug: state.workspaceSlug,
+      name: state.workspaceName,
+      description: "Local MinuChannels Workspace.",
+    });
+  }
+  const members = new Set((await client.listWorkspaceMembers(state.workspaceId)).map(({ identityId }) => identityId));
+  if (!members.has(state.currentHumanIdentityId)) {
+    await client.addWorkspaceMember(state.workspaceId, {
+      identityId: state.currentHumanIdentityId,
+      mentionHandle: "you",
+      accessRole: "owner",
+      roleLabel: "owner",
+    });
+  }
+  if (!members.has(state.builderIdentityId)) {
+    await client.addWorkspaceMember(state.workspaceId, {
+      identityId: state.builderIdentityId,
+      mentionHandle: "builder",
+      roleLabel: "builder",
+    });
+  }
+  if (!(await client.listWorkspaceChannels(state.workspaceId)).some(({ id }) => id === state.channelId)) {
+    await client.createChannel({
+      id: state.channelId,
+      workspaceId: state.workspaceId,
+      name: "General",
+      participantIds: [state.currentHumanIdentityId, state.builderIdentityId],
+    });
+  }
 
   const timestamp = new Date().toISOString();
   const relayStore = await DrizzleLibSqlRelayStorage.open({
@@ -174,15 +225,15 @@ async function initializeProfile(
   });
   try {
     await relayStore.putWorkspaceConfig({
-      workspaceId: workspace.id,
+      workspaceId: state.workspaceId,
       rootUri: pathToFileURL(workspaceRoot).href,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
     await relayStore.putAgentConfig({
-      id: `local-builder-${builder.id}`,
-      workspaceId: workspace.id,
-      agentIdentityId: builder.id,
+      id: `local-builder-${state.builderIdentityId}`,
+      workspaceId: state.workspaceId,
+      agentIdentityId: state.builderIdentityId,
       personaPrompt,
       runtimeAdapter,
       status: "active",
@@ -195,12 +246,13 @@ async function initializeProfile(
 
   const profile: LocalProfile = {
     version: PROFILE_VERSION,
-    currentHumanIdentityId: human.id,
-    workspaceId: workspace.id,
-    channelId: channel.id,
-    builderIdentityId: builder.id,
+    currentHumanIdentityId: state.currentHumanIdentityId,
+    workspaceId: state.workspaceId,
+    channelId: state.channelId,
+    builderIdentityId: state.builderIdentityId,
   };
   await writeProfile(profilePath, profile);
+  await rm(statePath, { force: true });
   return profile;
 }
 
@@ -242,7 +294,7 @@ export async function createLocalProductApp(
       port: options.channelsPort ?? 4310,
       service: new ChannelService(storage),
     });
-    const client = new ChannelClient(channelsServer.endpoint);
+    const client = new ChannelClient(channelsServer.endpoint, { serviceToken: channelsServer.serviceToken });
     let profile = await readProfile(profilePath);
     const initialized = profile === undefined;
     if (profile) {
@@ -296,6 +348,7 @@ export async function createLocalProductApp(
     controlDaemon = await createLocalControlDaemon({
       currentHumanIdentityId: profile.currentHumanIdentityId,
       channelsEndpoint: channelsServer.endpoint,
+      channelsServiceToken: channelsServer.serviceToken,
       relayDatabasePath,
       relayMigrationsFolder: options.relayMigrationsFolder,
       webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
@@ -307,6 +360,7 @@ export async function createLocalProductApp(
     let closed = false;
     return {
       channelsEndpoint: channelsServer.endpoint,
+      channelsServiceToken: channelsServer.serviceToken,
       controlEndpoint: controlDaemon.endpoint,
       dataDirectory,
       workspaceId: selectedWorkspaceId,
@@ -316,6 +370,7 @@ export async function createLocalProductApp(
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
         `/app/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}`,
       ),
+      authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
       async close() {
         if (closed) return;
         closed = true;

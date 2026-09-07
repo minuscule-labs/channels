@@ -15,7 +15,8 @@ const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 4311);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 4312);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 5174);
 const service = new ChannelService();
-let channelServer = await createChannelHttpServer({ service, port: channelsPort });
+const serviceToken = process.env.MINU_TEST_CHANNELS_SERVICE_TOKEN ?? "browser-fixture-service-token";
+let channelServer = await createChannelHttpServer({ service, port: channelsPort, serviceToken });
 const human = await service.createIdentity({ type: "human", displayName: "David Kennedy" });
 const agent = await service.createIdentity({ type: "agent", displayName: "Builder Agent" });
 const workspace = await service.createWorkspace({ slug: "browser-test", name: "Browser Test" });
@@ -41,7 +42,7 @@ await service.createMessage(channel.id, {
 });
 
 const privateStore = new InMemoryRelayBindingStore();
-const channelClient = new ChannelClient(channelServer.endpoint);
+const channelClient = new ChannelClient(channelServer.endpoint, { serviceToken });
 const browserSessions = new LocalControlBrowserSessions({
   browserUrl: `http://127.0.0.1:${webPort}/`,
   currentHumanIdentityId: human.id,
@@ -70,6 +71,7 @@ const fixtureRuntimes = {
 };
 const localControl = await createLocalControlHttpServer({
   port: controlPort,
+  selectLocalFolder: async () => "/tmp",
   allowedOrigins: [browserSessions.browserOrigin],
   browserSessions,
   service: new LocalControlService({
@@ -132,7 +134,7 @@ const controlServer = createServer(async (request, response) => {
   });
   response.writeHead(202).end();
   setTimeout(async () => {
-    channelServer = await createChannelHttpServer({ service, port: channelsPort });
+    channelServer = await createChannelHttpServer({ service, port: channelsPort, serviceToken });
   }, 2_000);
 });
 controlServer.listen(fixturePort, "127.0.0.1");

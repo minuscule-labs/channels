@@ -19,6 +19,7 @@ import type {
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
+import type { MessageListOptions } from "./storage.ts";
 
 export interface ChannelEventOptions {
   signal?: AbortSignal;
@@ -29,8 +30,13 @@ export interface PostMessageOptions {
   idempotencyKey?: string;
 }
 
+export interface ChannelClientOptions {
+  serviceToken?: string;
+  actorIdentityId?: string;
+}
+
 export class ChannelClient {
-  constructor(readonly endpoint: string) {}
+  constructor(readonly endpoint: string, private readonly options: ChannelClientOptions = {}) {}
 
   async createIdentity(input: CreateIdentityInput): Promise<Identity> {
     const response = await this.request("/identities", {
@@ -187,8 +193,13 @@ export class ChannelClient {
     return (await response.json()) as ResponseResult;
   }
 
-  async listMessages(channelId: string): Promise<ChannelMessage[]> {
-    const response = await this.request(`/channels/${channelId}/messages`);
+  async listMessages(channelId: string, options: MessageListOptions = {}): Promise<ChannelMessage[]> {
+    const query = new URLSearchParams();
+    if (options.afterSequence !== undefined) query.set("afterSequence", String(options.afterSequence));
+    if (options.beforeSequence !== undefined) query.set("beforeSequence", String(options.beforeSequence));
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const suffix = query.size > 0 ? `?${query}` : "";
+    const response = await this.request(`/channels/${channelId}/messages${suffix}`);
     return ((await response.json()) as { messages: ChannelMessage[] }).messages;
   }
 
@@ -224,7 +235,14 @@ export class ChannelClient {
   }
 
   private async request(path: string, init?: RequestInit): Promise<Response> {
-    const response = await fetch(`${this.endpoint}${path}`, init);
+    const response = await fetch(`${this.endpoint}${path}`, {
+      ...init,
+      headers: {
+        ...(this.options.serviceToken ? { authorization: `Bearer ${this.options.serviceToken}` } : {}),
+        ...(this.options.actorIdentityId ? { "x-minu-actor-id": this.options.actorIdentityId } : {}),
+        ...init?.headers,
+      },
+    });
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as { error?: string };
       throw new Error(body.error ?? `Channel request failed (${response.status})`);

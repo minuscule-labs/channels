@@ -48,9 +48,12 @@ export interface ChannelRuntimeRelayOptions {
   cursorStore?: ChannelCursorStore;
   turnPollIntervalMs?: number;
   turnTimeoutMs?: number;
+  runtimeRequestTimeoutMs?: number;
   onAgentResponse?(binding: AgentChannelBinding, message: ChannelMessage): void;
   onError?(binding: AgentChannelBinding | undefined, error: Error): void;
 }
+
+class PermanentTurnError extends Error {}
 
 interface BindingState {
   binding: AgentChannelBinding;
@@ -87,9 +90,17 @@ function shouldWake(
 
 function latestAssistant(
   messages: RuntimePortMessage[],
-  startIndex: number,
+  before: RuntimePortMessage[],
 ): RuntimePortMessage | undefined {
-  return messages.slice(startIndex).reverse().find((message) => message.role === "assistant");
+  let sharedPrefix = 0;
+  while (sharedPrefix < before.length && sharedPrefix < messages.length) {
+    const left = before[sharedPrefix]!;
+    const right = messages[sharedPrefix]!;
+    if (left.role !== right.role || left.content !== right.content
+      || left.timestamp !== right.timestamp || left.toolName !== right.toolName) break;
+    sharedPrefix += 1;
+  }
+  return messages.slice(sharedPrefix).reverse().find((message) => message.role === "assistant");
 }
 
 function participantRoster(participants: Participant[], connectedAgents: Set<string>): string {
@@ -132,7 +143,7 @@ function contextEnvelope(
     characters += lineLength;
   }
   selected.reverse();
-  const omitted = messages.filter((message) => message.sequence <= trigger.sequence).length - selected.length;
+  const omitted = Math.max(0, trigger.sequence - selected.length);
   const label = (identityId: string): string => {
     if (identityId === "@channel") return identityId;
     const participant = participants.find((candidate) => candidate.id === identityId);
@@ -170,8 +181,15 @@ Channel context${omitted > 0 ? ` (${omitted} older message(s) omitted; request h
 ${transcript}`;
 }
 
-async function delay(milliseconds: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
+async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
 }
 
 function validatePositiveMilliseconds(name: string, value: number | undefined): void {
@@ -190,6 +208,7 @@ export class ChannelRuntimeRelay {
   constructor(private readonly options: ChannelRuntimeRelayOptions) {
     validatePositiveMilliseconds("turnPollIntervalMs", options.turnPollIntervalMs);
     validatePositiveMilliseconds("turnTimeoutMs", options.turnTimeoutMs);
+    validatePositiveMilliseconds("runtimeRequestTimeoutMs", options.runtimeRequestTimeoutMs);
     this.states = options.bindings.map((binding) => ({
       binding,
       lastProcessedSequence: 0,
@@ -338,7 +357,10 @@ export class ChannelRuntimeRelay {
           (state) => !this.isActiveParticipant(state.binding.participantId),
         );
         if (retired.length > 0) {
-          const messages = await this.options.client.listMessages(this.options.channelId);
+          const messages = await this.options.client.listMessages(this.options.channelId, {
+            beforeSequence: Number.MAX_SAFE_INTEGER,
+            limit: 1,
+          });
           const headSequence = messages.at(-1)?.sequence ?? 0;
           for (const state of retired) {
             state.lastProcessedSequence = Math.max(state.lastProcessedSequence, headSequence);
@@ -357,9 +379,19 @@ export class ChannelRuntimeRelay {
   }
 
   private async catchUp(): Promise<void> {
-    const messages = await this.options.client.listMessages(this.options.channelId);
-    for (const message of messages) {
-      for (const state of this.states) this.enqueue(state, message);
+    let afterSequence = this.states.length > 0
+      ? Math.min(...this.states.map((state) => state.lastProcessedSequence))
+      : 0;
+    while (!this.controller?.signal.aborted) {
+      const messages = await this.options.client.listMessages(this.options.channelId, {
+        afterSequence,
+        limit: 500,
+      });
+      for (const message of messages) {
+        for (const state of this.states) this.enqueue(state, message);
+      }
+      if (messages.length < 500) return;
+      afterSequence = messages.at(-1)!.sequence;
     }
   }
 
@@ -368,17 +400,44 @@ export class ChannelRuntimeRelay {
     if (message.sequence <= state.lastEnqueuedSequence) return;
     if (!shouldWake(message, state.binding, this.roster?.participants ?? [])) return;
     state.lastEnqueuedSequence = message.sequence;
-    state.queue = state.queue
-      .then(() => this.handle(state, message))
-      .catch((error) => {
+    state.queue = state.queue.then(() => this.handleWithRetry(state, message));
+  }
+
+  private async handleWithRetry(state: BindingState, message: ChannelMessage): Promise<void> {
+    let attempt = 0;
+    while (!this.controller?.signal.aborted) {
+      try {
+        await this.handle(state, message);
+        return;
+      } catch (error) {
         state.activeTrigger = undefined;
         state.interruptedTriggerId = undefined;
-        state.lastEnqueuedSequence = state.lastProcessedSequence;
-        this.options.onError?.(
-          state.binding,
-          error instanceof Error ? error : new Error(String(error)),
-        );
-      });
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        this.options.onError?.(state.binding, normalized);
+        if (error instanceof PermanentTurnError) {
+          try {
+            if ((!state.binding.verifyLease || await state.binding.verifyLease())
+              && this.isActiveParticipant(state.binding.participantId)) {
+              await this.options.client.postResponse(this.options.channelId, {
+                participantId: state.binding.participantId,
+                body: "I couldn't complete this request because the Runtime turn failed. Start fresh and retry the request.",
+                triggerMessageId: message.id,
+                triggerSequence: message.sequence,
+              });
+              await this.markProcessed(state, message.sequence);
+            }
+            return;
+          } catch (persistenceError) {
+            this.options.onError?.(
+              state.binding,
+              persistenceError instanceof Error ? persistenceError : new Error(String(persistenceError)),
+            );
+          }
+        }
+        attempt += 1;
+        await delay(Math.min(2_000, 100 * 2 ** Math.min(attempt - 1, 5)), this.controller?.signal);
+      }
+    }
   }
 
   private async handle(state: BindingState, trigger: ChannelMessage): Promise<void> {
@@ -391,7 +450,10 @@ export class ChannelRuntimeRelay {
       return;
     }
     state.activeTrigger = trigger;
-    const channelMessages = await this.options.client.listMessages(this.options.channelId);
+    const channelMessages = await this.options.client.listMessages(this.options.channelId, {
+      beforeSequence: trigger.sequence + 1,
+      limit: binding.maxMessages ?? 20,
+    });
     const channel = this.roster ?? await this.options.client.getChannel(this.options.channelId);
     this.roster = channel;
     const prompt = contextEnvelope(
@@ -406,27 +468,43 @@ export class ChannelRuntimeRelay {
     let response: RuntimePortMessage | undefined;
     if (binding.runtime.startTurn && binding.runtime.turn) {
       const turnId = `channel:${this.options.channelId}:${binding.participantId}:${trigger.id}`;
-      let turn = await binding.runtime.turn(binding.sessionId, turnId);
+      let turn = await this.awaitRuntime(
+        binding.runtime.turn(binding.sessionId, turnId),
+        `read turn for ${binding.participantId}`,
+      );
       if (!turn) {
         await this.waitUntilIdle(binding);
-        turn = await binding.runtime.startTurn(binding.sessionId, turnId, prompt);
+        turn = await this.awaitRuntime(
+          binding.runtime.startTurn(binding.sessionId, turnId, prompt),
+          `start turn for ${binding.participantId}`,
+        );
       }
       turn = await this.waitForTurn(binding, turnId, turn);
       if (turn.status === "failed") {
-        throw new Error(`Agent ${binding.participantId} turn failed: ${turn.error ?? "unknown error"}`);
+        throw new PermanentTurnError(`Agent ${binding.participantId} turn failed: ${turn.error ?? "unknown error"}`);
       }
       if (turn.status === "interrupted") state.interruptedTriggerId = trigger.id;
       response = turn.response;
     } else {
       await this.waitUntilIdle(binding);
-      const before = await binding.runtime.messages(binding.sessionId);
+      const before = await this.awaitRuntime(
+        binding.runtime.messages(binding.sessionId),
+        `read messages for ${binding.participantId}`,
+      );
       try {
-        await binding.runtime.send(binding.sessionId, prompt);
+        await this.awaitRuntime(
+          binding.runtime.send(binding.sessionId, prompt),
+          `send to ${binding.participantId}`,
+          this.options.turnTimeoutMs ?? 30 * 60_000,
+        );
       } catch (error) {
         if (state.interruptedTriggerId !== trigger.id) throw error;
       }
-      const after = await binding.runtime.messages(binding.sessionId);
-      response = latestAssistant(after, before.length);
+      const after = await this.awaitRuntime(
+        binding.runtime.messages(binding.sessionId),
+        `read messages for ${binding.participantId}`,
+      );
+      response = latestAssistant(after, before);
     }
     if (binding.verifyLease && !(await binding.verifyLease())) {
       state.activeTrigger = undefined;
@@ -477,7 +555,11 @@ export class ChannelRuntimeRelay {
     while (Date.now() < deadline) {
       if (turn.status !== "running") return turn;
       await delay(this.options.turnPollIntervalMs ?? 250);
-      const recovered = await binding.runtime.turn?.(binding.sessionId, turnId);
+      const recovered = await this.awaitRuntime(
+        binding.runtime.turn!(binding.sessionId, turnId),
+        `recover turn for ${binding.participantId}`,
+        Math.min(this.options.runtimeRequestTimeoutMs ?? 15_000, Math.max(1, deadline - Date.now())),
+      );
       if (!recovered) throw new Error(`Runtime lost accepted turn: ${turnId}`);
       turn = recovered;
     }
@@ -487,11 +569,37 @@ export class ChannelRuntimeRelay {
   private async waitUntilIdle(binding: AgentChannelBinding): Promise<void> {
     const deadline = Date.now() + (this.options.turnTimeoutMs ?? 30 * 60_000);
     while (Date.now() < deadline) {
-      const status = await binding.runtime.status(binding.sessionId);
+      const status = await this.awaitRuntime(
+        binding.runtime.status(binding.sessionId),
+        `read status for ${binding.participantId}`,
+        Math.min(this.options.runtimeRequestTimeoutMs ?? 15_000, Math.max(1, deadline - Date.now())),
+      );
       if (status === "idle") return;
       if (status === "offline") throw new Error(`Agent session is offline: ${binding.sessionId}`);
       await delay(this.options.turnPollIntervalMs ?? 250);
     }
     throw new Error(`Timed out waiting for agent to become idle: ${binding.participantId}`);
+  }
+
+  private async awaitRuntime<T>(operation: Promise<T>, label: string, timeoutMs = this.options.runtimeRequestTimeoutMs ?? 15_000): Promise<T> {
+    const signal = this.controller?.signal;
+    return await new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        callback();
+      };
+      const timer = setTimeout(() => finish(() => reject(new Error(`Runtime request timed out: ${label}`))), timeoutMs);
+      const abort = () => finish(() => reject(new Error(`Runtime request cancelled: ${label}`)));
+      signal?.addEventListener("abort", abort, { once: true });
+      operation.then(
+        (value) => finish(() => resolve(value)),
+        (error) => finish(() => reject(error)),
+      );
+      if (signal?.aborted) abort();
+    });
   }
 }

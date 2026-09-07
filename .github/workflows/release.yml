@@ -15,10 +15,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: channels
+      - name: Read pinned Runtime source
+        id: runtime_source
+        working-directory: channels
+        run: |
+          echo "repository=$(node -p 'require(\"./runtime-source.json\").repository')" >> "$GITHUB_OUTPUT"
+          echo "commit=$(node -p 'require(\"./runtime-source.json\").commit')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          repository: minuscule-labs/minu-runtime
-          ref: 86a5f2245a934761e59942846b2e4b304b2881ad
+          repository: ${{ steps.runtime_source.outputs.repository }}
+          ref: ${{ steps.runtime_source.outputs.commit }}
           path: runtime
       - uses: pnpm/action-setup@v4
         with:

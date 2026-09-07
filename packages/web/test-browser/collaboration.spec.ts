@@ -236,7 +236,8 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await page.getByRole("button", { name: "Add Workspace" }).click();
   const createDialog = page.getByRole("dialog", { name: "Add Workspace" });
   await createDialog.getByLabel("Name", { exact: true }).fill("Browser Workspace");
-  await createDialog.getByLabel("Source folder", { exact: true }).fill("/tmp");
+  await createDialog.getByRole("button", { name: "Browse" }).click();
+  await expect(createDialog.getByLabel("Source folder", { exact: true })).toHaveValue("/tmp");
   await createDialog.getByRole("button", { name: "Create Workspace" }).click();
 
   await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();

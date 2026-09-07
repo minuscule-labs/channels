@@ -158,7 +158,7 @@ async function waitUntil(assertion: () => Promise<boolean>, timeoutMs = 2_000): 
 
 test("relay routes Workspace-local handles to stable agent identity ids", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const human = await client.createIdentity({ type: "human", displayName: "David" });
   const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
@@ -201,7 +201,7 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
 
 test("relay caches revisioned rosters and stops waking disabled or removed members", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const cursors = new InMemoryChannelStorage();
   const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
@@ -282,7 +282,7 @@ test("relay caches revisioned rosters and stops waking disabled or removed membe
 
 test("removing an agent fences an active turn result and advances recovery", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
   const cursors = new InMemoryChannelStorage();
   const [owner, agent] = await Promise.all([
@@ -337,7 +337,7 @@ test("removing an agent fences an active turn result and advances recovery", asy
 
 test("private bindings isolate Channel sessions and restore them under generation-safe leases", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const store = new InMemoryRelayBindingStore();
   const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
@@ -500,7 +500,7 @@ test("private bindings isolate Channel sessions and restore them under generatio
 
 test("relay catches up on addressed messages using a persisted cursor", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const cursors = new InMemoryChannelStorage();
   const channel = await client.createChannel({
@@ -539,9 +539,34 @@ test("relay catches up on addressed messages using a persisted cursor", async ()
   }
 });
 
+test("relay catch-up paginates beyond one bounded message page", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  try {
+    for (let index = 0; index < 501; index += 1) {
+      await server.service.createMessage(channel.id, { participantId: "agent-a", body: `self-${index}` });
+    }
+    const trigger = await server.service.createMessage(channel.id, { participantId: "user", body: "@agent-a paginated" });
+    const relay = new ChannelRuntimeRelay({
+      client, channelId: channel.id,
+      bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+      cursorStore: server.service.storage,
+    });
+    try {
+      await relay.start();
+      await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === trigger.sequence);
+      assert.equal(runtime.prompts.get("session-a")?.length, 1);
+    } finally { await relay.stop(); }
+  } finally { await server.close(); }
+});
+
 test("two-participant Channels implicitly wake the sole agent for human messages", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const channel = await client.createChannel({
     participants: [
@@ -575,7 +600,7 @@ test("two-participant Channels implicitly wake the sole agent for human messages
 
 test("an addressed turn includes bounded Channel history from before the binding cursor", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const cursors = new InMemoryChannelStorage();
   const channel = await client.createChannel({
@@ -612,7 +637,7 @@ test("an addressed turn includes bounded Channel history from before the binding
 test("relay suppresses an active result after its private binding lease is lost", async () => {
   const storage = new InMemoryChannelStorage();
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
   const channel = await client.createChannel({
     participants: [
@@ -654,7 +679,7 @@ test("relay suppresses an active result after its private binding lease is lost"
 test("overlapping relay recovery reuses active turns and preserves queued messages", async () => {
   const storage = new InMemoryChannelStorage();
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
   const channel = await client.createChannel({
     participants: [
@@ -710,7 +735,7 @@ test("overlapping relay recovery reuses active turns and preserves queued messag
 
 test("relay validates and enforces configurable turn polling timeouts", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
   const channel = await client.createChannel({
     participants: [
@@ -759,7 +784,7 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
 test("relay restart does not duplicate a committed response after its acknowledgement is lost", async () => {
   const storage = new InMemoryChannelStorage();
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const reliableClient = new ChannelClient(server.endpoint);
+  const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const channel = await reliableClient.createChannel({
     participants: [
@@ -783,7 +808,7 @@ test("relay restart does not duplicate a committed response after its acknowledg
     }
   }
   const firstRelay = new ChannelRuntimeRelay({
-    client: new LostAcknowledgementClient(server.endpoint),
+    client: new LostAcknowledgementClient(server.endpoint, { serviceToken: server.serviceToken }),
     channelId: channel.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: storage,
@@ -818,9 +843,122 @@ test("relay restart does not duplicate a committed response after its acknowledg
   }
 });
 
+test("a failed trigger blocks later cursor advancement until ordered retry succeeds", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  let attempts = 0;
+  class RetryRuntime extends FakeRuntime {
+    override async send(sessionId: string, input: string): Promise<void> {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient failure");
+      await super.send(sessionId, input);
+    }
+  }
+  const runtime = new RetryRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client, channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: server.service.storage,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(await server.service.storage.getCursor(channel.id, "agent-a"), 0);
+    await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === 2);
+    assert.equal(runtime.prompts.get("session-a")?.length, 2);
+    assert.ok(attempts >= 3);
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("terminal Runtime failure is recorded visibly before the cursor advances", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime: AgentRuntimePort = {
+    async send() {}, async messages() { return []; }, async status() { return "idle"; },
+    async turn() { return undefined; },
+    async startTurn(_sessionId, turnId, input) {
+      const timestamp = new Date().toISOString();
+      return { id: turnId, input, status: "failed", error: "provider failed", createdAt: timestamp, updatedAt: timestamp };
+    },
+  };
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client, channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: server.service.storage,
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(channel.id, { participantId: "user", body: "@agent-a fail" });
+    await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    const messages = await client.listMessages(channel.id);
+    assert.match(messages[1]!.body, /Runtime turn failed/);
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("legacy Runtime response recovery survives transcript compaction", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  let compacted = false;
+  const runtime: AgentRuntimePort = {
+    async status() { return "idle"; },
+    async send() { compacted = true; },
+    async messages() {
+      return compacted
+        ? [{ role: "assistant", content: "response after compaction" }]
+        : Array.from({ length: 3 }, (_, index) => ({ role: "user" as const, content: `old-${index}` }));
+    },
+  };
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client, channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a compact" });
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    assert.equal((await client.listMessages(channel.id))[1]?.body, "response after compaction");
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("Relay shutdown is bounded when a Runtime request stalls", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime: AgentRuntimePort = {
+    async send() {}, async messages() { return []; },
+    async status() { return await new Promise<"idle">(() => {}); },
+  };
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client, channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    runtimeRequestTimeoutMs: 20,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a stall" });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const started = Date.now();
+    await relay.stop();
+    assert.ok(Date.now() - started < 200);
+  } finally { await relay.stop(); await server.close(); }
+});
+
 test("relay supports an explicit agent-to-agent mention handoff", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime((sessionId) =>
     sessionId === "session-a" ? "@agent-b Please review Agent A's work" : "Review complete",
   );
@@ -861,7 +999,7 @@ test("relay supports an explicit agent-to-agent mention handoff", async () => {
 
 test("explicit steering reaches a working agent without creating another wake-up", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const channel = await client.createChannel({
     participants: [
@@ -893,7 +1031,7 @@ test("explicit steering reaches a working agent without creating another wake-up
 
 test("explicit interruption aborts work and queues a normal replacement turn", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const channel = await client.createChannel({
     participants: [
@@ -924,7 +1062,7 @@ test("explicit interruption aborts work and queues a normal replacement turn", a
 
 test("interrupting an active relay turn suppresses its response and runs the replacement", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new InterruptibleRuntime();
   const cursorStore = new InMemoryChannelStorage();
   const channel = await client.createChannel({
@@ -963,7 +1101,7 @@ test("interrupting an active relay turn suppresses its response and runs the rep
 
 test("relay wakes only addressed agents and posts responses without reply loops", async () => {
   const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint);
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const channel = await client.createChannel({
     participants: [

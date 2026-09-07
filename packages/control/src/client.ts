@@ -7,6 +7,8 @@ import type {
   LocalCurrentSession,
   LocalRuntimeOptions,
   LocalWorkspaceConfigurationSummary,
+  ProvisionLocalWorkspaceInput,
+  ProvisionLocalWorkspaceResult,
   UpdateLocalRuntimeModelPolicyInput,
   UpdateLocalWorkspaceAgentConfigurationInput,
   UpdateLocalWorkspaceConfigurationInput,
@@ -56,6 +58,13 @@ export class LocalControlClient {
       120_000,
     );
     return result?.path;
+  }
+
+  async provisionWorkspace(input: ProvisionLocalWorkspaceInput): Promise<ProvisionLocalWorkspaceResult> {
+    return this.request<ProvisionLocalWorkspaceResult>("/local/workspaces", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {

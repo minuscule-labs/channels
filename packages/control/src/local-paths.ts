@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -49,23 +49,22 @@ export async function prepareChannelsDataDirectory(path: string): Promise<void> 
   await chmod(runDirectory, 0o700);
 }
 
+const LOCK_INITIALIZATION_GRACE_MS = 30_000;
+
 export async function acquireChannelsDataDirectoryLock(
   dataDirectory: string,
 ): Promise<ProductDirectoryLock> {
   const lockPath = join(dataDirectory, "run", "instance.lock");
+  const ownerPath = join(lockPath, "owner.json");
   const token = randomUUID();
   const contents = `${JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() })}\n`;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     try {
-      const handle = await open(lockPath, "wx", 0o600);
-      try {
-        await handle.writeFile(contents);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await chmod(lockPath, 0o600);
+      await mkdir(lockPath, { mode: 0o700 });
+      const temporaryOwner = join(lockPath, `.owner-${token}.tmp`);
+      await writeFile(temporaryOwner, contents, { mode: 0o600 });
+      await rename(temporaryOwner, ownerPath);
       let released = false;
       return {
         path: lockPath,
@@ -73,8 +72,8 @@ export async function acquireChannelsDataDirectoryLock(
           if (released) return;
           released = true;
           try {
-            const current = JSON.parse(await readFile(lockPath, "utf8")) as { token?: unknown };
-            if (current.token === token) await rm(lockPath);
+            const current = JSON.parse(await readFile(ownerPath, "utf8")) as { token?: unknown };
+            if (current.token === token) await rm(lockPath, { recursive: true });
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           }
@@ -82,14 +81,64 @@ export async function acquireChannelsDataDirectoryLock(
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const pid = await lockOwnerPid(lockPath);
-      if (pid !== undefined && processIsRunning(pid)) {
+      const existing = await inspectLock(lockPath, ownerPath);
+      const observedOwner = await readFile(ownerPath, "utf8").catch(() => undefined);
+      if (existing.kind === "legacy-stale") {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      if (existing.kind === "live" || existing.kind === "initializing") {
         throw new Error(`MinuChannels is already using data directory: ${dataDirectory}`);
       }
-      await rm(lockPath, { force: true });
+
+      // Recovery is serialized inside the stale lock directory. Only its winner may rename it.
+      const recoveryClaim = join(lockPath, "recovery.claim");
+      let claim;
+      try {
+        claim = await open(recoveryClaim, "wx", 0o600);
+        await claim.writeFile(token);
+        await claim.close();
+      } catch (claimError) {
+        await claim?.close().catch(() => {});
+        if ((claimError as NodeJS.ErrnoException).code === "EEXIST"
+          || (claimError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw claimError;
+      }
+      const currentOwner = await readFile(ownerPath, "utf8").catch(() => undefined);
+      if (currentOwner !== observedOwner) {
+        await rm(recoveryClaim, { force: true }).catch(() => {});
+        throw new Error(`MinuChannels is already using data directory: ${dataDirectory}`);
+      }
+      const quarantine = `${lockPath}.stale-${token}`;
+      try {
+        await rename(lockPath, quarantine);
+        await rm(quarantine, { recursive: true, force: true });
+      } catch (recoveryError) {
+        if ((recoveryError as NodeJS.ErrnoException).code !== "ENOENT") throw recoveryError;
+      }
     }
   }
   throw new Error(`Unable to acquire MinuChannels data directory lock: ${dataDirectory}`);
+}
+
+type LockInspection = { kind: "live" | "stale" | "initializing" | "legacy-stale" };
+
+async function inspectLock(lockPath: string, ownerPath: string): Promise<LockInspection> {
+  try {
+    const metadata = await stat(lockPath);
+    if (metadata.isFile()) {
+      const pid = await lockOwnerPid(lockPath);
+      return pid !== undefined && processIsRunning(pid) ? { kind: "live" } : { kind: "legacy-stale" };
+    }
+    const pid = await lockOwnerPid(ownerPath);
+    if (pid !== undefined) return processIsRunning(pid) ? { kind: "live" } : { kind: "stale" };
+    return Date.now() - metadata.mtimeMs < LOCK_INITIALIZATION_GRACE_MS
+      ? { kind: "initializing" }
+      : { kind: "stale" };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "stale" };
+    throw error;
+  }
 }
 
 async function lockOwnerPid(path: string): Promise<number | undefined> {

@@ -8,20 +8,31 @@ import { LocalControlBrowserSessions, type LocalControlBrowserSession } from "./
 
 const execFileAsync = promisify(execFile);
 
-async function chooseLocalFolder(): Promise<string> {
+function normalizedSelectedPath(stdout: string): string {
+  const path = stdout.trim();
+  return path.length > 1 ? path.replace(/\/$/, "") : path;
+}
+
+async function chooseLocalFolder(): Promise<string | undefined> {
+  const signal = AbortSignal.timeout(2 * 60_000);
   if (process.platform === "darwin") {
-    const { stdout } = await execFileAsync("/usr/bin/osascript", [
-      "-e",
-      "POSIX path of (choose folder with prompt \"Choose a MinuChannels Workspace source folder\")",
-    ]);
-    return stdout.trim().replace(/\/$/, "");
+    try {
+      const { stdout } = await execFileAsync("/usr/bin/osascript", [
+        "-e",
+        "POSIX path of (choose folder with prompt \"Choose a MinuChannels Workspace source folder\")",
+      ], { signal });
+      return normalizedSelectedPath(stdout);
+    } catch (error) {
+      if (String((error as { stderr?: unknown }).stderr ?? "").includes("(-128)")) return undefined;
+      throw new LocalConfigurationRequestError("Native folder selection failed; enter an absolute path instead", 409, "unavailable");
+    }
   }
   if (process.platform === "linux") {
     try {
-      const { stdout } = await execFileAsync("zenity", ["--file-selection", "--directory", "--title=Choose a MinuChannels Workspace source folder"]);
-      return stdout.trim().replace(/\/$/, "");
+      const { stdout } = await execFileAsync("zenity", ["--file-selection", "--directory", "--title=Choose a MinuChannels Workspace source folder"], { signal });
+      return normalizedSelectedPath(stdout);
     } catch (error) {
-      if (String((error as NodeJS.ErrnoException).code) === "1") throw error;
+      if ((error as { code?: unknown }).code === 1) return undefined;
       throw new LocalConfigurationRequestError("Native folder selection requires zenity; enter an absolute path instead", 409, "unavailable");
     }
   }
@@ -44,6 +55,7 @@ import {
   type LocalControlHealth,
   type LocalRuntimeOptions,
   type LocalWakePolicy,
+  type ProvisionLocalWorkspaceResult,
   type LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
 
@@ -88,6 +100,7 @@ export interface LocalControlAgentLifecyclePort {
 }
 
 export interface LocalControlConfigurationPort {
+  provisionWorkspace?(actorIdentityId: string, input: unknown): Promise<ProvisionLocalWorkspaceResult>;
   getWorkspaceConfiguration(
     workspaceId: string,
     actorIdentityId: string,
@@ -172,6 +185,13 @@ export class LocalControlService {
         reconnect: false,
       },
     };
+  }
+
+  async provisionWorkspace(actorIdentityId: string, input: unknown): Promise<ProvisionLocalWorkspaceResult> {
+    if (!this.options.configuration?.provisionWorkspace) {
+      throw new LocalConfigurationRequestError("Workspace provisioning unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.provisionWorkspace(actorIdentityId, input);
   }
 
   async getWorkspaceConfiguration(
@@ -432,6 +452,7 @@ export interface LocalControlHttpServerOptions {
   allowedOrigins?: readonly string[];
   /** Required by the real daemon; optional for isolated read-only fixtures. */
   browserSessions?: LocalControlBrowserSessions;
+  selectLocalFolder?: () => Promise<string | undefined>;
 }
 
 export interface LocalControlHttpServer {
@@ -503,10 +524,13 @@ export async function createLocalControlHttpServer(
       return;
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
-    const isAgentLifecycle = request.method === "POST"
-      && /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop)$/.test(requestPath);
-    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAgentLifecycle) {
-      response.setHeader("allow", "GET, PATCH, PUT");
+    const isAllowedPost = request.method === "POST" && (
+      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop)$/.test(requestPath)
+      || requestPath === "/local/folders/select"
+      || requestPath === "/local/workspaces"
+    );
+    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost) {
+      response.setHeader("allow", "GET, PATCH, PUT, POST");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
     }
@@ -559,18 +583,22 @@ export async function createLocalControlHttpServer(
         return;
       }
       if (path === "/local/folders/select" && request.method === "POST" && browserSession) {
-        try {
-          json(response, 200, { path: await chooseLocalFolder() }, origin);
-        } catch (error) {
-          if (String((error as NodeJS.ErrnoException).code) === "1") {
-            response.statusCode = 204;
-            if (origin) response.setHeader("access-control-allow-origin", origin);
-            response.setHeader("access-control-allow-credentials", "true");
-            response.end();
-          } else {
-            throw error;
-          }
+        const selectedPath = await (options.selectLocalFolder ?? chooseLocalFolder)();
+        if (selectedPath === undefined) {
+          response.statusCode = 204;
+          if (origin) response.setHeader("access-control-allow-origin", origin);
+          response.setHeader("access-control-allow-credentials", "true");
+          response.end();
+        } else {
+          json(response, 200, { path: selectedPath }, origin);
         }
+        return;
+      }
+      if (path === "/local/workspaces" && request.method === "POST" && browserSession) {
+        json(response, 201, await options.service.provisionWorkspace(
+          browserSession.identityId,
+          await readJson(request),
+        ), origin);
         return;
       }
       const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);

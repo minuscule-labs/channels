@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 import { ChannelClient } from "../src/client.ts";
-import { createChannelHttpServer } from "../src/http-server.ts";
+import { createChannelHttpServer, type ChannelHttpServer } from "../src/http-server.ts";
 import { createResourceId, isResourceId, RESOURCE_ID_PREFIXES } from "../src/ids.ts";
 import type { ChannelEvent } from "../src/types.ts";
 
-async function jsonRequest(endpoint: string, path: string, init?: RequestInit) {
-  const response = await fetch(`${endpoint}${path}`, init);
+async function jsonRequest(server: ChannelHttpServer, path: string, init?: RequestInit) {
+  const response = await fetch(`${server.endpoint}${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${server.serviceToken}`, ...init?.headers },
+  });
   const body = (await response.json()) as Record<string, unknown>;
   return { response, body };
 }
@@ -41,8 +45,8 @@ test("creates typed resource ids with UUID-strength random payloads", () => {
   assert.equal(isResourceId("channel_not-random", "channel"), false);
 });
 
-async function createTestChannel(endpoint: string) {
-  const result = await jsonRequest(endpoint, "/channels", {
+async function createTestChannel(server: ChannelHttpServer) {
+  const result = await jsonRequest(server, "/channels", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -72,13 +76,13 @@ async function createTestChannel(endpoint: string) {
 test("creates a channel and starts with no messages", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
+    const channel = await createTestChannel(server);
     assert.equal(isResourceId(channel.id, "channel"), true);
     assert.equal(channel.name, "build-and-review");
     assert.equal(channel.participants.length, 2);
     assert.deepEqual(channel.messages, []);
 
-    const fetched = await jsonRequest(server.endpoint, `/channels/${channel.id}`);
+    const fetched = await jsonRequest(server, `/channels/${channel.id}`);
     assert.equal(fetched.response.status, 200);
     const fetchedChannel = fetched.body.channel as {
       name: string;
@@ -97,7 +101,7 @@ test("creates a channel and starts with no messages", async () => {
       status: "active",
     });
 
-    const listed = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`);
+    const listed = await jsonRequest(server, `/channels/${channel.id}/messages`);
     assert.equal(listed.response.status, 200);
     assert.deepEqual(listed.body.messages, []);
   } finally {
@@ -108,7 +112,7 @@ test("creates a channel and starts with no messages", async () => {
 test("registers reusable identities and Workspace-local handles for Channel routing", async () => {
   const server = await createChannelHttpServer();
   try {
-    const client = new ChannelClient(server.endpoint);
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
     const human = await client.createIdentity({ type: "human", displayName: "David" });
     const builder = await client.createIdentity({
       type: "agent",
@@ -238,7 +242,7 @@ test("registers reusable identities and Workspace-local handles for Channel rout
 test("owner-governed membership updates revise Channel rosters and preserve history", async () => {
   const server = await createChannelHttpServer();
   try {
-    const client = new ChannelClient(server.endpoint);
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
     const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
     const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
     const workspace = await client.createWorkspace({ slug: "mutable-roster", name: "Mutable" });
@@ -321,7 +325,7 @@ test("owner-governed membership updates revise Channel rosters and preserve hist
 test("owner-governed Channel roster replacement is revisioned and preserves message attribution", async () => {
   const server = await createChannelHttpServer();
   try {
-    const client = new ChannelClient(server.endpoint);
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
     const [owner, builder, reviewer] = await Promise.all([
       client.createIdentity({ type: "human", displayName: "Owner" }),
       client.createIdentity({ type: "agent", displayName: "Builder" }),
@@ -415,10 +419,10 @@ test("owner-governed Channel roster replacement is revisioned and preserves mess
 test("assigns per-channel sequences and resolves channel mentions", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
+    const channel = await createTestChannel(server);
     const clientMessage = async (body: string) =>
       (
-        await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+        await jsonRequest(server, `/channels/${channel.id}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ participantId: "agent-a", body }),
@@ -439,12 +443,12 @@ test("assigns per-channel sequences and resolves channel mentions", async () => 
 test("replays sequential and concurrent message retries without another sequence or event", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
+    const channel = await createTestChannel(server);
     let events = 0;
     const unsubscribe = await server.service.subscribe(channel.id, () => {
       events += 1;
     });
-    const post = (key: string) => jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+    const post = (key: string) => jsonRequest(server, `/channels/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": key },
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b review" }),
@@ -481,13 +485,13 @@ test("replays sequential and concurrent message retries without another sequence
 test("rejects reuse with a changed effective payload and accepts intentional duplicates", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
+    const channel = await createTestChannel(server);
     const reply = await server.service.createMessage(channel.id, {
       participantId: "agent-b",
       body: "reply anchor",
     });
     const post = (key: string | undefined, input: Record<string, unknown>) =>
-      jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+      jsonRequest(server, `/channels/${channel.id}/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -551,8 +555,8 @@ test("rejects reuse with a changed effective payload and accepts intentional dup
 test("ChannelClient forwards its optional idempotency key", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
-    const client = new ChannelClient(server.endpoint);
+    const channel = await createTestChannel(server);
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
     const input = { participantId: "agent-a", body: "sent through client" };
     const first = await client.postMessage(channel.id, input, { idempotencyKey: "client-key" });
     const replay = await client.postMessage(channel.id, input, { idempotencyKey: "client-key" });
@@ -565,7 +569,7 @@ test("ChannelClient forwards its optional idempotency key", async () => {
 test("validates idempotency keys by UTF-8 byte length", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
+    const channel = await createTestChannel(server);
     for (const key of [" ", "é".repeat(128)]) {
       await assert.rejects(
         server.service.createMessage(
@@ -590,8 +594,8 @@ test("validates idempotency keys by UTF-8 byte length", async () => {
 test("commits one idempotent response and advances its cursor atomically", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
-    const triggerResult = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+    const channel = await createTestChannel(server);
+    const triggerResult = await jsonRequest(server, `/channels/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b review this" }),
@@ -608,12 +612,12 @@ test("commits one idempotent response and advances its cursor atomically", async
       triggerSequence: trigger.sequence,
     };
     const [first, duplicate] = await Promise.all([
-      jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
+      jsonRequest(server, `/channels/${channel.id}/responses`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       }),
-      jsonRequest(server.endpoint, `/channels/${channel.id}/responses`, {
+      jsonRequest(server, `/channels/${channel.id}/responses`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
@@ -644,15 +648,15 @@ test("posts a message and emits it over SSE", async () => {
   const server = await createChannelHttpServer();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const channel = await createTestChannel(server.endpoint);
-    const eventResponse = await fetch(`${server.endpoint}/channels/${channel.id}/events`);
+    const channel = await createTestChannel(server);
+    const eventResponse = await fetch(`${server.endpoint}/channels/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
     assert.equal(eventResponse.status, 200);
     assert.ok(eventResponse.body);
     reader = eventResponse.body!.getReader();
     const stream = { buffer: "" };
     assert.match(await readSseFrame(reader, stream), /event: ready/);
 
-    const posted = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+    const posted = await jsonRequest(server, `/channels/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b Please review README.md" }),
@@ -675,7 +679,7 @@ test("posts a message and emits it over SSE", async () => {
     assert.deepEqual(event.message.to, ["agent-b"]);
     assert.equal(event.message.body, "@agent-b Please review README.md");
 
-    const listed = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`);
+    const listed = await jsonRequest(server, `/channels/${channel.id}/messages`);
     assert.equal((listed.body.messages as unknown[]).length, 1);
   } finally {
     await reader?.cancel();
@@ -686,8 +690,8 @@ test("posts a message and emits it over SSE", async () => {
 test("rejects messages from participants outside the channel", async () => {
   const server = await createChannelHttpServer();
   try {
-    const channel = await createTestChannel(server.endpoint);
-    const result = await jsonRequest(server.endpoint, `/channels/${channel.id}/messages`, {
+    const channel = await createTestChannel(server);
+    const result = await jsonRequest(server, `/channels/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ participantId: "intruder", body: "hello" }),
@@ -707,8 +711,8 @@ test("SSE connections receive validated heartbeats while a Channel is quiet", as
   const server = await createChannelHttpServer({ heartbeatIntervalMs: 10 });
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    const channel = await createTestChannel(server.endpoint);
-    const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`);
+    const channel = await createTestChannel(server);
+    const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
     assert.ok(response.body);
     reader = response.body!.getReader();
     const stream = { buffer: "" };
@@ -722,16 +726,73 @@ test("SSE connections receive validated heartbeats while a Channel is quiet", as
 
 test("server shutdown closes active SSE connections", async () => {
   const server = await createChannelHttpServer();
-  const channel = await createTestChannel(server.endpoint);
-  const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`);
+  const channel = await createTestChannel(server);
+  const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
   assert.equal(response.status, 200);
   await server.close();
+});
+
+test("direct collaboration HTTP requires its service credential and rejects browser spoofing", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const unauthorized = await fetch(`${server.endpoint}/identities`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ type: "human" }),
+    });
+    assert.equal(unauthorized.status, 401);
+    const hostileOrigin = await fetch(`${server.endpoint}/identities`, {
+      headers: { authorization: `Bearer ${server.serviceToken}`, origin: "https://hostile.example" },
+    });
+    assert.equal(hostileOrigin.status, 403);
+    const hostileHostStatus = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(`${server.endpoint}/identities`, {
+        headers: { authorization: `Bearer ${server.serviceToken}`, host: "hostile.example" },
+      }, (response) => { response.resume(); resolve(response.statusCode ?? 0); });
+      request.once("error", reject);
+      request.end();
+    });
+    assert.equal(hostileHostStatus, 403);
+    const wrongType = await fetch(`${server.endpoint}/identities`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${server.serviceToken}`, "content-type": "text/plain" },
+      body: JSON.stringify({ type: "human" }),
+    });
+    assert.equal(wrongType.status, 400);
+
+    const channel = await createTestChannel(server);
+    const spoofed = await fetch(`${server.endpoint}/channels/${channel.id}/messages`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${server.serviceToken}`,
+        "content-type": "application/json",
+        "x-minu-actor-id": "agent-b",
+      },
+      body: JSON.stringify({ participantId: "agent-a", body: "spoofed" }),
+    });
+    assert.equal(spoofed.status, 400);
+  } finally { await server.close(); }
+});
+
+test("lists messages with bounded sequence pagination", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const channel = await createTestChannel(server);
+    for (const body of ["one", "two", "three", "four"]) {
+      await client.postMessage(channel.id, { participantId: "agent-a", body });
+    }
+    assert.deepEqual((await client.listMessages(channel.id, { afterSequence: 1, limit: 2 })).map(({ sequence }) => sequence), [2, 3]);
+    assert.deepEqual((await client.listMessages(channel.id, { beforeSequence: 4, limit: 2 })).map(({ sequence }) => sequence), [2, 3]);
+    const invalid = await jsonRequest(server, `/channels/${channel.id}/messages?afterSequence=1&beforeSequence=4`);
+    assert.equal(invalid.response.status, 400);
+  } finally { await server.close(); }
 });
 
 test("returns 404 for an unknown channel", async () => {
   const server = await createChannelHttpServer();
   try {
-    const result = await jsonRequest(server.endpoint, "/channels/missing/messages");
+    const result = await jsonRequest(server, "/channels/missing/messages");
     assert.equal(result.response.status, 404);
   } finally {
     await server.close();

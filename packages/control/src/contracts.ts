@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 7 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 8 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -43,6 +43,18 @@ export interface UpdateLocalRuntimeModelPolicyInput {
 export interface LocalCurrentSession {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   identityId: string;
+}
+
+export interface ProvisionLocalWorkspaceInput {
+  slug: string;
+  name: string;
+  rootUri: string;
+}
+
+export interface ProvisionLocalWorkspaceResult {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  workspaceId: string;
+  channelId: string;
 }
 
 export interface LocalControlHealth {

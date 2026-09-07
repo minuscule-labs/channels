@@ -173,7 +173,7 @@ export class LocalControlBrowserSessions {
     });
     this.audit({ action: "launch.redeemed", outcome: "accepted" });
     return {
-      cookie: `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/local; Max-Age=${Math.ceil(this.sessionTtlMs / 1_000)}`,
+      cookie: `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.ceil(this.sessionTtlMs / 1_000)}`,
       redirectUrl: record.redirectUrl,
     };
   }
