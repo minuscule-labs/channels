@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useNavigate } from "@tanstack/react-router";
-import { FolderPlus, LoaderCircle, X } from "lucide-react";
+import { FolderOpen, FolderPlus, LoaderCircle, X } from "lucide-react";
 import { useState } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
@@ -22,6 +22,10 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
     queryFn: () => localControl.currentSession(),
     enabled: open,
     retry: false,
+  });
+  const picker = useMutation({
+    mutationFn: () => localControl.selectLocalFolder(),
+    onSuccess: (path) => { if (path) setSourcePath(path); },
   });
   const mutation = useMutation({
     mutationFn: async () => {
@@ -73,12 +77,16 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
             <label className="block text-xs font-medium">Name
               <input value={name} onChange={(event) => setName(event.target.value)} maxLength={200} placeholder="Runtime" className="settings-input mt-1.5" />
             </label>
-            <label className="mt-4 block text-xs font-medium">Source folder
-              <input value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="/absolute/path/to/project" autoComplete="off" spellCheck={false} className="settings-input mt-1.5 font-mono" />
-            </label>
+            <label htmlFor="workspace-source-folder" className="mt-4 block text-xs font-medium">Source folder</label>
+              <div className="mt-1.5 flex gap-2">
+                <input id="workspace-source-folder" value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder="/absolute/path/to/project" autoComplete="off" spellCheck={false} className="settings-input font-mono" />
+                <button type="button" className="button-secondary shrink-0" disabled={picker.isPending} onClick={() => picker.mutate()}>
+                  {picker.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FolderOpen className="h-3.5 w-3.5" />} Browse
+                </button>
+              </div>
             <p className="mt-1.5 text-[10px] leading-4 text-[var(--muted)]">Use an absolute local path. It remains private configuration.</p>
             <div className="mt-5 flex items-center justify-end gap-2">
-              {mutation.error || session.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? session.error)?.message}</span> : null}
+              {mutation.error || picker.error || session.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? picker.error ?? session.error)?.message}</span> : null}
               <Dialog.Close asChild><button type="button" className="button-secondary">Cancel</button></Dialog.Close>
               <button type="submit" className="button-primary" disabled={!valid || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}Create Workspace</button>
             </div>

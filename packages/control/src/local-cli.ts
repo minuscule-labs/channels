@@ -2,10 +2,12 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { Command, InvalidArgumentError } from "commander";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalProductApp } from "./local.ts";
+import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
 
 interface LocalCliOptions {
@@ -14,6 +16,7 @@ interface LocalCliOptions {
   webPort: number;
   dataDir?: string;
   cwd?: string;
+  workspaceName?: string;
   webDir?: string;
   runtimeModule?: string;
   open: boolean;
@@ -90,22 +93,44 @@ async function main(): Promise<void> {
   const program = new Command()
     .name("minu-channels")
     .description("Start the persistent local MinuChannels product")
-    .argument("[directory]", "Workspace source directory", process.cwd())
+    .argument("[directory]", "Workspace source directory (required on first non-interactive launch)")
     .option("--channels-port <number>", "internal Channels API port", port, 4310)
     .option("--control-port <number>", "internal authenticated control port", port, 4311)
     .option("--web-port <number>", "local product web port", port, 5174)
     .option("--data-dir <path>", "persistent local data directory")
     .option("--cwd <path>", "Workspace source directory (legacy alias)")
+    .option("--workspace-name <name>", "name for a newly created Workspace")
     .option("--web-dir <path>", "production web asset directory")
     .option("--runtime-module <module>", "Pi Runtime module")
     .option("--no-open", "print the one-time launch URL instead of opening a browser")
     .showHelpAfterError();
   program.parse(argv);
   const options = program.opts<LocalCliOptions>();
-  if (options.cwd && program.args[0] && resolve(program.args[0]) !== resolve(process.cwd())) {
+  if (options.cwd && program.args[0]) {
     throw new Error("Pass the Workspace directory as either a positional argument or --cwd, not both");
   }
-  const workspaceRoot = resolve(options.cwd ?? program.args[0] ?? process.cwd());
+  const directoryArgumentProvided = Boolean(options.cwd ?? program.args[0]);
+  const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+  const freshInstallation = !existsSync(join(dataDirectory, "local-profile.json"));
+  let workspaceInput = options.cwd ?? program.args[0];
+  let workspaceName = options.workspaceName?.trim();
+  if (freshInstallation && !workspaceInput) {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new Error("First launch requires a Workspace directory argument (for example: minu-channels .)");
+    }
+    const prompt = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const sourceAnswer = (await prompt.question(`Workspace source folder [${process.cwd()}]: `)).trim();
+      workspaceInput = sourceAnswer || process.cwd();
+      const inferredName = basename(resolve(workspaceInput)) || "Workspace";
+      const nameAnswer = (await prompt.question(`Workspace name [${inferredName}]: `)).trim();
+      workspaceName = nameAnswer || inferredName;
+    } finally {
+      prompt.close();
+    }
+  }
+  const workspaceRoot = resolve(workspaceInput ?? process.cwd());
+  workspaceName ||= basename(workspaceRoot) || "Workspace";
   if (new Set([options.channelsPort, options.controlPort, options.webPort]).size !== 3) {
     throw new Error("Channels, control, and web ports must be distinct");
   }
@@ -116,7 +141,9 @@ async function main(): Promise<void> {
     controlPort: options.controlPort,
     webUrl,
     workspaceRoot,
-    dataDirectory: options.dataDir,
+    dataDirectory: dataDirectory,
+    workspaceName,
+    selectWorkspaceRoot: !freshInstallation && directoryArgumentProvided,
     runtimeAdapter: "pi",
     runtime,
     channelsMigrationsFolder: defaultMigrationsFolder("channels"),

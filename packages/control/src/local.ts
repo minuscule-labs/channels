@@ -12,9 +12,9 @@ import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
-import { chmod, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
 import {
@@ -38,6 +38,8 @@ interface LocalProfile {
 export interface LocalProductAppOptions {
   dataDirectory?: string;
   workspaceRoot?: string;
+  workspaceName?: string;
+  selectWorkspaceRoot?: boolean;
   channelsPort?: number;
   controlPort?: number;
   webUrl?: string;
@@ -126,6 +128,7 @@ async function initializeProfile(
   client: ChannelClient,
   profilePath: string,
   workspaceRoot: string,
+  workspaceName: string,
   relayDatabasePath: string,
   runtimeAdapter: string,
   personaPrompt: string,
@@ -136,7 +139,6 @@ async function initializeProfile(
       `Local data exists without ${basename(profilePath)}. Move or remove the data directory before starting fresh.`,
     );
   }
-  const workspaceName = basename(workspaceRoot) || "Local Workspace";
   const human = await client.createIdentity({ type: "human", displayName: "You" });
   const builder = await client.createIdentity({
     type: "agent",
@@ -206,7 +208,16 @@ export async function createLocalProductApp(
   options: LocalProductAppOptions,
 ): Promise<LocalProductApp> {
   const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDirectory });
-  const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
+  const requestedWorkspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
+  let workspaceRoot: string;
+  try {
+    workspaceRoot = await realpath(requestedWorkspaceRoot);
+    if (!(await stat(workspaceRoot)).isDirectory()) throw new Error("not a directory");
+  } catch {
+    throw new Error(`Workspace source folder is unavailable or is not a directory: ${requestedWorkspaceRoot}`);
+  }
+  const workspaceName = options.workspaceName?.trim() || basename(workspaceRoot) || "Local Workspace";
+  if (workspaceName.length > 200) throw new Error("Workspace name must be at most 200 characters");
   const channelsDatabasePath = join(dataDirectory, "channels.db");
   const relayDatabasePath = join(dataDirectory, "relay.db");
   const profilePath = join(dataDirectory, "local-profile.json");
@@ -241,6 +252,7 @@ export async function createLocalProductApp(
         client,
         profilePath,
         workspaceRoot,
+        workspaceName,
         relayDatabasePath,
         options.runtimeAdapter,
         options.personaPrompt ?? DEFAULT_PERSONA,
@@ -248,6 +260,38 @@ export async function createLocalProductApp(
       );
     }
     await secureDatabaseFiles(relayDatabasePath);
+    let selectedWorkspaceId = profile.workspaceId;
+    let selectedChannelId = profile.channelId;
+    if (!initialized && options.selectWorkspaceRoot) {
+      const relayStore = await DrizzleLibSqlRelayStorage.open({
+        url: localRelayLibSqlUrl(relayDatabasePath),
+        migrationsFolder: options.relayMigrationsFolder,
+      });
+      try {
+        const matches: string[] = [];
+        for (const workspace of await client.listWorkspaces()) {
+          const config = await relayStore.getWorkspaceConfig(workspace.id);
+          if (!config?.rootUri) continue;
+          try {
+            if (await realpath(fileURLToPath(config.rootUri)) === workspaceRoot) matches.push(workspace.id);
+          } catch {
+            // Unavailable stored roots cannot match the requested canonical directory.
+          }
+        }
+        if (matches.length === 0) {
+          throw new Error(`No existing Workspace uses source folder: ${workspaceRoot}. Add it from the MinuChannels navigation instead.`);
+        }
+        if (matches.length > 1) {
+          throw new Error(`More than one Workspace uses source folder: ${workspaceRoot}. Start without a directory and choose one in the app.`);
+        }
+        selectedWorkspaceId = matches[0]!;
+        const channels = await client.listWorkspaceChannels(selectedWorkspaceId);
+        if (!channels[0]) throw new Error("The selected Workspace has no Channels");
+        selectedChannelId = channels[0].id;
+      } finally {
+        await relayStore.close();
+      }
+    }
 
     controlDaemon = await createLocalControlDaemon({
       currentHumanIdentityId: profile.currentHumanIdentityId,
@@ -265,12 +309,12 @@ export async function createLocalProductApp(
       channelsEndpoint: channelsServer.endpoint,
       controlEndpoint: controlDaemon.endpoint,
       dataDirectory,
-      workspaceId: profile.workspaceId,
-      channelId: profile.channelId,
+      workspaceId: selectedWorkspaceId,
+      channelId: selectedChannelId,
       humanIdentityId: profile.currentHumanIdentityId,
       initialized,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
-        `/app/workspaces/${profile!.workspaceId}/channels/${profile!.channelId}`,
+        `/app/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}`,
       ),
       async close() {
         if (closed) return;
