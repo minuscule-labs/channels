@@ -46,6 +46,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: channels
       - run: pnpm check
+        working-directory: runtime
+      - run: pnpm test
+        working-directory: runtime
+      - run: pnpm check
         working-directory: channels
       - run: pnpm test
         working-directory: channels
