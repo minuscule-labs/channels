@@ -12,6 +12,9 @@ import type {
   LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
 import { LOCAL_CONTROL_PROTOCOL_VERSION } from "./contracts.ts";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalControlAuditEvent } from "./session.ts";
 
 const MAX_ROOT_URI_BYTES = 8 * 1024;
@@ -73,6 +76,30 @@ function requiredString(value: unknown, label: string, maxBytes: number): string
     throw new LocalConfigurationRequestError(`${label} is too large`, 400, "invalid");
   }
   return value;
+}
+
+async function canonicalWorkspaceRoot(value: string): Promise<string> {
+  let path: string;
+  try {
+    path = value.startsWith("file:") ? fileURLToPath(value) : value;
+  } catch {
+    throw new LocalConfigurationRequestError("Source folder must be an absolute local path or file URL", 400, "invalid");
+  }
+  if (!isAbsolute(path)) {
+    throw new LocalConfigurationRequestError("Source folder must be an absolute local path", 400, "invalid");
+  }
+  try {
+    const canonical = await realpath(resolve(path));
+    if (!(await stat(canonical)).isDirectory()) {
+      throw new LocalConfigurationRequestError("Source folder is not a directory", 409, "unavailable");
+    }
+    return pathToFileURL(canonical).href;
+  } catch (error) {
+    if (error instanceof LocalConfigurationRequestError) throw error;
+    const code = (error as NodeJS.ErrnoException).code;
+    const reason = code === "EACCES" ? "cannot be accessed" : "is unavailable";
+    throw new LocalConfigurationRequestError(`Source folder ${reason}`, 409, "unavailable");
+  }
 }
 
 function optionalNullableString(
@@ -234,7 +261,9 @@ export class LocalAgentHostConfiguration {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Workspace configuration");
       rejectUnknown(input, ["rootUri", "notesFolderId"]);
-      const rootUri = requiredString(input.rootUri, "rootUri", MAX_ROOT_URI_BYTES);
+      const rootUri = await canonicalWorkspaceRoot(
+        requiredString(input.rootUri, "rootUri", MAX_ROOT_URI_BYTES),
+      );
       const notesFolderId = optionalNullableString(
         input.notesFolderId,
         "notesFolderId",

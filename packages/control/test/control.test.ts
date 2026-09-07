@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createServer as createNodeServer, request as httpRequest } from "node:http";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { ChannelClient } from "@minu/channels-core/client";
 import { createChannelHttpServer } from "@minu/channels-core";
 import type { ChannelMetadata } from "@minu/channels-core/types";
@@ -499,6 +500,7 @@ test("local product initializes once and reopens persistent collaboration data",
     first = await createLocalProductApp({
       dataDirectory,
       workspaceRoot,
+      workspaceName: "Chosen Workspace",
       channelsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
@@ -508,7 +510,7 @@ test("local product initializes once and reopens persistent collaboration data",
     assert.equal(first.initialized, true);
     const firstClient = new ChannelClient(first.channelsEndpoint);
     assert.equal((await firstClient.listIdentities()).length, 2);
-    assert.equal((await firstClient.listWorkspaces()).length, 1);
+    assert.deepEqual((await firstClient.listWorkspaces()).map(({ name }) => name), ["Chosen Workspace"]);
     assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId)).length, 1);
     assert.deepEqual(await firstClient.listMessages(first.channelId), []);
     assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o600);
@@ -532,6 +534,7 @@ test("local product initializes once and reopens persistent collaboration data",
     reopened = await createLocalProductApp({
       dataDirectory,
       workspaceRoot,
+      selectWorkspaceRoot: true,
       channelsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
@@ -596,7 +599,7 @@ test("private configuration authorizes current humans and returns only redacted 
       (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
     );
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
-      rootUri: "file:///private/source/root",
+      rootUri: process.cwd(),
       notesFolderId: "private-notes-folder",
     });
     await assert.rejects(
@@ -632,7 +635,7 @@ test("private configuration authorizes current humans and returns only redacted 
       boundChannelCount: 0,
       changesApplyToNewSessions: true,
     }]);
-    assert.equal((await store.getWorkspaceConfig(workspace.id))?.rootUri, "file:///private/source/root");
+    assert.equal((await store.getWorkspaceConfig(workspace.id))?.rootUri, pathToFileURL(await realpath(process.cwd())).href);
     const storedAgent = await store.getWorkspaceAgentConfig(workspace.id, agent.id);
     assert.equal(storedAgent?.personaPrompt, "PRIVATE PERSONA: build and verify carefully");
     assert.equal(storedAgent?.runtimeAdapter, "pi-owned");
@@ -661,7 +664,7 @@ test("private configuration authorizes current humans and returns only redacted 
 });
 
 test("agent host starts isolated Channel sessions with private roots and personas", async () => {
-  const sourceDirectory = await mkdtemp(join(tmpdir(), "minu-agent-host-source-"));
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-host-source-")));
   const channelServer = await createChannelHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const runtime = new ManagedFakeRuntime();
@@ -942,9 +945,22 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     const workspaceUpdate = await fetch(`${daemon.endpoint}/local/workspaces/${workspace.id}/config`, {
       method: "PATCH",
       headers: requestHeaders,
-      body: JSON.stringify({ rootUri: "file:///new/private/root" }),
+      body: JSON.stringify({ rootUri: directory }),
     });
     assert.equal(workspaceUpdate.status, 200);
+    const unavailableWorkspaceUpdate = await fetch(`${daemon.endpoint}/local/workspaces/${workspace.id}/config`, {
+      method: "PATCH",
+      headers: requestHeaders,
+      body: JSON.stringify({ rootUri: join(directory, "missing") }),
+    });
+    assert.equal(unavailableWorkspaceUpdate.status, 409);
+    assert.match((await unavailableWorkspaceUpdate.json() as { error: string }).error, /Source folder is unavailable/);
+    const relativeWorkspaceUpdate = await fetch(`${daemon.endpoint}/local/workspaces/${workspace.id}/config`, {
+      method: "PATCH",
+      headers: requestHeaders,
+      body: JSON.stringify({ rootUri: "relative/source" }),
+    });
+    assert.equal(relativeWorkspaceUpdate.status, 400);
     const agentUpdate = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/config`,
       {
@@ -1024,7 +1040,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       {
         method: "PATCH",
         headers: requestHeaders,
-        body: JSON.stringify({ rootUri: "file:///newer/private/root" }),
+        body: JSON.stringify({ rootUri: directory }),
       },
     );
     assert.equal(workspaceUpdateAfterPolicy.status, 200);

@@ -1,8 +1,32 @@
 import type { ChannelMetadata } from "@minu/channels-core/types";
+import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import { LocalControlBrowserSessions, type LocalControlBrowserSession } from "./session.ts";
+
+const execFileAsync = promisify(execFile);
+
+async function chooseLocalFolder(): Promise<string> {
+  if (process.platform === "darwin") {
+    const { stdout } = await execFileAsync("/usr/bin/osascript", [
+      "-e",
+      "POSIX path of (choose folder with prompt \"Choose a MinuChannels Workspace source folder\")",
+    ]);
+    return stdout.trim().replace(/\/$/, "");
+  }
+  if (process.platform === "linux") {
+    try {
+      const { stdout } = await execFileAsync("zenity", ["--file-selection", "--directory", "--title=Choose a MinuChannels Workspace source folder"]);
+      return stdout.trim().replace(/\/$/, "");
+    } catch (error) {
+      if (String((error as NodeJS.ErrnoException).code) === "1") throw error;
+      throw new LocalConfigurationRequestError("Native folder selection requires zenity; enter an absolute path instead", 409, "unavailable");
+    }
+  }
+  throw new LocalConfigurationRequestError("Native folder selection is unavailable; enter an absolute path instead", 409, "unavailable");
+}
 export {
   LocalControlBrowserSessions,
   type LocalControlAuditAction,
@@ -532,6 +556,21 @@ export async function createLocalControlHttpServer(
       }
       if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
+        return;
+      }
+      if (path === "/local/folders/select" && request.method === "POST" && browserSession) {
+        try {
+          json(response, 200, { path: await chooseLocalFolder() }, origin);
+        } catch (error) {
+          if (String((error as NodeJS.ErrnoException).code) === "1") {
+            response.statusCode = 204;
+            if (origin) response.setHeader("access-control-allow-origin", origin);
+            response.setHeader("access-control-allow-credentials", "true");
+            response.end();
+          } else {
+            throw error;
+          }
+        }
         return;
       }
       const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);

@@ -49,6 +49,15 @@ export class LocalControlClient {
     return this.get<LocalControlCapabilities>("/local/capabilities");
   }
 
+  async selectLocalFolder(): Promise<string | undefined> {
+    const result = await this.request<{ path: string } | undefined>(
+      "/local/folders/select",
+      { method: "POST" },
+      120_000,
+    );
+    return result?.path;
+  }
+
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
     return this.get<LocalChannelAgentsResponse>(`/local/channels/${encodeURIComponent(channelId)}/agents`);
   }
@@ -162,6 +171,7 @@ export class LocalControlClient {
         const body = (await response.json().catch(() => ({}))) as { error?: string };
         throw new LocalControlClientError(body.error ?? `Local control request failed (${response.status})`, response.status);
       }
+      if (response.status === 204) return undefined as T;
       return response.json() as Promise<T>;
     } finally {
       clearTimeout(timer);

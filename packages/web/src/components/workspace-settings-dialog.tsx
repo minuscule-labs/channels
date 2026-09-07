@@ -2,7 +2,7 @@ import type { LocalWorkspaceConfigurationSummary } from "@minu/channels-control/
 import type { Workspace, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Check, LoaderCircle, Settings, X } from "lucide-react";
+import { Check, FolderOpen, LoaderCircle, Settings, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
@@ -59,6 +59,10 @@ function WorkspaceRootForm({
 }) {
   const queryClient = useQueryClient();
   const [rootUri, setRootUri] = useState("");
+  const picker = useMutation({
+    mutationFn: () => localControl.selectLocalFolder(),
+    onSuccess: (path) => { if (path) setRootUri(path); },
+  });
   const mutation = useMutation({
     mutationFn: () => localControl.updateWorkspaceConfiguration(workspaceId, { rootUri }),
     onSuccess: (next) => {
@@ -87,20 +91,25 @@ function WorkspaceRootForm({
       <label className="mt-4 block text-xs font-medium" htmlFor={`workspace-root-${workspaceId}`}>
         {summary.rootConfigured ? "Replace source location" : "Source location"}
       </label>
-      <input
-        id={`workspace-root-${workspaceId}`}
-        value={rootUri}
-        onChange={(event) => setRootUri(event.target.value)}
-        autoComplete="off"
-        spellCheck={false}
-        placeholder="Path or URI"
-        className="settings-input mt-1.5 font-mono"
-      />
+      <div className="mt-1.5 flex gap-2">
+        <input
+          id={`workspace-root-${workspaceId}`}
+          value={rootUri}
+          onChange={(event) => setRootUri(event.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Absolute local path"
+          className="settings-input font-mono"
+        />
+        <button type="button" className="button-secondary shrink-0" disabled={picker.isPending} onClick={() => picker.mutate()}>
+          {picker.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FolderOpen className="h-3.5 w-3.5" />} Browse
+        </button>
+      </div>
       <p className="mt-1.5 text-[10px] text-[var(--muted)]">
         The saved value is never read back. Existing sessions are unchanged.
       </p>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error || picker.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? picker.error)?.message}</span> : null}
         {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
         <button className="button-primary" type="submit" disabled={!rootUri.trim() || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}

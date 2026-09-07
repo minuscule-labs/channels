@@ -121,7 +121,7 @@ test("configures Workspace agent startup without reflecting saved values", async
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("Signed in as @david · owner");
 
-  const rootValue = "file:///secret/browser-review-root";
+  const rootValue = "/tmp";
   await dialog.getByLabel("Source location", { exact: true }).fill(rootValue);
   const rootResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
@@ -236,7 +236,7 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await page.getByRole("button", { name: "Add Workspace" }).click();
   const createDialog = page.getByRole("dialog", { name: "Add Workspace" });
   await createDialog.getByLabel("Name", { exact: true }).fill("Browser Workspace");
-  await createDialog.getByLabel("Source folder", { exact: true }).fill("/tmp/browser-workspace");
+  await createDialog.getByLabel("Source folder", { exact: true }).fill("/tmp");
   await createDialog.getByRole("button", { name: "Create Workspace" }).click();
 
   await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();
