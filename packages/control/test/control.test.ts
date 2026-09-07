@@ -458,7 +458,11 @@ test("local production web server serves the SPA and proxies product APIs", asyn
   });
   const controlBackend = createNodeServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ source: "control", origin: request.headers.origin }));
+    response.end(JSON.stringify({
+      source: "control",
+      origin: request.headers.origin,
+      cookie: request.headers.cookie,
+    }));
   });
   const listen = async (server: ReturnType<typeof createNodeServer>): Promise<string> => {
     await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
@@ -496,9 +500,12 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     browserAuthenticated = true;
     assert.equal((await fetch(`${web.endpoint}/identities`, { headers: { origin: "https://hostile.example" } })).status, 403);
     const controlResponse = await (await fetch(`${web.endpoint}/local/health`, {
-      headers: { origin: web.endpoint },
-    })).json() as { source: string; origin: string };
-    assert.deepEqual(controlResponse, { source: "control" });
+      headers: { origin: web.endpoint, cookie: "minu_local_session=browser-session" },
+    })).json() as { source: string; origin?: string; cookie?: string };
+    assert.deepEqual(controlResponse, {
+      source: "control",
+      cookie: "minu_local_session=browser-session",
+    });
   } finally {
     await web.close();
     await Promise.all([
