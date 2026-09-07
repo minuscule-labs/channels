@@ -1,6 +1,6 @@
 # MinuChannels Distribution and Startup
 
-**Status:** The foreground product command and self-contained GitHub-release package build are implemented. Repository release automation and a genuine Pi clean-machine proof remain.
+**Status:** The foreground product command, self-contained GitHub Release package, release automation, and a genuine Pi response from an isolated packaged installation are implemented. Clean-account macOS/Linux validation and publication remain.
 
 ## BLUF
 
@@ -27,7 +27,7 @@ This provides persistent local collaboration data, restricted agent-host state, 
 
 The source-workspace command still builds and loads the adjacent Runtime checkout, but the release build now bundles Runtime core, the Pi adapter, and its owned worker into one product artifact. Release builds require clean Channels and Runtime repositories, record both commit hashes in the package, and support `MINU_RUNTIME_ROOT` when Runtime is not adjacent to the active checkout. The installed artifact has no sibling-repository lookup. `pnpm release:pack` builds both source workspaces, assembles the production web client and both migration trees, rejects common secret/local-data artifacts, creates an npm-compatible tarball, and emits `SHA256SUMS`. `pnpm release:smoke` installs that exact tarball in a temporary directory and proves both first launch and persistent reopen.
 
-The remaining release blockers are a genuine Pi response from the installed artifact, clean-account macOS/Linux validation, and tag-triggered automation once real private GitHub repository coordinates and cross-repository checkout credentials exist. [`local-release.md`](local-release.md) documents installation, upgrades, backup, reset, and uninstall without inventing repository or release URLs before they exist.
+An isolated npm-prefix installation of the generated tarball has started the bundled Pi Runtime and returned the requested `PACKAGED_PI_OK` response through Channels. The remaining release blockers are clean-account macOS/Linux validation, an explicit license decision, repository visibility confirmation, and cross-repository checkout access for the pinned Runtime commit. [`local-release.md`](local-release.md) documents installation, upgrades, backup, reset, and uninstall without inventing repository or release URLs before they exist.
 
 ## Recommended public package
 
