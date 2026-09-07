@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Open first-run Workspace setup in the browser; keep an explicit source path as a non-interactive shortcut.
+- Advertise the dedicated `minu-channels.localhost` browser origin while retaining loopback-only socket binding.
+- Move the default Channels, control, and web ports to `47410–47412`.
+
 ## 0.0.2
 
 First installable local-alpha release.

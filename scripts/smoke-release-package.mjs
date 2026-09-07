@@ -35,16 +35,17 @@ function capture(command, args, options = {}) {
   });
 }
 
-async function startAndStop(expectedSetup, portBase) {
+async function startAndStop(expectedSetup, portBase, options = {}) {
   const executable = join(installRoot, "node_modules/.bin/minu-channels");
+  const workspacePath = Object.hasOwn(options, "workspacePath") ? options.workspacePath : workspace;
   return await new Promise((resolveRun, reject) => {
     const child = spawn(executable, [
       "--no-open",
-      "--data-dir", dataDirectory,
+      "--data-dir", options.dataDirectory ?? dataDirectory,
       "--channels-port", String(portBase),
       "--control-port", String(portBase + 1),
       "--web-port", String(portBase + 2),
-      workspace,
+      ...(workspacePath ? [workspacePath] : []),
     ], { env: { ...process.env, HOME: join(temporary, "home") } });
     let output = "";
     let stopping = false;
@@ -99,6 +100,10 @@ try {
   const portBase = 46_000 + Math.floor(Math.random() * 1_000);
   await startAndStop("Setup:    created a fresh local Workspace", portBase);
   await startAndStop("Setup:    reopened existing local data", portBase);
+  await startAndStop("Setup:    ready for browser Workspace setup", portBase + 10, {
+    dataDirectory: join(temporary, "browser-first-data"),
+    workspacePath: undefined,
+  });
   console.log("Release package smoke test passed");
 } finally {
   await rm(temporary, { recursive: true, force: true });

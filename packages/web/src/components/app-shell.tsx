@@ -6,6 +6,7 @@ import { channels } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
+import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -45,6 +46,17 @@ export function AppShell() {
             Retry
           </button>
         </div>
+      </div>
+    );
+  }
+  if (workspaces.data?.length === 0) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[var(--bg)] p-6">
+        <div className="empty-state max-w-lg text-center">
+          <h1 className="text-lg font-semibold">Welcome to MinuChannels</h1>
+          <p>Choose a local source folder to create your first Workspace.</p>
+        </div>
+        <WorkspaceCreateDialog onboarding />
       </div>
     );
   }

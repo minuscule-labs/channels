@@ -32,10 +32,10 @@ Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://
 
 ```bash
 npm install -g ./minu-channels-0.0.2.tgz
-minu-channels /absolute/path/to/workspace
+minu-channels
 ```
 
-The first launch creates a local human, a configured but stopped `@builder` agent, the selected Workspace, and an empty **General** Channel. Start the agent from the UI when ready.
+The browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Channel; the source path remains private.
 
 Useful commands:
 
@@ -62,10 +62,10 @@ Install dependencies in both repositories, then start a persistent local Workspa
 
 ```bash
 pnpm install
-pnpm local -- /absolute/path/to/workspace
+pnpm local
 ```
 
-On an interactive first launch, omitting the path opens onboarding. Use `.` for the current directory, `--workspace-name` to override the inferred name, `--no-open` to print the one-time browser URL, or `--data-dir` for an independent installation.
+Normal launch opens browser onboarding when no Workspace exists. Passing a path remains a non-interactive shortcut that creates the initial Workspace and Builder agent. Use `.` for the current directory, `--workspace-name` to override the inferred name, `--no-open` to print the one-time browser URL, or `--data-dir` for an independent installation.
 
 For a disposable seeded review environment:
 

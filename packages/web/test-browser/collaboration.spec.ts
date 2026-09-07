@@ -379,6 +379,21 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await expect(page.getByRole("button", { name: "Show participants" })).toBeFocused();
 });
 
+test("shows required browser onboarding when no Workspace exists", async ({ page, request }) => {
+  expect((await request.post(`${fixtureBase}/hide-workspaces?value=true`)).ok()).toBe(true);
+  try {
+    await launchAuthenticated(page, request, "/");
+    await expect(page.getByRole("heading", { name: "Create your first Workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Browse" }).click();
+    await expect(page.getByLabel("Source folder")).toHaveValue("/tmp");
+    await expect(page.getByLabel("Name")).toHaveValue("tmp");
+    await expect(page.getByRole("button", { name: "Create Workspace" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+  } finally {
+    expect((await request.post(`${fixtureBase}/hide-workspaces?value=false`)).ok()).toBe(true);
+  }
+});
+
 test("keeps messaging available when Runtime status is unavailable", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
