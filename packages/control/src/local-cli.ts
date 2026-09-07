@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { access, readFile, stat } from "node:fs/promises";
 import { Command, InvalidArgumentError } from "commander";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -9,6 +10,7 @@ import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalProductApp } from "./local.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
+import { checkForUpdate, compareVersions, installUpdate, type UpdateCheck } from "./updater.ts";
 
 interface LocalCliOptions {
   channelsPort: number;
@@ -88,8 +90,81 @@ async function openBrowser(url: string): Promise<void> {
   });
 }
 
+async function currentVersion(): Promise<string> {
+  const currentDirectory = dirname(fileURLToPath(import.meta.url));
+  const candidates = [resolve(currentDirectory, "../..", "package.json"), resolve(currentDirectory, "../../../..", "package.json")];
+  for (const path of candidates) {
+    try {
+      const metadata = JSON.parse(await readFile(path, "utf8")) as { version?: unknown };
+      if (typeof metadata.version === "string") return metadata.version;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  throw new Error("Unable to determine the installed MinuChannels version");
+}
+
+function printUpdate(update: UpdateCheck, json: boolean): void {
+  if (json) return void console.log(JSON.stringify(update, null, 2));
+  if (update.updateAvailable) {
+    console.log(`MinuChannels ${update.latestVersion} is available (installed: ${update.currentVersion}).`);
+    console.log(`Release: ${update.releaseUrl}`);
+    console.log("Stop any running MinuChannels server, then run `minu-channels update`.");
+  } else {
+    const qualifier = compareVersions(update.currentVersion, update.latestVersion) > 0 ? ` (latest release: ${update.latestVersion})` : "";
+    console.log(`MinuChannels ${update.currentVersion} is up to date${qualifier}.`);
+  }
+}
+
+async function utilityCommand(args: string[]): Promise<boolean> {
+  const command = args[0];
+  if (command === "--version" || command === "-V" || command === "version") {
+    console.log(await currentVersion());
+    return true;
+  }
+  if (command !== "paths" && command !== "doctor" && command !== "update") return false;
+  const utility = new Command().name(`minu-channels ${command}`).option("--data-dir <path>").option("--json");
+  if (command === "update") utility.option("--check");
+  utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
+  const options = utility.opts<{ dataDir?: string; json?: boolean; check?: boolean }>();
+  const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+  if (command === "paths") {
+    const paths = { dataDirectory, channelsDatabase: join(dataDirectory, "channels.db"), relayDatabase: join(dataDirectory, "relay.db"), profile: join(dataDirectory, "local-profile.json"), lock: join(dataDirectory, "run", "instance.lock") };
+    if (options.json) console.log(JSON.stringify(paths, null, 2));
+    else Object.entries(paths).forEach(([label, path]) => console.log(`${label}: ${path}`));
+    return true;
+  }
+  if (command === "doctor") {
+    const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+    const nodeMajor = Number(process.versions.node.split(".")[0]);
+    checks.push({ name: "Node.js", ok: nodeMajor >= 22, detail: process.versions.node });
+    try {
+      await access(dataDirectory);
+      const mode = (await stat(dataDirectory)).mode & 0o777;
+      checks.push({ name: "Data directory", ok: (mode & 0o077) === 0, detail: `${dataDirectory} (${mode.toString(8)})` });
+    } catch {
+      checks.push({ name: "Data directory", ok: true, detail: `${dataDirectory} (not created yet)` });
+    }
+    checks.push({ name: "Platform", ok: process.platform === "darwin" || process.platform === "linux", detail: `${process.platform}/${process.arch}` });
+    if (options.json) console.log(JSON.stringify({ ok: checks.every(({ ok }) => ok), checks }, null, 2));
+    else checks.forEach((check) => console.log(`${check.ok ? "ok" : "failed"}  ${check.name}: ${check.detail}`));
+    if (checks.some(({ ok }) => !ok)) throw new Error("MinuChannels doctor found problems");
+    return true;
+  }
+  const update = await checkForUpdate({ currentVersion: await currentVersion() });
+  if (options.check || !update.updateAvailable) printUpdate(update, Boolean(options.json));
+  else {
+    const installed = await installUpdate(update);
+    if (options.json) console.log(JSON.stringify(installed));
+    else console.log(`Updated MinuChannels from ${installed.previousVersion} to ${installed.version}.`);
+  }
+  return true;
+}
+
 async function main(): Promise<void> {
-  const argv = process.argv.slice(0, 2).concat(process.argv.slice(2).filter((argument) => argument !== "--"));
+  const rawArguments = process.argv.slice(2).filter((argument) => argument !== "--");
+  if (await utilityCommand(rawArguments)) return;
+  const argv = process.argv.slice(0, 2).concat(rawArguments);
   const program = new Command()
     .name("minu-channels")
     .description("Start the persistent local MinuChannels product")

@@ -24,6 +24,17 @@ function run(command, args, options = {}) {
   });
 }
 
+function capture(command, args, options = {}) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn(command, args, options);
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolveRun(output) : reject(new Error(`${command} exited with ${code}: ${output}`)));
+  });
+}
+
 async function startAndStop(expectedSetup, portBase) {
   const executable = join(installRoot, "node_modules/.bin/minu-channels");
   return await new Promise((resolveRun, reject) => {
@@ -79,6 +90,12 @@ try {
   ]);
   console.log(`Installing ${basename(tarball)} into ${installRoot}`);
   await run("npm", ["install", "--prefix", installRoot, tarball]);
+  const executable = join(installRoot, "node_modules/.bin/minu-channels");
+  const version = (await capture(executable, ["--version"])).trim();
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Packaged CLI returned an invalid version: ${version}`);
+  const paths = JSON.parse(await capture(executable, ["paths", "--data-dir", dataDirectory, "--json"]));
+  if (paths.dataDirectory !== dataDirectory) throw new Error("Packaged paths command returned the wrong data directory");
+  await capture(executable, ["doctor", "--data-dir", dataDirectory, "--json"]);
   const portBase = 46_000 + Math.floor(Math.random() * 1_000);
   await startAndStop("Setup:    created a fresh local Workspace", portBase);
   await startAndStop("Setup:    reopened existing local data", portBase);
