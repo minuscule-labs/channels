@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
+import { confirmStoppedChannels } from "../src/update-confirmation.ts";
 import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance } from "../src/updater.ts";
 
 const release = {
@@ -14,6 +16,39 @@ const release = {
     { name: "SHA256SUMS", browser_download_url: "https://github.com/minuscule-labs/channels/releases/download/v1.2.3/SHA256SUMS" },
   ],
 };
+
+test("requires explicit update confirmation unless --yes is supplied", async () => {
+  const input = new PassThrough() as PassThrough & { isTTY?: boolean };
+  const output = new PassThrough() as PassThrough & { isTTY?: boolean };
+  input.isTTY = true;
+  output.isTTY = true;
+  input.end("yes\n");
+  assert.equal(await confirmStoppedChannels({ assumeYes: false, json: false, input, output }), true);
+
+  const declinedInput = new PassThrough() as PassThrough & { isTTY?: boolean };
+  const declinedOutput = new PassThrough() as PassThrough & { isTTY?: boolean };
+  declinedInput.isTTY = true;
+  declinedOutput.isTTY = true;
+  declinedInput.end("\n");
+  assert.equal(await confirmStoppedChannels({
+    assumeYes: false, json: false, input: declinedInput, output: declinedOutput,
+  }), false);
+
+  assert.equal(await confirmStoppedChannels({ assumeYes: true, json: true }), true);
+  await assert.rejects(
+    confirmStoppedChannels({ assumeYes: false, json: true }),
+    /requires --yes/,
+  );
+  await assert.rejects(
+    confirmStoppedChannels({
+      assumeYes: false,
+      json: false,
+      input: new PassThrough(),
+      output: new PassThrough(),
+    }),
+    /requires confirmation/,
+  );
+});
 
 test("discovers the latest checksum-addressed Channels release", async () => {
   const update = await checkForUpdate({

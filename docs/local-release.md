@@ -41,17 +41,22 @@ The built-in updater supports writable global npm installations. It downloads th
 
 1. Stop MinuChannels with Ctrl-C.
 2. Back up the data directory.
-3. Install the newer immutable release artifact over the existing global package.
+3. Run the updater and confirm that every MinuChannels process has stopped.
 4. Start MinuChannels with the same data directory and Workspace path.
 5. Verify Channels, messages, agents, and configuration before removing the backup.
 
 ```bash
 minu-channels update
+# MinuChannels must be stopped before updating.
+# Have you stopped all running MinuChannels processes? [y/N]
+
 minu-channels /absolute/path/to/workspace
 
 # Manual fallback:
 npm install -g <new-github-release-tarball-url>
 ```
+
+The confirmation defaults to **No**. Use `minu-channels update --yes` only after intentionally stopping Channels, such as in controlled automation. Non-interactive and `--json` installation require `--yes`. Confirmation does not bypass active-instance protection: the updater still refuses if it detects a running process from the installation.
 
 Database migrations run during startup. Downgrading an already-migrated data directory is unsupported; restore the pre-upgrade backup instead.
 
