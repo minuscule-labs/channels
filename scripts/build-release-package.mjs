@@ -63,6 +63,7 @@ await Promise.all([
   cp(resolve(root, "packages/storage-drizzle/drizzle"), join(assetsDirectory, "migrations/channels"), { recursive: true }),
   cp(resolve(root, "packages/relay-storage-drizzle/drizzle"), join(assetsDirectory, "migrations/agent-host"), { recursive: true }),
   cp(resolve(root, "README.md"), join(output, "README.md")),
+  cp(resolve(root, "LICENSE"), join(output, "LICENSE")),
 ]);
 
 const workspacePackage = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
@@ -78,11 +79,12 @@ const manifest = {
   name: "@minu/channels",
   version: workspacePackage.version,
   private: true,
+  license: workspacePackage.license,
   description: "Local collaboration for humans and coding agents",
   type: "module",
   engines: { node: ">=22" },
   bin: { "minu-channels": "./dist/bin/minu-channels.js" },
-  files: ["dist", "README.md"],
+  files: ["dist", "README.md", "LICENSE"],
   dependencies: {
     "@libsql/client": storagePackage.dependencies["@libsql/client"],
     "drizzle-orm": storagePackage.dependencies["drizzle-orm"],

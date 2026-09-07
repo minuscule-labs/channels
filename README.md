@@ -200,3 +200,7 @@ pnpm web:test:browser
 The browser uses typed product clients and does not depend on whether capabilities run in-process, over loopback, or on a hosted service. Workspace labels are explicit in navigation and Channel headers, while Channel names replace opaque ids as the primary UI label. Workspace settings show redacted configuration state and accept write-only replacement source/persona/Runtime values without reading them back. The composer always authors as the bound active human and offers no `Send as` selector. Enter sends a message; Shift+Enter or Cmd/Ctrl+Enter inserts a line break. The browser never reads internal execution storage or Runtime credentials directly. Current browser binding prevents accidental UI impersonation but does not authenticate Channels message requests or make a forged `actorIdentityId` trustworthy. Server-enforced user authentication remains upcoming; the planned baseline is MinuNotes' Better Auth email-OTP/session pattern rather than a client-only login screen.
 
 An optional separately installed Minu CLI may expose the same server as `minu channels serve`. The Pi collaboration demo lives under `examples/pi-demo` because it composes Channels with MinuRuntime and is not required to build or deploy Channels.
+
+## License
+
+MinuChannels is licensed under the [Apache License 2.0](LICENSE).
