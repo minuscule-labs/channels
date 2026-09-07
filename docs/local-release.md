@@ -1,6 +1,6 @@
 # Installing a Local Alpha Release
 
-**Status:** The package artifact is implemented and locally smoke-tested. Substitute the actual private GitHub Release asset URL after a release exists.
+**Status:** The package artifact, checksum-verified updater, and tag-triggered GitHub Release workflow are implemented. A release is not complete until its published artifact passes clean-account validation.
 
 ## Requirements
 
@@ -13,10 +13,10 @@ MinuChannels is a single-user, loopback-only local alpha. Do not expose its port
 
 ## Install
 
-Download and install the immutable `.tgz` attached to the approved private GitHub Release:
+Download and install the immutable `.tgz` attached to the approved GitHub Release:
 
 ```bash
-npm install -g <private-github-release-tarball-url>
+npm install -g <github-release-tarball-url>
 minu-channels /absolute/path/to/workspace
 ```
 
@@ -24,7 +24,20 @@ Use `--no-open` to print the one-time browser URL instead of opening it automati
 
 Installing from a release tarball is supported. Installing directly from a Git branch or repository checkout is not a release installation because it may require source build tools and sibling repositories.
 
+## Inspect the installation
+
+```bash
+minu-channels --version
+minu-channels paths
+minu-channels doctor
+minu-channels update --check
+```
+
+`paths` and `doctor` accept `--data-dir` and `--json`. The doctor checks the Node version, supported platform, and private data-directory permissions.
+
 ## Upgrade
+
+The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. It refuses source checkouts and unsupported package-manager layouts.
 
 1. Stop MinuChannels with Ctrl-C.
 2. Back up the data directory.
@@ -33,8 +46,11 @@ Installing from a release tarball is supported. Installing directly from a Git b
 5. Verify Channels, messages, agents, and configuration before removing the backup.
 
 ```bash
-npm install -g <new-private-github-release-tarball-url>
+minu-channels update
 minu-channels /absolute/path/to/workspace
+
+# Manual fallback:
+npm install -g <new-github-release-tarball-url>
 ```
 
 Database migrations run during startup. Downgrading an already-migrated data directory is unsupported; restore the pre-upgrade backup instead.

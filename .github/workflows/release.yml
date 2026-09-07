@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: channels
+      - uses: actions/checkout@v4
+        with:
+          repository: minuscule-labs/minu-runtime
+          ref: bed327e8744e1959d621b5d58b3d1758c30194e1
+          path: runtime
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: |
+            channels/pnpm-lock.yaml
+            runtime/pnpm-lock.yaml
+      - name: Verify tag matches package version
+        working-directory: channels
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e 'const expected = process.argv[1]; const actual = require("./package.json").version; if (actual !== expected) throw new Error(`Tag ${expected} does not match package ${actual}`)' "$VERSION"
+      - run: pnpm install --frozen-lockfile
+        working-directory: runtime
+      - run: pnpm install --frozen-lockfile
+        working-directory: channels
+      - run: pnpm check
+        working-directory: channels
+      - run: pnpm test
+        working-directory: channels
+      - name: Build release artifact and checksums
+        working-directory: channels
+        env:
+          MINU_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+        run: pnpm release:pack
+      - name: Smoke-test packaged installation
+        working-directory: channels
+        run: pnpm release:smoke
+      - name: Create GitHub release
+        working-directory: channels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            release/artifacts/*.tgz release/artifacts/SHA256SUMS \
+            --verify-tag \
+            --title "MinuChannels $GITHUB_REF_NAME" \
+            --generate-notes
