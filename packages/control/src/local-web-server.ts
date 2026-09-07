@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { extname, resolve, sep } from "node:path";
+import { DEFAULT_WEB_PORT, isLocalChannelsHostname } from "./local-host.ts";
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".css": "text/css; charset=utf-8",
@@ -133,7 +134,7 @@ async function serveStatic(
 function loopbackRequestHost(request: IncomingMessage): boolean {
   try {
     const hostname = new URL(`http://${request.headers.host ?? ""}`).hostname;
-    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
+    return isLocalChannelsHostname(hostname);
   } catch { return false; }
 }
 
@@ -194,7 +195,7 @@ export async function createLocalWebServer(
   });
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
-    server.listen(options.port ?? 5174, options.host ?? "127.0.0.1", () => {
+    server.listen(options.port ?? DEFAULT_WEB_PORT, options.host ?? "127.0.0.1", () => {
       server.removeListener("error", reject);
       resolveListen();
     });

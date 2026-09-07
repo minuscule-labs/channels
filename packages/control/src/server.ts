@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
 import { LocalConfigurationRequestError } from "./configuration.ts";
+import { DEFAULT_CONTROL_PORT, isLocalChannelsHostname } from "./local-host.ts";
 import { LocalControlBrowserSessions, type LocalControlBrowserSession } from "./session.ts";
 
 const execFileAsync = promisify(execFile);
@@ -505,7 +506,7 @@ function requestHostname(request: IncomingMessage): string | undefined {
 }
 
 function isAllowedHost(hostname: string | undefined): boolean {
-  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]" || hostname === "::1";
+  return isLocalChannelsHostname(hostname);
 }
 
 export async function createLocalControlHttpServer(
@@ -709,7 +710,7 @@ export async function createLocalControlHttpServer(
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(options.port ?? 4311, host, () => {
+    server.listen(options.port ?? DEFAULT_CONTROL_PORT, host, () => {
       server.off("error", reject);
       resolve();
     });

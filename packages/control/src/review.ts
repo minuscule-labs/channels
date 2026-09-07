@@ -20,6 +20,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
 class SimulatedReviewRuntime implements AgentRuntimePort {
@@ -98,7 +99,7 @@ export async function createLocalReviewApp(
   let relay: ChannelRuntimeRelay | undefined;
   try {
     channelsServer = await createChannelHttpServer({
-      port: options.channelsPort ?? 4310,
+      port: options.channelsPort ?? DEFAULT_CHANNELS_PORT,
       service: new ChannelService(new InMemoryChannelStorage()),
     });
     const client = new ChannelClient(channelsServer.endpoint, { serviceToken: channelsServer.serviceToken });
@@ -215,8 +216,8 @@ export async function createLocalReviewApp(
       channelsEndpoint: channelsServer.endpoint,
       channelsServiceToken: channelsServer.serviceToken,
       relayDatabasePath,
-      webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
-      port: options.controlPort ?? 4311,
+      webUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
+      port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [runtimeAdapter]: runtime },
       stopStartedSessionsOnClose: Boolean(options.managedRuntime),
       onAudit: options.onAudit,

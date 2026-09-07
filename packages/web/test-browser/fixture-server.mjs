@@ -10,10 +10,10 @@ import { ChannelService } from "../../core/dist/src/channel-service.js";
 import { ChannelClient } from "../../core/dist/src/client.js";
 import { InMemoryRelayBindingStore } from "../../relay/dist/src/binding-store.js";
 
-const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 4310);
-const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 4311);
-const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 4312);
-const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 5174);
+const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
+const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
+const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
+const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
 const service = new ChannelService();
 const serviceToken = process.env.MINU_TEST_CHANNELS_SERVICE_TOKEN ?? "browser-fixture-service-token";
 let channelServer = await createChannelHttpServer({ service, port: channelsPort, serviceToken });
@@ -44,7 +44,7 @@ await service.createMessage(channel.id, {
 const privateStore = new InMemoryRelayBindingStore();
 const channelClient = new ChannelClient(channelServer.endpoint, { serviceToken });
 const browserSessions = new LocalControlBrowserSessions({
-  browserUrl: `http://127.0.0.1:${webPort}/`,
+  browserUrl: `http://minu-channels.localhost:${webPort}/`,
   currentHumanIdentityId: human.id,
 });
 const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);

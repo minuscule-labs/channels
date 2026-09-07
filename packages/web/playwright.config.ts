@@ -1,9 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 4310);
-const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 4311);
-const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 4312);
-const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 5174);
+const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
+const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
+const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
+const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
 const serviceToken = "browser-fixture-service-token";
 
 export default defineConfig({
@@ -13,7 +13,7 @@ export default defineConfig({
   workers: 1,
   timeout: 30_000,
   use: {
-    baseURL: `http://127.0.0.1:${webPort}`,
+    baseURL: `http://minu-channels.localhost:${webPort}`,
     trace: "retain-on-failure",
     extraHTTPHeaders: { authorization: `Bearer ${serviceToken}` },
   },

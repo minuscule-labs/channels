@@ -89,7 +89,9 @@ The default data directory is:
 
 Override precedence is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default. Collaboration data and private execution configuration are stored separately inside this product directory with owner-only permissions.
 
-The production app binds to loopback, uses a one-time browser bootstrap, enforces Host and Origin policy, and protects direct collaboration traffic with a private service credential. Agent instructions, source paths, Runtime sessions, and credentials are not exposed through public collaboration metadata.
+The production app binds its sockets to `127.0.0.1` and advertises `http://minu-channels.localhost:47412/`. The reserved `.localhost` name stays on this computer and gives Channels its own browser-cookie namespace. Internal Channels and control ports default to `47410` and `47411`. All three ports remain configurable.
+
+A one-time browser bootstrap enforces Host and Origin policy and protects direct collaboration traffic with a private service credential. Agent instructions, source paths, Runtime sessions, and credentials are not exposed through public collaboration metadata.
 
 ## Architecture
 

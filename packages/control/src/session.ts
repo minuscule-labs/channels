@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { isLocalChannelsHostname } from "./local-host.ts";
 
 const DEFAULT_LAUNCH_CODE_TTL_MS = 60_000;
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1_000;
@@ -76,8 +77,8 @@ function loopbackBrowserUrl(value: string): URL {
   if (url.protocol !== "http:") {
     throw new Error("browserUrl must use loopback HTTP");
   }
-  if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost" && url.hostname !== "[::1]") {
-    throw new Error("browserUrl must use a loopback host");
+  if (!isLocalChannelsHostname(url.hostname)) {
+    throw new Error("browserUrl must use an approved local Channels host");
   }
   if (url.username || url.password) throw new Error("browserUrl must not contain credentials");
   url.hash = "";
@@ -121,12 +122,8 @@ export class LocalControlBrowserSessions {
 
   issueLaunchUrl(controlEndpoint: string, destinationPath?: string): string {
     const endpoint = new URL(controlEndpoint);
-    if (endpoint.protocol !== "http:" || (endpoint.hostname !== "127.0.0.1"
-      && endpoint.hostname !== "localhost" && endpoint.hostname !== "[::1]")) {
-      throw new Error("controlEndpoint must be loopback HTTP");
-    }
-    if (endpoint.hostname !== this.browserUrl.hostname) {
-      throw new Error("controlEndpoint and browserUrl must use the same loopback hostname");
+    if (endpoint.protocol !== "http:" || !isLocalChannelsHostname(endpoint.hostname)) {
+      throw new Error("controlEndpoint must use approved local Channels HTTP");
     }
     const redirectUrl = destinationPath === undefined
       ? this.browserUrl.href
@@ -142,6 +139,7 @@ export class LocalControlBrowserSessions {
     });
     this.audit({ action: "launch.created", outcome: "accepted" });
     const launchUrl = new URL("/local/session/bootstrap", endpoint);
+    launchUrl.hostname = this.browserUrl.hostname;
     launchUrl.searchParams.set("code", code);
     return launchUrl.href;
   }

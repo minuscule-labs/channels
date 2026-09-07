@@ -7,6 +7,7 @@ import { chmod, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { LocalAgentHost, type LocalManagedRuntimePort } from "./agent-host.ts";
 import { LocalAgentHostConfiguration } from "./configuration.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import {
   createLocalControlHttpServer,
@@ -67,14 +68,14 @@ export async function createLocalControlDaemon(
       });
     }
     const browserSessions = new LocalControlBrowserSessions({
-      browserUrl: options.webUrl ?? "http://127.0.0.1:5174/",
+      browserUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
       currentHumanIdentityId: options.currentHumanIdentityId,
       launchCodeTtlMs: options.launchCodeTtlMs,
       sessionTtlMs: options.sessionTtlMs,
       now: options.now,
       onAudit: options.onAudit,
     });
-    const client = new ChannelClient(options.channelsEndpoint ?? "http://127.0.0.1:4310", {
+    const client = new ChannelClient(options.channelsEndpoint ?? `http://127.0.0.1:${DEFAULT_CHANNELS_PORT}`, {
       serviceToken: options.channelsServiceToken,
     });
     agentHost = new LocalAgentHost({

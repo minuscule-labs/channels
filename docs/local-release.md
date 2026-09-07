@@ -20,7 +20,7 @@ npm install -g <github-release-tarball-url>
 minu-channels /absolute/path/to/workspace
 ```
 
-Use `--no-open` to print the one-time browser URL instead of opening it automatically. Use `--data-dir` to create an independent installation.
+Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Channels and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
 
 Installing from a release tarball is supported. Installing directly from a Git branch or repository checkout is not a release installation because it may require source build tools and sibling repositories.
 

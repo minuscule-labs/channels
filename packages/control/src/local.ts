@@ -18,6 +18,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import {
   acquireChannelsDataDirectoryLock,
   prepareChannelsDataDirectory,
@@ -291,7 +292,7 @@ export async function createLocalProductApp(
   try {
     await secureDatabaseFiles(channelsDatabasePath);
     channelsServer = await createChannelHttpServer({
-      port: options.channelsPort ?? 4310,
+      port: options.channelsPort ?? DEFAULT_CHANNELS_PORT,
       service: new ChannelService(storage),
     });
     const client = new ChannelClient(channelsServer.endpoint, { serviceToken: channelsServer.serviceToken });
@@ -351,8 +352,8 @@ export async function createLocalProductApp(
       channelsServiceToken: channelsServer.serviceToken,
       relayDatabasePath,
       relayMigrationsFolder: options.relayMigrationsFolder,
-      webUrl: options.webUrl ?? "http://127.0.0.1:5174/",
-      port: options.controlPort ?? 4311,
+      webUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
+      port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },
       onAudit: options.onAudit,
     });
