@@ -577,8 +577,8 @@ test("local product initializes once and reopens persistent collaboration data",
     const firstClient = new ChannelClient(first.channelsEndpoint, { serviceToken: first.channelsServiceToken });
     assert.equal((await firstClient.listIdentities()).length, 2);
     assert.deepEqual((await firstClient.listWorkspaces()).map(({ name }) => name), ["Chosen Workspace"]);
-    assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId)).length, 1);
-    assert.deepEqual(await firstClient.listMessages(first.channelId), []);
+    assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId!)).length, 1);
+    assert.deepEqual(await firstClient.listMessages(first.channelId!), []);
     assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o700);
     await assert.rejects(createLocalProductApp({
       dataDirectory,
@@ -628,6 +628,51 @@ test("local product initializes once and reopens persistent collaboration data",
   }
 });
 
+test("fresh local product starts without a terminal Workspace and provisions it through browser control", async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-browser-first-product-"));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-browser-first-workspace-"));
+  let app: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
+  try {
+    app = await createLocalProductApp({
+      dataDirectory,
+      channelsPort: 0,
+      controlPort: 0,
+      webUrl: "http://127.0.0.1:5199/",
+      runtimeAdapter: "managed-test",
+      runtime: new ManagedFakeRuntime(),
+    });
+    assert.equal(app.initialized, true);
+    assert.equal(app.workspaceId, undefined);
+    assert.equal(app.channelId, undefined);
+    const client = new ChannelClient(app.channelsEndpoint, { serviceToken: app.channelsServiceToken });
+    assert.equal((await client.listIdentities()).length, 1);
+    assert.deepEqual(await client.listWorkspaces(), []);
+
+    const bootstrap = await fetch(app.issueBrowserLaunchUrl(), { redirect: "manual" });
+    assert.equal(bootstrap.headers.get("location"), "http://127.0.0.1:5199/");
+    const cookie = bootstrap.headers.get("set-cookie")?.split(";", 1)[0];
+    assert.ok(cookie);
+    const provisionedResponse = await fetch(`${app.controlEndpoint}/local/workspaces`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ slug: "browser-first", name: "Browser First", rootUri: workspaceRoot }),
+    });
+    assert.equal(provisionedResponse.status, 201);
+    const provisioned = await provisionedResponse.json() as { workspaceId: string; channelId: string };
+    assert.deepEqual((await client.listWorkspaces()).map(({ id, name }) => ({ id, name })), [{
+      id: provisioned.workspaceId,
+      name: "Browser First",
+    }]);
+    assert.equal((await client.listWorkspaceChannels(provisioned.workspaceId))[0]?.id, provisioned.channelId);
+  } finally {
+    await app?.close().catch(() => undefined);
+    await Promise.all([
+      rm(dataDirectory, { recursive: true, force: true }),
+      rm(workspaceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("first-run initialization resumes after private-store setup fails", async () => {
   const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-recovery-"));
   const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-local-recovery-root-"));
@@ -651,7 +696,7 @@ test("first-run initialization resumes after private-store setup fails", async (
       const client = new ChannelClient(recovered.channelsEndpoint, { serviceToken: recovered.channelsServiceToken });
       assert.equal((await client.listIdentities()).length, 2);
       assert.equal((await client.listWorkspaces()).length, 1);
-      assert.equal((await client.listWorkspaceChannels(recovered.workspaceId)).length, 1);
+      assert.equal((await client.listWorkspaceChannels(recovered.workspaceId!)).length, 1);
     } finally { await recovered.close(); }
     await assert.rejects(stat(join(dataDirectory, "local-profile.json.initializing")), /ENOENT/);
   } finally {

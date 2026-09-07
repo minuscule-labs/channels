@@ -4,7 +4,6 @@ import { existsSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { Command, InvalidArgumentError } from "commander";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalProductApp } from "./local.ts";
@@ -174,7 +173,7 @@ async function main(): Promise<void> {
   const program = new Command()
     .name("minu-channels")
     .description("Start the persistent local MinuChannels product")
-    .argument("[directory]", "Workspace source directory (required on first non-interactive launch)")
+    .argument("[directory]", "Workspace source directory shortcut")
     .option("--channels-port <number>", "internal Channels API port", port, DEFAULT_CHANNELS_PORT)
     .option("--control-port <number>", "internal authenticated control port", port, DEFAULT_CONTROL_PORT)
     .option("--web-port <number>", "local product web port", port, DEFAULT_WEB_PORT)
@@ -193,25 +192,13 @@ async function main(): Promise<void> {
   const directoryArgumentProvided = Boolean(options.cwd ?? program.args[0]);
   const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
   const freshInstallation = !existsSync(join(dataDirectory, "local-profile.json"));
-  let workspaceInput = options.cwd ?? program.args[0];
-  let workspaceName = options.workspaceName?.trim();
-  if (freshInstallation && !workspaceInput) {
-    if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      throw new Error("First launch requires a Workspace directory argument (for example: minu-channels .)");
-    }
-    const prompt = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      const sourceAnswer = (await prompt.question(`Workspace source folder [${process.cwd()}]: `)).trim();
-      workspaceInput = sourceAnswer || process.cwd();
-      const inferredName = basename(resolve(workspaceInput)) || "Workspace";
-      const nameAnswer = (await prompt.question(`Workspace name [${inferredName}]: `)).trim();
-      workspaceName = nameAnswer || inferredName;
-    } finally {
-      prompt.close();
-    }
+  const workspaceInput = options.cwd ?? program.args[0];
+  const workspaceRoot = workspaceInput ? resolve(workspaceInput) : undefined;
+  if (options.workspaceName && !workspaceRoot) {
+    throw new Error("--workspace-name requires a Workspace directory argument");
   }
-  const workspaceRoot = resolve(workspaceInput ?? process.cwd());
-  workspaceName ||= basename(workspaceRoot) || "Workspace";
+  const workspaceName = options.workspaceName?.trim()
+    || (workspaceRoot ? basename(workspaceRoot) || "Workspace" : undefined);
   if (new Set([options.channelsPort, options.controlPort, options.webPort]).size !== 3) {
     throw new Error("Channels, control, and web ports must be distinct");
   }
@@ -262,9 +249,13 @@ async function main(): Promise<void> {
     console.log("\nMinuChannels is ready");
     console.log(`  Web:      ${webUrl}`);
     console.log(`  Data:     ${app.dataDirectory}`);
-    console.log(`  Workspace: ${workspaceRoot}`);
-    console.log(`  Setup:    ${app.initialized ? "created a fresh local Workspace" : "reopened existing local data"}`);
-    console.log("  Agent:    click Start for @builder, then send a message for a live Pi response");
+    console.log(`  Workspace: ${workspaceRoot ?? "choose or create one in the browser"}`);
+    console.log(`  Setup:    ${app.initialized
+      ? (app.workspaceId ? "created a fresh local Workspace" : "ready for browser Workspace setup")
+      : "reopened existing local data"}`);
+    if (app.workspaceId) {
+      console.log("  Agent:    click Start for @builder, then send a message for a live Pi response");
+    }
     if (options.open) {
       await openBrowser(launchUrl);
       console.log("\nOpened the authenticated local Workspace in your browser.");

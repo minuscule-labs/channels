@@ -73,10 +73,10 @@ Review mode demonstrates the application and Relay boundary. The `review-mode` R
 For fresh persistent local use with genuine Pi:
 
 ```bash
-pnpm local -- --cwd /absolute/path/to/workspace
+pnpm local
 ```
 
-This uses the dedicated `minu-channels` foreground entry point with owner-only persistent state under `~/.minu/channels`. First launch creates stable `@you` and `@builder` identities, a Workspace named after the source directory, and an empty **General** Channel. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The process serves the production web build, proxies collaboration/control/SSE traffic through one loopback URL, and retains browser bootstrap, audit output, live Pi integration, and coordinated Ctrl-C shutdown. Vite remains review/development-only.
+This uses the dedicated `minu-channels` foreground entry point with owner-only persistent state under `~/.minu/channels`. First launch creates the stable local human identity and opens browser onboarding; selecting a private source folder provisions the first Workspace and empty **General** Channel. Passing `--cwd /absolute/path/to/workspace` remains a non-interactive shortcut that also seeds the configured but stopped `@builder` agent. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The process serves the production web build, proxies collaboration/control/SSE traffic through one loopback URL, and retains browser bootstrap, audit output, live Pi integration, and coordinated Ctrl-C shutdown. Vite remains review/development-only.
 
 No hosted database is required for local MVP use. Collaboration database adapters are independent of the private agent-host store; PostgreSQL and other adapters remain documented future work.
 

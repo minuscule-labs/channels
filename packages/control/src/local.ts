@@ -26,18 +26,26 @@ import {
 } from "./local-paths.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
-const PROFILE_VERSION = 1;
+const LEGACY_PROFILE_VERSION = 1;
+const PROFILE_VERSION = 2;
 const DEFAULT_PERSONA = "You are the implementation agent for this Workspace. Follow the human's Channel requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Channel responses.";
 
-interface LocalProfile {
+interface BrowserFirstLocalProfile {
   version: typeof PROFILE_VERSION;
+  currentHumanIdentityId: string;
+}
+
+interface LegacyLocalProfile {
+  version: typeof LEGACY_PROFILE_VERSION;
   currentHumanIdentityId: string;
   workspaceId: string;
   channelId: string;
   builderIdentityId: string;
 }
 
-interface LocalInitializationState extends LocalProfile {
+type LocalProfile = BrowserFirstLocalProfile | LegacyLocalProfile;
+
+interface LocalInitializationState extends LegacyLocalProfile {
   workspaceName: string;
   workspaceSlug: string;
 }
@@ -64,8 +72,8 @@ export interface LocalProductApp {
   channelsServiceToken: string;
   controlEndpoint: string;
   dataDirectory: string;
-  workspaceId: string;
-  channelId: string;
+  workspaceId?: string;
+  channelId?: string;
   humanIdentityId: string;
   initialized: boolean;
   issueBrowserLaunchUrl(): string;
@@ -95,15 +103,18 @@ async function secureDatabaseFiles(path: string): Promise<void> {
 }
 
 function parseProfile(value: string): LocalProfile {
-  const candidate = JSON.parse(value) as Partial<LocalProfile>;
-  if (candidate.version !== PROFILE_VERSION
-    || typeof candidate.currentHumanIdentityId !== "string"
-    || typeof candidate.workspaceId !== "string"
-    || typeof candidate.channelId !== "string"
-    || typeof candidate.builderIdentityId !== "string") {
+  const candidate = JSON.parse(value) as Record<string, unknown>;
+  const browserFirst = candidate.version === PROFILE_VERSION
+    && typeof candidate.currentHumanIdentityId === "string";
+  const legacy = candidate.version === LEGACY_PROFILE_VERSION
+    && typeof candidate.currentHumanIdentityId === "string"
+    && typeof candidate.workspaceId === "string"
+    && typeof candidate.channelId === "string"
+    && typeof candidate.builderIdentityId === "string";
+  if (!browserFirst && !legacy) {
     throw new Error("Local MinuChannels profile is invalid or unsupported");
   }
-  return candidate as LocalProfile;
+  return candidate as unknown as LocalProfile;
 }
 
 async function readProfile(path: string): Promise<LocalProfile | undefined> {
@@ -123,15 +134,56 @@ async function writeProfile(path: string, profile: LocalProfile): Promise<void> 
 }
 
 async function validateProfile(client: ChannelClient, profile: LocalProfile): Promise<void> {
-  const [human, workspace, channel, builder] = await Promise.all([
-    client.getIdentity(profile.currentHumanIdentityId),
+  const human = await client.getIdentity(profile.currentHumanIdentityId);
+  if (human.type !== "human") {
+    throw new Error("Local MinuChannels profile does not match the collaboration database");
+  }
+  if (profile.version === PROFILE_VERSION) return;
+  const [workspace, channel, builder] = await Promise.all([
     client.getWorkspace(profile.workspaceId),
     client.getChannel(profile.channelId),
     client.getIdentity(profile.builderIdentityId),
   ]);
-  if (human.type !== "human" || builder.type !== "agent" || channel.workspaceId !== workspace.id) {
+  if (builder.type !== "agent" || channel.workspaceId !== workspace.id) {
     throw new Error("Local MinuChannels profile does not match the collaboration database");
   }
+}
+
+async function initializeBrowserFirstProfile(
+  client: ChannelClient,
+  profilePath: string,
+): Promise<BrowserFirstLocalProfile> {
+  const statePath = `${profilePath}.initializing`;
+  let profile: BrowserFirstLocalProfile | undefined;
+  try {
+    const candidate = parseProfile(await readFile(statePath, "utf8"));
+    if (candidate.version !== PROFILE_VERSION) throw new Error("Local initialization state is invalid");
+    profile = candidate;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (!profile) {
+    if ((await client.listWorkspaces()).length > 0 || (await client.listIdentities()).length > 0) {
+      throw new Error(
+        `Local data exists without ${basename(profilePath)}. Move or remove the data directory before starting fresh.`,
+      );
+    }
+    profile = {
+      version: PROFILE_VERSION,
+      currentHumanIdentityId: createResourceId("identity"),
+    };
+    await writeProfile(statePath, profile);
+  }
+  if (!(await client.listIdentities()).some(({ id }) => id === profile.currentHumanIdentityId)) {
+    await client.createIdentity({
+      id: profile.currentHumanIdentityId,
+      type: "human",
+      displayName: "You",
+    });
+  }
+  await writeProfile(profilePath, profile);
+  await rm(statePath, { force: true });
+  return profile;
 }
 
 async function initializeProfile(
@@ -163,7 +215,7 @@ async function initializeProfile(
       );
     }
     state = {
-      version: PROFILE_VERSION,
+      version: LEGACY_PROFILE_VERSION,
       currentHumanIdentityId: createResourceId("identity"),
       builderIdentityId: createResourceId("identity"),
       workspaceId: createResourceId("workspace"),
@@ -245,8 +297,8 @@ async function initializeProfile(
     await relayStore.close();
   }
 
-  const profile: LocalProfile = {
-    version: PROFILE_VERSION,
+  const profile: LegacyLocalProfile = {
+    version: LEGACY_PROFILE_VERSION,
     currentHumanIdentityId: state.currentHumanIdentityId,
     workspaceId: state.workspaceId,
     channelId: state.channelId,
@@ -261,16 +313,19 @@ export async function createLocalProductApp(
   options: LocalProductAppOptions,
 ): Promise<LocalProductApp> {
   const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDirectory });
-  const requestedWorkspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
-  let workspaceRoot: string;
-  try {
-    workspaceRoot = await realpath(requestedWorkspaceRoot);
-    if (!(await stat(workspaceRoot)).isDirectory()) throw new Error("not a directory");
-  } catch {
-    throw new Error(`Workspace source folder is unavailable or is not a directory: ${requestedWorkspaceRoot}`);
+  let workspaceRoot: string | undefined;
+  if (options.workspaceRoot !== undefined) {
+    const requestedWorkspaceRoot = resolve(options.workspaceRoot);
+    try {
+      workspaceRoot = await realpath(requestedWorkspaceRoot);
+      if (!(await stat(workspaceRoot)).isDirectory()) throw new Error("not a directory");
+    } catch {
+      throw new Error(`Workspace source folder is unavailable or is not a directory: ${requestedWorkspaceRoot}`);
+    }
   }
-  const workspaceName = options.workspaceName?.trim() || basename(workspaceRoot) || "Local Workspace";
-  if (workspaceName.length > 200) throw new Error("Workspace name must be at most 200 characters");
+  const workspaceName = options.workspaceName?.trim()
+    || (workspaceRoot ? basename(workspaceRoot) || "Local Workspace" : undefined);
+  if (workspaceName && workspaceName.length > 200) throw new Error("Workspace name must be at most 200 characters");
   const channelsDatabasePath = join(dataDirectory, "channels.db");
   const relayDatabasePath = join(dataDirectory, "relay.db");
   const profilePath = join(dataDirectory, "local-profile.json");
@@ -300,22 +355,24 @@ export async function createLocalProductApp(
     const initialized = profile === undefined;
     if (profile) {
       await validateProfile(client, profile);
-    } else {
+    } else if (workspaceRoot) {
       profile = await initializeProfile(
         client,
         profilePath,
         workspaceRoot,
-        workspaceName,
+        workspaceName ?? "Local Workspace",
         relayDatabasePath,
         options.runtimeAdapter,
         options.personaPrompt ?? DEFAULT_PERSONA,
         options.relayMigrationsFolder,
       );
+    } else {
+      profile = await initializeBrowserFirstProfile(client, profilePath);
     }
     await secureDatabaseFiles(relayDatabasePath);
-    let selectedWorkspaceId = profile.workspaceId;
-    let selectedChannelId = profile.channelId;
-    if (!initialized && options.selectWorkspaceRoot) {
+    let selectedWorkspaceId = profile.version === LEGACY_PROFILE_VERSION ? profile.workspaceId : undefined;
+    let selectedChannelId = profile.version === LEGACY_PROFILE_VERSION ? profile.channelId : undefined;
+    if (!initialized && options.selectWorkspaceRoot && workspaceRoot) {
       const relayStore = await DrizzleLibSqlRelayStorage.open({
         url: localRelayLibSqlUrl(relayDatabasePath),
         migrationsFolder: options.relayMigrationsFolder,
@@ -369,7 +426,9 @@ export async function createLocalProductApp(
       humanIdentityId: profile.currentHumanIdentityId,
       initialized,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
-        `/app/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}`,
+        selectedWorkspaceId && selectedChannelId
+          ? `/app/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}`
+          : "/",
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
       async close() {

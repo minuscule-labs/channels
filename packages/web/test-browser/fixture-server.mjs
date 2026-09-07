@@ -15,6 +15,9 @@ const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
 const service = new ChannelService();
+const listWorkspaces = service.listWorkspaces.bind(service);
+let hideWorkspaces = false;
+service.listWorkspaces = async () => hideWorkspaces ? [] : listWorkspaces();
 const serviceToken = process.env.MINU_TEST_CHANNELS_SERVICE_TOKEN ?? "browser-fixture-service-token";
 let channelServer = await createChannelHttpServer({ service, port: channelsPort, serviceToken });
 const human = await service.createIdentity({ type: "human", displayName: "David Kennedy" });
@@ -121,6 +124,11 @@ const controlServer = createServer(async (request, response) => {
       localControl.endpoint,
       url.searchParams.get("destination") ?? "/",
     ) }));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/hide-workspaces") {
+    hideWorkspaces = url.searchParams.get("value") === "true";
+    response.writeHead(204).end();
     return;
   }
   if (request.method !== "POST" || url.pathname !== "/disconnect") {

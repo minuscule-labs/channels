@@ -11,7 +11,13 @@ function workspaceSlug(name: string): string {
   return `${base}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
+export function WorkspaceCreateDialog({
+  onNavigate,
+  onboarding = false,
+}: {
+  onNavigate?(): void;
+  onboarding?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [sourcePath, setSourcePath] = useState("");
@@ -21,12 +27,16 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
   const session = useQuery({
     queryKey: queryKeys.localCurrentSession(),
     queryFn: () => localControl.currentSession(),
-    enabled: open,
+    enabled: onboarding || open,
     retry: false,
   });
   const picker = useMutation({
     mutationFn: () => localControl.selectLocalFolder(),
-    onSuccess: (path) => { if (path) setSourcePath(path); },
+    onSuccess: (path) => {
+      if (!path) return;
+      setSourcePath(path);
+      setName((current) => current || path.split("/").filter(Boolean).at(-1) || "Workspace");
+    },
   });
   const mutation = useMutation({
     mutationFn: async () => {
@@ -55,7 +65,8 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
   const valid = Boolean(name.trim() && sourcePath.trim().startsWith("/") && session.data);
 
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => {
+    <Dialog.Root open={onboarding || open} onOpenChange={(next) => {
+      if (onboarding) return;
       setOpen(next);
       if (!next) {
         provisioningSlug.current = undefined;
@@ -63,15 +74,17 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
         picker.reset();
       }
     }}>
-      <Dialog.Trigger asChild>
-        <button type="button" className="icon-button inline-flex" aria-label="Add Workspace" title="Add Workspace"><FolderPlus className="h-4 w-4" /></button>
-      </Dialog.Trigger>
+      {!onboarding ? (
+        <Dialog.Trigger asChild>
+          <button type="button" className="icon-button inline-flex" aria-label="Add Workspace" title="Add Workspace"><FolderPlus className="h-4 w-4" /></button>
+        </Dialog.Trigger>
+      ) : null}
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] w-[min(36rem,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
           <header className="flex items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
-            <div><Dialog.Title className="text-base font-semibold">Add Workspace</Dialog.Title><Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">Connect a local source folder to a new Workspace.</Dialog.Description></div>
-            <Dialog.Close className="icon-button inline-flex" aria-label="Close Add Workspace"><X className="h-4 w-4" /></Dialog.Close>
+            <div><Dialog.Title className="text-base font-semibold">{onboarding ? "Create your first Workspace" : "Add Workspace"}</Dialog.Title><Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">Connect a local source folder to a new Workspace. The folder stays on this computer.</Dialog.Description></div>
+            {!onboarding ? <Dialog.Close className="icon-button inline-flex" aria-label="Close Add Workspace"><X className="h-4 w-4" /></Dialog.Close> : null}
           </header>
           <form className="p-5" onSubmit={(event) => { event.preventDefault(); if (valid && !mutation.isPending) mutation.mutate(); }}>
             <label className="block text-xs font-medium">Name
@@ -87,7 +100,7 @@ export function WorkspaceCreateDialog({ onNavigate }: { onNavigate?(): void }) {
             <p className="mt-1.5 text-[10px] leading-4 text-[var(--muted)]">Use an absolute local path. It remains private configuration.</p>
             <div className="mt-5 flex items-center justify-end gap-2">
               {mutation.error || picker.error || session.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? picker.error ?? session.error)?.message}</span> : null}
-              <Dialog.Close asChild><button type="button" className="button-secondary">Cancel</button></Dialog.Close>
+              {!onboarding ? <Dialog.Close asChild><button type="button" className="button-secondary">Cancel</button></Dialog.Close> : null}
               <button type="submit" className="button-primary" disabled={!valid || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}Create Workspace</button>
             </div>
           </form>

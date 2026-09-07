@@ -17,10 +17,10 @@ Download and install the immutable `.tgz` attached to the approved GitHub Releas
 
 ```bash
 npm install -g <github-release-tarball-url>
-minu-channels /absolute/path/to/workspace
+minu-channels
 ```
 
-Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Channels and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
+Choose the first Workspace source folder in browser onboarding. Passing an absolute Workspace path remains available as a non-interactive shortcut. Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Channels and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
 
 Installing from a release tarball is supported. Installing directly from a Git branch or repository checkout is not a release installation because it may require source build tools and sibling repositories.
 
@@ -42,7 +42,7 @@ The built-in updater supports writable global npm installations. It downloads th
 1. Stop MinuChannels with Ctrl-C.
 2. Back up the data directory.
 3. Run the updater and confirm that every MinuChannels process has stopped.
-4. Start MinuChannels with the same data directory and Workspace path.
+4. Start MinuChannels with the same data directory.
 5. Verify Channels, messages, agents, and configuration before removing the backup.
 
 ```bash
@@ -50,7 +50,7 @@ minu-channels update
 # MinuChannels must be stopped before updating.
 # Have you stopped all running MinuChannels processes? [y/N]
 
-minu-channels /absolute/path/to/workspace
+minu-channels
 
 # Manual fallback:
 npm install -g <new-github-release-tarball-url>
@@ -84,10 +84,10 @@ Stop MinuChannels and move the data directory rather than deleting it immediatel
 
 ```bash
 mv ~/.minu/channels ~/.minu/channels.previous
-minu-channels /absolute/path/to/workspace
+minu-channels
 ```
 
-The next launch creates a fresh local identity, Workspace, Builder agent, and General Channel. Remove the previous directory only after confirming it is no longer needed.
+The next launch creates a fresh local identity and opens browser Workspace onboarding. Remove the previous directory only after confirming it is no longer needed.
 
 ## Uninstall
 
