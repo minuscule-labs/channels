@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.3
 
 - Open first-run Workspace setup in the browser; keep an explicit source path as a non-interactive shortcut.
 - Advertise the dedicated `minu-channels.localhost` browser origin while retaining loopback-only socket binding.
