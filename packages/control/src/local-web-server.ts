@@ -47,12 +47,14 @@ function proxy(
   response: ServerResponse,
   target: string,
   headers: Record<string, string> = {},
+  forwardCookie = false,
 ): void {
   const incoming = new URL(request.url ?? "/", "http://minu.local");
   const destination = new URL(target);
   destination.pathname = incoming.pathname;
   destination.search = incoming.search;
-  const { origin: _origin, cookie: _cookie, ...forwardedHeaders } = request.headers;
+  const { origin: _origin, ...forwardedHeaders } = request.headers;
+  if (!forwardCookie) delete forwardedHeaders.cookie;
   const upstream = proxyRequest(destination, {
     method: request.method,
     headers: {
@@ -179,7 +181,7 @@ export async function createLocalWebServer(
           authorization: `Bearer ${options.channelsServiceToken}`,
           "x-minu-actor-id": session.identityId,
         });
-      } else if (target) proxy(request, response, target);
+      } else if (target) proxy(request, response, target, {}, true);
       else await serveStatic(request, response, webDirectory, url.pathname);
     })().catch((error) => {
       if (response.headersSent) response.destroy(error as Error);
