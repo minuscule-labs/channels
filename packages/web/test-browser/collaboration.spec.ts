@@ -386,6 +386,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
     `${channelsBase}/workspaces/${workspaceId}/channels`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
+  await request.post(`${fixtureBase}/agent-activity?phase=running&queued=1`);
 
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Open navigation" }).click();
@@ -398,9 +399,12 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await page.getByRole("button", { name: "Show participants" }).click();
   const participants = page.getByRole("dialog", { name: "Participants" });
   await expect(participants).toContainText("Builder Agent");
+  await expect(participants).toContainText("Running");
+  await expect(participants).toContainText("1 queued turn");
   await participants.getByRole("button", { name: "Close participants" }).click();
   await expect(participants).toBeHidden();
   await expect(page.getByRole("button", { name: "Show participants" })).toBeFocused();
+  await request.post(`${fixtureBase}/agent-activity?phase=idle`);
 });
 
 test("shows required browser onboarding when no Workspace exists", async ({ page, request }) => {

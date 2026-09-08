@@ -553,6 +553,10 @@ export class ChannelRuntimeRelay {
     }
   }
 
+  private isCanceling(state: BindingState): boolean {
+    return state.phase === "canceling";
+  }
+
   private clearActive(state: BindingState): void {
     state.activeTrigger = undefined;
     state.startedAt = undefined;
@@ -607,6 +611,13 @@ export class ChannelRuntimeRelay {
       if (turn.status === "interrupted") state.interruptedTriggerId = trigger.id;
       response = turn.response;
     } else {
+      // A legacy Runtime cannot expose a stable turn id. Once cancellation has begun,
+      // only reconcile it to idle; never send the original prompt again.
+      if (state.phase === "canceling") {
+        await this.waitUntilIdle(binding);
+        await this.commitCancellation(state, trigger);
+        return;
+      }
       await this.waitUntilIdle(binding);
       const before = await this.awaitRuntime(
         binding.runtime.messages(binding.sessionId),
@@ -620,7 +631,7 @@ export class ChannelRuntimeRelay {
           this.options.turnTimeoutMs ?? 30 * 60_000,
         );
       } catch (error) {
-        if (state.interruptedTriggerId !== trigger.id && state.phase !== "canceling") {
+        if (state.interruptedTriggerId !== trigger.id && !this.isCanceling(state)) {
           // A local/transient rejection can be safely retried. Timeouts and dropped
           // acknowledgements may have reached the legacy Runtime, so reconcile those
           // once and never resend them without a caller-stable turn ID.
@@ -648,6 +659,9 @@ export class ChannelRuntimeRelay {
       return;
     }
     if (state.phase === "canceling") {
+      if (!binding.runtime.startTurn || !binding.runtime.turn) {
+        await this.waitUntilIdle(binding);
+      }
       await this.commitCancellation(state, trigger);
       return;
     }

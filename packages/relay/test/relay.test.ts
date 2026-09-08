@@ -875,6 +875,35 @@ test("a failed trigger blocks later cursor advancement until ordered retry succe
   } finally { await relay.stop(); await server.close(); }
 });
 
+test("Relay activity exposes retrying phase and the next attempt", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  let sends = 0;
+  class RetryingRuntime extends FakeRuntime {
+    override async send(sessionId: string, input: string): Promise<void> {
+      sends += 1;
+      if (sends === 1) throw new Error("transient Runtime bridge failure");
+      await super.send(sessionId, input);
+    }
+  }
+  const runtime = new RetryingRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a retry visibly" });
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "retrying");
+    assert.equal(relay.activity("agent-a")?.retryAttempt, 2);
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+  } finally { await relay.stop(); await server.close(); }
+});
+
 test("terminal Runtime failure is recorded visibly before the cursor advances", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -1157,8 +1186,10 @@ test("relay exposes active queue state and cancels only the current turn", async
       queuedTurns: 0,
     });
     assert.ok(initial?.startedAt);
+    const startedAt = initial!.startedAt;
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
     await waitUntil(async () => relay.activity("agent-a")?.queuedTurns === 1);
+    assert.equal(relay.activity("agent-a")?.startedAt, startedAt);
 
     await relay.cancelCurrent("agent-a", "user");
     await relay.cancelCurrent("agent-a", "user");
@@ -1175,6 +1206,52 @@ test("relay exposes active queue state and cancels only the current turn", async
     await relay.stop();
     await server.close();
   }
+});
+
+test("an ambiguous Runtime interrupt remains canceling and is not retried", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  let started = false;
+  let interrupts = 0;
+  const timestamp = new Date().toISOString();
+  const runtime: AgentRuntimePort = {
+    async send() { throw new Error("legacy send must not be used"); },
+    async messages() { return []; },
+    async status() { return started ? "working" : "idle"; },
+    async startTurn(_sessionId, turnId, input) {
+      started = true;
+      return { id: turnId, input, status: "running", createdAt: timestamp, updatedAt: timestamp };
+    },
+    async turn(_sessionId, turnId) {
+      return started
+        ? { id: turnId, input: "pending", status: "running", createdAt: timestamp, updatedAt: timestamp }
+        : undefined;
+    },
+    async interrupt() {
+      interrupts += 1;
+      throw new Error("connection dropped after interrupt invocation");
+    },
+  };
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    turnPollIntervalMs: 5,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a remain observable" });
+    await waitUntil(async () => started);
+    await relay.cancelCurrent("agent-a", "user");
+    await relay.cancelCurrent("agent-a", "user");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "canceling");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(interrupts, 1);
+    assert.equal((await client.listMessages(channel.id)).length, 1);
+  } finally { await relay.stop(); await server.close(); }
 });
 
 test("relay wakes only addressed agents and posts responses without reply loops", async () => {
