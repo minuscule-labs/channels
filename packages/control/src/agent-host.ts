@@ -8,6 +8,7 @@ import {
   type LocalWorkspaceConfig,
   type RelayBindingStore,
   type RestoredChannelBindings,
+  type RelayAgentActivity,
   type WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { randomUUID } from "node:crypto";
@@ -389,6 +390,52 @@ export class LocalAgentHost {
         );
       }
     });
+  }
+
+  activity(channelId: string, agentIdentityId: string): RelayAgentActivity | undefined {
+    return this.runners.get(channelId)?.relay.activity(agentIdentityId);
+  }
+
+  async cancelCurrentChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void> {
+    let workspaceId: string | undefined;
+    try {
+      if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+      const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+      workspaceId = context.channel.workspaceId;
+      const runner = this.runners.get(channelId);
+      if (!runner) {
+        throw new LocalConfigurationRequestError("Agent Channel session is unavailable", 409, "unavailable");
+      }
+      await runner.relay.cancelCurrent(agentIdentityId, actorIdentityId);
+      this.audit({
+        action: "agent.turn.cancel.requested",
+        outcome: "accepted",
+        actorIdentityId,
+        workspaceId,
+        channelId,
+        targetIdentityId: agentIdentityId,
+      });
+    } catch (error) {
+      this.audit({
+        action: "agent.turn.cancel.requested",
+        outcome: "rejected",
+        reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+        actorIdentityId,
+        workspaceId,
+        channelId,
+        targetIdentityId: agentIdentityId,
+      });
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      throw new LocalConfigurationRequestError(
+        error instanceof Error ? error.message : "Agent Channel session is unavailable",
+        409,
+        "unavailable",
+      );
+    }
   }
 
   async stopChannelAgent(

@@ -18,5 +18,7 @@ export {
   type ChannelRuntimeRelayOptions,
   type RuntimePortMessage,
   type RuntimePortTurn,
+  type RelayAgentActivity,
+  type RelayAgentActivityPhase,
   type WakePolicy,
 } from "./relay.ts";

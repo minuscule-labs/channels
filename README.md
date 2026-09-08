@@ -13,7 +13,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 - Reusable human, agent, and service identities
 - Live updates, mentions, Markdown, syntax highlighting, and code-copy controls
 - Per-agent instructions, Skills, harness, provider, model, and reasoning settings
-- Explicit **Start**, **Start fresh**, and **Stop** controls for agent sessions
+- Per-agent activity (trigger, elapsed time, and queue depth), **Cancel current**, and confirmed **Stop agent** controls
 - Workspace and Channel administration with native folder selection
 - Product-isolated local storage, recovery, locking, and checksum-verified updates
 - A self-contained release package with the web app, migrations, and pinned Runtime

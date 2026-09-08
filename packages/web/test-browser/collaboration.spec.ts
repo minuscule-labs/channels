@@ -294,7 +294,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/stop`));
-  await page.getByRole("button", { name: "Stop Builder Agent" }).click();
+  await page.getByRole("button", { name: "Stop agent Builder Agent" }).click();
   expect((await stopResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: disabled")).toBeVisible();
 
@@ -350,6 +350,30 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();
   await expect(page.getByText(/roster 3$/)).toBeVisible();
+});
+
+test("shows active agent work and cancels the current turn without disabling the session", async ({ page, request }) => {
+  const workspacesResponse = await request.get(`${channelsBase}/workspaces`);
+  const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
+  const workspaceId = workspaces[0]!.id;
+  const channelsResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`);
+  const { channels } = await channelsResponse.json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+
+  await expect(page.getByText(/Running · 1m/)).toBeVisible();
+  await expect(page.getByText("2 queued turns")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancel current request for Builder Agent" })).toBeVisible();
+  const cancelResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().includes(`/local/channels/${channelId}/agents/`)
+    && response.url().endsWith("/cancel-current"));
+  await page.getByRole("button", { name: "Cancel current request for Builder Agent" }).click();
+  expect((await cancelResponse).status()).toBe(202);
+  await expect(page.getByText("Canceling…")).toBeVisible();
+  await expect(page.getByTitle("Runtime: running")).toBeVisible();
+  await request.post(`${fixtureBase}/agent-activity?phase=idle`);
 });
 
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {

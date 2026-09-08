@@ -903,6 +903,33 @@ test("terminal Runtime failure is recorded visibly before the cursor advances", 
   } finally { await relay.stop(); await server.close(); }
 });
 
+test("legacy Runtime does not resend after an ambiguous send failure", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  let sends = 0;
+  const runtime: AgentRuntimePort = {
+    async status() { return "idle"; },
+    async send() { sends += 1; throw new Error("connection dropped after send"); },
+    async messages() { return []; },
+  };
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: server.service.storage,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a do not resend" });
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    assert.equal(sends, 1);
+    assert.match((await client.listMessages(channel.id))[1]!.body, /Runtime turn failed/);
+  } finally { await relay.stop(); await server.close(); }
+});
+
 test("legacy Runtime response recovery survives transcript compaction", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -1093,6 +1120,57 @@ test("interrupting an active relay turn suppresses its response and runs the rep
     assert.equal(messages[2]!.body, "Replacement completed");
     assert.equal(messages.some((message) => message.body.includes("original response")), false);
     assert.equal(relay.cursor("agent-a"), 2);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("relay exposes active queue state and cancels only the current turn", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new InterruptibleRuntime();
+  const cursorStore = new InMemoryChannelStorage();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore,
+  });
+  try {
+    await relay.start();
+    const first = await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
+    await waitUntil(async () => (await runtime.status()) === "working");
+    const initial = relay.activity("agent-a");
+    assert.deepEqual(initial && {
+      phase: initial.phase,
+      triggerMessageId: initial.triggerMessageId,
+      triggerSequence: initial.triggerSequence,
+      queuedTurns: initial.queuedTurns,
+    }, {
+      phase: "running",
+      triggerMessageId: first.id,
+      triggerSequence: first.sequence,
+      queuedTurns: 0,
+    });
+    assert.ok(initial?.startedAt);
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
+    await waitUntil(async () => relay.activity("agent-a")?.queuedTurns === 1);
+
+    await relay.cancelCurrent("agent-a", "user");
+    await relay.cancelCurrent("agent-a", "user");
+    assert.equal(relay.activity("agent-a")?.phase, "canceling");
+    await waitUntil(async () => runtime.interruptCount === 1);
+    await waitUntil(async () => (await client.listMessages(channel.id)).length === 4);
+    const messages = await client.listMessages(channel.id);
+    assert.equal(runtime.interruptCount, 1);
+    assert.equal(messages.some((message) => message.body === "Current request was canceled by @user."), true);
+    assert.equal(messages.some((message) => message.body.includes("original")), false);
+    assert.equal(await cursorStore.getCursor(channel.id, "agent-a"), 2);
+    assert.equal(relay.activity("agent-a"), undefined);
   } finally {
     await relay.stop();
     await server.close();
