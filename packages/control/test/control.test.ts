@@ -84,8 +84,12 @@ async function requestStatus(url: string, headers: Record<string, string>): Prom
 class ManagedFakeRuntime {
   readonly starts: Array<{ sessionId: string; config: ManagedRuntimeStartConfig }> = [];
   readonly prompts = new Map<string, string[]>();
+  readonly stops: string[] = [];
+  readonly interruptions: string[] = [];
   private readonly transcripts = new Map<string, Array<{ role: "user" | "assistant"; content: string }>>();
   private readonly statuses = new Map<string, "idle" | "working">();
+  private readonly heldSends = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
+  private readonly heldStatuses = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
 
   async capabilities() {
     return {
@@ -104,7 +108,25 @@ class ManagedFakeRuntime {
   }
 
   async status(sessionId: string): Promise<"idle" | "working" | "offline"> {
+    const held = this.heldStatuses.get(sessionId);
+    if (held) {
+      held.enter();
+      await held.release;
+      this.heldStatuses.delete(sessionId);
+    }
     return this.transcripts.has(sessionId) ? this.statuses.get(sessionId) ?? "idle" : "offline";
+  }
+
+  holdStatus(sessionId: string) {
+    const held = this.hold();
+    this.heldStatuses.set(sessionId, held);
+    return { entered: held.entered, release: held.complete };
+  }
+
+  holdSend(sessionId: string) {
+    const held = this.hold();
+    this.heldSends.set(sessionId, held);
+    return { entered: held.entered, release: held.complete };
   }
 
   setStatus(sessionId: string, status: "idle" | "working"): void {
@@ -118,19 +140,41 @@ class ManagedFakeRuntime {
     const prompts = this.prompts.get(sessionId) ?? [];
     prompts.push(input);
     this.prompts.set(sessionId, prompts);
-    transcript.push(
-      { role: "user", content: input },
-      { role: "assistant", content: `Genuine managed response from ${sessionId}` },
-    );
+    transcript.push({ role: "user", content: input });
+    this.statuses.set(sessionId, "working");
+    const held = this.heldSends.get(sessionId);
+    if (held) {
+      held.enter();
+      await held.release;
+      this.heldSends.delete(sessionId);
+    }
+    transcript.push({ role: "assistant", content: `Genuine managed response from ${sessionId}` });
+    this.statuses.set(sessionId, "idle");
   }
 
   async messages(sessionId: string) {
     return (this.transcripts.get(sessionId) ?? []).map((message) => ({ ...message }));
   }
 
+  async interrupt(sessionId: string): Promise<void> {
+    this.interruptions.push(sessionId);
+  }
+
   async stop(sessionId: string): Promise<void> {
+    this.stops.push(sessionId);
     this.transcripts.delete(sessionId);
     this.statuses.delete(sessionId);
+  }
+
+  private hold() {
+    let enter!: () => void;
+    let complete!: () => void;
+    return {
+      entered: new Promise<void>((resolve) => { enter = resolve; }),
+      enter: () => enter(),
+      release: new Promise<void>((resolve) => { complete = resolve; }),
+      complete: () => complete(),
+    };
   }
 }
 
@@ -986,6 +1030,49 @@ test("agent host sanitizes unexpected cancellation failures and audit output", a
   assert.doesNotMatch(JSON.stringify(audit), /SECRET_DATABASE_URL|private\/path/);
 });
 
+test("one binding queue drain does not hold the shared Relay ownership lock", async () => {
+  const host = new LocalAgentHost({
+    client: {} as ChannelClient,
+    store: {} as InMemoryRelayBindingStore,
+    runtimes: {},
+  });
+  let releaseA!: () => void;
+  const blockedA = new Promise<void>((resolve) => { releaseA = resolve; });
+  let enteredA!: () => void;
+  const aStarted = new Promise<void>((resolve) => { enteredA = resolve; });
+  const retired: string[] = [];
+  const internals = host as unknown as {
+    runners: Map<string, unknown>;
+    retireBinding(channelId: string, participantId: string): Promise<void>;
+  };
+  internals.runners.set("channel-shared", {
+    relay: {
+      async retire(participantId: string) {
+        retired.push(participantId);
+        if (participantId === "agent-a") {
+          enteredA();
+          await blockedA;
+        }
+      },
+      async stop() {},
+    },
+    readiness: "ready",
+    ready: Promise.resolve(),
+    resolveReady() {},
+    pendingAttaches: new Set(),
+    restored: new Map([
+      ["agent-a", { async close() {} }],
+      ["agent-b", { async close() {} }],
+    ]),
+  });
+  const retiringA = internals.retireBinding("channel-shared", "agent-a");
+  await aStarted;
+  await internals.retireBinding("channel-shared", "agent-b");
+  assert.deepEqual(retired, ["agent-a", "agent-b"]);
+  releaseA();
+  await retiringA;
+});
+
 test("agent host starts isolated Channel sessions with private roots and personas", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-host-source-")));
   const channelServer = await createChannelHttpServer({ port: 0 });
@@ -1162,6 +1249,116 @@ test("agent host starts isolated Channel sessions with private roots and persona
   } finally {
     await host?.close().catch(() => undefined);
     await restoredHost?.close().catch(() => undefined);
+    await store.close();
+    await channelServer.close();
+    await rm(sourceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("agent lifecycle changes remain isolated within one shared Channel Relay", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-isolation-")));
+  const channelServer = await createChannelHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new ManagedFakeRuntime();
+  let host: LocalAgentHost | undefined;
+  try {
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
+    const agentA = await client.createIdentity({ type: "agent", displayName: "Agent A" });
+    const agentB = await client.createIdentity({ type: "agent", displayName: "Agent B" });
+    const workspace = await client.createWorkspace({ slug: "runner-isolation", name: "Runner Isolation" });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: owner.id, mentionHandle: "owner", accessRole: "owner",
+    });
+    await client.addWorkspaceMember(workspace.id, { identityId: agentA.id, mentionHandle: "agent-a" });
+    await client.addWorkspaceMember(workspace.id, { identityId: agentB.id, mentionHandle: "agent-b" });
+    const channel = await client.createChannel({
+      workspaceId: workspace.id,
+      name: "shared-relay",
+      participantIds: [owner.id, agentA.id, agentB.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({
+      client, store, runtimes: { "managed-test": runtime },
+    });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    for (const agent of [agentA, agentB]) {
+      await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+        runtimeAdapter: "managed-test",
+        modelProvider: "openai",
+        modelId: "gpt-managed",
+      });
+    }
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await Promise.all([
+      host.startChannelAgent(channel.id, agentA.id, owner.id),
+      host.startChannelAgent(channel.id, agentB.id, owner.id),
+    ]);
+    const bindings = await store.listChannelBindings(channel.id);
+    const bindingA = bindings.find(({ agentIdentityId }) => agentIdentityId === agentA.id)!;
+    const bindingB = bindings.find(({ agentIdentityId }) => agentIdentityId === agentB.id)!;
+    assert.equal(bindings.length, 2);
+
+    const heldB = runtime.holdSend(bindingB.runtimeSessionId);
+    const triggerB = await client.postMessage(channel.id, {
+      participantId: owner.id,
+      to: [agentB.id],
+      body: "Agent B in-flight work must survive Agent A lifecycle changes",
+    });
+    await heldB.entered;
+    const beforeB = await store.getBinding(bindingB.id);
+
+    await host.replaceChannelAgent(channel.id, agentA.id, owner.id);
+    const replacedA = (await store.listChannelBindings(channel.id))
+      .find(({ agentIdentityId }) => agentIdentityId === agentA.id)!;
+    assert.equal(replacedA.generation, 2);
+    await host.stopChannelAgent(channel.id, agentA.id, owner.id);
+    assert.equal((await client.listMessages(channel.id)).filter(
+      ({ participantId }) => participantId === agentB.id,
+    ).length, 0);
+
+    heldB.release();
+    await waitUntil(async () => (await client.listMessages(channel.id)).filter(
+      ({ participantId }) => participantId === agentB.id,
+    ).length === 1);
+    const afterB = await store.getBinding(bindingB.id);
+    assert.equal(await store.getCursor(channel.id, agentB.id), triggerB.sequence);
+    assert.equal(afterB?.generation, beforeB?.generation);
+    assert.equal(afterB?.runtimeSessionId, beforeB?.runtimeSessionId);
+    assert.equal(afterB?.leaseOwner, beforeB?.leaseOwner);
+    assert.ok(afterB?.leaseExpiresAt);
+    assert.ok(beforeB?.leaseExpiresAt);
+    assert.ok(afterB.leaseExpiresAt >= beforeB.leaseExpiresAt);
+    assert.equal(afterB.state, "connected");
+    assert.equal(runtime.stops.includes(bindingB.runtimeSessionId), false);
+    assert.equal(runtime.interruptions.includes(bindingB.runtimeSessionId), false);
+
+    const acquireBindingLease = store.acquireBindingLease.bind(store);
+    store.acquireBindingLease = async (bindingId, ...args) =>
+      bindingId === bindingB.id ? undefined : acquireBindingLease(bindingId, ...args);
+    await assert.rejects(
+      host.replaceChannelAgent(channel.id, agentB.id, owner.id),
+      /requires reconciliation/,
+    );
+    assert.equal((await store.getBinding(bindingB.id))?.state, "replacing");
+    assert.equal(await runtime.status(bindingB.runtimeSessionId), "offline");
+    assert.equal(await runtime.status(runtime.starts.at(-1)!.sessionId), "idle");
+    store.acquireBindingLease = acquireBindingLease;
+
+    const nextAgentASession = `managed-session-${runtime.starts.length + 1}`;
+    const heldAStatus = runtime.holdStatus(nextAgentASession);
+    const attachingA = host.replaceChannelAgent(channel.id, agentA.id, owner.id);
+    await heldAStatus.entered;
+    await Promise.race([
+      host.stopChannelAgent(channel.id, agentB.id, owner.id),
+      new Promise<never>((_resolve, reject) => setTimeout(
+        () => reject(new Error("Agent B lifecycle was blocked by Agent A attachment status")),
+        500,
+      )),
+    ]);
+    heldAStatus.release();
+    await attachingA;
+  } finally {
+    await host?.close().catch(() => undefined);
     await store.close();
     await channelServer.close();
     await rm(sourceDirectory, { recursive: true, force: true });

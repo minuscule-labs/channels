@@ -83,6 +83,9 @@ interface BindingState {
   runtimeTurnAccepted?: boolean;
   interruptIssued?: boolean;
   interruptPromise?: Promise<boolean>;
+  /** Live events are buffered until attach catch-up has a contiguous ordered view. */
+  initializing?: boolean;
+  bufferedEvents?: ChannelMessage[];
   queue: Promise<void>;
 }
 
@@ -236,6 +239,8 @@ export class ChannelRuntimeRelay {
       lastProcessedSequence: 0,
       lastEnqueuedSequence: 0,
       queuedTurns: 0,
+      initializing: true,
+      bufferedEvents: [],
       queue: Promise.resolve(),
     }));
   }
@@ -254,6 +259,8 @@ export class ChannelRuntimeRelay {
             state.binding.participantId,
           )) ?? 0;
         state.lastEnqueuedSequence = state.lastProcessedSequence;
+        state.initializing = true;
+        state.bufferedEvents = [];
       }),
     );
     this.controller = new AbortController();
@@ -277,7 +284,7 @@ export class ChannelRuntimeRelay {
     } finally {
       resolveRosterReady();
     }
-    await this.catchUp();
+    await Promise.all([...this.states].map((state) => this.catchUpState(state)));
   }
 
   async stop(): Promise<void> {
@@ -290,6 +297,43 @@ export class ChannelRuntimeRelay {
 
   async waitForIdle(): Promise<void> {
     await Promise.all(this.states.map((state) => state.queue));
+  }
+
+  /** Attach one binding without recreating the shared Channel subscription. */
+  async attach(binding: AgentChannelBinding): Promise<void> {
+    if (this.states.some((state) => state.binding.participantId === binding.participantId)) {
+      throw new Error(`Runtime binding already attached: ${binding.participantId}`);
+    }
+    const lastProcessedSequence =
+      (await this.options.cursorStore?.getCursor(this.options.channelId, binding.participantId)) ?? 0;
+    const state: BindingState = {
+      binding,
+      lastProcessedSequence,
+      lastEnqueuedSequence: lastProcessedSequence,
+      queuedTurns: 0,
+      initializing: true,
+      bufferedEvents: [],
+      queue: Promise.resolve(),
+    };
+    // Install before catch-up and buffer live events. The final synchronous merge below
+    // prevents a newer event from advancing lastEnqueuedSequence ahead of an older trigger.
+    this.states.push(state);
+    try {
+      if (this.task) await this.catchUpState(state);
+      else state.initializing = false;
+    } catch (error) {
+      const index = this.states.indexOf(state);
+      if (index >= 0) this.states.splice(index, 1);
+      throw error;
+    }
+  }
+
+  /** Stop routing future messages to one binding and return after its existing queue settles. */
+  async retire(participantId: string): Promise<void> {
+    const index = this.states.findIndex((state) => state.binding.participantId === participantId);
+    if (index < 0) return;
+    const [state] = this.states.splice(index, 1);
+    await state!.queue.catch(() => undefined);
   }
 
   cursor(participantId: string): number | undefined {
@@ -477,24 +521,33 @@ export class ChannelRuntimeRelay {
     }
   }
 
-  private async catchUp(): Promise<void> {
-    let afterSequence = this.states.length > 0
-      ? Math.min(...this.states.map((state) => state.lastProcessedSequence))
-      : 0;
-    while (!this.controller?.signal.aborted) {
+  private async catchUpState(state: BindingState): Promise<void> {
+    let afterSequence = state.lastProcessedSequence;
+    const catchUp: ChannelMessage[] = [];
+    while (!this.controller?.signal.aborted && this.states.includes(state)) {
       const messages = await this.options.client.listMessages(this.options.channelId, {
         afterSequence,
         limit: 500,
       });
-      for (const message of messages) {
-        for (const state of this.states) this.enqueue(state, message);
-      }
-      if (messages.length < 500) return;
+      catchUp.push(...messages);
+      if (messages.length < 500) break;
       afterSequence = messages.at(-1)!.sequence;
     }
+    if (!this.states.includes(state)) return;
+    const ordered = [...new Map([...catchUp, ...(state.bufferedEvents ?? [])]
+      .map((message) => [message.sequence, message])).values()]
+      .sort((left, right) => left.sequence - right.sequence);
+    // No await after this point: transition and enqueue are atomic relative to event delivery.
+    state.initializing = false;
+    state.bufferedEvents = undefined;
+    for (const message of ordered) this.enqueue(state, message);
   }
 
   private enqueue(state: BindingState, message: ChannelMessage): void {
+    if (state.initializing) {
+      state.bufferedEvents?.push(message);
+      return;
+    }
     if (!this.isActiveParticipant(state.binding.participantId)) return;
     if (message.sequence <= state.lastEnqueuedSequence) return;
     if (!shouldWake(message, state.binding, this.roster?.participants ?? [])) return;

@@ -565,6 +565,79 @@ test("relay catch-up paginates beyond one bounded message page", async () => {
   } finally { await server.close(); }
 });
 
+test("dynamic attach orders buffered live events behind catch-up", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" },
+    { id: "agent-a", type: "agent" },
+    { id: "agent-b", type: "agent" },
+  ] });
+  const historical = await client.postMessage(channel.id, {
+    participantId: "user",
+    to: ["agent-b"],
+    body: "historical trigger",
+  });
+  const originalListMessages = client.listMessages.bind(client);
+  const originalEvents = client.events.bind(client);
+  let releaseCatchUp!: () => void;
+  const catchUpReleased = new Promise<void>((resolve) => { releaseCatchUp = resolve; });
+  let catchUpCaptured!: () => void;
+  const captured = new Promise<void>((resolve) => { catchUpCaptured = resolve; });
+  let liveObserved!: () => void;
+  const observed = new Promise<void>((resolve) => { liveObserved = resolve; });
+  let intercept = false;
+  client.listMessages = (async (channelId, options) => {
+    const messages = await originalListMessages(channelId, options);
+    if (intercept && options?.afterSequence === 0) {
+      intercept = false;
+      catchUpCaptured();
+      await catchUpReleased;
+    }
+    return messages;
+  }) as ChannelClient["listMessages"];
+  client.events = ((channelId, options) => {
+    const events = originalEvents(channelId, options);
+    return (async function* () {
+      for await (const event of events) {
+        yield event;
+        if (event.type === "message.created" && event.message.body === "live trigger") {
+          liveObserved();
+        }
+      }
+    })();
+  }) as ChannelClient["events"];
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  });
+  try {
+    await relay.start();
+    intercept = true;
+    const attaching = relay.attach({ participantId: "agent-b", sessionId: "session-b", runtime });
+    await captured;
+    const live = await client.postMessage(channel.id, {
+      participantId: "user",
+      to: ["agent-b"],
+      body: "live trigger",
+    });
+    await observed;
+    releaseCatchUp();
+    await attaching;
+    await waitUntil(async () => relay.cursor("agent-b") === live.sequence);
+    const prompts = runtime.prompts.get("session-b") ?? [];
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[0]!, new RegExp(`\\[${historical.sequence}\\].*historical trigger`));
+    assert.match(prompts[1]!, new RegExp(`\\[${live.sequence}\\].*live trigger`));
+  } finally {
+    releaseCatchUp();
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("two-participant Channels implicitly wake the sole agent for human messages", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
