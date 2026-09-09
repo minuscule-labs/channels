@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 8 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 9 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -67,6 +67,8 @@ export interface LocalWorkspaceAgentConfigurationSummary {
   configured: boolean;
   personaConfigured: boolean;
   runtimeConfigured: boolean;
+  /** Authenticated local-control display label; never exposed by public Channel APIs. */
+  runtimeAdapter?: string;
   modelConfigured: boolean;
   reasoningConfigured: boolean;
   skillsConfigured: boolean;
@@ -128,12 +130,23 @@ export type LocalChannelAgentState =
 
 export type LocalWakePolicy = "mentions" | "direct_mentions" | "all_messages" | "muted";
 
+/** Presentation-safe Relay activity; it deliberately omits Runtime/session internals. */
+export interface LocalAgentActivity {
+  phase: "running" | "retrying" | "canceling";
+  triggerMessageId: string;
+  triggerSequence: number;
+  startedAt: string;
+  queuedTurns: number;
+  retryAttempt?: number;
+}
+
 export interface LocalChannelAgent {
   workspaceId: string;
   channelId: string;
   identityId: string;
   state: LocalChannelAgentState;
   wakePolicy?: LocalWakePolicy;
+  activity?: LocalAgentActivity;
   capabilities: {
     start: boolean;
     replace: boolean;

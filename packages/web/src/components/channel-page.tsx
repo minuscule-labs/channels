@@ -52,17 +52,37 @@ export function ChannelPage() {
     queryKey: queryKeys.localChannelAgents(channelId),
     queryFn: async () => (await localControl.listChannelAgents(channelId)).agents,
     retry: false,
-    refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
+    refetchInterval: (query) => query.state.status === "error"
+      ? 30_000
+      : query.state.data?.some((agent) => agent.activity) ? 1_000 : 5_000,
   });
   const { connection, retry } = useLiveChannel(channelId);
   const agentAction = useMutation({
-    mutationFn: ({ action, identityId }: { action: "start" | "replace" | "stop"; identityId: string }) => {
+    mutationFn: ({ action, identityId }: { action: "start" | "replace" | "stop" | "cancel"; identityId: string }) => {
       if (action === "replace") return localControl.replaceChannelAgent(channelId, identityId);
       if (action === "stop") return localControl.stopChannelAgent(channelId, identityId);
+      if (action === "cancel") return localControl.cancelCurrentChannelAgent(channelId, identityId);
       return localControl.startChannelAgent(channelId, identityId);
+    },
+    onMutate: ({ action, identityId }) => {
+      if (action !== "cancel") return undefined;
+      const previous = localAgents.data;
+      queryClient.setQueryData(queryKeys.localChannelAgents(channelId), (current: typeof localAgents.data) =>
+        current?.map((agent) => agent.identityId === identityId && agent.activity
+          ? { ...agent, activity: { ...agent.activity, phase: "canceling" as const }, capabilities: { ...agent.capabilities, interrupt: false } }
+          : agent),
+      );
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(queryKeys.localChannelAgents(channelId), context.previous);
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelMessages(channelId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
     },
   });
@@ -157,6 +177,8 @@ export function ChannelPage() {
           >
             <MemberRoster
               participants={participants}
+              currentHumanIdentityId={currentSession.data?.identityId}
+              messages={messages.data ?? []}
               localAgents={localAgentMap}
               localStatus={localStatus}
               drawer
@@ -166,8 +188,9 @@ export function ChannelPage() {
                   agentAction.mutate({ action: "replace", identityId });
                 }
               }}
+              onCancelAgent={(identityId) => agentAction.mutate({ action: "cancel", identityId })}
               onStopAgent={(identityId) => {
-                if (window.confirm("Stop this agent session? Active tool or filesystem effects cannot be rolled back.")) {
+                if (window.confirm("Stop and disable this agent for this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
                   agentAction.mutate({ action: "stop", identityId });
                 }
               }}
@@ -217,6 +240,8 @@ export function ChannelPage() {
       <div className="hidden lg:block">
         <MemberRoster
           participants={participants}
+          currentHumanIdentityId={currentSession.data?.identityId}
+          messages={messages.data ?? []}
           localAgents={localAgentMap}
           localStatus={localStatus}
           onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
@@ -225,8 +250,9 @@ export function ChannelPage() {
               agentAction.mutate({ action: "replace", identityId });
             }
           }}
+          onCancelAgent={(identityId) => agentAction.mutate({ action: "cancel", identityId })}
           onStopAgent={(identityId) => {
-            if (window.confirm("Stop this agent session? Active tool or filesystem effects cannot be rolled back.")) {
+            if (window.confirm("Stop and disable this agent for this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
               agentAction.mutate({ action: "stop", identityId });
             }
           }}

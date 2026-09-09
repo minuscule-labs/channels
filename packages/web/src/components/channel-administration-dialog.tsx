@@ -62,10 +62,12 @@ function useWorkspaceParticipants(workspaceId: string, open: boolean) {
 function ParticipantChoices({
   participants,
   selected,
+  currentHumanIdentityId,
   onToggle,
 }: {
   participants: WorkspaceParticipant[];
   selected: Set<string>;
+  currentHumanIdentityId?: string;
   onToggle(identityId: string): void;
 }) {
   return (
@@ -77,18 +79,23 @@ function ParticipantChoices({
       <div className="mt-3 max-h-72 space-y-1 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2">
         {participants.map(({ identity, member }) => {
           const available = identity.status === "active" && member.status === "active";
+          const isCurrentHuman = identity.id === currentHumanIdentityId;
           return (
             <label
               key={identity.id}
-              className={`flex items-center gap-3 rounded-md px-2.5 py-2 ${available ? "cursor-pointer hover:bg-[var(--hover)]" : "opacity-50"}`}
+              className={`flex items-center gap-3 rounded-md px-2.5 py-2 ${available && !isCurrentHuman ? "cursor-pointer hover:bg-[var(--hover)]" : ""} ${!available ? "opacity-50" : ""}`}
             >
-              <input
-                type="checkbox"
-                checked={selected.has(identity.id)}
-                disabled={!available}
-                onChange={() => onToggle(identity.id)}
-                className="h-4 w-4 accent-[var(--accent)]"
-              />
+              {isCurrentHuman ? (
+                <span className="grid h-4 w-4 place-items-center text-[var(--success)]" aria-hidden="true"><Check className="h-3.5 w-3.5" /></span>
+              ) : (
+                <input
+                  type="checkbox"
+                  checked={selected.has(identity.id)}
+                  disabled={!available}
+                  onChange={() => onToggle(identity.id)}
+                  className="h-4 w-4 accent-[var(--accent)]"
+                />
+              )}
               <span className="avatar" aria-hidden="true">
                 {(identity.displayName ?? member.mentionHandle).slice(0, 1).toUpperCase()}
               </span>
@@ -98,6 +105,7 @@ function ParticipantChoices({
                   @{member.mentionHandle} · {identity.type}{member.roleLabel ? ` · ${member.roleLabel}` : ""}
                 </span>
               </span>
+              {isCurrentHuman ? <span className="text-[10px] text-[var(--muted)]">You are included automatically.</span> : null}
               {!available ? <span className="text-[10px] uppercase text-[var(--muted)]">disabled</span> : null}
             </label>
           );
@@ -198,7 +206,7 @@ export function CreateChannelDialog({
     mutationFn: () => channels.createChannel({
       workspaceId: workspace.id,
       name: name.trim(),
-      participantIds: [...selected],
+      participantIds: [...new Set([...selected, data.session.data!.identityId])],
       actorIdentityId: data.session.data!.identityId,
     }),
     onSuccess: (channel) => {
@@ -250,6 +258,7 @@ export function CreateChannelDialog({
           <ParticipantChoices
             participants={data.participants}
             selected={selected}
+            currentHumanIdentityId={data.session.data?.identityId}
             onToggle={(identityId) => setSelected((current) => {
               const next = new Set(current);
               if (next.has(identityId)) next.delete(identityId);
@@ -294,7 +303,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
   const mutation = useMutation({
     mutationFn: () => channels.updateChannelParticipants(channel.id, {
       actorIdentityId: data.session.data!.identityId,
-      participantIds: [...selected],
+      participantIds: [...new Set([...selected, data.session.data!.identityId])],
       expectedRosterRevision: channel.rosterRevision,
     }),
     onSuccess: (updated) => {
@@ -311,7 +320,10 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
     setOpen(nextOpen);
     if (nextOpen) {
       setName(channel.name);
-      setSelected(new Set(channel.participants.filter(({ status }) => status === "active").map(({ id }) => id)));
+      setSelected(new Set([
+        ...channel.participants.filter(({ status }) => status === "active").map(({ id }) => id),
+        ...(data.session.data ? [data.session.data.identityId] : []),
+      ]));
       renameMutation.reset();
       mutation.reset();
     }
@@ -365,6 +377,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
           <ParticipantChoices
             participants={data.participants}
             selected={selected}
+            currentHumanIdentityId={data.session.data?.identityId}
             onToggle={(identityId) => setSelected((current) => {
               const next = new Set(current);
               if (next.has(identityId)) next.delete(identityId);

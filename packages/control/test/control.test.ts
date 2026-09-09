@@ -184,6 +184,48 @@ test("projects private bindings into presentation-safe Channel agent status", as
   assert.doesNotMatch(publicJson, /runtimeSessionId|runtimeAdapter|leaseOwner/);
 });
 
+test("projects Relay activity and accepts cancellation without exposing Runtime details", async () => {
+  let cancelCalls = 0;
+  const control = new LocalControlService({
+    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
+    bindings: { async listChannelBindings() { return records; } },
+    runtimes: {
+      "pi-private-adapter": {
+        async status() { return "working" as const; },
+        async interrupt() {},
+      },
+    },
+    lifecycle: {
+      available: true,
+      async startChannelAgent() {},
+      async replaceChannelAgent() {},
+      async stopChannelAgent() {},
+      async cancelCurrentChannelAgent() { cancelCalls += 1; },
+      activity() {
+        return {
+          phase: "running",
+          triggerMessageId: "message-public-id",
+          triggerSequence: 37,
+          startedAt: "2026-08-28T00:00:00.000Z",
+          queuedTurns: 2,
+        };
+      },
+    },
+  });
+  const result = await control.listChannelAgents(channel.id);
+  assert.deepEqual(result.agents[0]?.activity, {
+    phase: "running",
+    triggerMessageId: "message-public-id",
+    triggerSequence: 37,
+    startedAt: "2026-08-28T00:00:00.000Z",
+    queuedTurns: 2,
+  });
+  assert.equal(result.agents[0]?.capabilities.interrupt, true);
+  assert.doesNotMatch(JSON.stringify(result), /runtime-session-secret|pi-private-adapter/);
+  await control.cancelCurrentChannelAgent(channel.id, "agent-running", "human-1");
+  assert.equal(cancelCalls, 1);
+});
+
 test("maps missing, failed, and stalled Runtime bridges to offline without leaking errors", async () => {
   const control = new LocalControlService({
     channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
@@ -230,7 +272,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 8 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 9 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -312,7 +354,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 8, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 9, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -331,6 +373,49 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
     { action: "launch.rejected", outcome: "rejected", reason: "expired" },
   ]);
   assert.doesNotMatch(JSON.stringify(audit), /minu_local_session|code=|runtime-session-secret/);
+});
+
+test("accepts authenticated cancel-current requests and returns the canceling agent", async (context) => {
+  let cancelCalls = 0;
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/",
+    currentHumanIdentityId: "human-1",
+  });
+  const control = new LocalControlService({
+    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
+    bindings: { async listChannelBindings() { return records; } },
+    runtimes: { "pi-private-adapter": { async status() { return "working" as const; }, async interrupt() {} } },
+    lifecycle: {
+      available: true,
+      async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
+      async cancelCurrentChannelAgent() { cancelCalls += 1; },
+      activity() {
+        return {
+          phase: "canceling", triggerMessageId: "message-37", triggerSequence: 37,
+          startedAt: "2026-08-28T00:00:00.000Z", queuedTurns: 0,
+        };
+      },
+    },
+  });
+  const server = await createLocalControlHttpServer({
+    service: control,
+    port: 0,
+    allowedOrigins: [sessions.browserOrigin],
+    browserSessions: sessions,
+  });
+  context.after(() => server.close());
+  const endpoint = `/local/channels/${channel.id}/agents/agent-running/cancel-current`;
+  assert.equal((await fetch(`${server.endpoint}${endpoint}`, { method: "POST" })).status, 401);
+  const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+  const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+  const response = await fetch(`${server.endpoint}${endpoint}`, {
+    method: "POST",
+    headers: { cookie, origin: sessions.browserOrigin },
+  });
+  assert.equal(response.status, 202);
+  assert.equal(cancelCalls, 1);
+  const body = await response.json() as { agent: { activity?: { phase: string } } };
+  assert.equal(body.agent.activity?.phase, "canceling");
 });
 
 test("advertises the product-specific localhost name across control and browser ports", () => {
@@ -430,7 +515,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 8,
+      protocolVersion: 9,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -840,6 +925,7 @@ test("private configuration authorizes current humans and returns only redacted 
       configured: true,
       personaConfigured: true,
       runtimeConfigured: true,
+      runtimeAdapter: "pi-owned",
       modelConfigured: true,
       reasoningConfigured: true,
       skillsConfigured: false,
@@ -858,7 +944,7 @@ test("private configuration authorizes current humans and returns only redacted 
     const presented = JSON.stringify(summary);
     assert.doesNotMatch(
       presented,
-      /private\/source|private-notes-folder|PRIVATE PERSONA|pi-owned|openai-private|gpt-private|personaPrompt|runtimeAdapter|modelProvider|modelId|reasoningLevel|rootUri/,
+      /private\/source|private-notes-folder|PRIVATE PERSONA|openai-private|gpt-private|personaPrompt|modelProvider|modelId|reasoningLevel|rootUri/,
     );
     assert.doesNotMatch(
       JSON.stringify(audit),
@@ -874,6 +960,30 @@ test("private configuration authorizes current humans and returns only redacted 
     await store.close();
     await channelServer.close();
   }
+});
+
+test("agent host sanitizes unexpected cancellation failures and audit output", async () => {
+  const audit: LocalControlAuditEvent[] = [];
+  const host = new LocalAgentHost({
+    client: {} as ChannelClient,
+    store: {} as InMemoryRelayBindingStore,
+    runtimes: {},
+    onAudit: (event) => audit.push(event),
+  });
+  const internals = host as unknown as {
+    baseContext: () => Promise<{ channel: { workspaceId: string } }>;
+    runners: Map<string, { relay: { cancelCurrent(): Promise<void> } }>;
+  };
+  internals.baseContext = async () => ({ channel: { workspaceId: "workspace-safe" } });
+  internals.runners.set("channel-safe", {
+    relay: { async cancelCurrent() { throw new Error("SECRET_DATABASE_URL=/private/path"); } },
+  });
+  await assert.rejects(
+    host.cancelCurrentChannelAgent("channel-safe", "agent-safe", "owner-safe"),
+    (error: unknown) => error instanceof LocalConfigurationRequestError
+      && error.message === "Agent turn could not be canceled",
+  );
+  assert.doesNotMatch(JSON.stringify(audit), /SECRET_DATABASE_URL|private\/path/);
 });
 
 test("agent host starts isolated Channel sessions with private roots and personas", async () => {
@@ -1193,7 +1303,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 8,
+      protocolVersion: 9,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -1206,7 +1316,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 8,
+      protocolVersion: 9,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
@@ -1283,6 +1393,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       configured: true,
       personaConfigured: true,
       runtimeConfigured: true,
+      runtimeAdapter: "pi-owned-private",
       modelConfigured: false,
       reasoningConfigured: false,
       skillsConfigured: false,
@@ -1293,7 +1404,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     }]);
     assert.doesNotMatch(
       JSON.stringify(configurationBody),
-      /new\/private|DAEMON PRIVATE PERSONA|pi-owned-private|rootUri|personaPrompt|runtimeAdapter/,
+      /new\/private|DAEMON PRIVATE PERSONA|rootUri|personaPrompt/,
     );
     assert.doesNotMatch(
       JSON.stringify(audit),

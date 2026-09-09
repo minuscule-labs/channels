@@ -1,5 +1,5 @@
 import type { ChannelCursorStore, ChannelMessage, ChannelMetadata, Participant } from "@minu/channels-core";
-import { ChannelClient } from "@minu/channels-core";
+import { ChannelClient, ChannelClientError } from "@minu/channels-core";
 export interface RuntimePortMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -54,13 +54,35 @@ export interface ChannelRuntimeRelayOptions {
 }
 
 class PermanentTurnError extends Error {}
+class FencedTurnError extends Error {}
+
+export type RelayAgentActivityPhase = "running" | "retrying" | "canceling";
+
+/** Presentation-safe, ephemeral activity for one bound Channel agent. */
+export interface RelayAgentActivity {
+  phase: RelayAgentActivityPhase;
+  triggerMessageId: string;
+  triggerSequence: number;
+  startedAt: string;
+  queuedTurns: number;
+  retryAttempt?: number;
+}
 
 interface BindingState {
   binding: AgentChannelBinding;
   lastProcessedSequence: number;
   lastEnqueuedSequence: number;
   activeTrigger?: ChannelMessage;
+  startedAt?: string;
+  phase?: RelayAgentActivityPhase;
+  retryAttempt?: number;
+  queuedTurns: number;
+  /** Retained for the legacy interrupt-and-replace operation. */
   interruptedTriggerId?: string;
+  cancelActorId?: string;
+  runtimeTurnAccepted?: boolean;
+  interruptIssued?: boolean;
+  interruptPromise?: Promise<boolean>;
   queue: Promise<void>;
 }
 
@@ -213,6 +235,7 @@ export class ChannelRuntimeRelay {
       binding,
       lastProcessedSequence: 0,
       lastEnqueuedSequence: 0,
+      queuedTurns: 0,
       queue: Promise.resolve(),
     }));
   }
@@ -274,6 +297,20 @@ export class ChannelRuntimeRelay {
       ?.lastProcessedSequence;
   }
 
+  /** Return a sanitized snapshot; Runtime/session details intentionally never leave Relay. */
+  activity(participantId: string): RelayAgentActivity | undefined {
+    const state = this.states.find((candidate) => candidate.binding.participantId === participantId);
+    if (!state?.activeTrigger || !state.startedAt || !state.phase) return undefined;
+    return {
+      phase: state.phase,
+      triggerMessageId: state.activeTrigger.id,
+      triggerSequence: state.activeTrigger.sequence,
+      startedAt: state.startedAt,
+      queuedTurns: state.queuedTurns,
+      ...(state.phase === "retrying" && state.retryAttempt ? { retryAttempt: state.retryAttempt } : {}),
+    };
+  }
+
   async steer(participantId: string, actorId: string, input: string): Promise<void> {
     const state = this.stateFor(participantId);
     if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
@@ -325,6 +362,68 @@ export class ChannelRuntimeRelay {
       participantId: actorId,
       body: `@${participantId} [replacement after interrupt] ${replacement}`,
     });
+  }
+
+  /**
+   * Request cancellation of the active Relay-owned turn without disabling the session.
+   * Once the Runtime call has been initiated, ambiguous transport failures remain visibly
+   * canceling and are reconciled by the active turn handler; they are never blindly retried.
+   */
+  async cancelCurrent(participantId: string, actorId: string): Promise<void> {
+    const state = this.stateFor(participantId);
+    if (state.phase === "canceling" && state.activeTrigger) return;
+    await this.assertInterruptible(state, participantId);
+    if (!state.activeTrigger) throw new Error(`Agent has no active Channel turn: ${participantId}`);
+    state.phase = "canceling";
+    state.cancelActorId = actorId;
+    this.requestRuntimeInterrupt(state, participantId);
+  }
+
+  private async assertInterruptible(state: BindingState, participantId: string): Promise<void> {
+    if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
+      throw new Error(`Agent binding lease was lost: ${participantId}`);
+    }
+    if (!this.isActiveParticipant(participantId)) {
+      throw new Error(`Agent is not an active Channel participant: ${participantId}`);
+    }
+    if (!state.activeTrigger) throw new Error(`Agent has no active Channel turn: ${participantId}`);
+    if (!state.binding.runtime.interrupt) {
+      throw new Error(`Agent Runtime does not support interruption: ${participantId}`);
+    }
+    try {
+      if ((await state.binding.runtime.status(state.binding.sessionId)) === "offline") {
+        throw new Error(`Agent Channel session is unavailable: ${participantId}`);
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Agent Channel session is unavailable:")) {
+        throw error;
+      }
+      throw new Error(`Agent Channel session is unavailable: ${participantId}`);
+    }
+  }
+
+  private requestRuntimeInterrupt(state: BindingState, participantId: string): void {
+    if (!state.runtimeTurnAccepted || state.interruptIssued) return;
+    state.interruptIssued = true;
+    state.interruptPromise = this.invokeCancellation(state, participantId);
+  }
+
+  private async invokeCancellation(state: BindingState, participantId: string): Promise<boolean> {
+    try {
+      await this.awaitRuntime(
+        state.binding.runtime.interrupt!(state.binding.sessionId),
+        `interrupt agent turn for ${participantId}`,
+      );
+      return true;
+    } catch (error) {
+      // The invocation may have reached Runtime even when its acknowledgement was lost.
+      // Do not let a later queued turn share this session until shutdown/recovery resolves it.
+      this.options.onError?.(
+        state.binding,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      return false;
+    }
   }
 
   private stateFor(participantId: string): BindingState {
@@ -400,56 +499,114 @@ export class ChannelRuntimeRelay {
     if (message.sequence <= state.lastEnqueuedSequence) return;
     if (!shouldWake(message, state.binding, this.roster?.participants ?? [])) return;
     state.lastEnqueuedSequence = message.sequence;
-    state.queue = state.queue.then(() => this.handleWithRetry(state, message));
+    state.queuedTurns += 1;
+    const run = async (): Promise<void> => {
+      state.queuedTurns -= 1;
+      state.activeTrigger = message;
+      state.startedAt = new Date().toISOString();
+      state.phase = "running";
+      state.retryAttempt = undefined;
+      try {
+        await this.handleWithRetry(state, message);
+      } catch (error) {
+        this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        this.clearActive(state);
+      }
+    };
+    state.queue = state.queue.catch((error) => {
+      this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
+    }).then(run);
   }
 
   private async handleWithRetry(state: BindingState, message: ChannelMessage): Promise<void> {
-    let attempt = 0;
+    let attempts = 0;
+    let firstFailureAt: number | undefined;
     while (!this.controller?.signal.aborted) {
+      attempts += 1;
       try {
         await this.handle(state, message);
         return;
       } catch (error) {
-        state.activeTrigger = undefined;
-        state.interruptedTriggerId = undefined;
         const normalized = error instanceof Error ? error : new Error(String(error));
         this.options.onError?.(state.binding, normalized);
+        if (error instanceof FencedTurnError) return;
         if (error instanceof PermanentTurnError) {
           try {
-            if ((!state.binding.verifyLease || await state.binding.verifyLease())
-              && this.isActiveParticipant(state.binding.participantId)) {
-              await this.options.client.postResponse(this.options.channelId, {
-                participantId: state.binding.participantId,
-                body: "I couldn't complete this request because the Runtime turn failed. Start fresh and retry the request.",
-                triggerMessageId: message.id,
-                triggerSequence: message.sequence,
-              });
-              await this.markProcessed(state, message.sequence);
-            }
-            return;
+            await this.recordTerminalFailure(state, message);
           } catch (persistenceError) {
             this.options.onError?.(
               state.binding,
               persistenceError instanceof Error ? persistenceError : new Error(String(persistenceError)),
             );
           }
+          return;
         }
-        attempt += 1;
-        await delay(Math.min(2_000, 100 * 2 ** Math.min(attempt - 1, 5)), this.controller?.signal);
+        // An interruption may have reached Runtime even if its acknowledgement or a
+        // subsequent turn read timed out. Keep reconciling its caller-stable turn rather
+        // than retrying interrupt or converting an ambiguous cancellation into failure.
+        if (state.phase === "canceling") {
+          await delay(1_000, this.controller?.signal);
+          continue;
+        }
+        const now = Date.now();
+        firstFailureAt ??= now;
+        if (attempts >= 5 || now - firstFailureAt >= 2 * 60_000) {
+          try {
+            await this.recordTerminalFailure(state, message);
+          } catch (persistenceError) {
+            this.options.onError?.(
+              state.binding,
+              persistenceError instanceof Error ? persistenceError : new Error(String(persistenceError)),
+            );
+          }
+          return;
+        }
+        state.phase = "retrying";
+        state.retryAttempt = attempts + 1;
+        const backoffMs = [250, 500, 1_000, 2_000, 5_000][Math.min(attempts - 1, 4)]!;
+        await delay(backoffMs, this.controller?.signal);
+        if (state.phase === "retrying") state.phase = "running";
       }
     }
+  }
+
+  private async recordTerminalFailure(state: BindingState, trigger: ChannelMessage): Promise<void> {
+    // commitResponse owns lease/participant fencing and retries transient lease errors.
+    // Checking here would turn a storage failure into a silently dropped outcome.
+    await this.commitResponse(state, {
+      participantId: state.binding.participantId,
+      body: "I couldn't complete this request because the Runtime turn failed. The agent remains available; retry or start fresh if the problem continues.",
+      triggerMessageId: trigger.id,
+      triggerSequence: trigger.sequence,
+    });
+  }
+
+  private isCanceling(state: BindingState): boolean {
+    return state.phase === "canceling";
+  }
+
+  private clearActive(state: BindingState): void {
+    state.activeTrigger = undefined;
+    state.startedAt = undefined;
+    state.phase = undefined;
+    state.retryAttempt = undefined;
+    state.interruptedTriggerId = undefined;
+    state.cancelActorId = undefined;
+    state.runtimeTurnAccepted = undefined;
+    state.interruptIssued = undefined;
+    state.interruptPromise = undefined;
   }
 
   private async handle(state: BindingState, trigger: ChannelMessage): Promise<void> {
     const { binding } = state;
     if (binding.verifyLease && !(await binding.verifyLease())) {
-      throw new Error(`Agent binding lease was lost: ${binding.participantId}`);
+      throw new FencedTurnError(`Agent binding lease was lost: ${binding.participantId}`);
     }
     if (!this.isActiveParticipant(binding.participantId)) {
       state.lastProcessedSequence = Math.max(state.lastProcessedSequence, trigger.sequence);
       return;
     }
-    state.activeTrigger = trigger;
     const channelMessages = await this.options.client.listMessages(this.options.channelId, {
       beforeSequence: trigger.sequence + 1,
       limit: binding.maxMessages ?? 20,
@@ -473,12 +630,24 @@ export class ChannelRuntimeRelay {
         `read turn for ${binding.participantId}`,
       );
       if (!turn) {
+        // Cancellation may win while the recoverable-turn lookup is in flight. Never
+        // dispatch a new Runtime turn after that marker; no side effect has started.
+        if (state.phase === "canceling") {
+          await this.completeCancellation(state, trigger);
+          return;
+        }
         await this.waitUntilIdle(binding);
+        if (this.isCanceling(state)) {
+          await this.completeCancellation(state, trigger);
+          return;
+        }
         turn = await this.awaitRuntime(
           binding.runtime.startTurn(binding.sessionId, turnId, prompt),
           `start turn for ${binding.participantId}`,
         );
       }
+      state.runtimeTurnAccepted = true;
+      if (this.isCanceling(state)) this.requestRuntimeInterrupt(state, binding.participantId);
       turn = await this.waitForTurn(binding, turnId, turn);
       if (turn.status === "failed") {
         throw new PermanentTurnError(`Agent ${binding.participantId} turn failed: ${turn.error ?? "unknown error"}`);
@@ -486,11 +655,28 @@ export class ChannelRuntimeRelay {
       if (turn.status === "interrupted") state.interruptedTriggerId = trigger.id;
       response = turn.response;
     } else {
+      // A legacy Runtime cannot expose a stable turn id. Once cancellation has begun,
+      // only reconcile it to idle; never send the original prompt again.
+      if (state.phase === "canceling") {
+        await this.waitUntilIdle(binding);
+        await this.completeCancellation(state, trigger);
+        return;
+      }
       await this.waitUntilIdle(binding);
+      if (this.isCanceling(state)) {
+        await this.completeCancellation(state, trigger);
+        return;
+      }
       const before = await this.awaitRuntime(
         binding.runtime.messages(binding.sessionId),
         `read messages for ${binding.participantId}`,
       );
+      let ambiguousSendFailure = false;
+      if (this.isCanceling(state)) {
+        await this.completeCancellation(state, trigger);
+        return;
+      }
+      state.runtimeTurnAccepted = true;
       try {
         await this.awaitRuntime(
           binding.runtime.send(binding.sessionId, prompt),
@@ -498,42 +684,116 @@ export class ChannelRuntimeRelay {
           this.options.turnTimeoutMs ?? 30 * 60_000,
         );
       } catch (error) {
-        if (state.interruptedTriggerId !== trigger.id) throw error;
+        if (state.interruptedTriggerId !== trigger.id && !this.isCanceling(state)) {
+          // Legacy send has no caller-stable id. Any rejection can be ambiguous, so
+          // reconcile it once and never replay the prompt without an explicit adapter
+          // proof that dispatch did not occur.
+          ambiguousSendFailure = true;
+        }
       }
       const after = await this.awaitRuntime(
         binding.runtime.messages(binding.sessionId),
         `read messages for ${binding.participantId}`,
       );
       response = latestAssistant(after, before);
+      if (ambiguousSendFailure && !response) {
+        throw new PermanentTurnError(`Legacy Runtime send could not be reconciled: ${binding.participantId}`);
+      }
     }
     if (binding.verifyLease && !(await binding.verifyLease())) {
-      state.activeTrigger = undefined;
-      state.interruptedTriggerId = undefined;
-      return;
+      throw new FencedTurnError(`Agent binding lease was lost: ${binding.participantId}`);
     }
     if (!this.isActiveParticipant(binding.participantId)) {
       state.lastProcessedSequence = Math.max(state.lastProcessedSequence, trigger.sequence);
-      state.activeTrigger = undefined;
-      state.interruptedTriggerId = undefined;
+      return;
+    }
+    if (state.phase === "canceling") {
+      if (!binding.runtime.startTurn || !binding.runtime.turn) {
+        await this.waitUntilIdle(binding);
+      }
+      await this.completeCancellation(state, trigger);
       return;
     }
     if (state.interruptedTriggerId === trigger.id) {
       await this.markProcessed(state, trigger.sequence);
-      state.interruptedTriggerId = undefined;
-      state.activeTrigger = undefined;
       return;
     }
     if (!response) throw new Error(`Agent ${binding.participantId} produced no assistant response`);
 
-    const committed = await this.options.client.postResponse(this.options.channelId, {
+    const committed = await this.commitResponse(state, {
       participantId: binding.participantId,
       body: response.content,
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     });
-    await this.markProcessed(state, trigger.sequence);
-    state.activeTrigger = undefined;
-    if (committed.created) this.options.onAgentResponse?.(binding, committed.message);
+    if (committed?.created) this.options.onAgentResponse?.(binding, committed.message);
+  }
+
+  private async completeCancellation(state: BindingState, trigger: ChannelMessage): Promise<void> {
+    const interrupted = await state.interruptPromise;
+    if (interrupted === false) {
+      // An acknowledgement loss can deliver a session-level interrupt late. Do not let
+      // another queued turn share the session until shutdown/recovery fences it.
+      while (!this.controller?.signal.aborted) await delay(1_000, this.controller?.signal);
+      return;
+    }
+    await this.commitCancellation(state, trigger);
+  }
+
+  private async commitCancellation(state: BindingState, trigger: ChannelMessage): Promise<void> {
+    const actor = this.roster?.participants.find((participant) => participant.id === state.cancelActorId);
+    const label = actor?.handle ?? state.cancelActorId ?? "a Channel member";
+    await this.commitResponse(state, {
+      participantId: state.binding.participantId,
+      body: `Current request was canceled by @${label}.`,
+      triggerMessageId: trigger.id,
+      triggerSequence: trigger.sequence,
+    });
+  }
+
+  private async commitResponse(
+    state: BindingState,
+    input: {
+      participantId: string;
+      body: string;
+      triggerMessageId: string;
+      triggerSequence: number;
+    },
+  ) {
+    // Delivery is idempotent by trigger. Never re-run a Runtime turn merely because the
+    // Channel service acknowledgement was lost. A stopped/fenced Relay has no authority
+    // to continue delivery and must let shutdown complete normally.
+    while (!this.controller?.signal.aborted) {
+      try {
+        if (!await this.mayDeliverResponse(state)) return undefined;
+        const committed = await this.awaitRuntime(
+          this.options.client.postResponse(this.options.channelId, input),
+          `deliver Channel response for ${state.binding.participantId}`,
+        );
+        // postResponse atomically records the durable Channel outcome and its public
+        // cursor. Mirror that committed result into Relay's private recovery cursor only
+        // after delivery succeeds; a retry uses the same idempotent response key.
+        await this.markProcessed(state, input.triggerSequence);
+        return committed;
+      } catch (error) {
+        if (this.controller?.signal.aborted) return undefined;
+        this.options.onError?.(
+          state.binding,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        // A validated client rejection cannot be fixed by replaying the same outcome.
+        if (error instanceof ChannelClientError && error.status < 500) return undefined;
+        await delay(1_000, this.controller?.signal);
+      }
+    }
+    return undefined;
+  }
+
+  private async mayDeliverResponse(state: BindingState): Promise<boolean> {
+    // A definitive false fences delivery. Storage/lease failures are transient and must
+    // reach commitResponse's retry loop rather than silently dropping this outcome.
+    if (state.binding.verifyLease && !(await state.binding.verifyLease())) return false;
+    return this.isActiveParticipant(state.binding.participantId);
   }
 
   private async markProcessed(state: BindingState, sequence: number): Promise<void> {

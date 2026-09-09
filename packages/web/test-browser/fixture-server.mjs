@@ -39,7 +39,7 @@ const channel = await service.createChannel({
   name: "browser-collaboration",
   participantIds: [human.id, agent.id],
 });
-await service.createMessage(channel.id, {
+const initialTrigger = await service.createMessage(channel.id, {
   participantId: human.id,
   body: "@builder Verify the browser collaboration flow.",
 });
@@ -51,8 +51,10 @@ const browserSessions = new LocalControlBrowserSessions({
   currentHumanIdentityId: human.id,
 });
 const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
+let agentActivity;
 const fixtureRuntime = {
-  async status() { return "idle"; },
+  async status() { return agentActivity ? "working" : "idle"; },
+  async interrupt() {},
   async capabilities() {
     return {
       models: [
@@ -107,6 +109,13 @@ const localControl = await createLocalControlHttpServer({
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${channelId}:${identityId}`, "disabled");
       },
+      async cancelCurrentChannelAgent(channelId, identityId) {
+        if (channelId !== channel.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
+        agentActivity = { ...agentActivity, phase: "canceling" };
+      },
+      activity(channelId, identityId) {
+        return channelId === channel.id && identityId === agent.id ? agentActivity : undefined;
+      },
     },
     configuration: new LocalAgentHostConfiguration({
       client: channelClient,
@@ -124,6 +133,23 @@ const controlServer = createServer(async (request, response) => {
       localControl.endpoint,
       url.searchParams.get("destination") ?? "/",
     ) }));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/agent-activity") {
+    const phase = url.searchParams.get("phase") ?? "running";
+    if (phase === "idle") {
+      agentActivity = undefined;
+    } else {
+      agentActivity = {
+        phase,
+        triggerMessageId: initialTrigger.id,
+        triggerSequence: initialTrigger.sequence,
+        startedAt: new Date(Date.now() - 62_000).toISOString(),
+        queuedTurns: Number(url.searchParams.get("queued") ?? 0),
+        ...(phase === "retrying" ? { retryAttempt: 2 } : {}),
+      };
+    }
+    response.writeHead(204).end();
     return;
   }
   if (request.method === "POST" && url.pathname === "/hide-workspaces") {

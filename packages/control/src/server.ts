@@ -49,6 +49,7 @@ export {
 } from "./session.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
+  type LocalAgentActivity,
   type LocalAgentRuntimeOptions,
   type LocalChannelAgent,
   type LocalChannelAgentsResponse,
@@ -79,6 +80,7 @@ export interface LocalControlBindingDirectory {
 
 export interface LocalControlRuntimePort {
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
+  interrupt?(sessionId: string): Promise<void>;
 }
 
 export interface LocalControlAgentLifecyclePort {
@@ -98,6 +100,12 @@ export interface LocalControlAgentLifecyclePort {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
+  cancelCurrentChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void>;
+  activity?(channelId: string, agentIdentityId: string): LocalAgentActivity | undefined;
 }
 
 export interface LocalControlConfigurationPort {
@@ -182,7 +190,7 @@ export class LocalControlService {
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),
         steer: false,
-        interrupt: false,
+        interrupt: Boolean(this.options.lifecycle?.available),
         reconnect: false,
       },
     };
@@ -316,6 +324,18 @@ export class LocalControlService {
     return this.channelAgent(channelId, identityId);
   }
 
+  async cancelCurrentChannelAgent(
+    channelId: string,
+    identityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelAgent> {
+    if (!this.options.lifecycle?.available) {
+      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
+    }
+    await this.options.lifecycle.cancelCurrentChannelAgent(channelId, identityId, actorIdentityId);
+    return this.channelAgent(channelId, identityId);
+  }
+
   private async channelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.listChannelAgents(channelId);
     const agent = response.agents.find((candidate) => candidate.identityId === identityId);
@@ -388,6 +408,24 @@ export class LocalControlService {
           ...disabledCapabilities,
           replace: Boolean(this.options.lifecycle?.available),
           stop: Boolean(this.options.lifecycle?.available),
+        },
+      };
+    }
+    const activity = this.options.lifecycle?.activity?.(channel.id, identityId);
+    if (activity) {
+      return {
+        ...base,
+        ...details,
+        state: "running",
+        activity,
+        capabilities: {
+          ...disabledCapabilities,
+          stop: Boolean(this.options.lifecycle?.available),
+          interrupt: Boolean(
+            this.options.lifecycle?.available
+            && runtime.interrupt
+            && activity.phase !== "canceling",
+          ),
         },
       };
     }
@@ -526,7 +564,7 @@ export async function createLocalControlHttpServer(
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAllowedPost = request.method === "POST" && (
-      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop)$/.test(requestPath)
+      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop|cancel-current)$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
     );
@@ -688,6 +726,16 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
         );
         json(response, 200, { agent }, origin);
+        return;
+      }
+      const agentCancelMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/cancel-current$/);
+      if (agentCancelMatch && browserSession && request.method === "POST") {
+        const agent = await options.service.cancelCurrentChannelAgent(
+          decodeURIComponent(agentCancelMatch[1]!),
+          decodeURIComponent(agentCancelMatch[2]!),
+          browserSession.identityId,
+        );
+        json(response, 202, { agent }, origin);
         return;
       }
       const match = path.match(/^\/local\/channels\/([^/]+)\/agents$/);

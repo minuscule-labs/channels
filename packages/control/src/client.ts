@@ -98,6 +98,15 @@ export class LocalControlClient {
     return response.agent;
   }
 
+  async cancelCurrentChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
+    const response = await this.request<{ agent: LocalChannelAgent }>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/cancel-current`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+    return response.agent;
+  }
+
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {
     return this.get<LocalWorkspaceConfigurationSummary>(
       `/local/workspaces/${encodeURIComponent(workspaceId)}/config`,

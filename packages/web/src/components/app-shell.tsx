@@ -1,5 +1,5 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
-import { Outlet, useRouterState } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { channels } from "../lib/api";
@@ -10,28 +10,52 @@ import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => channels.listWorkspaces() });
-  const channelQueries = useQueries({
-    queries: (workspaces.data ?? []).map((workspace) => ({
-      queryKey: queryKeys.workspaceChannels(workspace.id),
-      queryFn: () => channels.listWorkspaceChannels(workspace.id),
-      staleTime: 5_000,
-    })),
+  const routeWorkspaceId = pathname.match(/\/app\/workspaces\/([^/]+)/)?.[1];
+  const selectedWorkspaceId = routeWorkspaceId
+    ?? (workspaces.data ?? []).find((workspace) => workspace.id === localStorage.getItem("minu-channels:last-workspace"))?.id
+    ?? workspaces.data?.[0]?.id;
+  const selectedWorkspace = (workspaces.data ?? []).find((workspace) => workspace.id === selectedWorkspaceId);
+  const selectedChannels = useQuery({
+    queryKey: selectedWorkspace ? queryKeys.workspaceChannels(selectedWorkspace.id) : ["workspace", "none", "channels"],
+    queryFn: () => channels.listWorkspaceChannels(selectedWorkspace!.id),
+    enabled: Boolean(selectedWorkspace),
+    staleTime: 5_000,
   });
   const activeChannelId = pathname.match(/\/channels\/([^/]+)/)?.[1];
   const activeAgentsWorkspaceId = pathname.match(/\/workspaces\/([^/]+)\/agents(?:\/|$)/)?.[1];
-  const navigationItems = useMemo<WorkspaceNavigationItem[]>(
-    () =>
-      (workspaces.data ?? []).map((workspace, index) => ({
-        workspace,
-        channels: channelQueries[index]?.data ?? [],
-        loading: channelQueries[index]?.isLoading ?? false,
-      })),
-    [channelQueries, workspaces.data],
-  );
+  const navigationItems = useMemo<WorkspaceNavigationItem[]>(() => selectedWorkspace ? [{
+    workspace: selectedWorkspace,
+    channels: selectedChannels.data ?? [],
+    loading: selectedChannels.isLoading,
+  }] : [], [selectedChannels.data, selectedChannels.isLoading, selectedWorkspace]);
+
+  const selectWorkspace = async (workspaceId: string) => {
+    const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);
+    if (!workspace) return;
+    localStorage.setItem("minu-channels:last-workspace", workspaceId);
+    const channelList = await channels.listWorkspaceChannels(workspaceId);
+    const rememberedChannelId = localStorage.getItem(`minu-channels:last-channel:${workspaceId}`);
+    const channel = channelList.find(({ id }) => id === rememberedChannelId) ?? channelList[0];
+    void navigate(channel ? {
+      to: "/app/workspaces/$workspaceId/channels/$channelId",
+      params: { workspaceId, channelId: channel.id },
+    } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
+  };
 
   useEffect(() => setNavigationOpen(false), [pathname]);
+  useEffect(() => {
+    if (routeWorkspaceId) localStorage.setItem("minu-channels:last-workspace", routeWorkspaceId);
+    if (routeWorkspaceId && activeChannelId) localStorage.setItem(`minu-channels:last-channel:${routeWorkspaceId}`, activeChannelId);
+  }, [activeChannelId, routeWorkspaceId]);
+  useEffect(() => {
+    if (pathname !== "/" || !selectedWorkspaceId) return;
+    void selectWorkspace(selectedWorkspaceId);
+  // Redirecting from the index only needs the current loaded Workspace set.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname, selectedWorkspaceId]);
 
   if (workspaces.isLoading) {
     return <div className="grid min-h-screen place-items-center text-sm text-[var(--muted)]">Loading MinuChannels…</div>;
@@ -68,6 +92,9 @@ export function AppShell() {
           items={navigationItems}
           activeChannelId={activeChannelId}
           activeAgentsWorkspaceId={activeAgentsWorkspaceId}
+          workspaces={workspaces.data ?? []}
+          selectedWorkspaceId={selectedWorkspaceId}
+          onSelectWorkspace={(workspaceId) => void selectWorkspace(workspaceId)}
         />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -91,6 +118,9 @@ export function AppShell() {
             items={navigationItems}
             activeChannelId={activeChannelId}
             activeAgentsWorkspaceId={activeAgentsWorkspaceId}
+            workspaces={workspaces.data ?? []}
+            selectedWorkspaceId={selectedWorkspaceId}
+            onSelectWorkspace={(workspaceId) => { void selectWorkspace(workspaceId); setNavigationOpen(false); }}
             onNavigate={() => setNavigationOpen(false)}
             onClose={() => setNavigationOpen(false)}
           />

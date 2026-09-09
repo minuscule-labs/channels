@@ -35,6 +35,14 @@ export interface ChannelClientOptions {
   actorIdentityId?: string;
 }
 
+/** HTTP failures retain their status without exposing response internals to callers. */
+export class ChannelClientError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ChannelClientError";
+  }
+}
+
 export class ChannelClient {
   constructor(readonly endpoint: string, private readonly options: ChannelClientOptions = {}) {}
 
@@ -245,7 +253,7 @@ export class ChannelClient {
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new Error(body.error ?? `Channel request failed (${response.status})`);
+      throw new ChannelClientError(body.error ?? `Channel request failed (${response.status})`, response.status);
     }
     return response;
   }

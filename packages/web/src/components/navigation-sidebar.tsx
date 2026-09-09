@@ -15,22 +15,36 @@ export function NavigationSidebar({
   items,
   activeChannelId,
   activeAgentsWorkspaceId,
+  workspaces,
+  selectedWorkspaceId,
+  onSelectWorkspace,
   onNavigate,
   onClose,
 }: {
   items: WorkspaceNavigationItem[];
   activeChannelId?: string;
   activeAgentsWorkspaceId?: string;
+  workspaces: Workspace[];
+  selectedWorkspaceId?: string;
+  onSelectWorkspace(workspaceId: string): void;
   onNavigate?(): void;
   onClose?(): void;
 }) {
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-[var(--border)] bg-[var(--panel-muted)] md:w-72">
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
-        <Link to="/" className="flex items-center gap-2 font-mono font-semibold" onClick={onNavigate}>
-          <MessageSquare className="h-4 w-4 text-[var(--accent)]" />
-          MinuChannels
-        </Link>
+        <div className="flex min-w-0 items-center gap-2">
+          <MessageSquare className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+          <label className="sr-only" htmlFor="workspace-switcher">Selected Workspace</label>
+          <select
+            id="workspace-switcher"
+            value={selectedWorkspaceId ?? ""}
+            onChange={(event) => onSelectWorkspace(event.target.value)}
+            className="min-w-0 max-w-40 bg-transparent text-sm font-semibold outline-none"
+          >
+            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+          </select>
+        </div>
         <div className="flex items-center gap-1">
           <WorkspaceCreateDialog onNavigate={onNavigate} />
           {onClose ? (
@@ -93,7 +107,6 @@ export function NavigationSidebar({
                       >
                         <Hash className="h-3.5 w-3.5 shrink-0" />
                         <span className="truncate">{channel.name}</span>
-                        <span className="ml-auto text-[10px] tabular-nums">{channel.participants.length}</span>
                       </Link>
                     </li>
                   );

@@ -75,6 +75,10 @@ export function ChannelComposer({
 
   const bodyBytes = useMemo(() => messageByteLength(body), [body]);
   const bodyTooLarge = bodyBytes > MAX_MESSAGE_BYTES;
+  const showByteCount = bodyBytes >= MAX_MESSAGE_BYTES * 0.8;
+  const byteCountTone = bodyTooLarge ? "text-[var(--danger)]"
+    : bodyBytes >= MAX_MESSAGE_BYTES * 0.9 ? "text-[var(--warning)]"
+      : "text-[var(--muted)]";
   const mentionQuery = mentionQueryAt(body, cursor);
   const mentionIdentity = mentionQuery ? `${mentionQuery.start}:${mentionQuery.end}:${mentionQuery.value}` : undefined;
   const suggestions = useMemo<MentionSuggestion[]>(() => {
@@ -252,9 +256,14 @@ export function ChannelComposer({
             </span>
             <span className="text-[10px] text-[var(--muted)]">Enter sends · Shift or ⌘/Ctrl + Enter adds a line · @mention wakes an agent</span>
             <div className="ml-auto flex items-center gap-2">
-              <span className={`font-mono text-[10px] ${bodyTooLarge ? "text-[var(--danger)]" : "text-[var(--muted)]"}`}>
-                {bodyBytes.toLocaleString()} / {MAX_MESSAGE_BYTES.toLocaleString()} B
-              </span>
+              {showByteCount ? (
+                <span
+                  className={`font-mono text-[10px] ${byteCountTone}`}
+                  title={`${bodyBytes.toLocaleString()} of ${MAX_MESSAGE_BYTES.toLocaleString()} bytes`}
+                >
+                  {Math.ceil(bodyBytes / 1024)} KB of {MAX_MESSAGE_BYTES / 1024} KB
+                </span>
+              ) : null}
               <button
                 className="button-primary"
                 type="button"

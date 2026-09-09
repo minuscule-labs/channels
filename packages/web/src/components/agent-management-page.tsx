@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
+import { useAppToast } from "./ui/toast";
 
 function modelKey(model: { provider: string; id: string }): string {
   return JSON.stringify([model.provider, model.id]);
@@ -117,9 +118,11 @@ function AgentIdentityForm({
 function AgentLaunchProfileForm({
   workspaceId,
   agent,
+  onConfigurationSaved,
 }: {
   workspaceId: string;
   agent: LocalWorkspaceAgentConfigurationSummary;
+  onConfigurationSaved?(): void;
 }) {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<"general" | "skills" | "runtime">("general");
@@ -206,6 +209,9 @@ function AgentLaunchProfileForm({
       setSelectedModelKey("");
       setReasoningLevel("");
       setPersonaPrompt("");
+      if (next.agents.find((candidate) => candidate.identityId === agent.identityId)?.runtimeConfigured) {
+        onConfigurationSaved?.();
+      }
     },
   });
   const submit = (event: FormEvent) => {
@@ -240,7 +246,9 @@ function AgentLaunchProfileForm({
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">{agent.status}</span>
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
-        <ConfigurationState configured={agent.runtimeConfigured} label="Harness" />
+        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">
+          Harness: {agent.runtimeAdapter ?? "not configured"}
+        </span>
         <ConfigurationState configured={agent.modelConfigured} label="Model" />
         <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
         <ConfigurationState configured={agent.skillsConfigured} label={`Skills (${agent.selectedSkillCount})`} />
@@ -537,7 +545,7 @@ export function AgentManagementPage() {
                         <span className="font-mono text-[10px] text-[var(--muted)]">@{member.mentionHandle}</span>
                       </div>
                       <p className="mt-1 truncate text-[11px] text-[var(--muted)]">
-                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · {assignedChannels.length} {assignedChannels.length === 1 ? "Channel" : "Channels"} · {config.boundChannelCount} active {config.boundChannelCount === 1 ? "binding" : "bindings"}
+                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · Harness: {config.runtimeAdapter ?? "not configured"} · {assignedChannels.length} {assignedChannels.length === 1 ? "Channel" : "Channels"} · {config.boundChannelCount} active {config.boundChannelCount === 1 ? "binding" : "bindings"}
                       </p>
                     </div>
                     <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">{config.status}</span>
@@ -558,6 +566,7 @@ export function AgentManagementPage() {
 export function AgentCreatePage() {
   const { workspaceId } = useParams({ from: "/app/workspaces/$workspaceId/agents/new" });
   const navigate = useNavigate();
+  const { showToast } = useAppToast();
   const data = useAgentManagementData(workspaceId);
   if (data.pending) return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading agent editor…</div>;
   if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
@@ -584,10 +593,28 @@ export function AgentCreatePage() {
                 workspaceId={workspaceId}
                 existingMembers={data.members.data ?? []}
                 mode="agent"
-                onCreated={(identity) => void navigate({
-                  to: "/app/workspaces/$workspaceId/agents/$agentId",
-                  params: { workspaceId, agentId: identity.id },
-                })}
+                onCreated={(identity, _member, configurationWarning) => {
+                  if (configurationWarning) {
+                    localStorage.setItem(`minu-channels:agent-configuration-warning:${identity.id}`, configurationWarning);
+                    void navigate({
+                      to: "/app/workspaces/$workspaceId/agents/$agentId",
+                      params: { workspaceId, agentId: identity.id },
+                    });
+                    return;
+                  }
+                  void navigate({
+                    to: "/app/workspaces/$workspaceId/agents",
+                    params: { workspaceId },
+                  });
+                  showToast({
+                    message: `Agent “${identity.displayName ?? identity.id}” created`,
+                    actionLabel: "Edit agent",
+                    onAction: () => void navigate({
+                      to: "/app/workspaces/$workspaceId/agents/$agentId",
+                      params: { workspaceId, agentId: identity.id },
+                    }),
+                  });
+                }}
               />
             </div>
           </article>
@@ -599,6 +626,8 @@ export function AgentCreatePage() {
 
 export function AgentDetailPage() {
   const { workspaceId, agentId } = useParams({ from: "/app/workspaces/$workspaceId/agents/$agentId" });
+  const warningKey = `minu-channels:agent-configuration-warning:${agentId}`;
+  const [configurationWarning, setConfigurationWarning] = useState(() => localStorage.getItem(warningKey));
   const data = useAgentManagementData(workspaceId);
   if (data.pending || (!data.agents.some(({ identity }) => identity.id === agentId) && data.configuration.isFetching)) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading agent…</div>;
@@ -637,8 +666,20 @@ export function AgentDetailPage() {
                 ? assignedChannels.map((channel) => <span key={channel.id} className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">#{channel.name}</span>)
                 : <span className="text-[11px] text-[var(--muted)]">Not assigned to a Channel</span>}
             </div>
+            {configurationWarning ? (
+              <div className="mt-4 rounded-lg border border-[var(--warning)]/40 bg-[var(--bg)] p-3 text-sm text-[var(--warning)]" role="alert">
+                Agent created, but its launch profile needs attention: {configurationWarning}
+              </div>
+            ) : null}
             <AgentIdentityForm workspaceId={workspaceId} actorIdentityId={data.session.data.identityId} identity={agent.identity} member={agent.member} />
-            <AgentLaunchProfileForm workspaceId={workspaceId} agent={agent.config} />
+            <AgentLaunchProfileForm
+              workspaceId={workspaceId}
+              agent={agent.config}
+              onConfigurationSaved={() => {
+                localStorage.removeItem(warningKey);
+                setConfigurationWarning(null);
+              }}
+            />
           </article>
         </div>
       </div>

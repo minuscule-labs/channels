@@ -15,7 +15,8 @@ export type LocalControlAuditAction =
   | "agent.config.updated"
   | "agent.session.started"
   | "agent.session.replaced"
-  | "agent.session.stopped";
+  | "agent.session.stopped"
+  | "agent.turn.cancel.requested";
 
 export interface LocalControlAuditEvent {
   action: LocalControlAuditAction;

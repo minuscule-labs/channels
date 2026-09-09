@@ -51,7 +51,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
   await expect(page.getByText("Workspace: Browser Test", { exact: false })).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
   await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
   await expect(page.getByText("Send as", { exact: true })).toHaveCount(0);
@@ -156,9 +156,9 @@ test("configures Workspace agent startup without reflecting saved values", async
   const agentResponse = await agentResponsePromise;
   expect(agentResponse.ok()).toBe(true);
   const agentResponseBody = await agentResponse.text();
-  expect(agentResponseBody).not.toContain(runtimeValue);
+  expect(agentResponseBody).toContain(runtimeValue);
   expect(agentResponseBody).not.toContain(personaValue);
-  await expect(agentForm.getByText("Harness: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByText(`Harness: ${runtimeValue}`, { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByLabel("Replace harness", { exact: true })).toHaveValue("");
   await agentForm.getByRole("tab", { name: "General" }).click();
@@ -218,6 +218,9 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await page.getByRole("checkbox", { name: /handoff Prepare a concise handoff/ }).uncheck();
   await page.getByRole("button", { name: "Create agent" }).click();
 
+  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Agent “Browser Review Agent” created");
+  await page.getByRole("button", { name: "Edit agent" }).click();
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
   await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
@@ -231,6 +234,76 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByRole("link", { name: /Browser Lead Review Agent/ })).toBeVisible();
 });
 
+test("repairs a failed initial agent launch profile without creating a duplicate", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspace = workspaces[0]!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+
+  let rejectedInitialConfiguration = false;
+  await page.route("**/local/workspaces/*/agents/*/config", async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    if (!rejectedInitialConfiguration) {
+      rejectedInitialConfiguration = true;
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Harness unavailable" }) });
+      return;
+    }
+    const identityId = route.request().url().match(/\/agents\/([^/]+)\/config$/)?.[1]!;
+    const input = JSON.parse(route.request().postData() ?? "{}") as { runtimeAdapter?: string };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        protocolVersion: 9,
+        workspaceId: workspace.id,
+        rootConfigured: true,
+        notesFolderConfigured: false,
+        agents: [{
+          identityId,
+          configured: Boolean(input.runtimeAdapter),
+          personaConfigured: true,
+          runtimeConfigured: Boolean(input.runtimeAdapter),
+          ...(input.runtimeAdapter ? { runtimeAdapter: input.runtimeAdapter } : {}),
+          modelConfigured: false,
+          reasoningConfigured: false,
+          skillsConfigured: false,
+          selectedSkillCount: 0,
+          status: input.runtimeAdapter ? "active" : "unconfigured",
+          boundChannelCount: 0,
+          changesApplyToNewSessions: true,
+        }],
+      }),
+    });
+  });
+
+  await page.getByRole("link", { name: "Add agent" }).click();
+  await page.getByLabel("Display name").fill("Repairable Agent");
+  await page.getByRole("button", { name: "Create agent" }).click();
+  await expect(page.getByRole("alert")).toContainText("Agent created, but its launch profile needs attention: Harness unavailable");
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Repairable Agent", exact: true, level: 1 })).toBeVisible();
+
+  const launchProfile = page.locator("form").filter({ hasText: "Private launch profile" });
+  await launchProfile.getByRole("tab", { name: "General" }).click();
+  await launchProfile.getByLabel("Agent instructions", { exact: true }).fill("Incomplete repair");
+  const incompleteResponse = page.waitForResponse((response) => response.request().method() === "PATCH"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  expect((await incompleteResponse).ok()).toBe(true);
+  await expect(page.getByRole("alert")).toContainText("Harness unavailable");
+
+  await launchProfile.getByRole("tab", { name: "Runtime" }).click();
+  await launchProfile.getByLabel("Harness", { exact: true }).fill("pi");
+  const repairResponse = page.waitForResponse((response) => response.request().method() === "PATCH"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  expect((await repairResponse).ok()).toBe(true);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("link", { name: "All agents" }).click();
+  await expect(page.getByRole("link", { name: /Repairable Agent/ })).toHaveCount(1);
+});
+
 test("creates and renames a Workspace with a private source path", async ({ page, request }) => {
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Add Workspace" }).click();
@@ -241,13 +314,13 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await createDialog.getByRole("button", { name: "Create Workspace" }).click();
 
   await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();
-  await expect(page.getByText("Browser Workspace", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Browser Workspace", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Configure Workspace Browser Workspace" }).click();
   const settings = page.getByRole("dialog", { name: "Browser Workspace configuration" });
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
   await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
   await settings.getByRole("button", { name: "Save name" }).click();
-  await expect(page.getByText("Renamed Workspace", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Selected Workspace").locator("option:checked")).toHaveText("Renamed Workspace");
 });
 
 test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {
@@ -265,7 +338,8 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const createDialog = page.getByRole("dialog", { name: `Create a Channel in ${workspace.name}` });
   await expect(createDialog).toBeVisible();
   await createDialog.getByLabel("Channel name").fill("roster-administration");
-  await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toBeChecked();
+  await expect(createDialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
+  await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toHaveCount(0);
   await createDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   const createResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/channels"));
@@ -280,7 +354,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/start`));
   await page.getByRole("button", { name: "Start Builder Agent" }).click();
   expect((await startResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   const replaceResponsePromise = page.waitForResponse((response) =>
@@ -288,19 +362,19 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/replace`));
   await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
   expect((await replaceResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/stop`));
-  await page.getByRole("button", { name: "Stop Builder Agent" }).click();
+  await page.getByRole("button", { name: "Stop agent Builder Agent" }).click();
   expect((await stopResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: disabled")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Stopped")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {
     data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },
