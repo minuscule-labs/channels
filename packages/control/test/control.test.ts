@@ -316,7 +316,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 9 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 10 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -398,7 +398,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 9, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 10, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -460,6 +460,58 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
   assert.equal(cancelCalls, 1);
   const body = await response.json() as { agent: { activity?: { phase: string } } };
   assert.equal(body.agent.activity?.phase, "canceling");
+});
+
+test("serves authenticated bulk lifecycle partial results", async (context) => {
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/",
+    currentHumanIdentityId: "human-bulk",
+  });
+  const calls: string[] = [];
+  const control = new LocalControlService({
+    channels: { async getChannel() { return channel; } },
+    bindings: { async listChannelBindings() { return []; } },
+    runtimes: {},
+    lifecycle: {
+      available: true,
+      async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
+      async cancelCurrentChannelAgent() {},
+      async startAllChannelAgents(channelId, actorIdentityId) {
+        calls.push(`start:${channelId}:${actorIdentityId}`);
+        return [
+          { identityId: "agent-a", outcome: "started" },
+          { identityId: "agent-b", outcome: "skipped", reason: "unconfigured" },
+        ];
+      },
+      async stopAllChannelAgents(channelId, actorIdentityId) {
+        calls.push(`stop:${channelId}:${actorIdentityId}`);
+        return [{ identityId: "agent-a", outcome: "stopped" }];
+      },
+    },
+  });
+  const server = await createLocalControlHttpServer({
+    service: control,
+    port: 0,
+    allowedOrigins: [sessions.browserOrigin],
+    browserSessions: sessions,
+  });
+  context.after(() => server.close());
+  const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+  const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+  const request = (action: "start" | "stop") => fetch(
+    `${server.endpoint}/local/channels/${channel.id}/agents/${action}-all`,
+    { method: "POST", headers: { cookie, origin: sessions.browserOrigin } },
+  );
+  assert.equal((await request("start")).status, 200);
+  const stopped = await request("stop");
+  assert.equal(stopped.status, 200);
+  assert.deepEqual((await stopped.json() as { results: unknown[] }).results, [
+    { identityId: "agent-a", outcome: "stopped" },
+  ]);
+  assert.deepEqual(calls, [
+    `start:${channel.id}:human-bulk`,
+    `stop:${channel.id}:human-bulk`,
+  ]);
 });
 
 test("advertises the product-specific localhost name across control and browser ports", () => {
@@ -559,7 +611,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 9,
+      protocolVersion: 10,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -1073,6 +1125,140 @@ test("one binding queue drain does not hold the shared Relay ownership lock", as
   await retiringA;
 });
 
+test("bulk lifecycle bounds concurrency and preserves participant order", async () => {
+  const host = new LocalAgentHost({
+    client: {} as ChannelClient,
+    store: {} as InMemoryRelayBindingStore,
+    runtimes: {},
+  });
+  const identityIds = ["agent-1", "agent-2", "agent-3", "agent-4", "agent-5"];
+  let active = 0;
+  let maximum = 0;
+  const targets = identityIds.map((identityId) => ({ identityId, duplicate: false }));
+  const internals = host as unknown as {
+    bulkTargets(): Promise<{ workspaceId: string; targets: typeof targets }>;
+    bulkStartOne(
+      _channelId: string,
+      _workspaceId: string,
+      target: typeof targets[number],
+    ): Promise<{ identityId: string; outcome: "started" }>;
+  };
+  internals.bulkTargets = async () => ({ workspaceId: "workspace-bulk", targets });
+  internals.bulkStartOne = async (_channelId, _workspaceId, { identityId }) => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, identityId === "agent-1" ? 20 : 5));
+    active -= 1;
+    if (identityId === "agent-2") throw new Error("target-local preflight failed");
+    return { identityId, outcome: "started" };
+  };
+  const results = await host.startAllChannelAgents("channel-bulk", "owner-bulk");
+  assert.equal(maximum, 3);
+  assert.deepEqual(results, identityIds.map((identityId) => identityId === "agent-2"
+    ? { identityId, outcome: "failed", reason: "unavailable" }
+    : { identityId, outcome: "started" }));
+});
+
+test("bulk stop does not reverse a real individual start accepted after its snapshot", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-bulk-race-")));
+  const channelServer = await createChannelHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new ManagedFakeRuntime();
+  let host: LocalAgentHost | undefined;
+  try {
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
+    const agents = await Promise.all(["A", "B", "C", "D"].map((name) =>
+      client.createIdentity({ type: "agent", displayName: `Agent ${name}` })));
+    const workspace = await client.createWorkspace({ slug: "bulk-race", name: "Bulk Race" });
+    await client.addWorkspaceMember(workspace.id, {
+      identityId: owner.id,
+      mentionHandle: "owner",
+      accessRole: "owner",
+    });
+    for (const [index, agent] of agents.entries()) {
+      await client.addWorkspaceMember(workspace.id, {
+        identityId: agent.id,
+        mentionHandle: `agent-${String.fromCharCode(97 + index)}`,
+      });
+    }
+    const channel = await client.createChannel({
+      workspaceId: workspace.id,
+      name: "bulk-race",
+      participantIds: [owner.id, ...agents.map(({ id }) => id)],
+    });
+    const configuration = new LocalAgentHostConfiguration({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+    });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
+      rootUri: sourceDirectory,
+    });
+    for (const agent of agents) {
+      await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+        runtimeAdapter: "managed-test",
+        modelProvider: "openai",
+        modelId: "gpt-managed",
+      });
+    }
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await Promise.all(agents.slice(0, 3).map((agent) =>
+      host!.startChannelAgent(channel.id, agent.id, owner.id)));
+    const initialBindings = await store.listChannelBindings(channel.id);
+    const heldStatuses = initialBindings.map(({ runtimeSessionId }) => runtime.holdStatus(runtimeSessionId));
+
+    const stopping = host.stopAllChannelAgents(channel.id, owner.id);
+    await Promise.all(heldStatuses.map(({ entered }) => entered));
+    const agentD = agents[3]!;
+    await host.startChannelAgent(channel.id, agentD.id, owner.id);
+    const startedD = (await store.listChannelBindings(channel.id))
+      .find(({ agentIdentityId }) => agentIdentityId === agentD.id)!;
+    assert.equal(startedD.state, "connected");
+    assert.equal(startedD.generation, 1);
+    assert.ok(startedD.leaseOwner);
+    assert.equal(await runtime.status(startedD.runtimeSessionId), "idle");
+
+    for (const held of heldStatuses) held.release();
+    const results = await stopping;
+    assert.deepEqual(results.at(-1), {
+      identityId: agentD.id,
+      outcome: "skipped",
+      reason: "already_idle",
+    });
+    const afterD = await store.getBinding(startedD.id);
+    assert.equal(afterD?.state, "connected");
+    assert.equal(afterD?.generation, 1);
+    assert.equal(afterD?.runtimeSessionId, startedD.runtimeSessionId);
+    assert.equal(afterD?.leaseOwner, startedD.leaseOwner);
+    assert.equal(runtime.stops.includes(startedD.runtimeSessionId), false);
+    assert.equal(runtime.interruptions.includes(startedD.runtimeSessionId), false);
+
+    const nextSessionNumber = runtime.starts.length + 1;
+    const heldStarts = [0, 1, 2].map((offset) =>
+      runtime.holdStatus(`managed-session-${nextSessionNumber + offset}`));
+    const starting = host.startAllChannelAgents(channel.id, owner.id);
+    await Promise.all(heldStarts.map(({ entered }) => entered));
+    await host.stopChannelAgent(channel.id, agentD.id, owner.id);
+    for (const held of heldStarts) held.release();
+    const startResults = await starting;
+    assert.deepEqual(startResults.at(-1), {
+      identityId: agentD.id,
+      outcome: "skipped",
+      reason: "offline",
+    });
+    const stoppedD = await store.getBinding(startedD.id);
+    assert.equal(stoppedD?.state, "disabled");
+    assert.equal(stoppedD?.generation, 2);
+    assert.equal(runtime.stops.filter((sessionId) => sessionId === startedD.runtimeSessionId).length, 1);
+  } finally {
+    await host?.close().catch(() => undefined);
+    await store.close();
+    await channelServer.close();
+    await rm(sourceDirectory, { recursive: true, force: true });
+  }
+});
+
 test("agent host starts isolated Channel sessions with private roots and personas", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-host-source-")));
   const channelServer = await createChannelHttpServer({ port: 0 });
@@ -1260,22 +1446,25 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
   const channelServer = await createChannelHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const runtime = new ManagedFakeRuntime();
+  const audit: LocalControlAuditEvent[] = [];
   let host: LocalAgentHost | undefined;
   try {
     const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
     const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
     const agentA = await client.createIdentity({ type: "agent", displayName: "Agent A" });
     const agentB = await client.createIdentity({ type: "agent", displayName: "Agent B" });
+    const agentC = await client.createIdentity({ type: "service", displayName: "Agent C" });
     const workspace = await client.createWorkspace({ slug: "runner-isolation", name: "Runner Isolation" });
     await client.addWorkspaceMember(workspace.id, {
       identityId: owner.id, mentionHandle: "owner", accessRole: "owner",
     });
     await client.addWorkspaceMember(workspace.id, { identityId: agentA.id, mentionHandle: "agent-a" });
     await client.addWorkspaceMember(workspace.id, { identityId: agentB.id, mentionHandle: "agent-b" });
+    await client.addWorkspaceMember(workspace.id, { identityId: agentC.id, mentionHandle: "agent-c" });
     const channel = await client.createChannel({
       workspaceId: workspace.id,
       name: "shared-relay",
-      participantIds: [owner.id, agentA.id, agentB.id],
+      participantIds: [owner.id, agentA.id, agentB.id, agentC.id],
     });
     const configuration = new LocalAgentHostConfiguration({
       client, store, runtimes: { "managed-test": runtime },
@@ -1288,7 +1477,12 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
         modelId: "gpt-managed",
       });
     }
-    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    host = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      onAudit: (event) => audit.push(event),
+    });
     await Promise.all([
       host.startChannelAgent(channel.id, agentA.id, owner.id),
       host.startChannelAgent(channel.id, agentB.id, owner.id),
@@ -1297,6 +1491,10 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
     const bindingA = bindings.find(({ agentIdentityId }) => agentIdentityId === agentA.id)!;
     const bindingB = bindings.find(({ agentIdentityId }) => agentIdentityId === agentB.id)!;
     assert.equal(bindings.length, 2);
+    await assert.rejects(
+      host.startAllChannelAgents(channel.id, agentA.id),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
+    );
 
     const heldB = runtime.holdSend(bindingB.runtimeSessionId);
     const triggerB = await client.postMessage(channel.id, {
@@ -1357,6 +1555,24 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
     ]);
     heldAStatus.release();
     await attachingA;
+
+    assert.deepEqual(await host.startAllChannelAgents(channel.id, owner.id), [
+      { identityId: agentA.id, outcome: "skipped", reason: "already_idle" },
+      { identityId: agentB.id, outcome: "started" },
+      { identityId: agentC.id, outcome: "skipped", reason: "unconfigured" },
+    ]);
+    assert.deepEqual(await host.stopAllChannelAgents(channel.id, owner.id), [
+      { identityId: agentA.id, outcome: "stopped" },
+      { identityId: agentB.id, outcome: "stopped" },
+      { identityId: agentC.id, outcome: "skipped", reason: "already_idle" },
+    ]);
+    assert.equal(audit.filter(({ action }) => action === "agent.session.bulk-started").length, 3);
+    assert.equal(audit.filter(({ action }) => action === "agent.session.bulk-stopped").length, 3);
+    assert.equal(audit.filter(({ action, outcome }) =>
+      action === "agents.bulk-started" && outcome === "accepted").length, 1);
+    assert.equal(audit.filter(({ action, outcome }) =>
+      action === "agents.bulk-started" && outcome === "rejected").length, 1);
+    assert.equal(audit.filter(({ action }) => action === "agents.bulk-stopped").length, 1);
   } finally {
     await host?.close().catch(() => undefined);
     await store.close();
@@ -1500,7 +1716,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 9,
+      protocolVersion: 10,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -1513,7 +1729,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 9,
+      protocolVersion: 10,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

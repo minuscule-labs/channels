@@ -1,5 +1,6 @@
 export const queryKeys = {
   localCurrentSession: () => ["local", "session"] as const,
+  localCapabilities: () => ["local", "capabilities"] as const,
   identities: () => ["identities"] as const,
   workspaces: () => ["workspaces"] as const,
   workspace: (workspaceId: string) => ["workspace", workspaceId] as const,

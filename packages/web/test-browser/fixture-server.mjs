@@ -109,6 +109,13 @@ const localControl = await createLocalControlHttpServer({
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${channelId}:${identityId}`, "disabled");
       },
+      async startAllChannelAgents() {
+        return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
+      },
+      async stopAllChannelAgents() {
+        agentBindings.set(`${channel.id}:${agent.id}`, "disabled");
+        return [{ identityId: agent.id, outcome: "stopped" }];
+      },
       async cancelCurrentChannelAgent(channelId, identityId) {
         if (channelId !== channel.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
         agentActivity = { ...agentActivity, phase: "canceling" };

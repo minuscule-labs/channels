@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 9 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 10 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -114,6 +114,8 @@ export interface LocalControlCapabilities {
     agentStart: boolean;
     agentReplace: boolean;
     agentStop: boolean;
+    agentBulkStart: boolean;
+    agentBulkStop: boolean;
     steer: boolean;
     interrupt: boolean;
     reconnect: boolean;
@@ -162,4 +164,24 @@ export interface LocalChannelAgentsResponse {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   channelId: string;
   agents: LocalChannelAgent[];
+}
+
+export type LocalBulkAgentLifecycleReason =
+  | "already_running"
+  | "already_idle"
+  | "unconfigured"
+  | "offline"
+  | "uncertain"
+  | "unavailable";
+
+export interface LocalBulkAgentLifecycleResult {
+  identityId: string;
+  outcome: "started" | "stopped" | "skipped" | "failed";
+  reason?: LocalBulkAgentLifecycleReason;
+}
+
+export interface LocalBulkAgentLifecycleResponse {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  channelId: string;
+  results: LocalBulkAgentLifecycleResult[];
 }

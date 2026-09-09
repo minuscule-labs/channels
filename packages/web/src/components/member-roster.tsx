@@ -1,4 +1,7 @@
-import type { LocalChannelAgent } from "@minu/channels-control/contracts";
+import type {
+  LocalBulkAgentLifecycleResult,
+  LocalChannelAgent,
+} from "@minu/channels-control/contracts";
 import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 import { CircleX, LoaderCircle, Play, RotateCcw, Square } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -23,6 +26,18 @@ function runtimeStateLabel(state: LocalChannelAgent["state"]): string {
   }
 }
 
+function bulkReasonLabel(reason: LocalBulkAgentLifecycleResult["reason"]): string | undefined {
+  switch (reason) {
+    case "already_running": return "already running";
+    case "already_idle": return "already idle";
+    case "unconfigured": return "not configured";
+    case "offline": return "offline";
+    case "uncertain": return "status uncertain";
+    case "unavailable": return "unavailable";
+    case undefined: return undefined;
+  }
+}
+
 function messageSnippet(message: ChannelMessage | undefined): string | undefined {
   if (!message) return undefined;
   const plainText = message.body.replace(/\s+/g, " ").trim();
@@ -40,7 +55,13 @@ export function MemberRoster({
   onReplaceAgent,
   onCancelAgent,
   onStopAgent,
+  onStartAllAgents,
+  onStopAllAgents,
   pendingAgentAction,
+  pendingBulkAction,
+  pendingBulkIdentityIds,
+  bulkResultAction,
+  bulkResults,
 }: {
   participants: Participant[];
   currentHumanIdentityId?: string;
@@ -52,10 +73,19 @@ export function MemberRoster({
   onReplaceAgent?(identityId: string): void;
   onCancelAgent?(identityId: string): void;
   onStopAgent?(identityId: string): void;
+  onStartAllAgents?(): void;
+  onStopAllAgents?(): void;
   pendingAgentAction?: { action: "start" | "replace" | "stop" | "cancel"; identityId: string };
+  pendingBulkAction?: "start" | "stop";
+  pendingBulkIdentityIds?: ReadonlySet<string>;
+  bulkResultAction?: "start" | "stop";
+  bulkResults?: readonly LocalBulkAgentLifecycleResult[];
 }) {
   const [now, setNow] = useState(() => Date.now());
-  const hasActivity = [...(localAgents?.values() ?? [])].some((agent) => agent.activity);
+  const agentValues = [...(localAgents?.values() ?? [])];
+  const hasActivity = agentValues.some((agent) => agent.activity);
+  const startEligible = agentValues.filter(({ state }) => state === "unbound" || state === "disabled").length;
+  const stopEligible = agentValues.filter(({ state }) => state === "idle" || state === "running" || state === "offline").length;
   useEffect(() => {
     if (!hasActivity) return;
     const interval = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -71,8 +101,64 @@ export function MemberRoster({
             <p className="text-[10px] text-[var(--warning)]">Runtime status unavailable</p>
           ) : null}
         </div>
-        {drawer ? <DrawerCloseButton label="Close participants" /> : null}
+        <div className="flex items-center gap-1">
+          {onStartAllAgents ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-[10px] font-medium hover:bg-[var(--hover)] disabled:opacity-50"
+              disabled={startEligible === 0 || pendingBulkAction !== undefined}
+              onClick={onStartAllAgents}
+              title={`Start ${startEligible} eligible ${startEligible === 1 ? "agent" : "agents"}`}
+            >
+              {pendingBulkAction === "start" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+              Start agents ({startEligible})
+            </button>
+          ) : null}
+          {onStopAllAgents ? (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-[10px] font-medium text-[var(--danger)] hover:bg-[var(--hover)] disabled:opacity-50"
+              disabled={stopEligible === 0 || pendingBulkAction !== undefined}
+              onClick={onStopAllAgents}
+              title={`Stop ${stopEligible} active ${stopEligible === 1 ? "agent" : "agents"}`}
+            >
+              {pendingBulkAction === "stop" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
+              Stop agents ({stopEligible})
+            </button>
+          ) : null}
+          {drawer ? <DrawerCloseButton label="Close participants" /> : null}
+        </div>
       </div>
+      {bulkResults ? (
+        <div role="status" className="border-b border-[var(--border)] px-4 py-2 text-[11px] text-[var(--muted)]">
+          <p className="font-medium text-[var(--text)]">Bulk action complete</p>
+          <ul className="mt-1 space-y-0.5">
+            {bulkResults.map((result) => {
+              const participant = participants.find(({ id }) => id === result.identityId);
+              return (
+                <li key={result.identityId}>
+                  {participant ? participantLabel(participant, participant.id) : shortId(result.identityId)}: {result.outcome}
+                  {result.reason ? ` (${bulkReasonLabel(result.reason)})` : ""}
+                  {result.outcome === "failed" && bulkResultAction ? (
+                    <button
+                      type="button"
+                      className="ml-1 underline underline-offset-2 hover:text-[var(--text)]"
+                      onClick={() => {
+                        if (bulkResultAction === "stop") onStopAgent?.(result.identityId);
+                        else if (localAgents?.get(result.identityId)?.state === "disabled") {
+                          onReplaceAgent?.(result.identityId);
+                        } else onStartAgent?.(result.identityId);
+                      }}
+                    >
+                      Retry
+                    </button>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
       <ul className="minu-scroll min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
         {participants.filter((participant) => participant.id !== currentHumanIdentityId).map((participant) => {
           const localAgent = localAgents?.get(participant.id);
@@ -107,7 +193,7 @@ export function MemberRoster({
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
-                        disabled={pendingAgentAction !== undefined}
+                        disabled={pendingBulkIdentityIds?.has(participant.id) || pendingAgentAction?.identityId === participant.id}
                         onClick={() => onStartAgent(participant.id)}
                         aria-label={`Start ${participantLabel(participant, participant.id)}`}
                         title="Start an isolated Runtime session for this Channel"
@@ -122,7 +208,7 @@ export function MemberRoster({
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
-                        disabled={pendingAgentAction !== undefined}
+                        disabled={pendingBulkIdentityIds?.has(participant.id) || pendingAgentAction?.identityId === participant.id}
                         onClick={() => onReplaceAgent(participant.id)}
                         aria-label={`Start fresh with ${participantLabel(participant, participant.id)}`}
                         title="Start a new session with current Workspace configuration and an empty Runtime transcript"
@@ -137,7 +223,7 @@ export function MemberRoster({
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 rounded border border-[var(--warning)]/60 px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
-                        disabled={pendingAgentAction !== undefined}
+                        disabled={pendingBulkIdentityIds?.has(participant.id) || pendingAgentAction?.identityId === participant.id}
                         onClick={() => onCancelAgent(participant.id)}
                         aria-label={`Cancel current request for ${participantLabel(participant, participant.id)}`}
                         title="Cancel the active request and keep this agent session available"
@@ -152,7 +238,7 @@ export function MemberRoster({
                       <button
                         type="button"
                         className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--danger)] hover:bg-[var(--hover)] disabled:opacity-50"
-                        disabled={pendingAgentAction !== undefined}
+                        disabled={pendingBulkIdentityIds?.has(participant.id) || pendingAgentAction?.identityId === participant.id}
                         onClick={() => onStopAgent(participant.id)}
                         aria-label={`Stop agent ${participantLabel(participant, participant.id)}`}
                         title="Disable this Channel binding and stop its Runtime process"

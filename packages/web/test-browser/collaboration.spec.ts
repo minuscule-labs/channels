@@ -109,6 +109,129 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
+test("runs Channel-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(
+    `${channelsBase}/workspaces/${workspaceId}/channels`,
+  )).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  const { channel: channelMetadata } = await (await request.get(
+    `${channelsBase}/channels/${channelId}`,
+  )).json() as { channel: {
+    participants: Array<Record<string, unknown> & { id: string }>;
+    [key: string]: unknown;
+  } };
+  const builder = channelMetadata.participants.find(({ type }) => type === "agent")!;
+  const unboundId = "agent-unbound-browser";
+  await page.route(`**/channels/${channelId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ channel: {
+      ...channelMetadata,
+      participants: [...channelMetadata.participants, {
+        id: unboundId,
+        type: "agent",
+        displayName: "Unbound Agent",
+        handle: "unbound-agent",
+        status: "active",
+      }],
+    } }),
+  }));
+  await page.route(`**/local/channels/${channelId}/agents`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      protocolVersion: 10,
+      channelId,
+      agents: [
+        {
+          workspaceId, channelId, identityId: builder.id, state: "idle",
+          capabilities: { start: false, replace: false, stop: true, steer: false, interrupt: false, reconnect: false },
+        },
+        {
+          workspaceId, channelId, identityId: unboundId, state: "unbound",
+          capabilities: { start: true, replace: false, stop: false, steer: false, interrupt: false, reconnect: false },
+        },
+      ],
+    }),
+  }));
+  let releaseRequest!: () => void;
+  const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
+  let requests = 0;
+  await page.route(`**/local/channels/${channelId}/agents/stop-all`, async (route) => {
+    requests += 1;
+    await requestGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        protocolVersion: 10,
+        channelId,
+        results: [
+          { identityId: builder.id, outcome: "stopped" },
+          { identityId: unboundId, outcome: "skipped", reason: "uncertain" },
+        ],
+      }),
+    });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByRole("button", { name: /^Start agents/ })).toBeVisible();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Active work will be interrupted");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: /^Stop agents/ }).click();
+  await expect(page.getByRole("button", { name: "Stop agent Builder Agent" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Start Unbound Agent" })).toBeEnabled();
+  releaseRequest();
+  await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("stopped");
+  await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("status uncertain");
+  expect(requests).toBe(1);
+});
+
+test("hides bulk lifecycle controls when the local capability is unavailable", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(
+    `${channelsBase}/workspaces/${workspaceId}/channels`,
+  )).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  await page.route("**/local/capabilities", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      protocolVersion: 10,
+      features: {
+        currentSession: true,
+        channelAgentStatus: true,
+        workspaceConfigRead: true,
+        workspaceConfigWrite: true,
+        agentCreate: false,
+        agentRuntimeOptions: true,
+        agentSkills: true,
+        agentStart: true,
+        agentReplace: true,
+        agentStop: true,
+        agentBulkStart: false,
+        agentBulkStop: false,
+        steer: false,
+        interrupt: true,
+        reconnect: false,
+      },
+    }),
+  }));
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByRole("heading", { name: "Collaborators" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Start agents/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Stop agents/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Stop agent/ })).toBeVisible();
+});
+
 test("configures Workspace agent startup without reflecting saved values", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
@@ -255,7 +378,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 9,
+        protocolVersion: 10,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,

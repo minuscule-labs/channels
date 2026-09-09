@@ -1,5 +1,6 @@
 import type {
   LocalAgentRuntimeOptions,
+  LocalBulkAgentLifecycleResponse,
   LocalChannelAgent,
   LocalChannelAgentsResponse,
   LocalControlCapabilities,
@@ -69,6 +70,22 @@ export class LocalControlClient {
 
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
     return this.get<LocalChannelAgentsResponse>(`/local/channels/${encodeURIComponent(channelId)}/agents`);
+  }
+
+  async startAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {
+    return this.request<LocalBulkAgentLifecycleResponse>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/start-all`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+  }
+
+  async stopAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {
+    return this.request<LocalBulkAgentLifecycleResponse>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/stop-all`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
   }
 
   async startChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {

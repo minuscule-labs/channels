@@ -51,6 +51,8 @@ import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalAgentActivity,
   type LocalAgentRuntimeOptions,
+  type LocalBulkAgentLifecycleResponse,
+  type LocalBulkAgentLifecycleResult,
   type LocalChannelAgent,
   type LocalChannelAgentsResponse,
   type LocalControlCapabilities,
@@ -100,6 +102,14 @@ export interface LocalControlAgentLifecyclePort {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
+  startAllChannelAgents?(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalBulkAgentLifecycleResult[]>;
+  stopAllChannelAgents?(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalBulkAgentLifecycleResult[]>;
   cancelCurrentChannelAgent(
     channelId: string,
     agentIdentityId: string,
@@ -189,6 +199,8 @@ export class LocalControlService {
         agentStart: Boolean(this.options.lifecycle?.available),
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),
+        agentBulkStart: Boolean(this.options.lifecycle?.available && this.options.lifecycle.startAllChannelAgents),
+        agentBulkStop: Boolean(this.options.lifecycle?.available && this.options.lifecycle.stopAllChannelAgents),
         steer: false,
         interrupt: Boolean(this.options.lifecycle?.available),
         reconnect: false,
@@ -322,6 +334,34 @@ export class LocalControlService {
     }
     await this.options.lifecycle.stopChannelAgent(channelId, identityId, actorIdentityId);
     return this.channelAgent(channelId, identityId);
+  }
+
+  async startAllChannelAgents(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalBulkAgentLifecycleResponse> {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.startAllChannelAgents) {
+      throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
+    }
+    return {
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      channelId,
+      results: await this.options.lifecycle.startAllChannelAgents(channelId, actorIdentityId),
+    };
+  }
+
+  async stopAllChannelAgents(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalBulkAgentLifecycleResponse> {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.stopAllChannelAgents) {
+      throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
+    }
+    return {
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      channelId,
+      results: await this.options.lifecycle.stopAllChannelAgents(channelId, actorIdentityId),
+    };
   }
 
   async cancelCurrentChannelAgent(
@@ -565,6 +605,7 @@ export async function createLocalControlHttpServer(
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAllowedPost = request.method === "POST" && (
       /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop|cancel-current)$/.test(requestPath)
+      || /^\/local\/channels\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
     );
@@ -694,6 +735,24 @@ export async function createLocalControlHttpServer(
           decodeURIComponent(agentConfigMatch[2]!),
           browserSession.identityId,
           await readJson(request),
+        );
+        json(response, 200, result, origin);
+        return;
+      }
+      const bulkStartMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/start-all$/);
+      if (bulkStartMatch && browserSession && request.method === "POST") {
+        const result = await options.service.startAllChannelAgents(
+          decodeURIComponent(bulkStartMatch[1]!),
+          browserSession.identityId,
+        );
+        json(response, 200, result, origin);
+        return;
+      }
+      const bulkStopMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/stop-all$/);
+      if (bulkStopMatch && browserSession && request.method === "POST") {
+        const result = await options.service.stopAllChannelAgents(
+          decodeURIComponent(bulkStopMatch[1]!),
+          browserSession.identityId,
         );
         json(response, 200, result, origin);
         return;

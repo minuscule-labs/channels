@@ -1,3 +1,4 @@
+import type { LocalBulkAgentLifecycleResult } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -19,6 +20,8 @@ export function ChannelPage() {
   const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
+  const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
+  const [pendingBulkTargets, setPendingBulkTargets] = useState<ReadonlySet<string>>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearEndRef = useRef(true);
   const previousMessageCountRef = useRef(0);
@@ -48,6 +51,12 @@ export function ChannelPage() {
     retry: false,
     refetchInterval: 60_000,
   });
+  const localCapabilities = useQuery({
+    queryKey: queryKeys.localCapabilities(),
+    queryFn: () => localControl.capabilities(),
+    retry: false,
+    staleTime: 60_000,
+  });
   const localAgents = useQuery({
     queryKey: queryKeys.localChannelAgents(channelId),
     queryFn: async () => (await localControl.listChannelAgents(channelId)).agents,
@@ -65,6 +74,7 @@ export function ChannelPage() {
       return localControl.startChannelAgent(channelId, identityId);
     },
     onMutate: ({ action, identityId }) => {
+      setBulkResults(undefined);
       if (action !== "cancel") return undefined;
       const previous = localAgents.data;
       queryClient.setQueryData(queryKeys.localChannelAgents(channelId), (current: typeof localAgents.data) =>
@@ -86,6 +96,32 @@ export function ChannelPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
     },
   });
+  const bulkAgentAction = useMutation({
+    mutationFn: (action: "start" | "stop") => action === "start"
+      ? localControl.startAllChannelAgents(channelId)
+      : localControl.stopAllChannelAgents(channelId),
+    onMutate: (action) => {
+      setBulkResults(undefined);
+      setPendingBulkTargets(new Set((localAgents.data ?? [])
+        .filter(({ state }) => action === "start"
+          ? state === "unbound" || state === "disabled"
+          : state === "idle" || state === "running" || state === "offline")
+        .map(({ identityId }) => identityId)));
+    },
+    onSuccess: (response) => {
+      setBulkResults(response.results);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channelMessages(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
+    },
+    onSettled: () => setPendingBulkTargets(undefined),
+  });
+  const startAllAgents = () => bulkAgentAction.mutate("start");
+  const stopAllAgents = () => {
+    if (window.confirm("Stop all active agents in this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
+      bulkAgentAction.mutate("stop");
+    }
+  };
   const participants = metadata.data?.participants ?? [];
   const attributionParticipants = useMemo<Participant[]>(() => {
     const byId = new Map(participants.map((participant) => [participant.id, participant]));
@@ -194,13 +230,19 @@ export function ChannelPage() {
                   agentAction.mutate({ action: "stop", identityId });
                 }
               }}
+              onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
+              onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
               pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
+              pendingBulkAction={bulkAgentAction.isPending ? bulkAgentAction.variables : undefined}
+              pendingBulkIdentityIds={pendingBulkTargets}
+              bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
+              bulkResults={bulkResults}
             />
           </Drawer>
         </header>
-        {agentAction.error ? (
+        {agentAction.error || bulkAgentAction.error ? (
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
-            {agentAction.error.message}
+            {(agentAction.error ?? bulkAgentAction.error)?.message}
           </div>
         ) : null}
         <div className="relative min-h-0 flex-1">
@@ -256,7 +298,13 @@ export function ChannelPage() {
               agentAction.mutate({ action: "stop", identityId });
             }
           }}
+          onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
+          onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
           pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
+          pendingBulkAction={bulkAgentAction.isPending ? bulkAgentAction.variables : undefined}
+          pendingBulkIdentityIds={pendingBulkTargets}
+          bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
+          bulkResults={bulkResults}
         />
       </div>
     </div>
