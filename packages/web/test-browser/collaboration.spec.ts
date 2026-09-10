@@ -317,6 +317,28 @@ test("hides identity-scoped notification preferences when session capability is 
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
+test("summarizes Channel-wide agent activity above the composer", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
+  const strip = page.getByRole("region", { name: "Channel agent activity" });
+  await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 turns queued/, { timeout: 10_000 });
+  await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
+  expect((await strip.boundingBox())!.y).toBeLessThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
+
+  await request.post(`${fixtureBase}/agent-activity?phase=retrying&queued=1`);
+  await expect(strip).toContainText(/@builder is retrying \(attempt 2\).*1 turn queued/, { timeout: 10_000 });
+  await page.getByRole("button", { name: "Cancel current request for Builder Agent" }).first().click();
+  await expect(strip).toContainText("@builder is canceling", { timeout: 10_000 });
+  await request.post(`${fixtureBase}/agent-activity?phase=idle`);
+  await expect(strip).toHaveCount(0, { timeout: 10_000 });
+});
+
 test("reconnects an existing reachable session and exposes only safe diagnostics", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;

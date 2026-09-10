@@ -10,6 +10,7 @@ import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 import { readSequence, resetReadSequence, writeReadSequence } from "../lib/channel-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
+import { ChannelActivityStrip } from "./channel-activity-strip";
 import { EditChannelParticipantsDialog } from "./channel-administration-dialog";
 import { ChannelComposer } from "./channel-composer";
 import { ChannelTimeline } from "./channel-timeline";
@@ -308,6 +309,7 @@ export function ChannelPage() {
             </button>
           ) : null}
         </div>
+        <ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />
         <ChannelComposer
           key={`${channelId}:${currentSession.data?.identityId ?? currentSession.status}`}
           participants={participants}
