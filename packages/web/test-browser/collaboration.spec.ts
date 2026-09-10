@@ -331,6 +331,10 @@ test("summarizes Channel-wide agent activity above the composer", async ({ page,
   await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
   expect((await strip.boundingBox())!.y).toBeLessThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
 
+  await request.post(`${fixtureBase}/agent-activity?phase=using_tools&queued=1`);
+  await expect(strip).toContainText(/@builder is using tools.*1 turn queued/, { timeout: 10_000 });
+  await request.post(`${fixtureBase}/agent-activity?phase=responding&queued=1`);
+  await expect(strip).toContainText(/@builder is responding.*1 turn queued/, { timeout: 10_000 });
   await request.post(`${fixtureBase}/agent-activity?phase=retrying&queued=1`);
   await expect(strip).toContainText(/@builder is retrying \(attempt 2\).*1 turn queued/, { timeout: 10_000 });
   await page.getByRole("button", { name: "Cancel current request for Builder Agent" }).first().click();

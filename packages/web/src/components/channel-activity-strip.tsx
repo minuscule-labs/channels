@@ -22,7 +22,11 @@ export function activitySummaryItems(
     const handle = `@${participant?.handle ?? shortId(agent.identityId)}`;
     const phase = activity.phase === "retrying"
       ? `is retrying (attempt ${activity.retryAttempt ?? 1})`
-      : activity.phase === "canceling" ? "is canceling" : "is working";
+      : activity.phase === "canceling"
+        ? "is canceling"
+        : activity.phase === "using_tools"
+          ? "is using tools"
+          : activity.phase === "responding" ? "is responding" : "is working";
     const queue = activity.queuedTurns > 0
       ? ` · ${activity.queuedTurns} ${activity.queuedTurns === 1 ? "turn" : "turns"} queued`
       : "";

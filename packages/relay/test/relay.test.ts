@@ -1323,10 +1323,31 @@ test("interrupting an active relay turn suppresses its response and runs the rep
   }
 });
 
-test("relay exposes active queue state and cancels only the current turn", async () => {
+test("relay exposes safe Runtime phases, active queue state, and target-only cancellation", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
-  const runtime = new InterruptibleRuntime();
+  const runtime = new InterruptibleRuntime() as InterruptibleRuntime & Required<Pick<AgentRuntimePort, "activityEvents">>;
+  const activityEvents: Array<{ phase: "working" | "using_tools" | "responding"; observedAt: string }> = [];
+  let wakeActivity: (() => void) | undefined;
+  let activitySubscriptions = 0;
+  runtime.activityEvents = async function* (_sessionId, { signal }) {
+    activitySubscriptions += 1;
+    while (!signal.aborted) {
+      if (activityEvents.length) {
+        yield activityEvents.shift()!;
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        wakeActivity = resolve;
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }
+  };
+  const publishActivity = (phase: "working" | "using_tools" | "responding") => {
+    activityEvents.push({ phase, observedAt: new Date().toISOString() });
+    wakeActivity?.();
+    wakeActivity = undefined;
+  };
   const cursorStore = new InMemoryChannelStorage();
   const channel = await client.createChannel({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
@@ -1355,6 +1376,10 @@ test("relay exposes active queue state and cancels only the current turn", async
     });
     assert.ok(initial?.startedAt);
     const startedAt = initial!.startedAt;
+    publishActivity("using_tools");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
+    publishActivity("responding");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "responding");
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
     await waitUntil(async () => relay.activity("agent-a")?.queuedTurns === 1);
     assert.equal(relay.activity("agent-a")?.startedAt, startedAt);
@@ -1370,6 +1395,10 @@ test("relay exposes active queue state and cancels only the current turn", async
     assert.equal(messages.some((message) => message.body.includes("original")), false);
     assert.equal(await cursorStore.getCursor(channel.id, "agent-a"), 2);
     assert.equal(relay.activity("agent-a"), undefined);
+
+    await relay.stop();
+    await relay.start();
+    assert.equal(activitySubscriptions, 2);
   } finally {
     await relay.stop();
     await server.close();
