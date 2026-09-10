@@ -51,7 +51,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
   await expect(page.getByText("Workspace: Browser Test", { exact: false })).toBeVisible();
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
   await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
   await expect(page.getByText("Send as", { exact: true })).toHaveCount(0);
@@ -109,6 +109,337 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
+test("tracks durable unread mentions and plays only opt-in contextual sound", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const channelId = channels[0]!.id;
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
+    class TestAudioContext {
+      currentTime = 0;
+      destination = {};
+      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
+      createOscillator() {
+        return {
+          frequency: { value: 0 },
+          connect: () => ({ connect: () => this.destination }),
+          start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
+          stop: () => undefined,
+          addEventListener: (_name: string, listener: () => void) => listener(),
+        };
+      }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+
+  await page.getByRole("link", { name: "Agents" }).first().click();
+  await request.post(`${fixtureBase}/peer-message?mention=true&body=Unread%20mention`);
+  const unread = page.getByLabel(/1 unread message, 1 direct mention/).first();
+  await expect(unread).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByLabel("Selected Workspace").first().locator("option:checked")).toContainText("1 unread");
+  await expect(page).toHaveTitle(/\(1\) MinuChannels/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+
+  const sound = page.getByLabel("Notification sound").first();
+  await sound.selectOption("mentions");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await request.post(`${fixtureBase}/peer-message?duplicate=true&body=Agent%20reply`);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount), { timeout: 10_000 }).toBe(2);
+
+  await page.getByRole("link", { name: /browser-collaboration/ }).first().click();
+  await expect(page.getByText("Agent reply", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+  await expect(page).toHaveTitle("MinuChannels");
+  await page.getByLabel("Notification sound").first().selectOption("off");
+  await page.getByRole("link", { name: "Agents" }).first().click();
+  await request.post(`${fixtureBase}/peer-message?body=Muted%20agent%20reply`);
+  await expect(page.getByLabel(/1 unread message/).first()).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  await page.getByRole("link", { name: /browser-collaboration/ }).first().click();
+  await expect(page.getByText("Muted agent reply", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Agents" }).first().click();
+  await request.post(`${fixtureBase}/peer-message?author=human&body=Own%20message`);
+  await page.waitForTimeout(5_500);
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByLabel("Notification sound").first()).toHaveValue("off");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+});
+
+test("tracks an inactive visited Workspace incrementally with cursor-bounded requests", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const primary = workspaces.find(({ name }) => name === "Browser Test")!;
+  const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
+  const { channels: secondaryChannels } = await (await request.get(`${channelsBase}/workspaces/${secondary.id}/channels`)).json() as {
+    channels: Array<{ id: string }>;
+  };
+  const secondaryChannelId = secondaryChannels[0]!.id;
+  const messageRequests: string[] = [];
+  page.on("request", (outgoing) => {
+    if (outgoing.url().includes(`/channels/${secondaryChannelId}/messages`)) messageRequests.push(outgoing.url());
+  });
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
+    class TestAudioContext {
+      currentTime = 0;
+      destination = {};
+      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
+      createOscillator() {
+        return {
+          frequency: { value: 0 }, connect: () => ({ connect: () => this.destination }),
+          start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
+          stop: () => undefined, addEventListener: (_name: string, listener: () => void) => listener(),
+        };
+      }
+    }
+    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/channels/${secondaryChannelId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  messageRequests.length = 0;
+  await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
+  await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
+  await page.getByLabel("Notification sound").first().selectOption("all");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+
+  await request.post(`${fixtureBase}/disconnect?workspace=inactive`);
+  await expect(page.getByLabel("Selected Workspace").first().locator(`option[value="${secondary.id}"]`)).toContainText("1 unread", { timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await request.post(`${fixtureBase}/peer-message?workspace=inactive&body=Subsequent%20live`);
+  await expect(page.getByLabel("Selected Workspace").first().locator(`option[value="${secondary.id}"]`)).toContainText("2 unread", { timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  await expect(page).toHaveTitle(/\(2\) MinuChannels/);
+  await expect.poll(() => messageRequests.some((requestUrl) => {
+    const url = new URL(requestUrl);
+    return url.searchParams.has("afterSequence") && url.searchParams.get("limit") === "100";
+  })).toBe(true);
+  expect(messageRequests.filter((requestUrl) => !new URL(requestUrl).searchParams.has("limit"))).toHaveLength(0);
+  expect(messageRequests.filter((requestUrl) => new URL(requestUrl).searchParams.has("limit"))
+    .every((requestUrl) => new URL(requestUrl).searchParams.get("limit") === "100")).toBe(true);
+});
+
+test("resets near-end and unseen state across parameter-only Channel navigation", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const primary = channels.find(({ name }) => name === "browser-collaboration")!;
+  const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${primary.id}`);
+  await request.post(`${fixtureBase}/peer-message?count=35&body=Navigation%20scroll`);
+  await expect(page.getByText("Navigation scroll 35", { exact: true })).toBeVisible();
+  const timeline = page.locator(".minu-scroll.absolute");
+  await timeline.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
+  await page.getByRole("link", { name: "alternate-collaboration" }).first().click();
+  await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
+  await request.post(`${fixtureBase}/peer-message?channel=alternate&body=Alternate%20fresh`);
+  await expect(page.getByText("Alternate fresh", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /new message/ })).toHaveCount(0);
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+  expect(alternate.id).toBeTruthy();
+});
+
+test("advances the durable read cursor only when a real visible timeline is near its end", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  const { members } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/members`)).json() as {
+    members: Array<{ identityId: string; mentionHandle: string }>;
+  };
+  const humanId = members.find(({ mentionHandle }) => mentionHandle === "david")!.identityId;
+  await page.addInitScript(() => {
+    (window as unknown as { __soundCount: number }).__soundCount = 0;
+    class TestAudioContext {
+      currentTime = 0; destination = {};
+      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
+      createOscillator() { return {
+        frequency: { value: 0 }, connect: () => ({ connect: () => this.destination }),
+        start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
+        stop: () => undefined, addEventListener: (_name: string, listener: () => void) => listener(),
+      }; }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await page.getByLabel("Notification sound").first().selectOption("mentions");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await request.post(`${fixtureBase}/peer-message?count=35&body=Scroll%20fixture`);
+  await expect(page.getByText("Scroll fixture 35", { exact: true })).toBeVisible();
+  const cursorKey = `minu-channels:last-read:${humanId}:${channelId}`;
+  await expect.poll(() => page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBeGreaterThan(0);
+
+  const timeline = page.locator(".minu-scroll.absolute");
+  await expect.poll(() => timeline.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForTimeout(100);
+  await request.post(`${fixtureBase}/peer-message?body=Held%20unread`);
+  await expect(page.getByRole("button", { name: "1 new message" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  const heldCursor = await page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBe(heldCursor);
+
+  await page.getByRole("button", { name: "1 new message" }).click();
+  await expect.poll(() => page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBeGreaterThan(heldCursor);
+});
+
+test("hides identity-scoped notification preferences when session capability is unavailable", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
+  const workspaceId = workspaces[0]!.id;
+  await page.route("**/local/session", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "Session unavailable" }),
+  }));
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/agents`);
+  await expect(page.getByLabel("Selected Workspace").first()).toBeVisible();
+  await expect(page.getByLabel("Notification sound")).toHaveCount(0);
+});
+
+test("runs Channel-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(
+    `${channelsBase}/workspaces/${workspaceId}/channels`,
+  )).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  const { channel: channelMetadata } = await (await request.get(
+    `${channelsBase}/channels/${channelId}`,
+  )).json() as { channel: {
+    participants: Array<Record<string, unknown> & { id: string }>;
+    [key: string]: unknown;
+  } };
+  const builder = channelMetadata.participants.find(({ type }) => type === "agent")!;
+  const unboundId = "agent-unbound-browser";
+  await page.route(`**/channels/${channelId}`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ channel: {
+      ...channelMetadata,
+      participants: [...channelMetadata.participants, {
+        id: unboundId,
+        type: "agent",
+        displayName: "Unbound Agent",
+        handle: "unbound-agent",
+        status: "active",
+      }],
+    } }),
+  }));
+  await page.route(`**/local/channels/${channelId}/agents`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      protocolVersion: 10,
+      channelId,
+      agents: [
+        {
+          workspaceId, channelId, identityId: builder.id, state: "idle",
+          capabilities: { start: false, replace: false, stop: true, steer: false, interrupt: false, reconnect: false },
+        },
+        {
+          workspaceId, channelId, identityId: unboundId, state: "unbound",
+          capabilities: { start: true, replace: false, stop: false, steer: false, interrupt: false, reconnect: false },
+        },
+      ],
+    }),
+  }));
+  let releaseRequest!: () => void;
+  const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
+  let requests = 0;
+  await page.route(`**/local/channels/${channelId}/agents/stop-all`, async (route) => {
+    requests += 1;
+    await requestGate;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        protocolVersion: 10,
+        channelId,
+        results: [
+          { identityId: builder.id, outcome: "stopped" },
+          { identityId: unboundId, outcome: "skipped", reason: "uncertain" },
+        ],
+      }),
+    });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByRole("button", { name: /^Start agents/ })).toBeVisible();
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Active work will be interrupted");
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: /^Stop agents/ }).click();
+  await expect(page.getByRole("button", { name: "Stop agent Builder Agent" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Start Unbound Agent" })).toBeEnabled();
+  releaseRequest();
+  await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("stopped");
+  await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("status uncertain");
+  expect(requests).toBe(1);
+});
+
+test("hides bulk lifecycle controls when the local capability is unavailable", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(
+    `${channelsBase}/workspaces/${workspaceId}/channels`,
+  )).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  await page.route("**/local/capabilities", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      protocolVersion: 10,
+      features: {
+        currentSession: true,
+        channelAgentStatus: true,
+        workspaceConfigRead: true,
+        workspaceConfigWrite: true,
+        agentCreate: false,
+        agentRuntimeOptions: true,
+        agentSkills: true,
+        agentStart: true,
+        agentReplace: true,
+        agentStop: true,
+        agentBulkStart: false,
+        agentBulkStop: false,
+        steer: false,
+        interrupt: true,
+        reconnect: false,
+      },
+    }),
+  }));
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByRole("heading", { name: "Collaborators" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Start agents/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Stop agents/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Stop agent/ })).toBeVisible();
+});
+
 test("configures Workspace agent startup without reflecting saved values", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
@@ -156,9 +487,9 @@ test("configures Workspace agent startup without reflecting saved values", async
   const agentResponse = await agentResponsePromise;
   expect(agentResponse.ok()).toBe(true);
   const agentResponseBody = await agentResponse.text();
-  expect(agentResponseBody).not.toContain(runtimeValue);
+  expect(agentResponseBody).toContain(runtimeValue);
   expect(agentResponseBody).not.toContain(personaValue);
-  await expect(agentForm.getByText("Harness: configured", { exact: true })).toBeVisible();
+  await expect(agentForm.getByText(`Harness: ${runtimeValue}`, { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   await expect(agentForm.getByLabel("Replace harness", { exact: true })).toHaveValue("");
   await agentForm.getByRole("tab", { name: "General" }).click();
@@ -218,6 +549,9 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await page.getByRole("checkbox", { name: /handoff Prepare a concise handoff/ }).uncheck();
   await page.getByRole("button", { name: "Create agent" }).click();
 
+  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Agent “Browser Review Agent” created");
+  await page.getByRole("button", { name: "Edit agent" }).click();
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
   await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
@@ -231,6 +565,76 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByRole("link", { name: /Browser Lead Review Agent/ })).toBeVisible();
 });
 
+test("repairs a failed initial agent launch profile without creating a duplicate", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspace = workspaces[0]!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+
+  let rejectedInitialConfiguration = false;
+  await page.route("**/local/workspaces/*/agents/*/config", async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    if (!rejectedInitialConfiguration) {
+      rejectedInitialConfiguration = true;
+      await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Harness unavailable" }) });
+      return;
+    }
+    const identityId = route.request().url().match(/\/agents\/([^/]+)\/config$/)?.[1]!;
+    const input = JSON.parse(route.request().postData() ?? "{}") as { runtimeAdapter?: string };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        protocolVersion: 10,
+        workspaceId: workspace.id,
+        rootConfigured: true,
+        notesFolderConfigured: false,
+        agents: [{
+          identityId,
+          configured: Boolean(input.runtimeAdapter),
+          personaConfigured: true,
+          runtimeConfigured: Boolean(input.runtimeAdapter),
+          ...(input.runtimeAdapter ? { runtimeAdapter: input.runtimeAdapter } : {}),
+          modelConfigured: false,
+          reasoningConfigured: false,
+          skillsConfigured: false,
+          selectedSkillCount: 0,
+          status: input.runtimeAdapter ? "active" : "unconfigured",
+          boundChannelCount: 0,
+          changesApplyToNewSessions: true,
+        }],
+      }),
+    });
+  });
+
+  await page.getByRole("link", { name: "Add agent" }).click();
+  await page.getByLabel("Display name").fill("Repairable Agent");
+  await page.getByRole("button", { name: "Create agent" }).click();
+  await expect(page.getByRole("alert")).toContainText("Agent created, but its launch profile needs attention: Harness unavailable");
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Repairable Agent", exact: true, level: 1 })).toBeVisible();
+
+  const launchProfile = page.locator("form").filter({ hasText: "Private launch profile" });
+  await launchProfile.getByRole("tab", { name: "General" }).click();
+  await launchProfile.getByLabel("Agent instructions", { exact: true }).fill("Incomplete repair");
+  const incompleteResponse = page.waitForResponse((response) => response.request().method() === "PATCH"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  expect((await incompleteResponse).ok()).toBe(true);
+  await expect(page.getByRole("alert")).toContainText("Harness unavailable");
+
+  await launchProfile.getByRole("tab", { name: "Runtime" }).click();
+  await launchProfile.getByLabel("Harness", { exact: true }).fill("pi");
+  const repairResponse = page.waitForResponse((response) => response.request().method() === "PATCH"
+    && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  expect((await repairResponse).ok()).toBe(true);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("link", { name: "All agents" }).click();
+  await expect(page.getByRole("link", { name: /Repairable Agent/ })).toHaveCount(1);
+});
+
 test("creates and renames a Workspace with a private source path", async ({ page, request }) => {
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Add Workspace" }).click();
@@ -241,13 +645,13 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await createDialog.getByRole("button", { name: "Create Workspace" }).click();
 
   await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();
-  await expect(page.getByText("Browser Workspace", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Browser Workspace", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Configure Workspace Browser Workspace" }).click();
   const settings = page.getByRole("dialog", { name: "Browser Workspace configuration" });
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
   await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
   await settings.getByRole("button", { name: "Save name" }).click();
-  await expect(page.getByText("Renamed Workspace", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Selected Workspace").locator("option:checked")).toHaveText("Renamed Workspace");
 });
 
 test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {
@@ -265,7 +669,8 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const createDialog = page.getByRole("dialog", { name: `Create a Channel in ${workspace.name}` });
   await expect(createDialog).toBeVisible();
   await createDialog.getByLabel("Channel name").fill("roster-administration");
-  await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toBeChecked();
+  await expect(createDialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
+  await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toHaveCount(0);
   await createDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   const createResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/channels"));
@@ -280,7 +685,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/start`));
   await page.getByRole("button", { name: "Start Builder Agent" }).click();
   expect((await startResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   const replaceResponsePromise = page.waitForResponse((response) =>
@@ -288,19 +693,19 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/replace`));
   await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
   expect((await replaceResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/stop`));
-  await page.getByRole("button", { name: "Stop Builder Agent" }).click();
+  await page.getByRole("button", { name: "Stop agent Builder Agent" }).click();
   expect((await stopResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: disabled")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Stopped")).toBeVisible();
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
-  await expect(page.getByTitle("Runtime: idle")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {
     data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },

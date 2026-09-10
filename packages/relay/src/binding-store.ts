@@ -291,7 +291,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     binding.runtimeAdapter = runtimeAdapter;
     binding.runtimeSessionId = runtimeSessionId;
     binding.generation += 1;
-    binding.state = "connected";
+    // Remain visibly uncertain until the new session is leased, verified, and attached.
+    binding.state = "replacing";
     delete binding.leaseOwner;
     delete binding.leaseExpiresAt;
     delete binding.lastVerifiedAt;
@@ -508,6 +509,10 @@ export interface RestoreChannelBindingsOptions {
   client: ChannelClient;
   store: RelayBindingStore;
   channelId: string;
+  /** Restore only these records when attaching one runner to an already-live Relay. */
+  bindingIds?: readonly string[];
+  /** Defer connected state until the caller has completed Relay attachment. */
+  markConnected?: boolean;
   leaseOwner: string;
   runtimes: Readonly<Record<string, AgentRuntimePort>>;
   leaseDurationMs?: number;
@@ -529,6 +534,21 @@ export class RestoredChannelBindings {
     private readonly now: () => Date,
   ) {
     this.bindings = bindings;
+  }
+
+  async markConnected(): Promise<boolean> {
+    if (this.closed) return false;
+    const timestamp = this.now().toISOString();
+    const results = await Promise.all(this.records.map((record) =>
+      this.store.updateBindingState(
+        record.id,
+        record.generation,
+        this.leaseOwner,
+        "connected",
+        timestamp,
+        timestamp,
+      )));
+    return results.every(Boolean);
   }
 
   async renew(): Promise<boolean> {
@@ -601,6 +621,7 @@ export async function restoreChannelBindings(
   const records: ChannelAgentBindingRecord[] = [];
 
   for (const candidate of candidates) {
+    if (options.bindingIds && !options.bindingIds.includes(candidate.id)) continue;
     if (candidate.state === "disabled") continue;
     const timestamp = now();
     const leased = await options.store.acquireBindingLease(
@@ -651,14 +672,16 @@ export async function restoreChannelBindings(
       await release();
       continue;
     }
-    const connected = await options.store.updateBindingState(
-      leased.id,
-      leased.generation,
-      options.leaseOwner,
-      "connected",
-      verifiedAt,
-      verifiedAt,
-    );
+    const connected = options.markConnected === false
+      ? leased
+      : await options.store.updateBindingState(
+        leased.id,
+        leased.generation,
+        options.leaseOwner,
+        "connected",
+        verifiedAt,
+        verifiedAt,
+      );
     if (!connected) {
       await release();
       continue;

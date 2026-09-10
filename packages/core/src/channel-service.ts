@@ -522,6 +522,9 @@ export class ChannelService {
           throw new ChannelValidationError("actorIdentityId must be a non-empty string");
         }
         await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+        if (!input.participantIds.includes(input.actorIdentityId)) {
+          throw new ChannelValidationError("Channel participants must include the acting human");
+        }
       }
       participants = await this.resolveActiveParticipants(workspaceId, input.participantIds);
     } else {
@@ -638,6 +641,9 @@ export class ChannelService {
     const workspace = await this.getWorkspace(channel.workspaceId);
     if (workspace.status !== "active") throw new ChannelValidationError("Workspace is archived");
     await this.assertWorkspaceAdministrator(channel.workspaceId, input.actorIdentityId);
+    if (!input.participantIds.includes(input.actorIdentityId)) {
+      throw new ChannelValidationError("Channel participants must include the acting human");
+    }
     const participants = await this.resolveActiveParticipants(
       channel.workspaceId,
       input.participantIds,

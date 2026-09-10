@@ -1,4 +1,4 @@
-export { ChannelClient, type ChannelEventOptions, type PostMessageOptions } from "./client.ts";
+export { ChannelClient, ChannelClientError, type ChannelEventOptions, type PostMessageOptions } from "./client.ts";
 export { createResourceId, isResourceId, RESOURCE_ID_PREFIXES, type ResourceIdPrefix } from "./ids.ts";
 export {
   ChannelConflictError,

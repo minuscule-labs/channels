@@ -293,7 +293,8 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       runtimeAdapter,
       runtimeSessionId,
       generation: expectedGeneration + 1,
-      state: "connected",
+      // Reconciliation marks it connected only after the new Runtime is verified and leased.
+      state: "replacing",
       leaseOwner: null,
       leaseExpiresAt: null,
       lastVerifiedAt: null,

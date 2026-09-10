@@ -15,13 +15,29 @@ export type LocalControlAuditAction =
   | "agent.config.updated"
   | "agent.session.started"
   | "agent.session.replaced"
-  | "agent.session.stopped";
+  | "agent.session.stopped"
+  | "agent.turn.cancel.requested"
+  | "agent.session.bulk-started"
+  | "agent.session.bulk-stopped"
+  | "agents.bulk-started"
+  | "agents.bulk-stopped";
 
 export interface LocalControlAuditEvent {
   action: LocalControlAuditAction;
   outcome: "accepted" | "rejected";
   timestamp: string;
-  reason?: "missing" | "invalid" | "expired" | "reused" | "forbidden" | "unavailable";
+  reason?:
+    | "missing"
+    | "invalid"
+    | "expired"
+    | "reused"
+    | "forbidden"
+    | "unavailable"
+    | "already_running"
+    | "already_idle"
+    | "unconfigured"
+    | "offline"
+    | "uncertain";
   actorIdentityId?: string;
   workspaceId?: string;
   channelId?: string;

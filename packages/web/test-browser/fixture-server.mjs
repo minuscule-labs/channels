@@ -39,9 +39,29 @@ const channel = await service.createChannel({
   name: "browser-collaboration",
   participantIds: [human.id, agent.id],
 });
-await service.createMessage(channel.id, {
+const initialTrigger = await service.createMessage(channel.id, {
   participantId: human.id,
   body: "@builder Verify the browser collaboration flow.",
+});
+const alternateChannel = await service.createChannel({
+  workspaceId: workspace.id,
+  name: "alternate-collaboration",
+  participantIds: [human.id, agent.id],
+});
+const secondaryWorkspace = await service.createWorkspace({ slug: "browser-secondary", name: "Browser Secondary" });
+await service.addWorkspaceMember(secondaryWorkspace.id, {
+  identityId: human.id,
+  mentionHandle: "david",
+  accessRole: "owner",
+});
+await service.addWorkspaceMember(secondaryWorkspace.id, {
+  identityId: agent.id,
+  mentionHandle: "builder",
+});
+const secondaryChannel = await service.createChannel({
+  workspaceId: secondaryWorkspace.id,
+  name: "secondary-collaboration",
+  participantIds: [human.id, agent.id],
 });
 
 const privateStore = new InMemoryRelayBindingStore();
@@ -51,8 +71,10 @@ const browserSessions = new LocalControlBrowserSessions({
   currentHumanIdentityId: human.id,
 });
 const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
+let agentActivity;
 const fixtureRuntime = {
-  async status() { return "idle"; },
+  async status() { return agentActivity ? "working" : "idle"; },
+  async interrupt() {},
   async capabilities() {
     return {
       models: [
@@ -107,6 +129,20 @@ const localControl = await createLocalControlHttpServer({
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${channelId}:${identityId}`, "disabled");
       },
+      async startAllChannelAgents() {
+        return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
+      },
+      async stopAllChannelAgents() {
+        agentBindings.set(`${channel.id}:${agent.id}`, "disabled");
+        return [{ identityId: agent.id, outcome: "stopped" }];
+      },
+      async cancelCurrentChannelAgent(channelId, identityId) {
+        if (channelId !== channel.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
+        agentActivity = { ...agentActivity, phase: "canceling" };
+      },
+      activity(channelId, identityId) {
+        return channelId === channel.id && identityId === agent.id ? agentActivity : undefined;
+      },
     },
     configuration: new LocalAgentHostConfiguration({
       client: channelClient,
@@ -126,6 +162,45 @@ const controlServer = createServer(async (request, response) => {
     ) }));
     return;
   }
+  if (request.method === "POST" && url.pathname === "/agent-activity") {
+    const phase = url.searchParams.get("phase") ?? "running";
+    if (phase === "idle") {
+      agentActivity = undefined;
+    } else {
+      agentActivity = {
+        phase,
+        triggerMessageId: initialTrigger.id,
+        triggerSequence: initialTrigger.sequence,
+        startedAt: new Date(Date.now() - 62_000).toISOString(),
+        queuedTurns: Number(url.searchParams.get("queued") ?? 0),
+        ...(phase === "retrying" ? { retryAttempt: 2 } : {}),
+      };
+    }
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/peer-message") {
+    const mention = url.searchParams.get("mention") === "true";
+    const author = url.searchParams.get("author") === "human" ? human : agent;
+    const count = Math.max(1, Math.min(50, Number(url.searchParams.get("count") ?? 1)));
+    const targetChannel = url.searchParams.get("workspace") === "inactive"
+      ? secondaryChannel
+      : url.searchParams.get("channel") === "alternate" ? alternateChannel : channel;
+    const created = [];
+    for (let index = 0; index < count; index += 1) {
+      const input = {
+        participantId: author.id,
+        body: `${url.searchParams.get("body") ?? "A new peer message."}${count > 1 ? ` ${index + 1}` : ""}`,
+        ...(mention ? { to: [human.id] } : {}),
+      };
+      const idempotencyKey = url.searchParams.get("duplicate") === "true" ? `browser-duplicate-${Date.now()}-${index}` : undefined;
+      created.push(await service.createMessage(targetChannel.id, input, idempotencyKey));
+      if (idempotencyKey) await service.createMessage(targetChannel.id, input, idempotencyKey);
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ messages: created }));
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/hide-workspaces") {
     hideWorkspaces = url.searchParams.get("value") === "true";
     response.writeHead(204).end();
@@ -136,8 +211,9 @@ const controlServer = createServer(async (request, response) => {
     return;
   }
   await channelServer.close();
-  await service.createMessage(channel.id, {
-    participantId: human.id,
+  const disconnectedChannel = url.searchParams.get("workspace") === "inactive" ? secondaryChannel : channel;
+  await service.createMessage(disconnectedChannel.id, {
+    participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
     body: "Message created while the browser was offline.",
   });
   response.writeHead(202).end();

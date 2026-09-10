@@ -215,6 +215,7 @@ export class LocalAgentHostConfiguration {
           configured: Boolean(config),
           personaConfigured: Boolean(config?.personaPrompt || config?.personaRef),
           runtimeConfigured: Boolean(config?.runtimeAdapter),
+          ...(config?.runtimeAdapter ? { runtimeAdapter: config.runtimeAdapter } : {}),
           modelConfigured: Boolean(config?.modelProvider && config?.modelId),
           reasoningConfigured: Boolean(config?.reasoningLevel),
           skillsConfigured: config?.skillIds !== undefined,

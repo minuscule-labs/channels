@@ -35,6 +35,11 @@ export function useLiveChannel(channelId: string) {
           queryKeys.channelMessages(channelId),
           (messages) => mergeMessages(messages, [action.message]),
         );
+        if (current) {
+          window.dispatchEvent(new CustomEvent("minu-live-message", {
+            detail: { channel: current, message: action.message },
+          }));
+        }
       } else if (action.type === "refresh-metadata") {
         if (action.rosterRevision !== undefined) {
           highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);

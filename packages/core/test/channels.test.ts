@@ -347,6 +347,15 @@ test("owner-governed Channel roster replacement is revisioned and preserves mess
         mentionHandle: "reviewer",
       }),
     ]);
+    await assert.rejects(
+      client.createChannel({
+        workspaceId: workspace.id,
+        name: "missing-owner",
+        participantIds: [builder.id],
+        actorIdentityId: owner.id,
+      }),
+      /participants must include the acting human/,
+    );
     const channel = await client.createChannel({
       workspaceId: workspace.id,
       name: "implementation",
@@ -379,6 +388,14 @@ test("owner-governed Channel roster replacement is revisioned and preserves mess
         expectedRosterRevision: 1,
       }),
       /owner or admin is required/,
+    );
+    await assert.rejects(
+      client.updateChannelParticipants(channel.id, {
+        actorIdentityId: owner.id,
+        participantIds: [reviewer.id],
+        expectedRosterRevision: 1,
+      }),
+      /participants must include the acting human/,
     );
     const revised = await client.updateChannelParticipants(channel.id, {
       actorIdentityId: owner.id,

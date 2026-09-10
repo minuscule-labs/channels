@@ -20,7 +20,7 @@ export function AddWorkspaceParticipantForm({
 }: {
   workspaceId: string;
   existingMembers: WorkspaceMember[];
-  onCreated?(identity: Identity, member: WorkspaceMember): void;
+  onCreated?(identity: Identity, member: WorkspaceMember, configurationWarning?: string): void;
   mode?: "participant" | "agent";
 }) {
   const queryClient = useQueryClient();
@@ -90,7 +90,7 @@ export function AddWorkspaceParticipantForm({
       }
       return { identity, member, configurationWarning };
     },
-    onSuccess: ({ identity, member }) => {
+    onSuccess: ({ identity, member, configurationWarning }) => {
       queryClient.setQueryData<Identity[]>(queryKeys.identities(), (current = []) => [
         ...current.filter(({ id }) => id !== identity.id),
         identity,
@@ -100,7 +100,7 @@ export function AddWorkspaceParticipantForm({
         member,
       ]);
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
-      onCreated?.(identity, member);
+      onCreated?.(identity, member, configurationWarning);
       setDisplayName("");
       setMentionHandle("");
       setHandleCustomized(false);
