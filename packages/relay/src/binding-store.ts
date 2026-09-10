@@ -516,6 +516,7 @@ export interface RestoreChannelBindingsOptions {
   leaseOwner: string;
   runtimes: Readonly<Record<string, AgentRuntimePort>>;
   leaseDurationMs?: number;
+  statusTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -524,6 +525,7 @@ export class RestoredChannelBindings {
   private closed = false;
   private renewalTimer: NodeJS.Timeout | undefined;
   private renewalActive = false;
+  private onLeaseLost: (() => void | Promise<void>) | undefined;
 
   constructor(
     bindings: AgentChannelBinding[],
@@ -534,6 +536,7 @@ export class RestoredChannelBindings {
     private readonly now: () => Date,
   ) {
     this.bindings = bindings;
+    this.beginRenewal();
   }
 
   async markConnected(): Promise<boolean> {
@@ -546,6 +549,21 @@ export class RestoredChannelBindings {
         this.leaseOwner,
         "connected",
         timestamp,
+        timestamp,
+      )));
+    return results.every(Boolean);
+  }
+
+  async markOffline(): Promise<boolean> {
+    if (this.closed) return false;
+    const timestamp = this.now().toISOString();
+    const results = await Promise.all(this.records.map((record) =>
+      this.store.updateBindingState(
+        record.id,
+        record.generation,
+        this.leaseOwner,
+        "offline",
+        record.lastVerifiedAt,
         timestamp,
       )));
     return results.every(Boolean);
@@ -568,7 +586,12 @@ export class RestoredChannelBindings {
 
   startAutoRenew(onLeaseLost: () => void | Promise<void>): void {
     if (this.closed) throw new Error("Channel bindings are closed");
-    if (this.renewalTimer || this.records.length === 0) return;
+    this.onLeaseLost = onLeaseLost;
+    this.beginRenewal();
+  }
+
+  private beginRenewal(): void {
+    if (this.renewalTimer || this.records.length === 0 || this.closed) return;
     const intervalMs = Math.max(1, Math.floor(this.leaseDurationMs / 3));
     this.renewalTimer = setInterval(() => {
       if (this.renewalActive || this.closed) return;
@@ -577,13 +600,13 @@ export class RestoredChannelBindings {
         if (!renewed && !this.closed) {
           if (this.renewalTimer) clearInterval(this.renewalTimer);
           this.renewalTimer = undefined;
-          await Promise.resolve(onLeaseLost()).catch(() => undefined);
+          await Promise.resolve(this.onLeaseLost?.()).catch(() => undefined);
         }
       }).catch(async () => {
         if (!this.closed) {
           if (this.renewalTimer) clearInterval(this.renewalTimer);
           this.renewalTimer = undefined;
-          await Promise.resolve(onLeaseLost()).catch(() => undefined);
+          await Promise.resolve(this.onLeaseLost?.()).catch(() => undefined);
         }
       }).finally(() => {
         this.renewalActive = false;
@@ -609,6 +632,10 @@ export async function restoreChannelBindings(
   if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 1) {
     throw new RangeError("leaseDurationMs must be a positive integer");
   }
+  const statusTimeoutMs = options.statusTimeoutMs ?? 2_000;
+  if (!Number.isSafeInteger(statusTimeoutMs) || statusTimeoutMs < 1) {
+    throw new RangeError("statusTimeoutMs must be a positive integer");
+  }
   const now = options.now ?? (() => new Date());
   const channel = await options.client.getChannel(options.channelId);
   const [candidates, workspaceMembers, workspaceConfig] = await Promise.all([
@@ -619,8 +646,31 @@ export async function restoreChannelBindings(
   if (!workspaceConfig) throw new Error("Private Workspace configuration is required");
   const bindings: AgentChannelBinding[] = [];
   const records: ChannelAgentBindingRecord[] = [];
+  const provisionalRenewals = new Map<string, {
+    record: ChannelAgentBindingRecord;
+    timer: NodeJS.Timeout;
+    inFlight: Set<Promise<unknown>>;
+  }>();
+  const stopProvisional = async (bindingId: string) => {
+    const provisional = provisionalRenewals.get(bindingId);
+    if (!provisional) return;
+    clearInterval(provisional.timer);
+    await Promise.allSettled([...provisional.inFlight]);
+    provisionalRenewals.delete(bindingId);
+  };
+  const releaseProvisional = async (bindingId: string) => {
+    const provisional = provisionalRenewals.get(bindingId);
+    if (!provisional) return;
+    await stopProvisional(bindingId);
+    await options.store.releaseBindingLease(
+      provisional.record.id,
+      provisional.record.generation,
+      options.leaseOwner,
+    );
+  };
 
-  for (const candidate of candidates) {
+  try {
+    for (const candidate of candidates) {
     if (options.bindingIds && !options.bindingIds.includes(candidate.id)) continue;
     if (candidate.state === "disabled") continue;
     const timestamp = now();
@@ -631,11 +681,23 @@ export async function restoreChannelBindings(
       new Date(timestamp.getTime() + leaseDurationMs).toISOString(),
     );
     if (!leased) continue;
-    const release = async () => options.store.releaseBindingLease(
-      leased.id,
-      leased.generation,
-      options.leaseOwner,
-    );
+    const renewalIntervalMs = Math.max(1, Math.floor(leaseDurationMs / 3));
+    const inFlight = new Set<Promise<unknown>>();
+    const provisionalRenewal = setInterval(() => {
+      const checkedAt = now();
+      const renewal = options.store.renewBindingLease(
+        leased.id,
+        leased.generation,
+        options.leaseOwner,
+        checkedAt.toISOString(),
+        new Date(checkedAt.getTime() + leaseDurationMs).toISOString(),
+      );
+      inFlight.add(renewal);
+      void renewal.catch(() => undefined).finally(() => inFlight.delete(renewal));
+    }, renewalIntervalMs);
+    provisionalRenewal.unref();
+    provisionalRenewals.set(leased.id, { record: leased, timer: provisionalRenewal, inFlight });
+    const release = async () => releaseProvisional(leased.id);
     const [config, identity] = await Promise.all([
       options.store.getAgentConfig(leased.workspaceAgentConfigId),
       options.client.getIdentity(leased.agentIdentityId).catch(() => undefined),
@@ -654,7 +716,18 @@ export async function restoreChannelBindings(
     let reachable = false;
     if (runtime) {
       try {
-        reachable = (await runtime.status(leased.runtimeSessionId)) !== "offline";
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          reachable = (await Promise.race([
+            runtime.status(leased.runtimeSessionId),
+            new Promise<"offline">((resolve) => {
+              timer = setTimeout(() => resolve("offline"), statusTimeoutMs);
+              timer.unref();
+            }),
+          ])) !== "offline";
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       } catch {
         reachable = false;
       }
@@ -703,14 +776,21 @@ export async function restoreChannelBindings(
         );
       },
     });
-  }
+    }
 
-  return new RestoredChannelBindings(
-    bindings,
-    records,
-    options.store,
-    options.leaseOwner,
-    leaseDurationMs,
-    now,
-  );
+    // Stop and drain provisional renewal before transferring every surviving lease. Draining
+    // first prevents an already-started renewal from racing a later close/release.
+    await Promise.all([...provisionalRenewals.keys()].map(stopProvisional));
+    return new RestoredChannelBindings(
+      bindings,
+      records,
+      options.store,
+      options.leaseOwner,
+      leaseDurationMs,
+      now,
+    );
+  } catch (error) {
+    await Promise.allSettled([...provisionalRenewals.keys()].map(releaseProvisional));
+    throw error;
+  }
 }

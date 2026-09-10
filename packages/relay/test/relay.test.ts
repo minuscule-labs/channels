@@ -482,6 +482,41 @@ test("private bindings isolate Channel sessions and restore them under generatio
   );
   await restarted.close();
 
+  const originalGetAgentConfig = store.getAgentConfig.bind(store);
+  store.getAgentConfig = async () => { throw new Error("forced configuration lookup failure"); };
+  await assert.rejects(restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    bindingIds: [bindingA.id],
+    leaseOwner: "single-failure",
+    runtimes: { fake: runtime },
+    leaseDurationMs: 15,
+  }), /forced configuration lookup failure/);
+  store.getAgentConfig = originalGetAgentConfig;
+  assert.equal((await store.getBinding(bindingA.id))?.leaseOwner, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await store.getBinding(bindingA.id))?.leaseOwner, undefined);
+
+  let configurationLookups = 0;
+  store.getAgentConfig = async (configId) => {
+    configurationLookups += 1;
+    if (configurationLookups === 2) throw new Error("forced later candidate failure");
+    return originalGetAgentConfig(configId);
+  };
+  await assert.rejects(restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    leaseOwner: "multi-failure",
+    runtimes: { fake: runtime },
+    leaseDurationMs: 15,
+  }), /forced later candidate failure/);
+  store.getAgentConfig = originalGetAgentConfig;
+  assert.equal((await store.listChannelBindings(channelA.id)).every(({ leaseOwner }) => leaseOwner === undefined), true);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal((await store.listChannelBindings(channelA.id)).every(({ leaseOwner }) => leaseOwner === undefined), true);
+
   runtime.setStatus("replacement-channel-a", "offline");
   const offline = await restoreChannelBindings({
     client,

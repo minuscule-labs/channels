@@ -50,8 +50,10 @@ export function MemberRoster({
   messages = [],
   localAgents,
   localStatus = "loading",
+  showDiagnostics = false,
   drawer = false,
   onStartAgent,
+  onReconnectAgent,
   onReplaceAgent,
   onCancelAgent,
   onStopAgent,
@@ -68,14 +70,16 @@ export function MemberRoster({
   messages?: readonly ChannelMessage[];
   localAgents?: ReadonlyMap<string, LocalChannelAgent>;
   localStatus?: "loading" | "available" | "unavailable";
+  showDiagnostics?: boolean;
   drawer?: boolean;
   onStartAgent?(identityId: string): void;
+  onReconnectAgent?(identityId: string): void;
   onReplaceAgent?(identityId: string): void;
   onCancelAgent?(identityId: string): void;
   onStopAgent?(identityId: string): void;
   onStartAllAgents?(): void;
   onStopAllAgents?(): void;
-  pendingAgentAction?: { action: "start" | "replace" | "stop" | "cancel"; identityId: string };
+  pendingAgentAction?: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string };
   pendingBulkAction?: "start" | "stop";
   pendingBulkIdentityIds?: ReadonlySet<string>;
   bulkResultAction?: "start" | "stop";
@@ -204,6 +208,21 @@ export function MemberRoster({
                         Start
                       </button>
                     ) : null}
+                    {localAgent?.capabilities.reconnect && onReconnectAgent ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-50"
+                        disabled={pendingAgentAction?.identityId === participant.id}
+                        onClick={() => onReconnectAgent(participant.id)}
+                        aria-label={`Reconnect ${participantLabel(participant, participant.id)}`}
+                        title="Reconnect the existing reachable Runtime session and preserve its transcript"
+                      >
+                        {pendingAgentAction?.action === "reconnect" && pendingAgentAction.identityId === participant.id
+                          ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" />
+                          : <RotateCcw className="h-2.5 w-2.5" />}
+                        Reconnect
+                      </button>
+                    ) : null}
                     {localAgent?.capabilities.replace && onReplaceAgent ? (
                       <button
                         type="button"
@@ -274,6 +293,21 @@ export function MemberRoster({
                   </div>
                 );
               })() : null}
+              {showDiagnostics && localAgent?.diagnostics ? (
+                <details className="mt-2 pl-9 text-[11px] text-[var(--muted)]">
+                  <summary className="cursor-pointer font-medium text-[var(--text)]">Diagnostics</summary>
+                  <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                    <dt>Connection</dt><dd>{localAgent.diagnostics.connection}</dd>
+                    <dt>Queue</dt><dd>{localAgent.diagnostics.queuedTurns}</dd>
+                    <dt>Last binding verification</dt><dd>{localAgent.diagnostics.lastVerifiedAt ?? "Not verified"}</dd>
+                    <dt>Events</dt><dd>{localAgent.diagnostics.capabilities.events ? "Supported" : "Not supported"}</dd>
+                    <dt>Interrupt</dt><dd>{localAgent.diagnostics.capabilities.interrupt ? "Supported" : "Not supported"}</dd>
+                    <dt>Reconnect implementation</dt><dd>{localAgent.diagnostics.capabilities.hostReconnect ? "Supported" : "Not supported"}</dd>
+                    <dt>Interactive attach</dt><dd>{localAgent.diagnostics.capabilities.attach ? "Supported" : "Not available"}</dd>
+                    <dt>Live tools</dt><dd>Not verified</dd>
+                  </dl>
+                </details>
+              ) : null}
               {participant.role || participant.profile ? (
                 <p className="mt-2 line-clamp-3 pl-9 text-xs leading-5 text-[var(--muted)]">
                   {participant.role ? `${participant.role}${participant.profile ? " — " : ""}` : ""}

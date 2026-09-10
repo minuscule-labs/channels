@@ -316,7 +316,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 10 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 11 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -398,7 +398,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 10, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 11, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -421,6 +421,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
 
 test("accepts authenticated cancel-current requests and returns the canceling agent", async (context) => {
   let cancelCalls = 0;
+  const reconnectActors: string[] = [];
   const sessions = new LocalControlBrowserSessions({
     browserUrl: "http://127.0.0.1:5174/",
     currentHumanIdentityId: "human-1",
@@ -432,6 +433,7 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
     lifecycle: {
       available: true,
       async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
+      async reconnectChannelAgent(_channelId, _identityId, actorIdentityId) { reconnectActors.push(actorIdentityId); },
       async cancelCurrentChannelAgent() { cancelCalls += 1; },
       activity() {
         return {
@@ -460,6 +462,15 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
   assert.equal(cancelCalls, 1);
   const body = await response.json() as { agent: { activity?: { phase: string } } };
   assert.equal(body.agent.activity?.phase, "canceling");
+
+  const reconnectEndpoint = `/local/channels/${channel.id}/agents/agent-running/reconnect`;
+  assert.equal((await fetch(`${server.endpoint}${reconnectEndpoint}`, { method: "POST" })).status, 401);
+  const reconnected = await fetch(`${server.endpoint}${reconnectEndpoint}`, {
+    method: "POST",
+    headers: { cookie, origin: sessions.browserOrigin },
+  });
+  assert.equal(reconnected.status, 200);
+  assert.deepEqual(reconnectActors, ["human-1"]);
 });
 
 test("serves authenticated bulk lifecycle partial results", async (context) => {
@@ -611,7 +622,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 10,
+      protocolVersion: 11,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -619,7 +630,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     });
     assert.equal(response.status, 200);
     const body = await response.json() as { agents: Array<{ state: string }> };
-    assert.deepEqual(body.agents.map(({ state }) => state), ["idle", "unbound"]);
+    assert.deepEqual(body.agents.map(({ state }) => state), ["offline", "unbound"]);
     assert.doesNotMatch(JSON.stringify(body), /review-builder-session|review-mode:builder|rootUri/);
   } finally {
     await app.close();
@@ -1317,6 +1328,8 @@ test("agent host starts isolated Channel sessions with private roots and persona
       client,
       store,
       runtimes: { "managed-test": runtime },
+      bindingLeaseDurationMs: 30,
+      runtimeStatusTimeoutMs: 100,
       onAudit: (event) => audit.push(event),
     });
     assert.equal(host.available, true);
@@ -1359,12 +1372,57 @@ test("agent host starts isolated Channel sessions with private roots and persona
     assert.equal((await configuration.getWorkspaceConfiguration(workspace.id, owner.id))
       .agents[0]?.boundChannelCount, 2);
 
+    const originalBinding = (await store.listChannelBindings(channelA.id))[0]!;
+    await (host as unknown as { retireBinding(channelId: string, identityId: string): Promise<void> })
+      .retireBinding(channelA.id, agent.id);
+    assert.equal(host.isAttached(channelA.id, agent.id), false);
+    await client.postMessage(channelA.id, { participantId: owner.id, body: "@builder queued while disconnected" });
+    await assert.rejects(host.reconnectChannelAgent(channelA.id, agent.id, agent.id),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
+    let releaseCatchUp!: () => void;
+    let signalCatchUp!: () => void;
+    const catchUpReleased = new Promise<void>((resolve) => { releaseCatchUp = resolve; });
+    const catchUpEntered = new Promise<void>((resolve) => { signalCatchUp = resolve; });
+    const originalListMessages = client.listMessages.bind(client);
+    let delayCatchUp = true;
+    client.listMessages = async (...args) => {
+      if (delayCatchUp && args[0] === channelA.id) {
+        delayCatchUp = false;
+        signalCatchUp();
+        await catchUpReleased;
+      }
+      return originalListMessages(...args);
+    };
+    const heldReconnectStatus = runtime.holdStatus(originalBinding.runtimeSessionId);
+    const reconnecting = host.reconnectChannelAgent(channelA.id, agent.id, owner.id);
+    await heldReconnectStatus.entered;
+    await host.stopChannelAgent(channelB.id, agent.id, owner.id);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 45));
+    heldReconnectStatus.release();
+    await catchUpEntered;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 45));
+    const renewedDuringCatchUp = await store.getBinding(originalBinding.id);
+    assert.equal(renewedDuringCatchUp?.leaseOwner !== undefined, true);
+    assert.equal(Date.parse(renewedDuringCatchUp!.leaseExpiresAt!) > Date.now(), true);
+    releaseCatchUp();
+    await reconnecting;
+    client.listMessages = originalListMessages;
+    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 5);
+    const reconnectedBinding = (await store.listChannelBindings(channelA.id))[0]!;
+    assert.equal(reconnectedBinding.id, originalBinding.id);
+    assert.equal(reconnectedBinding.generation, originalBinding.generation);
+    assert.equal(reconnectedBinding.runtimeSessionId, originalBinding.runtimeSessionId);
+    assert.equal(runtime.starts.length, 2);
+    assert.equal(host.isAttached(channelA.id, agent.id), true);
+
     await host.close();
     host = undefined;
     restoredHost = new LocalAgentHost({
       client,
       store,
       runtimes: { "managed-test": runtime },
+      bindingLeaseDurationMs: 30,
+      runtimeStatusTimeoutMs: 100,
       onAudit: (event) => audit.push(event),
     });
     await restoredHost.restore();
@@ -1372,8 +1430,8 @@ test("agent host starts isolated Channel sessions with private roots and persona
       participantId: owner.id,
       body: "@builder resume only A",
     });
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 5);
-    assert.equal(await store.getCursor(channelA.id, agent.id), 4);
+    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 7);
+    assert.equal(await store.getCursor(channelA.id, agent.id), 6);
 
     runtime.setStatus("managed-session-1", "working");
     await assert.rejects(
@@ -1391,8 +1449,8 @@ test("agent host starts isolated Channel sessions with private roots and persona
       participantId: owner.id,
       body: "@builder replaced session work",
     });
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 7);
-    assert.match((await client.listMessages(channelA.id))[6]?.body ?? "", /managed-session-3/);
+    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 9);
+    assert.match((await client.listMessages(channelA.id))[8]?.body ?? "", /managed-session-3/);
 
     runtime.setStatus("managed-session-3", "working");
     await restoredHost.stopChannelAgent(channelA.id, agent.id, owner.id);
@@ -1405,7 +1463,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
       body: "@builder stopped work must not run",
     });
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-    assert.equal((await client.listMessages(channelA.id)).length, 8);
+    assert.equal((await client.listMessages(channelA.id)).length, 10);
 
     await restoredHost.replaceChannelAgent(channelA.id, agent.id, owner.id);
     binding = (await store.listChannelBindings(channelA.id))[0]!;
@@ -1416,9 +1474,27 @@ test("agent host starts isolated Channel sessions with private roots and persona
       participantId: owner.id,
       body: "@builder restarted work only",
     });
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 10);
-    assert.match((await client.listMessages(channelA.id))[9]?.body ?? "", /managed-session-4/);
-    assert.equal(await store.getCursor(channelA.id, agent.id), 9);
+    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 12);
+    assert.match((await client.listMessages(channelA.id))[11]?.body ?? "", /managed-session-4/);
+    assert.equal(await store.getCursor(channelA.id, agent.id), 11);
+
+    await (restoredHost as unknown as { retireBinding(channelId: string, identityId: string): Promise<void> })
+      .retireBinding(channelA.id, agent.id);
+    const neverResolvingStatus = runtime.holdStatus("managed-session-4");
+    const timeoutStartedAt = Date.now();
+    await assert.rejects(
+      restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
+      /unreachable; start fresh instead/,
+    );
+    assert.equal(Date.now() - timeoutStartedAt < 500, true);
+    neverResolvingStatus.release();
+    const unreachableBinding = (await store.listChannelBindings(channelA.id))[0]!;
+    assert.equal(unreachableBinding.state, "offline");
+    assert.equal(unreachableBinding.generation, 4);
+    assert.equal(unreachableBinding.runtimeSessionId, "managed-session-4");
+    assert.equal(runtime.starts.length, 4);
+    assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
+
     assert.doesNotMatch(
       JSON.stringify(audit),
       /PRIVATE MANAGED PERSONA|managed-session|agent-host-source/,
@@ -1427,11 +1503,33 @@ test("agent host starts isolated Channel sessions with private roots and persona
       { action: "agent.session.started", outcome: "rejected" },
       { action: "agent.session.started", outcome: "accepted" },
       { action: "agent.session.started", outcome: "accepted" },
+      { action: "agent.session.reconnected", outcome: "rejected" },
+      { action: "agent.session.stopped", outcome: "accepted" },
+      { action: "agent.session.reconnected", outcome: "accepted" },
       { action: "agent.session.replaced", outcome: "rejected" },
       { action: "agent.session.replaced", outcome: "accepted" },
       { action: "agent.session.stopped", outcome: "accepted" },
       { action: "agent.session.replaced", outcome: "accepted" },
+      { action: "agent.session.reconnected", outcome: "rejected" },
     ]);
+
+    runtime.setStatus("managed-session-4", "idle");
+    const heldShutdownReconnect = runtime.holdStatus("managed-session-4");
+    const reconnectDuringShutdown = restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id);
+    await heldShutdownReconnect.entered;
+    let shutdownFinished = false;
+    const shutdown = restoredHost.close().then(() => { shutdownFinished = true; });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+    assert.equal(shutdownFinished, false);
+    heldShutdownReconnect.release();
+    await reconnectDuringShutdown;
+    await shutdown;
+    assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
+    await assert.rejects(
+      restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
+      /Agent host is unavailable/,
+    );
+    restoredHost = undefined;
   } finally {
     await host?.close().catch(() => undefined);
     await restoredHost?.close().catch(() => undefined);
@@ -1716,7 +1814,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 10,
+      protocolVersion: 11,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -1729,7 +1827,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 10,
+      protocolVersion: 11,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
@@ -1833,8 +1931,13 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       workspaceId: workspace.id,
       channelId: createdChannel.id,
       identityId: agent.id,
-      state: "idle",
+      state: "offline",
       wakePolicy: "mentions",
+      diagnostics: {
+        connection: "disconnected",
+        queuedTurns: 0,
+        capabilities: { events: false, interrupt: false, hostReconnect: true, attach: false, diagnostics: false },
+      },
       capabilities: { start: false, replace: false, stop: false, steer: false, interrupt: false, reconnect: false },
     }]);
     assert.doesNotMatch(

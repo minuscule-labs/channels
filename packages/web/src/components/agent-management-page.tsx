@@ -251,7 +251,7 @@ function AgentLaunchProfileForm({
         </span>
         <ConfigurationState configured={agent.modelConfigured} label="Model" />
         <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
-        <ConfigurationState configured={agent.skillsConfigured} label={`Skills (${agent.selectedSkillCount})`} />
+        <ConfigurationState configured={agent.skillsConfigured} label={`Skills configured for new sessions (${agent.selectedSkillCount})`} />
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
       <div className="mt-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Launch profile settings">
@@ -368,7 +368,8 @@ function AgentLaunchProfileForm({
         <div className="mt-4" role="tabpanel">
         {runtimeOptions.data?.skills.length ? (
         <fieldset>
-          <legend className="text-xs font-medium">Skills</legend>
+          <legend className="text-xs font-medium">Skills configured for new sessions</legend>
+          <p className="mb-2 text-[11px] text-[var(--muted)]">Available in this session: Not verified</p>
           <p className="mt-1 text-[10px] text-[var(--muted)]">Changes apply when starting fresh.</p>
           <div className="mt-2 grid max-h-48 gap-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--panel)] p-2 sm:grid-cols-2">
             {runtimeOptions.data.skills.map((skill) => (

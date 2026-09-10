@@ -317,6 +317,45 @@ test("hides identity-scoped notification preferences when session capability is 
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
+test("reconnects an existing reachable session and exposes only safe diagnostics", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
+  const lifecycleRequests: string[] = [];
+  page.on("request", (outgoing) => {
+    if (/\/(reconnect|replace)$/.test(new URL(outgoing.url()).pathname)) lifecycleRequests.push(new URL(outgoing.url()).pathname);
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await request.post(`${fixtureBase}/detach-agent`);
+  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Start fresh/ })).toHaveCount(0);
+  await page.getByText("Diagnostics").click();
+  await expect(page.getByText("disconnected", { exact: true })).toBeVisible();
+  await expect(page.getByText("Not verified", { exact: true }).first()).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp/);
+
+  await page.getByRole("button", { name: "Reconnect Builder Agent" }).click();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toHaveCount(0);
+  expect(lifecycleRequests).toHaveLength(1);
+  expect(lifecycleRequests[0]).toMatch(new RegExp(`^/local/channels/${channelId}/agents/[^/]+/reconnect$`));
+  expect(lifecycleRequests.some((path) => path.endsWith("/replace"))).toBe(false);
+
+  await request.post(`${fixtureBase}/detach-agent`);
+  await request.post(`${fixtureBase}/runtime-reachable?value=false`);
+  await expect(page.getByRole("button", { name: "Start fresh with Builder Agent" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
+  await request.post(`${fixtureBase}/runtime-reachable?value=true`);
+  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Reconnect Builder Agent" }).click();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
+});
+
 test("runs Channel-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
@@ -352,7 +391,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 10,
+      protocolVersion: 11,
       channelId,
       agents: [
         {
@@ -376,7 +415,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 10,
+        protocolVersion: 11,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -413,7 +452,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 10,
+      protocolVersion: 11,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -555,7 +594,7 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
   await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
-  await expect(page.getByText("Skills (1): configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Skills configured for new sessions (1): configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   const createdIdentityForm = page.locator("form").filter({ hasText: "The name identifies the agent" });
   await createdIdentityForm.getByLabel("Name", { exact: true }).fill("Browser Lead Review Agent");
@@ -586,7 +625,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 10,
+        protocolVersion: 11,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,
