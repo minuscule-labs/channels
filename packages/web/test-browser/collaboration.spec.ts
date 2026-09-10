@@ -707,6 +707,13 @@ test("creates and renames a Workspace with a private source path", async ({ page
 
   await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Browser Workspace", exact: true })).toBeVisible();
+  const createdWorkspaceId = new URL(page.url()).pathname.match(/\/workspaces\/([^/]+)/)?.[1];
+  expect(createdWorkspaceId).toBeTruthy();
+  await expect.poll(() => page.evaluate(async (workspaceId) => {
+    const response = await fetch(`/local/workspaces/${workspaceId}/config`);
+    if (!response.ok) return false;
+    return Boolean((await response.json() as { rootConfigured?: boolean }).rootConfigured);
+  }, createdWorkspaceId)).toBe(true);
   await page.getByRole("button", { name: "Configure Workspace Browser Workspace" }).click();
   const settings = page.getByRole("dialog", { name: "Browser Workspace configuration" });
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
