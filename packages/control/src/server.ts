@@ -82,6 +82,10 @@ export interface LocalControlBindingDirectory {
 
 export interface LocalControlRuntimePort {
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
+  activityEvents?(
+    sessionId: string,
+    options: { signal: AbortSignal },
+  ): AsyncIterable<{ phase: "working" | "using_tools" | "responding"; observedAt: string }>;
   interrupt?(sessionId: string): Promise<void>;
 }
 
@@ -478,7 +482,7 @@ export class LocalControlService {
     const activity = this.options.lifecycle?.activity?.(channel.id, identityId);
     const attached = this.options.lifecycle?.isAttached?.(channel.id, identityId);
     const diagnosticCapabilities = {
-      events: false,
+      events: Boolean(runtime.activityEvents),
       interrupt: Boolean(runtime.interrupt),
       hostReconnect: Boolean(this.options.lifecycle?.reconnectChannelAgent),
       attach: false,

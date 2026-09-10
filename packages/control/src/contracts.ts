@@ -134,7 +134,7 @@ export type LocalWakePolicy = "mentions" | "direct_mentions" | "all_messages" | 
 
 /** Presentation-safe Relay activity; it deliberately omits Runtime/session internals. */
 export interface LocalAgentActivity {
-  phase: "running" | "retrying" | "canceling";
+  phase: "running" | "using_tools" | "responding" | "retrying" | "canceling";
   triggerMessageId: string;
   triggerSequence: number;
   startedAt: string;

@@ -11,7 +11,7 @@ const participant = (id: string, handle: string): Participant => ({
 });
 const agent = (
   identityId: string,
-  phase: "running" | "retrying" | "canceling",
+  phase: "running" | "using_tools" | "responding" | "retrying" | "canceling",
   queuedTurns: number,
 ): LocalChannelAgent => ({
   workspaceId: "workspace-a",
@@ -32,16 +32,26 @@ const agent = (
 describe("Channel activity summary", () => {
   it("summarizes every active agent using only coarse presentation-safe state", () => {
     const items = activitySummaryItems(
-      [agent("builder", "running", 2), agent("reviewer", "retrying", 0), agent("writer", "canceling", 1)],
-      [participant("builder", "builder"), participant("reviewer", "reviewer"), participant("writer", "writer")],
+      [
+        agent("builder", "running", 2), agent("reviewer", "retrying", 0),
+        agent("writer", "canceling", 1), agent("tools", "using_tools", 0),
+        agent("responder", "responding", 0),
+      ],
+      [
+        participant("builder", "builder"), participant("reviewer", "reviewer"),
+        participant("writer", "writer"), participant("tools", "tools"),
+        participant("responder", "responder"),
+      ],
       Date.parse("2026-09-10T12:01:02.000Z"),
     );
     expect(items).toEqual([
       "@builder is working · 1m 2s · 2 turns queued",
       "@reviewer is retrying (attempt 3) · 1m 2s",
       "@writer is canceling · 1m 2s · 1 turn queued",
+      "@tools is using tools · 1m 2s",
+      "@responder is responding · 1m 2s",
     ]);
-    expect(items.join(" ")).not.toMatch(/message-private-trigger|42|tool|prompt|path|error/i);
+    expect(items.join(" ")).not.toMatch(/message-private-trigger|42|private-tool-name|prompt|path|error/i);
   });
 
   it("omits idle agents", () => {

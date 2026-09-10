@@ -25,6 +25,10 @@ export interface AgentRuntimePort {
   steer?(sessionId: string, input: string): Promise<void>;
   interrupt?(sessionId: string): Promise<void>;
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
+  activityEvents?(
+    sessionId: string,
+    options: { signal: AbortSignal },
+  ): AsyncIterable<{ phase: "working" | "using_tools" | "responding"; observedAt: string }>;
   messages(sessionId: string): Promise<RuntimePortMessage[]>;
 }
 
@@ -56,7 +60,7 @@ export interface ChannelRuntimeRelayOptions {
 class PermanentTurnError extends Error {}
 class FencedTurnError extends Error {}
 
-export type RelayAgentActivityPhase = "running" | "retrying" | "canceling";
+export type RelayAgentActivityPhase = "running" | "using_tools" | "responding" | "retrying" | "canceling";
 
 /** Presentation-safe, ephemeral activity for one bound Channel agent. */
 export interface RelayAgentActivity {
@@ -87,6 +91,8 @@ interface BindingState {
   initializing?: boolean;
   bufferedEvents?: ChannelMessage[];
   queue: Promise<void>;
+  activityController?: AbortController;
+  activityTask?: Promise<void>;
 }
 
 function isExplicitlyAddressed(message: ChannelMessage, participantId: string): boolean {
@@ -264,6 +270,7 @@ export class ChannelRuntimeRelay {
       }),
     );
     this.controller = new AbortController();
+    for (const state of this.states) this.startActivityEvents(state);
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => {
@@ -289,8 +296,14 @@ export class ChannelRuntimeRelay {
 
   async stop(): Promise<void> {
     this.controller?.abort();
+    for (const state of this.states) state.activityController?.abort();
     await this.task?.catch(() => {});
     await this.waitForIdle();
+    await Promise.all(this.states.map((state) => state.activityTask?.catch(() => undefined)));
+    for (const state of this.states) {
+      state.activityController = undefined;
+      state.activityTask = undefined;
+    }
     this.controller = undefined;
     this.task = undefined;
   }
@@ -318,10 +331,13 @@ export class ChannelRuntimeRelay {
     // Install before catch-up and buffer live events. The final synchronous merge below
     // prevents a newer event from advancing lastEnqueuedSequence ahead of an older trigger.
     this.states.push(state);
+    this.startActivityEvents(state);
     try {
       if (this.task) await this.catchUpState(state);
       else state.initializing = false;
     } catch (error) {
+      state.activityController?.abort();
+      await state.activityTask?.catch(() => undefined);
       const index = this.states.indexOf(state);
       if (index >= 0) this.states.splice(index, 1);
       throw error;
@@ -333,7 +349,11 @@ export class ChannelRuntimeRelay {
     const index = this.states.findIndex((state) => state.binding.participantId === participantId);
     if (index < 0) return;
     const [state] = this.states.splice(index, 1);
-    await state!.queue.catch(() => undefined);
+    state!.activityController?.abort();
+    await Promise.all([
+      state!.queue.catch(() => undefined),
+      state!.activityTask?.catch(() => undefined),
+    ]);
   }
 
   cursor(participantId: string): number | undefined {
@@ -468,6 +488,30 @@ export class ChannelRuntimeRelay {
       );
       return false;
     }
+  }
+
+  private startActivityEvents(state: BindingState): void {
+    if (!state.binding.runtime.activityEvents || state.activityTask) return;
+    const controller = new AbortController();
+    state.activityController = controller;
+    state.activityTask = (async () => {
+      try {
+        for await (const event of state.binding.runtime.activityEvents!(state.binding.sessionId, {
+          signal: controller.signal,
+        })) {
+          if (!state.activeTrigger || state.phase === "retrying" || state.phase === "canceling") continue;
+          state.phase = event.phase === "working" ? "running" : event.phase;
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          this.options.onError?.(state.binding, new Error("Runtime activity stream unavailable"));
+        }
+      } finally {
+        if (state.activeTrigger && state.phase !== "retrying" && state.phase !== "canceling") {
+          state.phase = "running";
+        }
+      }
+    })();
   }
 
   private stateFor(participantId: string): BindingState {

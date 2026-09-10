@@ -276,7 +276,11 @@ export function MemberRoster({
                 const author = trigger ? participants.find((participant) => participant.id === trigger.participantId) : undefined;
                 const phase = localAgent.activity.phase === "retrying"
                   ? `Retrying (attempt ${localAgent.activity.retryAttempt ?? 1})`
-                  : localAgent.activity.phase === "canceling" ? "Canceling…" : "Running";
+                  : localAgent.activity.phase === "canceling"
+                    ? "Canceling…"
+                    : localAgent.activity.phase === "using_tools"
+                      ? "Using tools…"
+                      : localAgent.activity.phase === "responding" ? "Responding…" : "Working…";
                 return (
                   <div className="mt-2 rounded border border-[var(--border)] bg-[var(--bg)] p-2 text-[11px]">
                     <p className="font-medium"><span aria-live="polite">{phase}</span> · {elapsedLabel(localAgent.activity.startedAt, now)}</p>
