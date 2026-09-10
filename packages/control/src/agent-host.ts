@@ -72,6 +72,8 @@ export interface LocalAgentHostOptions {
   now?: () => Date;
   leaseOwner?: string;
   stopStartedSessionsOnClose?: boolean;
+  bindingLeaseDurationMs?: number;
+  runtimeStatusTimeoutMs?: number;
   onAudit?(event: LocalControlAuditEvent): void;
   onError?(error: Error): void;
 }
@@ -462,6 +464,65 @@ export class LocalAgentHost {
 
   activity(channelId: string, agentIdentityId: string): RelayAgentActivity | undefined {
     return this.runners.get(channelId)?.relay.activity(agentIdentityId);
+  }
+
+  isAttached(channelId: string, agentIdentityId: string): boolean {
+    return this.runners.get(channelId)?.restored.has(agentIdentityId) ?? false;
+  }
+
+  async reconnectChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void> {
+    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+      let workspaceId: string | undefined;
+      try {
+        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+        workspaceId = context.channel.workspaceId;
+        const matches = context.bindings.filter(({ agentIdentityId: candidate }) => candidate === agentIdentityId);
+        if (matches.length !== 1) {
+          throw new LocalConfigurationRequestError("Agent reconnect requires one existing Channel session", 409, "unavailable");
+        }
+        const binding = matches[0]!;
+        if (binding.state === "disabled" || binding.state === "replacing") {
+          throw new LocalConfigurationRequestError("Agent session cannot be reconnected from its current state", 409, "unavailable");
+        }
+        if (this.isAttached(channelId, agentIdentityId)) {
+          throw new LocalConfigurationRequestError("Agent session is already connected", 409, "unavailable");
+        }
+        if (!await this.attachBinding(channelId, binding.id, true)) {
+          const current = await this.options.store.getBinding(binding.id);
+          throw new LocalConfigurationRequestError(
+            current?.state === "offline"
+              ? "Existing Runtime session is unreachable; start fresh instead"
+              : "Existing Runtime session could not be reconnected",
+            409,
+            "unavailable",
+          );
+        }
+        this.audit({
+          action: "agent.session.reconnected",
+          outcome: "accepted",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+      } catch (error) {
+        this.audit({
+          action: "agent.session.reconnected",
+          outcome: "rejected",
+          reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+        throw error;
+      }
+    });
   }
 
   async cancelCurrentChannelAgent(
@@ -926,7 +987,7 @@ export class LocalAgentHost {
       .map((record) => this.attachBinding(channelId, record.id)));
   }
 
-  private async attachBinding(channelId: string, bindingId: string): Promise<boolean> {
+  private async attachBinding(channelId: string, bindingId: string, markOfflineOnFailure = false): Promise<boolean> {
     const lockKey = `relay:${channelId}`;
     const reserved = await this.exclusive(lockKey, async () => {
       if (this.attachingBindings.has(bindingId)) return false;
@@ -951,6 +1012,8 @@ export class LocalAgentHost {
         bindingIds: [bindingId],
         markConnected: false,
         leaseOwner: this.leaseOwner,
+        leaseDurationMs: this.options.bindingLeaseDurationMs,
+        statusTimeoutMs: this.options.runtimeStatusTimeoutMs,
         runtimes,
       });
       const binding = restored.bindings[0];
@@ -1016,6 +1079,7 @@ export class LocalAgentHost {
       });
       return true;
     } catch (error) {
+      if (markOfflineOnFailure) await restored?.markOffline().catch(() => undefined);
       if (attached && runner) await runner.relay.retire(
         restored?.bindings[0]?.participantId ?? "",
       ).catch(() => undefined);

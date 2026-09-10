@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 10 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 11 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -142,6 +142,21 @@ export interface LocalAgentActivity {
   retryAttempt?: number;
 }
 
+export interface LocalAgentDiagnostics {
+  connection: "connected" | "disconnected" | "offline" | "uncertain";
+  phase?: LocalAgentActivity["phase"];
+  startedAt?: string;
+  queuedTurns: number;
+  lastVerifiedAt?: string;
+  capabilities: {
+    events: boolean;
+    interrupt: boolean;
+    hostReconnect: boolean;
+    attach: boolean;
+    diagnostics: boolean;
+  };
+}
+
 export interface LocalChannelAgent {
   workspaceId: string;
   channelId: string;
@@ -158,6 +173,7 @@ export interface LocalChannelAgent {
     reconnect: boolean;
   };
   lastVerifiedAt?: string;
+  diagnostics?: LocalAgentDiagnostics;
 }
 
 export interface LocalChannelAgentsResponse {

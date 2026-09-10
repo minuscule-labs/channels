@@ -10,6 +10,7 @@ import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 import { readSequence, resetReadSequence, writeReadSequence } from "../lib/channel-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
+import { ChannelActivityStrip } from "./channel-activity-strip";
 import { EditChannelParticipantsDialog } from "./channel-administration-dialog";
 import { ChannelComposer } from "./channel-composer";
 import { ChannelTimeline } from "./channel-timeline";
@@ -68,7 +69,8 @@ export function ChannelPage() {
   });
   const { connection, retry } = useLiveChannel(channelId);
   const agentAction = useMutation({
-    mutationFn: ({ action, identityId }: { action: "start" | "replace" | "stop" | "cancel"; identityId: string }) => {
+    mutationFn: ({ action, identityId }: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string }) => {
+      if (action === "reconnect") return localControl.reconnectChannelAgent(channelId, identityId);
       if (action === "replace") return localControl.replaceChannelAgent(channelId, identityId);
       if (action === "stop") return localControl.stopChannelAgent(channelId, identityId);
       if (action === "cancel") return localControl.cancelCurrentChannelAgent(channelId, identityId);
@@ -245,8 +247,10 @@ export function ChannelPage() {
               messages={messages.data ?? []}
               localAgents={localAgentMap}
               localStatus={localStatus}
+              showDiagnostics={currentSession.isSuccess}
               drawer
               onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
+              onReconnectAgent={(identityId) => agentAction.mutate({ action: "reconnect", identityId })}
               onReplaceAgent={(identityId) => {
                 if (window.confirm("Start a fresh agent session? The current Runtime transcript will not carry over. Channel history and filesystem effects remain.")) {
                   agentAction.mutate({ action: "replace", identityId });
@@ -305,6 +309,7 @@ export function ChannelPage() {
             </button>
           ) : null}
         </div>
+        <ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />
         <ChannelComposer
           key={`${channelId}:${currentSession.data?.identityId ?? currentSession.status}`}
           participants={participants}
@@ -321,7 +326,9 @@ export function ChannelPage() {
           messages={messages.data ?? []}
           localAgents={localAgentMap}
           localStatus={localStatus}
+          showDiagnostics={currentSession.isSuccess}
           onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
+          onReconnectAgent={(identityId) => agentAction.mutate({ action: "reconnect", identityId })}
           onReplaceAgent={(identityId) => {
             if (window.confirm("Start a fresh agent session? The current Runtime transcript will not carry over. Channel history and filesystem effects remain.")) {
               agentAction.mutate({ action: "replace", identityId });

@@ -97,6 +97,15 @@ export class LocalControlClient {
     return response.agent;
   }
 
+  async reconnectChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
+    const response = await this.request<{ agent: LocalChannelAgent }>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/reconnect`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+    return response.agent;
+  }
+
   async replaceChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.request<{ agent: LocalChannelAgent }>(
       `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/replace`,

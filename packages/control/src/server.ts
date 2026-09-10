@@ -102,6 +102,12 @@ export interface LocalControlAgentLifecyclePort {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
+  reconnectChannelAgent?(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void>;
+  isAttached?(channelId: string, agentIdentityId: string): boolean;
   startAllChannelAgents?(
     channelId: string,
     actorIdentityId: string,
@@ -203,7 +209,7 @@ export class LocalControlService {
         agentBulkStop: Boolean(this.options.lifecycle?.available && this.options.lifecycle.stopAllChannelAgents),
         steer: false,
         interrupt: Boolean(this.options.lifecycle?.available),
-        reconnect: false,
+        reconnect: Boolean(this.options.lifecycle?.available && this.options.lifecycle.reconnectChannelAgent),
       },
     };
   }
@@ -336,6 +342,18 @@ export class LocalControlService {
     return this.channelAgent(channelId, identityId);
   }
 
+  async reconnectChannelAgent(
+    channelId: string,
+    identityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelAgent> {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.reconnectChannelAgent) {
+      throw new LocalConfigurationRequestError("Agent reconnect unavailable", 404, "unavailable");
+    }
+    await this.options.lifecycle.reconnectChannelAgent(channelId, identityId, actorIdentityId);
+    return this.channelAgent(channelId, identityId);
+  }
+
   async startAllChannelAgents(
     channelId: string,
     actorIdentityId: string,
@@ -444,6 +462,12 @@ export class LocalControlService {
         ...base,
         ...details,
         state: "offline",
+        diagnostics: {
+          connection: "offline",
+          queuedTurns: 0,
+          lastVerifiedAt: binding.lastVerifiedAt,
+          capabilities: { events: false, interrupt: false, hostReconnect: false, attach: false, diagnostics: false },
+        },
         capabilities: {
           ...disabledCapabilities,
           replace: Boolean(this.options.lifecycle?.available),
@@ -452,12 +476,28 @@ export class LocalControlService {
       };
     }
     const activity = this.options.lifecycle?.activity?.(channel.id, identityId);
+    const attached = this.options.lifecycle?.isAttached?.(channel.id, identityId);
+    const diagnosticCapabilities = {
+      events: false,
+      interrupt: Boolean(runtime.interrupt),
+      hostReconnect: Boolean(this.options.lifecycle?.reconnectChannelAgent),
+      attach: false,
+      diagnostics: false,
+    };
     if (activity) {
       return {
         ...base,
         ...details,
         state: "running",
         activity,
+        diagnostics: {
+          connection: "connected",
+          phase: activity.phase,
+          startedAt: activity.startedAt,
+          queuedTurns: activity.queuedTurns,
+          lastVerifiedAt: binding.lastVerifiedAt,
+          capabilities: diagnosticCapabilities,
+        },
         capabilities: {
           ...disabledCapabilities,
           stop: Boolean(this.options.lifecycle?.available),
@@ -471,11 +511,36 @@ export class LocalControlService {
     }
     try {
       const status = await this.readRuntimeStatus(runtime, binding.runtimeSessionId);
+      if (attached === false && status !== "offline") {
+        return {
+          ...base,
+          ...details,
+          state: "offline",
+          diagnostics: {
+            connection: "disconnected",
+            queuedTurns: 0,
+            lastVerifiedAt: binding.lastVerifiedAt,
+            capabilities: diagnosticCapabilities,
+          },
+          capabilities: {
+            ...disabledCapabilities,
+            reconnect: Boolean(this.options.lifecycle?.available && this.options.lifecycle.reconnectChannelAgent),
+            replace: false,
+            stop: Boolean(this.options.lifecycle?.available),
+          },
+        };
+      }
       if (status === "working") {
         return {
           ...base,
           ...details,
           state: "running",
+          diagnostics: {
+            connection: "connected",
+            queuedTurns: 0,
+            lastVerifiedAt: binding.lastVerifiedAt,
+            capabilities: diagnosticCapabilities,
+          },
           capabilities: {
             ...disabledCapabilities,
             stop: Boolean(this.options.lifecycle?.available),
@@ -486,6 +551,12 @@ export class LocalControlService {
         ...base,
         ...details,
         state: status === "idle" ? "idle" : "offline",
+        diagnostics: {
+          connection: status === "idle" ? "connected" : "offline",
+          queuedTurns: 0,
+          lastVerifiedAt: binding.lastVerifiedAt,
+          capabilities: diagnosticCapabilities,
+        },
         capabilities: {
           ...disabledCapabilities,
           replace: Boolean(this.options.lifecycle?.available),
@@ -497,6 +568,12 @@ export class LocalControlService {
         ...base,
         ...details,
         state: "offline",
+        diagnostics: {
+          connection: "offline",
+          queuedTurns: 0,
+          lastVerifiedAt: binding.lastVerifiedAt,
+          capabilities: diagnosticCapabilities,
+        },
         capabilities: {
           ...disabledCapabilities,
           replace: Boolean(this.options.lifecycle?.available),
@@ -604,7 +681,7 @@ export async function createLocalControlHttpServer(
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAllowedPost = request.method === "POST" && (
-      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|replace|stop|cancel-current)$/.test(requestPath)
+      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/channels\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
@@ -765,6 +842,16 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
         );
         json(response, 201, { agent }, origin);
+        return;
+      }
+      const agentReconnectMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/reconnect$/);
+      if (agentReconnectMatch && browserSession && request.method === "POST") {
+        const agent = await options.service.reconnectChannelAgent(
+          decodeURIComponent(agentReconnectMatch[1]!),
+          decodeURIComponent(agentReconnectMatch[2]!),
+          browserSession.identityId,
+        );
+        json(response, 200, { agent }, origin);
         return;
       }
       const agentReplaceMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/replace$/);

@@ -71,9 +71,11 @@ const browserSessions = new LocalControlBrowserSessions({
   currentHumanIdentityId: human.id,
 });
 const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
+const attachedAgents = new Set([`${channel.id}:${agent.id}`]);
 let agentActivity;
+let runtimeReachable = true;
 const fixtureRuntime = {
-  async status() { return agentActivity ? "working" : "idle"; },
+  async status() { return runtimeReachable ? (agentActivity ? "working" : "idle") : "offline"; },
   async interrupt() {},
   async capabilities() {
     return {
@@ -120,20 +122,31 @@ const localControl = await createLocalControlHttpServer({
       async startChannelAgent(channelId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${channelId}:${identityId}`, "connected");
+        attachedAgents.add(`${channelId}:${identityId}`);
+      },
+      async reconnectChannelAgent(channelId, identityId) {
+        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+        attachedAgents.add(`${channelId}:${identityId}`);
+      },
+      isAttached(channelId, identityId) {
+        return attachedAgents.has(`${channelId}:${identityId}`);
       },
       async replaceChannelAgent(channelId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${channelId}:${identityId}`, "connected");
+        attachedAgents.add(`${channelId}:${identityId}`);
       },
       async stopChannelAgent(channelId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${channelId}:${identityId}`, "disabled");
+        attachedAgents.delete(`${channelId}:${identityId}`);
       },
       async startAllChannelAgents() {
         return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
       },
       async stopAllChannelAgents() {
         agentBindings.set(`${channel.id}:${agent.id}`, "disabled");
+        attachedAgents.delete(`${channel.id}:${agent.id}`);
         return [{ identityId: agent.id, outcome: "stopped" }];
       },
       async cancelCurrentChannelAgent(channelId, identityId) {
@@ -199,6 +212,16 @@ const controlServer = createServer(async (request, response) => {
     }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ messages: created }));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/detach-agent") {
+    attachedAgents.delete(`${channel.id}:${agent.id}`);
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/runtime-reachable") {
+    runtimeReachable = url.searchParams.get("value") !== "false";
+    response.writeHead(204).end();
     return;
   }
   if (request.method === "POST" && url.pathname === "/hide-workspaces") {
