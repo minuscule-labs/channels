@@ -3,11 +3,12 @@ import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { channels, localControl } from "../lib/api";
 import { useLiveChannel } from "../lib/live-channel";
 import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
+import { readSequence, resetReadSequence, writeReadSequence } from "../lib/channel-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
 import { EditChannelParticipantsDialog } from "./channel-administration-dialog";
 import { ChannelComposer } from "./channel-composer";
@@ -149,6 +150,27 @@ export function ChannelPage() {
   const localStatus = localAgents.isSuccess ? "available" : localAgents.isError ? "unavailable" : "loading";
 
   useEffect(() => {
+    nearEndRef.current = true;
+    previousMessageCountRef.current = 0;
+    setUnseenMessages(0);
+    window.dispatchEvent(new CustomEvent("minu-channel-view", {
+      detail: { channelId, nearEnd: true },
+    }));
+  }, [channelId]);
+
+  const markRead = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("minu-channel-view", {
+      detail: { channelId, nearEnd: nearEndRef.current },
+    }));
+    const identityId = currentSession.data?.identityId;
+    const sequence = messages.data?.at(-1)?.sequence;
+    if (!identityId || sequence === undefined || document.visibilityState !== "visible" || !nearEndRef.current) return;
+    if (readSequence(localStorage, identityId, channelId) > sequence) resetReadSequence(localStorage, identityId, channelId);
+    writeReadSequence(localStorage, identityId, channelId, sequence);
+    window.dispatchEvent(new Event("minu-read-state"));
+  }, [channelId, currentSession.data?.identityId, messages.data]);
+
+  useEffect(() => {
     const count = messages.data?.length ?? 0;
     const previousCount = previousMessageCountRef.current;
     previousMessageCountRef.current = count;
@@ -157,10 +179,16 @@ export function ChannelPage() {
     if (previousCount === 0 || nearEndRef.current) {
       requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
       setUnseenMessages(0);
+      markRead();
     } else {
       setUnseenMessages((current) => current + added);
     }
-  }, [messages.data?.length]);
+  }, [markRead, messages.data?.length]);
+  useEffect(() => {
+    const visible = () => markRead();
+    document.addEventListener("visibilitychange", visible);
+    return () => document.removeEventListener("visibilitychange", visible);
+  }, [markRead]);
 
   if (metadata.isLoading || messages.isLoading) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Channel…</div>;
@@ -251,7 +279,13 @@ export function ChannelPage() {
             className="minu-scroll absolute inset-0 overflow-y-auto bg-[var(--bg)]"
             onScroll={(event) => {
               nearEndRef.current = isNearTimelineEnd(event.currentTarget);
-              if (nearEndRef.current) setUnseenMessages(0);
+              window.dispatchEvent(new CustomEvent("minu-channel-view", {
+                detail: { channelId, nearEnd: nearEndRef.current },
+              }));
+              if (nearEndRef.current) {
+                setUnseenMessages(0);
+                markRead();
+              }
             }}
           >
             <ChannelTimeline messages={messages.data ?? []} participants={attributionParticipants} />
@@ -263,6 +297,7 @@ export function ChannelPage() {
               onClick={() => {
                 nearEndRef.current = true;
                 setUnseenMessages(0);
+                markRead();
                 scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
               }}
             >

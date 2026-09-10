@@ -1,6 +1,7 @@
 import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
-import { Bot, Hash, MessageSquare, X } from "lucide-react";
+import { Bell, Bot, Hash, MessageSquare, X } from "lucide-react";
+import type { NotificationSound } from "../lib/channel-notifications";
 import { CreateChannelDialog } from "./channel-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
@@ -9,6 +10,7 @@ export interface WorkspaceNavigationItem {
   workspace: Workspace;
   channels: ChannelMetadata[];
   loading: boolean;
+  unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
 }
 
 export function NavigationSidebar({
@@ -20,6 +22,10 @@ export function NavigationSidebar({
   onSelectWorkspace,
   onNavigate,
   onClose,
+  sound = "off",
+  onSoundChange,
+  onTestSound,
+  workspaceUnread = new Map(),
 }: {
   items: WorkspaceNavigationItem[];
   activeChannelId?: string;
@@ -29,6 +35,10 @@ export function NavigationSidebar({
   onSelectWorkspace(workspaceId: string): void;
   onNavigate?(): void;
   onClose?(): void;
+  sound?: NotificationSound;
+  onSoundChange?(sound: NotificationSound): void;
+  onTestSound?(): void;
+  workspaceUnread?: ReadonlyMap<string, number>;
 }) {
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-[var(--border)] bg-[var(--panel-muted)] md:w-72">
@@ -42,7 +52,11 @@ export function NavigationSidebar({
             onChange={(event) => onSelectWorkspace(event.target.value)}
             className="min-w-0 max-w-40 bg-transparent text-sm font-semibold outline-none"
           >
-            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}{workspaceUnread.get(workspace.id) ? ` (${workspaceUnread.get(workspace.id)} unread)` : ""}
+              </option>
+            ))}
           </select>
         </div>
         <div className="flex items-center gap-1">
@@ -59,7 +73,7 @@ export function NavigationSidebar({
           <p className="px-2 py-6 text-sm text-[var(--muted)]">No Workspaces yet.</p>
         ) : null}
         <div className="space-y-5">
-          {items.map(({ workspace, channels, loading }) => (
+          {items.map(({ workspace, channels, loading, unread }) => (
             <section key={workspace.id}>
               <div className="mb-1 flex items-end justify-between gap-2 px-2">
                 <div className="min-w-0">
@@ -106,7 +120,15 @@ export function NavigationSidebar({
                         aria-current={active ? "page" : undefined}
                       >
                         <Hash className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">{channel.name}</span>
+                        <span className="min-w-0 flex-1 truncate">{channel.name}</span>
+                        {unread?.get(channel.id)?.count ? (
+                          <span
+                            className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-semibold ${unread.get(channel.id)!.mentionCount ? "bg-[var(--accent)] text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
+                            aria-label={`${unread.get(channel.id)!.count} unread message${unread.get(channel.id)!.count === 1 ? "" : "s"}${unread.get(channel.id)!.mentionCount ? `, ${unread.get(channel.id)!.mentionCount} direct mention${unread.get(channel.id)!.mentionCount === 1 ? "" : "s"}` : ""}`}
+                          >
+                            {unread.get(channel.id)!.count}
+                          </span>
+                        ) : null}
                       </Link>
                     </li>
                   );
@@ -116,6 +138,25 @@ export function NavigationSidebar({
           ))}
         </div>
       </nav>
+      {onSoundChange ? (
+        <div className="border-t border-[var(--border)] p-3">
+          <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
+            <Bell className="h-3.5 w-3.5" />
+            <span>Sound</span>
+            <select
+              aria-label="Notification sound"
+              className="ml-auto bg-transparent text-xs text-[var(--text)]"
+              value={sound}
+              onChange={(event) => onSoundChange(event.target.value as NotificationSound)}
+            >
+              <option value="off">Off</option>
+              <option value="mentions">Mentions and agent replies</option>
+              <option value="all">All new messages</option>
+            </select>
+          </label>
+          {sound !== "off" && onTestSound ? <button className="button-secondary mt-2 w-full" type="button" onClick={onTestSound}>Test sound</button> : null}
+        </div>
+      ) : null}
     </aside>
   );
 }

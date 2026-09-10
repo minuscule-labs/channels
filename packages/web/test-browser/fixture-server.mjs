@@ -43,6 +43,26 @@ const initialTrigger = await service.createMessage(channel.id, {
   participantId: human.id,
   body: "@builder Verify the browser collaboration flow.",
 });
+const alternateChannel = await service.createChannel({
+  workspaceId: workspace.id,
+  name: "alternate-collaboration",
+  participantIds: [human.id, agent.id],
+});
+const secondaryWorkspace = await service.createWorkspace({ slug: "browser-secondary", name: "Browser Secondary" });
+await service.addWorkspaceMember(secondaryWorkspace.id, {
+  identityId: human.id,
+  mentionHandle: "david",
+  accessRole: "owner",
+});
+await service.addWorkspaceMember(secondaryWorkspace.id, {
+  identityId: agent.id,
+  mentionHandle: "builder",
+});
+const secondaryChannel = await service.createChannel({
+  workspaceId: secondaryWorkspace.id,
+  name: "secondary-collaboration",
+  participantIds: [human.id, agent.id],
+});
 
 const privateStore = new InMemoryRelayBindingStore();
 const channelClient = new ChannelClient(channelServer.endpoint, { serviceToken });
@@ -159,6 +179,28 @@ const controlServer = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
+  if (request.method === "POST" && url.pathname === "/peer-message") {
+    const mention = url.searchParams.get("mention") === "true";
+    const author = url.searchParams.get("author") === "human" ? human : agent;
+    const count = Math.max(1, Math.min(50, Number(url.searchParams.get("count") ?? 1)));
+    const targetChannel = url.searchParams.get("workspace") === "inactive"
+      ? secondaryChannel
+      : url.searchParams.get("channel") === "alternate" ? alternateChannel : channel;
+    const created = [];
+    for (let index = 0; index < count; index += 1) {
+      const input = {
+        participantId: author.id,
+        body: `${url.searchParams.get("body") ?? "A new peer message."}${count > 1 ? ` ${index + 1}` : ""}`,
+        ...(mention ? { to: [human.id] } : {}),
+      };
+      const idempotencyKey = url.searchParams.get("duplicate") === "true" ? `browser-duplicate-${Date.now()}-${index}` : undefined;
+      created.push(await service.createMessage(targetChannel.id, input, idempotencyKey));
+      if (idempotencyKey) await service.createMessage(targetChannel.id, input, idempotencyKey);
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ messages: created }));
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/hide-workspaces") {
     hideWorkspaces = url.searchParams.get("value") === "true";
     response.writeHead(204).end();
@@ -169,8 +211,9 @@ const controlServer = createServer(async (request, response) => {
     return;
   }
   await channelServer.close();
-  await service.createMessage(channel.id, {
-    participantId: human.id,
+  const disconnectedChannel = url.searchParams.get("workspace") === "inactive" ? secondaryChannel : channel;
+  await service.createMessage(disconnectedChannel.id, {
+    participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
     body: "Message created while the browser was offline.",
   });
   response.writeHead(202).end();

@@ -109,6 +109,214 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
+test("tracks durable unread mentions and plays only opt-in contextual sound", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const channelId = channels[0]!.id;
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
+    class TestAudioContext {
+      currentTime = 0;
+      destination = {};
+      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
+      createOscillator() {
+        return {
+          frequency: { value: 0 },
+          connect: () => ({ connect: () => this.destination }),
+          start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
+          stop: () => undefined,
+          addEventListener: (_name: string, listener: () => void) => listener(),
+        };
+      }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+
+  await page.getByRole("link", { name: "Agents" }).first().click();
+  await request.post(`${fixtureBase}/peer-message?mention=true&body=Unread%20mention`);
+  const unread = page.getByLabel(/1 unread message, 1 direct mention/).first();
+  await expect(unread).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByLabel("Selected Workspace").first().locator("option:checked")).toContainText("1 unread");
+  await expect(page).toHaveTitle(/\(1\) MinuChannels/);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+
+  const sound = page.getByLabel("Notification sound").first();
+  await sound.selectOption("mentions");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await request.post(`${fixtureBase}/peer-message?duplicate=true&body=Agent%20reply`);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount), { timeout: 10_000 }).toBe(2);
+
+  await page.getByRole("link", { name: /browser-collaboration/ }).first().click();
+  await expect(page.getByText("Agent reply", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+  await expect(page).toHaveTitle("MinuChannels");
+  await page.getByLabel("Notification sound").first().selectOption("off");
+  await page.getByRole("link", { name: "Agents" }).first().click();
+  await request.post(`${fixtureBase}/peer-message?body=Muted%20agent%20reply`);
+  await expect(page.getByLabel(/1 unread message/).first()).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  await page.getByRole("link", { name: /browser-collaboration/ }).first().click();
+  await expect(page.getByText("Muted agent reply", { exact: true })).toBeVisible();
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+
+  await page.getByRole("link", { name: "Agents" }).first().click();
+  await request.post(`${fixtureBase}/peer-message?author=human&body=Own%20message`);
+  await page.waitForTimeout(5_500);
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByLabel("Notification sound").first()).toHaveValue("off");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+});
+
+test("tracks an inactive visited Workspace incrementally with cursor-bounded requests", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const primary = workspaces.find(({ name }) => name === "Browser Test")!;
+  const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
+  const { channels: secondaryChannels } = await (await request.get(`${channelsBase}/workspaces/${secondary.id}/channels`)).json() as {
+    channels: Array<{ id: string }>;
+  };
+  const secondaryChannelId = secondaryChannels[0]!.id;
+  const messageRequests: string[] = [];
+  page.on("request", (outgoing) => {
+    if (outgoing.url().includes(`/channels/${secondaryChannelId}/messages`)) messageRequests.push(outgoing.url());
+  });
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
+    class TestAudioContext {
+      currentTime = 0;
+      destination = {};
+      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
+      createOscillator() {
+        return {
+          frequency: { value: 0 }, connect: () => ({ connect: () => this.destination }),
+          start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
+          stop: () => undefined, addEventListener: (_name: string, listener: () => void) => listener(),
+        };
+      }
+    }
+    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/channels/${secondaryChannelId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  messageRequests.length = 0;
+  await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
+  await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
+  await page.getByLabel("Notification sound").first().selectOption("all");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+
+  await request.post(`${fixtureBase}/disconnect?workspace=inactive`);
+  await expect(page.getByLabel("Selected Workspace").first().locator(`option[value="${secondary.id}"]`)).toContainText("1 unread", { timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await request.post(`${fixtureBase}/peer-message?workspace=inactive&body=Subsequent%20live`);
+  await expect(page.getByLabel("Selected Workspace").first().locator(`option[value="${secondary.id}"]`)).toContainText("2 unread", { timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  await expect(page).toHaveTitle(/\(2\) MinuChannels/);
+  await expect.poll(() => messageRequests.some((requestUrl) => {
+    const url = new URL(requestUrl);
+    return url.searchParams.has("afterSequence") && url.searchParams.get("limit") === "100";
+  })).toBe(true);
+  expect(messageRequests.filter((requestUrl) => !new URL(requestUrl).searchParams.has("limit"))).toHaveLength(0);
+  expect(messageRequests.filter((requestUrl) => new URL(requestUrl).searchParams.has("limit"))
+    .every((requestUrl) => new URL(requestUrl).searchParams.get("limit") === "100")).toBe(true);
+});
+
+test("resets near-end and unseen state across parameter-only Channel navigation", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const primary = channels.find(({ name }) => name === "browser-collaboration")!;
+  const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${primary.id}`);
+  await request.post(`${fixtureBase}/peer-message?count=35&body=Navigation%20scroll`);
+  await expect(page.getByText("Navigation scroll 35", { exact: true })).toBeVisible();
+  const timeline = page.locator(".minu-scroll.absolute");
+  await timeline.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
+  await page.getByRole("link", { name: "alternate-collaboration" }).first().click();
+  await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
+  await request.post(`${fixtureBase}/peer-message?channel=alternate&body=Alternate%20fresh`);
+  await expect(page.getByText("Alternate fresh", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /new message/ })).toHaveCount(0);
+  await expect(page.getByLabel(/unread message/)).toHaveCount(0);
+  expect(alternate.id).toBeTruthy();
+});
+
+test("advances the durable read cursor only when a real visible timeline is near its end", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
+  const workspaceId = workspaces[0]!.id;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as { channels: Array<{ id: string }> };
+  const channelId = channels[0]!.id;
+  const { members } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/members`)).json() as {
+    members: Array<{ identityId: string; mentionHandle: string }>;
+  };
+  const humanId = members.find(({ mentionHandle }) => mentionHandle === "david")!.identityId;
+  await page.addInitScript(() => {
+    (window as unknown as { __soundCount: number }).__soundCount = 0;
+    class TestAudioContext {
+      currentTime = 0; destination = {};
+      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
+      createOscillator() { return {
+        frequency: { value: 0 }, connect: () => ({ connect: () => this.destination }),
+        start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
+        stop: () => undefined, addEventListener: (_name: string, listener: () => void) => listener(),
+      }; }
+      close() { return Promise.resolve(); }
+    }
+    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
+  });
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await page.getByLabel("Notification sound").first().selectOption("mentions");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await request.post(`${fixtureBase}/peer-message?count=35&body=Scroll%20fixture`);
+  await expect(page.getByText("Scroll fixture 35", { exact: true })).toBeVisible();
+  const cursorKey = `minu-channels:last-read:${humanId}:${channelId}`;
+  await expect.poll(() => page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBeGreaterThan(0);
+
+  const timeline = page.locator(".minu-scroll.absolute");
+  await expect.poll(() => timeline.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await timeline.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.waitForTimeout(100);
+  await request.post(`${fixtureBase}/peer-message?body=Held%20unread`);
+  await expect(page.getByRole("button", { name: "1 new message" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+  const heldCursor = await page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey);
+  await page.waitForTimeout(250);
+  expect(await page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBe(heldCursor);
+
+  await page.getByRole("button", { name: "1 new message" }).click();
+  await expect.poll(() => page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBeGreaterThan(heldCursor);
+});
+
+test("hides identity-scoped notification preferences when session capability is unavailable", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
+  const workspaceId = workspaces[0]!.id;
+  await page.route("**/local/session", (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "Session unavailable" }),
+  }));
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/agents`);
+  await expect(page.getByLabel("Selected Workspace").first()).toBeVisible();
+  await expect(page.getByLabel("Notification sound")).toHaveCount(0);
+});
+
 test("runs Channel-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
