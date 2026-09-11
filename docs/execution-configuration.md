@@ -40,7 +40,7 @@ A future Channel working scope may narrow the Runtime working directory with a r
 - apply consistently to every agent session in that Channel unless later evidence justifies a narrower override;
 - remain restricted agent-host configuration rather than collaboration metadata;
 - expose only a redacted or relative summary in ordinary browser responses; and
-- apply to new or explicitly **Start fresh** sessions, never mutate an active session.
+- apply to newly started sessions or explicit **New session** replacements, never mutate an active session.
 
 This is filesystem scoping, not nested Channels. Conversational threads or subchannels are a separate future product decision.
 
@@ -98,11 +98,11 @@ Model management is scoped to a Runtime adapter, not to Pi or to one global mode
 - launch-time revalidation; and
 - sanitized unavailable states that do not expose credentials or provider errors.
 
-The model allowlist enables models per Runtime adapter and filters the adapter's discovered catalog for every Workspace agent using that adapter. Channels shows enabled and disabled state, but it does not store provider credentials or infer access merely because a model exists in a static catalog. New and **Start fresh** sessions fail closed when their configured model has since been disabled.
+The model allowlist enables models per Runtime adapter and filters the adapter's discovered catalog for every Workspace agent using that adapter. Channels shows enabled and disabled state, but it does not store provider credentials or infer access merely because a model exists in a static catalog. Newly started sessions and **New session** replacements fail closed when their configured model has since been disabled.
 
 A native Codex harness should register as its own MinuRuntime adapter and implement the same capability/start contract. This remains distinct from selecting an `openai-codex` provider through the Pi adapter. Other harnesses can expose the common model and reasoning fields, omit unsupported capabilities, and later contribute capability-defined options without changing Channels core or the collaboration schema.
 
-Configuration changes apply only to new or **Start fresh** sessions. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Channels-authored skill options.
+Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Channels-authored skill options.
 
 ## Current implementation
 
@@ -116,7 +116,7 @@ The current product supports:
 - validated provider/model and reasoning-level selection;
 - harness-discovered, validated per-agent skill selection;
 - redacted configured-state summaries;
-- application of profile changes only to new or **Start fresh** sessions; and
+- application of profile changes only to newly started sessions and **New session** replacements; and
 - isolated Runtime sessions per Channel-agent binding.
 
 MinuRuntime's start contract accepts structured provider/model and reasoning selections in addition to `cwd`, `systemPrompt`, and `appendSystemPrompt`. The Pi adapter discovers configured models through RPC, verifies exact selections, checks the selected model's available thinking levels, and fails before registration rather than silently falling back. The complete product flow has been proved with `openai-codex/gpt-5.6-sol`, low reasoning, and genuine output `CHANNEL_PROFILE_OK`.
