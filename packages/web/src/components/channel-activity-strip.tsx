@@ -49,9 +49,20 @@ export function ChannelActivityStrip({
     return () => window.clearInterval(interval);
   }, [active]);
   const items = useMemo(() => activitySummaryItems(agents, participants, now), [agents, participants, now]);
+  const announcement = useMemo(() => agents.flatMap((agent) => {
+    if (!agent.activity) return [];
+    const participant = participants.find(({ id }) => id === agent.identityId);
+    const handle = `@${participant?.handle ?? shortId(agent.identityId)}`;
+    const phase = agent.activity.phase === "retrying" ? "retrying"
+      : agent.activity.phase === "canceling" ? "canceling"
+        : agent.activity.phase === "using_tools" ? "using tools"
+          : agent.activity.phase === "responding" ? "responding" : "working";
+    return [`${handle} is ${phase}`];
+  }).join(". "), [agents, participants]);
   if (!items.length) return null;
   return (
-    <section className="flex shrink-0 items-start gap-2 border-t border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-xs" aria-label="Channel agent activity">
+    <section className="flex items-start gap-2 px-1 text-xs text-[var(--muted)]" aria-label="Channel agent activity">
+      <p className="sr-only" aria-live="polite">{announcement}</p>
       <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent)]" aria-hidden="true" />
       <ul className="flex min-w-0 flex-wrap gap-x-2 gap-y-1">
         {items.map((item, index) => <li key={agents.filter(({ activity }) => activity)[index]?.identityId ?? item}>{item}</li>)}

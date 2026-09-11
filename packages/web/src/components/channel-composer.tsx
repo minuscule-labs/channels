@@ -1,7 +1,7 @@
 import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Send } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { channels } from "../lib/api";
 import {
   createMessageSubmission,
@@ -33,12 +33,14 @@ export function ChannelComposer({
   channelId,
   currentHumanIdentityId,
   identityStatus,
+  activity,
 }: {
   participants: Participant[];
   workspaceId: string;
   channelId: string;
   currentHumanIdentityId?: string;
   identityStatus: "loading" | "ready" | "unavailable";
+  activity?: ReactNode;
 }) {
   const queryClient = useQueryClient();
   const currentHuman = participants.find((participant) =>
@@ -57,6 +59,33 @@ export function ChannelComposer({
   const pendingCursorRef = useRef<number | undefined>(undefined);
   const draftRef = useRef({ authorId: activeAuthorId, body });
   draftRef.current = { authorId: activeAuthorId, body };
+
+  const resize = () => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const styles = window.getComputedStyle(textarea);
+    const lineHeight = Number.parseFloat(styles.lineHeight) || 20;
+    const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+    const maxHeight = Math.max(lineHeight + verticalPadding, Math.min(lineHeight * 16 + verticalPadding, window.innerHeight * 0.4));
+    const minHeight = Math.min(lineHeight * 3 + verticalPadding, maxHeight);
+    textarea.style.height = "auto";
+    const height = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
+    textarea.style.height = `${height}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  };
+
+  useLayoutEffect(() => {
+    resize();
+  }, [body]);
+  useEffect(() => {
+    const observer = new ResizeObserver(resize);
+    if (textareaRef.current) observer.observe(textareaRef.current);
+    window.addEventListener("resize", resize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeAuthorId) return;
@@ -156,7 +185,7 @@ export function ChannelComposer({
 
   return (
     <div className="border-t border-[var(--border)] bg-[var(--panel)] px-3 py-3 sm:px-6">
-      <div className="relative mx-auto max-w-3xl">
+      <div className="relative mx-auto max-w-5xl">
         {suggestions.length ? (
           <div
             id="channel-mention-suggestions"
@@ -242,7 +271,7 @@ export function ChannelComposer({
                   ? "Relaunch MinuChannels to restore your browser identity."
                   : "You are not an active human participant in this Channel."}
             disabled={!activeAuthorId || !authorReady || mutation.isPending}
-            className="block w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-[var(--muted)]"
+            className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] px-2.5 py-2">
             <span className="min-w-0 text-xs text-[var(--muted)]">
@@ -276,6 +305,7 @@ export function ChannelComposer({
             </div>
           </div>
         </div>
+        <div className="min-h-7 pt-2">{activity}</div>
         {mutation.error ? (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--danger)]" role="alert">
             <span>{mutation.error.message}. Your draft was preserved.</span>

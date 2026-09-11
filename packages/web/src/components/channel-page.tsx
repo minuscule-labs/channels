@@ -307,7 +307,6 @@ export function ChannelPage() {
             </button>
           ) : null}
         </div>
-        <ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />
         <ChannelComposer
           key={`${channelId}:${currentSession.data?.identityId ?? currentSession.status}`}
           participants={participants}
@@ -315,6 +314,7 @@ export function ChannelPage() {
           channelId={channelId}
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
+          activity={<ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />}
         />
       </section>
       <div className="hidden lg:block">

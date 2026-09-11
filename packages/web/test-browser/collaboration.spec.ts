@@ -64,6 +64,13 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
 
   const composer = page.getByRole("combobox", { name: "Channel message" });
+  const compactHeight = await composer.evaluate((element) => element.clientHeight);
+  await composer.fill(Array.from({ length: 20 }, (_, index) => `visual line ${index + 1}`).join("\n"));
+  await expect.poll(() => composer.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY })))
+    .toMatchObject({ overflowY: "auto" });
+  expect(await composer.evaluate((element) => element.clientHeight)).toBeLessThanOrEqual(340);
+  await composer.fill("");
+  await expect.poll(() => composer.evaluate((element) => element.clientHeight)).toBe(compactHeight);
   await composer.fill("@b");
   await expect(page.getByRole("option", { name: /@builder/ })).toBeVisible();
   await composer.press("Enter");
@@ -72,6 +79,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("log").getByText("@builder Browser reply.", { exact: true })).toBeVisible();
   expect(idempotencyKeys[0]).toBeTruthy();
   await expect(composer).toHaveValue("");
+  await expect.poll(() => composer.evaluate((element) => element.clientHeight)).toBe(compactHeight);
 
   await composer.fill("First line");
   await composer.press("Control+Enter");
@@ -354,7 +362,7 @@ test("hides identity-scoped notification preferences when session capability is 
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
-test("summarizes Channel-wide agent activity above the composer", async ({ page, request }) => {
+test("summarizes Channel-wide agent activity below the composer", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
   const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
@@ -366,7 +374,7 @@ test("summarizes Channel-wide agent activity above the composer", async ({ page,
   const strip = page.getByRole("region", { name: "Channel agent activity" });
   await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 turns queued/, { timeout: 10_000 });
   await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
-  expect((await strip.boundingBox())!.y).toBeLessThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
+  expect((await strip.boundingBox())!.y).toBeGreaterThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
 
   await request.post(`${fixtureBase}/agent-activity?phase=using_tools&queued=1`);
   await expect(strip).toContainText(/@builder is using tools.*1 turn queued/, { timeout: 10_000 });
