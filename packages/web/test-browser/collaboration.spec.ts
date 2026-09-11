@@ -879,6 +879,37 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await expect(page.getByText(/roster 3$/)).toBeVisible();
 });
 
+test("caps wrapped drafts on mobile and restores them after Channel navigation", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 480 });
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspace.id}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const primary = channels.find(({ name }) => name === "browser-collaboration")!;
+  const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
+
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/channels/${primary.id}`);
+  const composer = page.getByRole("combobox", { name: "Channel message" });
+  const draft = Array.from({ length: 180 }, () => "wrapped").join(" ");
+  await composer.fill(draft);
+  await expect.poll(() => composer.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+  }))).toMatchObject({ overflowY: "auto" });
+  expect(await composer.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect((await page.getByRole("button", { name: "Send", exact: true }).boundingBox())!.y).toBeLessThan(480);
+
+  await page.goto(`/app/workspaces/${workspace.id}/channels/${alternate.id}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
+  await page.goto(`/app/workspaces/${workspace.id}/channels/${primary.id}`, { waitUntil: "domcontentloaded" });
+  await expect(composer).toHaveValue(draft);
+  await expect.poll(() => composer.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
+});
+
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
