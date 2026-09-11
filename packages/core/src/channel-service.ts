@@ -833,16 +833,35 @@ export class ChannelService {
   }
 
   async subscribe(channelId: string, listener: EventListener): Promise<() => void> {
-    if (!(await this.storage.getChannel(channelId))) {
-      throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
-    }
-    const channelListeners = this.listeners.get(channelId) ?? new Set<EventListener>();
-    channelListeners.add(listener);
-    this.listeners.set(channelId, channelListeners);
-    return () => {
-      channelListeners.delete(listener);
-      if (channelListeners.size === 0) this.listeners.delete(channelId);
+    return this.subscribeMany([channelId], listener);
+  }
+
+  async subscribeMany(channelIds: readonly string[], listener: EventListener): Promise<() => void> {
+    const subscriptions: Array<{ channelId: string; channelListeners: Set<EventListener> }> = [];
+    let subscribed = true;
+    const unsubscribe = () => {
+      if (!subscribed) return;
+      subscribed = false;
+      for (const { channelId, channelListeners } of subscriptions) {
+        channelListeners.delete(listener);
+        if (channelListeners.size === 0) this.listeners.delete(channelId);
+      }
     };
+    try {
+      for (const channelId of [...new Set(channelIds)]) {
+        if (!(await this.storage.getChannel(channelId))) {
+          throw new ChannelNotFoundError(`Channel not found: ${channelId}`);
+        }
+        const channelListeners = this.listeners.get(channelId) ?? new Set<EventListener>();
+        channelListeners.add(listener);
+        this.listeners.set(channelId, channelListeners);
+        subscriptions.push({ channelId, channelListeners });
+      }
+      return unsubscribe;
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
   }
 
   async close(): Promise<void> {

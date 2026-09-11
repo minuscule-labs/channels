@@ -227,6 +227,39 @@ export async function createChannelHttpServer(
         return;
       }
 
+      if (url.pathname === "/channels/events" && request.method === "GET") {
+        const channelIds = [...new Set(url.searchParams.getAll("channelId"))];
+        if (channelIds.length === 0 || channelIds.length > 100 || channelIds.some((channelId) => !channelId)) {
+          throw new ChannelValidationError("channelId must identify between 1 and 100 Channels");
+        }
+        const pending: ChannelEvent[] = [];
+        let ready = false;
+        const unsubscribe = await service.subscribeMany(channelIds, (event) => {
+          if (ready) sendEvent(response, event);
+          else pending.push(event);
+        });
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        streams.add(response);
+        response.write(`event: ready\ndata: ${JSON.stringify({ channelIds })}\n\n`);
+        ready = true;
+        for (const event of pending) sendEvent(response, event);
+        const heartbeat = setInterval(
+          () => response.write(": keepalive\n\n"),
+          heartbeatIntervalMs,
+        );
+        heartbeat.unref();
+        request.on("close", () => {
+          clearInterval(heartbeat);
+          streams.delete(response);
+          unsubscribe();
+        });
+        return;
+      }
+
       const channelMatch = url.pathname.match(/^\/channels\/([^/]+)$/);
       if (channelMatch && request.method === "GET") {
         json(response, 200, { channel: await service.getChannelMetadata(channelMatch[1]!) });

@@ -211,8 +211,19 @@ export class ChannelClient {
     return ((await response.json()) as { messages: ChannelMessage[] }).messages;
   }
 
-  async *events(channelId: string, options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
-    const response = await this.request(`/channels/${channelId}/events`, { signal: options.signal });
+  events(channelId: string, options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
+    return this.eventStream(`/channels/${channelId}/events`, options);
+  }
+
+  eventsMany(channelIds: readonly string[], options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
+    if (channelIds.length === 0) throw new RangeError("eventsMany requires at least one Channel");
+    const query = new URLSearchParams();
+    for (const channelId of [...new Set(channelIds)]) query.append("channelId", channelId);
+    return this.eventStream(`/channels/events?${query}`, options);
+  }
+
+  private async *eventStream(path: string, options: ChannelEventOptions): AsyncIterable<ChannelEvent> {
+    const response = await this.request(path, { signal: options.signal });
     if (!response.body) throw new Error("Channel event response has no body");
     const decoder = new TextDecoder();
     let buffer = "";

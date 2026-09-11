@@ -109,6 +109,43 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
+test("keeps Workspace navigation responsive with more Channels than the browser connection limit", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const primary = workspaces.find(({ name }) => name === "Browser Test")!;
+  const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${primary.id}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  expect(channels.length).toBeGreaterThan(6);
+  const active = channels.find(({ name }) => name === "browser-collaboration")!;
+  const eventRequests: string[] = [];
+  page.on("request", (outgoing) => {
+    const url = new URL(outgoing.url());
+    if (url.pathname.endsWith("/events")) eventRequests.push(`${url.pathname}${url.search}`);
+  });
+
+  await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/channels/${active.id}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await expect.poll(() => eventRequests.some((url) => url.startsWith("/channels/events?"))).toBe(true);
+  expect(new Set(eventRequests.filter((url) => /^\/channels\/[^/]+\/events$/.test(url))))
+    .toEqual(new Set([`/channels/${active.id}/events`]));
+
+  const fetchDuration = await page.evaluate(async () => {
+    const startedAt = performance.now();
+    const response = await fetch("/workspaces");
+    if (!response.ok) throw new Error(`Workspace request failed (${response.status})`);
+    return performance.now() - startedAt;
+  });
+  expect(fetchDuration).toBeLessThan(1_000);
+
+  await page.getByLabel("Selected Workspace").first().selectOption(secondary.id);
+  await expect(page.getByRole("heading", { name: "#secondary-collaboration" })).toBeVisible({ timeout: 2_000 });
+  await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
+  await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible({ timeout: 2_000 });
+});
+
 test("tracks durable unread mentions and plays only opt-in contextual sound", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
