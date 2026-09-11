@@ -120,10 +120,8 @@ export function ChannelPage() {
     onSettled: () => setPendingBulkTargets(undefined),
   });
   const startAllAgents = () => bulkAgentAction.mutate("start");
-  const stopAllAgents = () => {
-    if (window.confirm("Stop all active agents in this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
-      bulkAgentAction.mutate("stop");
-    }
+  const stopAllAgents = async () => {
+    await bulkAgentAction.mutateAsync("stop");
   };
   const participants = metadata.data?.participants ?? [];
   const attributionParticipants = useMemo<Participant[]>(() => {

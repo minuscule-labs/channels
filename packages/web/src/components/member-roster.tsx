@@ -7,6 +7,7 @@ import { CircleX, LoaderCircle, Play, RotateCcw, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 import { participantLabel } from "../lib/participants";
 import { shortId } from "../lib/messages";
+import { ParticipantActionsMenu } from "./participant-actions-menu";
 import { DrawerCloseButton } from "./ui/drawer";
 
 function elapsedLabel(startedAt: string, now: number): string {
@@ -78,7 +79,7 @@ export function MemberRoster({
   onCancelAgent?(identityId: string): void;
   onStopAgent?(identityId: string): void;
   onStartAllAgents?(): void;
-  onStopAllAgents?(): void;
+  onStopAllAgents?(): Promise<void>;
   pendingAgentAction?: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string };
   pendingBulkAction?: "start" | "stop";
   pendingBulkIdentityIds?: ReadonlySet<string>;
@@ -97,38 +98,23 @@ export function MemberRoster({
   }, [hasActivity]);
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-l border-[var(--border)] bg-[var(--panel)] lg:w-72">
-      <div className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
-        <div>
-          <h2 className="text-sm font-semibold">Collaborators</h2>
-          <p className="text-xs text-[var(--muted)]">{participants.filter(({ id }) => id !== currentHumanIdentityId).length} in this Channel</p>
+      <div className="flex min-h-14 shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-4 py-2">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">Participants</h2>
+          <p className="truncate text-xs text-[var(--muted)]">{participants.filter(({ id }) => id !== currentHumanIdentityId).length} in this Channel</p>
           {localStatus === "unavailable" ? (
             <p className="text-[10px] text-[var(--warning)]">Runtime status unavailable</p>
           ) : null}
         </div>
-        <div className="flex items-center gap-1">
-          {onStartAllAgents ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-[10px] font-medium hover:bg-[var(--hover)] disabled:opacity-50"
-              disabled={startEligible === 0 || pendingBulkAction !== undefined}
-              onClick={onStartAllAgents}
-              title={`Start ${startEligible} eligible ${startEligible === 1 ? "agent" : "agents"}`}
-            >
-              {pendingBulkAction === "start" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-              Start agents ({startEligible})
-            </button>
-          ) : null}
-          {onStopAllAgents ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-[10px] font-medium text-[var(--danger)] hover:bg-[var(--hover)] disabled:opacity-50"
-              disabled={stopEligible === 0 || pendingBulkAction !== undefined}
-              onClick={onStopAllAgents}
-              title={`Stop ${stopEligible} active ${stopEligible === 1 ? "agent" : "agents"}`}
-            >
-              {pendingBulkAction === "stop" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Square className="h-3 w-3" />}
-              Stop agents ({stopEligible})
-            </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {(onStartAllAgents || onStopAllAgents) ? (
+            <ParticipantActionsMenu
+              startEligible={startEligible}
+              stopEligible={stopEligible}
+              pendingAction={pendingBulkAction}
+              onStart={onStartAllAgents}
+              onStop={onStopAllAgents}
+            />
           ) : null}
           {drawer ? <DrawerCloseButton label="Close participants" /> : null}
         </div>

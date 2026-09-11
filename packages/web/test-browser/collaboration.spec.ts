@@ -488,17 +488,23 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     });
   });
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
-  await expect(page.getByRole("button", { name: /^Start agents/ })).toBeVisible();
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Active work will be interrupted");
-    await dialog.accept();
-  });
-  await page.getByRole("button", { name: /^Stop agents/ }).click();
-  await expect(page.getByRole("button", { name: "Stop agent Builder Agent" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Start Unbound Agent" })).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
+  const actions = page.getByRole("button", { name: "Open participant actions" });
+  await actions.click();
+  await expect(page.getByRole("button", { name: "Start eligible agents (1)" })).toBeVisible();
+  await page.getByRole("button", { name: "Stop active agents (1)" }).click();
+  const confirmation = page.getByRole("dialog");
+  await expect(confirmation).toContainText("Active work will be interrupted");
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await confirmation.getByRole("button", { name: "Stop active agents" }).click();
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await expect(confirmation.getByRole("button", { name: "Stop active agents" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toBeVisible();
   releaseRequest();
   await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("stopped");
   await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("status uncertain");
+  await expect(actions).toBeFocused();
   expect(requests).toBe(1);
 });
 
@@ -536,9 +542,8 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     }),
   }));
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
-  await expect(page.getByRole("heading", { name: "Collaborators" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Start agents/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^Stop agents/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open participant actions" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Stop agent/ })).toBeVisible();
 });
 
