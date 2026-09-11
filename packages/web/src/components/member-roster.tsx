@@ -74,11 +74,11 @@ export function MemberRoster({
   localStatus?: "loading" | "available" | "unavailable";
   showDiagnostics?: boolean;
   drawer?: boolean;
-  onStartAgent?(identityId: string): void | Promise<void>;
-  onReconnectAgent?(identityId: string): void | Promise<void>;
-  onReplaceAgent?(identityId: string): void | Promise<void>;
-  onCancelAgent?(identityId: string): void | Promise<void>;
-  onStopAgent?(identityId: string): void | Promise<void>;
+  onStartAgent?(identityId: string): void | Promise<unknown>;
+  onReconnectAgent?(identityId: string): void | Promise<unknown>;
+  onReplaceAgent?(identityId: string): void | Promise<unknown>;
+  onCancelAgent?(identityId: string): void | Promise<unknown>;
+  onStopAgent?(identityId: string): void | Promise<unknown>;
   onStartAllAgents?(): void;
   onStopAllAgents?(): Promise<void>;
   pendingAgentAction?: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string };

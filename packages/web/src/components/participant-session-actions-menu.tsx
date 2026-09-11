@@ -36,11 +36,11 @@ export function ParticipantSessionActionsMenu({
   canStop: boolean;
   pendingAction?: ParticipantSessionAction;
   disabled?: boolean;
-  onStart?(): void | Promise<void>;
-  onReconnect?(): void | Promise<void>;
-  onReplace?(): void | Promise<void>;
-  onCancel?(): void | Promise<void>;
-  onStop?(): void | Promise<void>;
+  onStart?(): void | Promise<unknown>;
+  onReconnect?(): void | Promise<unknown>;
+  onReplace?(): void | Promise<unknown>;
+  onCancel?(): void | Promise<unknown>;
+  onStop?(): void | Promise<unknown>;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmedAction, setConfirmedAction] = useState<ConfirmedAction>();
@@ -52,7 +52,7 @@ export function ParticipantSessionActionsMenu({
 
   if (!hasActions) return null;
 
-  const invoke = (action: () => void | Promise<void>) => {
+  const invoke = (action: () => void | Promise<unknown>) => {
     setMenuOpen(false);
     void Promise.resolve(action()).catch(() => undefined);
   };
