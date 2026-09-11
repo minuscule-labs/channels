@@ -64,6 +64,13 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
 
   const composer = page.getByRole("combobox", { name: "Channel message" });
+  const compactHeight = await composer.evaluate((element) => element.clientHeight);
+  await composer.fill(Array.from({ length: 20 }, (_, index) => `visual line ${index + 1}`).join("\n"));
+  await expect.poll(() => composer.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY })))
+    .toMatchObject({ overflowY: "auto" });
+  expect(await composer.evaluate((element) => element.clientHeight)).toBeLessThanOrEqual(340);
+  await composer.fill("");
+  await expect.poll(() => composer.evaluate((element) => element.clientHeight)).toBe(compactHeight);
   await composer.fill("@b");
   await expect(page.getByRole("option", { name: /@builder/ })).toBeVisible();
   await composer.press("Enter");
@@ -72,6 +79,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("log").getByText("@builder Browser reply.", { exact: true })).toBeVisible();
   expect(idempotencyKeys[0]).toBeTruthy();
   await expect(composer).toHaveValue("");
+  await expect.poll(() => composer.evaluate((element) => element.clientHeight)).toBe(compactHeight);
 
   await composer.fill("First line");
   await composer.press("Control+Enter");
@@ -107,6 +115,43 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByText("Message created while the browser was offline.", { exact: true })).toBeVisible();
   expect(messageAuthors.length).toBeGreaterThan(0);
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
+});
+
+test("keeps Workspace navigation responsive with more Channels than the browser connection limit", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const primary = workspaces.find(({ name }) => name === "Browser Test")!;
+  const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${primary.id}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  expect(channels.length).toBeGreaterThan(6);
+  const active = channels.find(({ name }) => name === "browser-collaboration")!;
+  const eventRequests: string[] = [];
+  page.on("request", (outgoing) => {
+    const url = new URL(outgoing.url());
+    if (url.pathname.endsWith("/events")) eventRequests.push(`${url.pathname}${url.search}`);
+  });
+
+  await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/channels/${active.id}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await expect.poll(() => eventRequests.some((url) => url.startsWith("/channels/events?"))).toBe(true);
+  expect(new Set(eventRequests.filter((url) => /^\/channels\/[^/]+\/events$/.test(url))))
+    .toEqual(new Set([`/channels/${active.id}/events`]));
+
+  const fetchDuration = await page.evaluate(async () => {
+    const startedAt = performance.now();
+    const response = await fetch("/workspaces");
+    if (!response.ok) throw new Error(`Workspace request failed (${response.status})`);
+    return performance.now() - startedAt;
+  });
+  expect(fetchDuration).toBeLessThan(1_000);
+
+  await page.getByLabel("Selected Workspace").first().selectOption(secondary.id);
+  await expect(page.getByRole("heading", { name: "#secondary-collaboration" })).toBeVisible({ timeout: 2_000 });
+  await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
+  await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible({ timeout: 2_000 });
 });
 
 test("tracks durable unread mentions and plays only opt-in contextual sound", async ({ page, request }) => {
@@ -317,7 +362,7 @@ test("hides identity-scoped notification preferences when session capability is 
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
-test("summarizes Channel-wide agent activity above the composer", async ({ page, request }) => {
+test("summarizes Channel-wide agent activity below the composer", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
   const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
@@ -329,7 +374,7 @@ test("summarizes Channel-wide agent activity above the composer", async ({ page,
   const strip = page.getByRole("region", { name: "Channel agent activity" });
   await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 turns queued/, { timeout: 10_000 });
   await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
-  expect((await strip.boundingBox())!.y).toBeLessThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
+  expect((await strip.boundingBox())!.y).toBeGreaterThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
 
   await request.post(`${fixtureBase}/agent-activity?phase=using_tools&queued=1`);
   await expect(strip).toContainText(/@builder is using tools.*1 turn queued/, { timeout: 10_000 });
@@ -451,17 +496,23 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     });
   });
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
-  await expect(page.getByRole("button", { name: /^Start agents/ })).toBeVisible();
-  page.once("dialog", async (dialog) => {
-    expect(dialog.message()).toContain("Active work will be interrupted");
-    await dialog.accept();
-  });
-  await page.getByRole("button", { name: /^Stop agents/ }).click();
-  await expect(page.getByRole("button", { name: "Stop agent Builder Agent" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Start Unbound Agent" })).toBeEnabled();
+  await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
+  const actions = page.getByRole("button", { name: "Open participant actions" });
+  await actions.click();
+  await expect(page.getByRole("button", { name: "Start eligible agents (1)" })).toBeVisible();
+  await page.getByRole("button", { name: "Stop active agents (1)" }).click();
+  const confirmation = page.getByRole("dialog");
+  await expect(confirmation).toContainText("Active work will be interrupted");
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await confirmation.getByRole("button", { name: "Stop active agents" }).click();
+  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await expect(confirmation.getByRole("button", { name: "Stop active agents" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toBeVisible();
   releaseRequest();
   await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("stopped");
   await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("status uncertain");
+  await expect(actions).toBeFocused();
   expect(requests).toBe(1);
 });
 
@@ -499,9 +550,8 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     }),
   }));
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
-  await expect(page.getByRole("heading", { name: "Collaborators" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Start agents/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^Stop agents/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open participant actions" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Stop agent/ })).toBeVisible();
 });
 
@@ -827,6 +877,37 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();
   await expect(page.getByText(/roster 3$/)).toBeVisible();
+});
+
+test("caps wrapped drafts on mobile and restores them after Channel navigation", async ({ page, request }) => {
+  await page.setViewportSize({ width: 390, height: 480 });
+  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspace.id}/channels`)).json() as {
+    channels: Array<{ id: string; name: string }>;
+  };
+  const primary = channels.find(({ name }) => name === "browser-collaboration")!;
+  const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
+
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/channels/${primary.id}`);
+  const composer = page.getByRole("combobox", { name: "Channel message" });
+  const draft = Array.from({ length: 180 }, () => "wrapped").join(" ");
+  await composer.fill(draft);
+  await expect.poll(() => composer.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+    overflowY: getComputedStyle(element).overflowY,
+  }))).toMatchObject({ overflowY: "auto" });
+  expect(await composer.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect((await page.getByRole("button", { name: "Send", exact: true }).boundingBox())!.y).toBeLessThan(480);
+
+  await page.goto(`/app/workspaces/${workspace.id}/channels/${alternate.id}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
+  await page.goto(`/app/workspaces/${workspace.id}/channels/${primary.id}`, { waitUntil: "domcontentloaded" });
+  await expect(composer).toHaveValue(draft);
+  await expect.poll(() => composer.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
 });
 
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {

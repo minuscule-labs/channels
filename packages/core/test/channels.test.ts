@@ -704,6 +704,63 @@ test("posts a message and emits it over SSE", async () => {
   }
 });
 
+test("multiplexes several Channels over one SSE connection", async () => {
+  const server = await createChannelHttpServer();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const first = await createTestChannel(server);
+    const second = await createTestChannel(server);
+    const query = new URLSearchParams();
+    query.append("channelId", first.id);
+    query.append("channelId", second.id);
+    const eventResponse = await fetch(`${server.endpoint}/channels/events?${query}`, {
+      headers: { authorization: `Bearer ${server.serviceToken}` },
+    });
+    assert.equal(eventResponse.status, 200);
+    assert.ok(eventResponse.body);
+    reader = eventResponse.body!.getReader();
+    const stream = { buffer: "" };
+    const ready = await readSseFrame(reader, stream);
+    assert.match(ready, /event: ready/);
+    assert.deepEqual(JSON.parse(ready.split("\n").find((line) => line.startsWith("data: "))!.slice(6)), {
+      channelIds: [first.id, second.id],
+    });
+
+    await server.service.createMessage(second.id, {
+      participantId: "agent-a",
+      body: "second Channel event",
+    });
+    const frame = await readSseFrame(reader, stream);
+    assert.match(frame, /event: message\.created/);
+    const event = JSON.parse(frame.split("\n").find((line) => line.startsWith("data: "))!.slice(6)) as ChannelEvent;
+    assert.equal(event.channelId, second.id);
+  } finally {
+    await reader?.cancel();
+    await server.close();
+  }
+});
+
+test("rejects invalid multiplexed SSE Channel sets and cleans up partial subscriptions", async () => {
+  const server = await createChannelHttpServer();
+  try {
+    const response = await fetch(`${server.endpoint}/channels/events`, {
+      headers: { authorization: `Bearer ${server.serviceToken}` },
+    });
+    assert.equal(response.status, 400);
+
+    const channel = await createTestChannel(server);
+    let delivered = 0;
+    await assert.rejects(
+      server.service.subscribeMany([channel.id, "missing-channel"], () => { delivered += 1; }),
+      /Channel not found/,
+    );
+    await server.service.createMessage(channel.id, { participantId: "agent-a", body: "after failure" });
+    assert.equal(delivered, 0);
+  } finally {
+    await server.close();
+  }
+});
+
 test("rejects messages from participants outside the channel", async () => {
   const server = await createChannelHttpServer();
   try {

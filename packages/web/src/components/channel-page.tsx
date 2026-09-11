@@ -120,10 +120,8 @@ export function ChannelPage() {
     onSettled: () => setPendingBulkTargets(undefined),
   });
   const startAllAgents = () => bulkAgentAction.mutate("start");
-  const stopAllAgents = () => {
-    if (window.confirm("Stop all active agents in this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
-      bulkAgentAction.mutate("stop");
-    }
+  const stopAllAgents = async () => {
+    await bulkAgentAction.mutateAsync("stop");
   };
   const participants = metadata.data?.participants ?? [];
   const attributionParticipants = useMemo<Participant[]>(() => {
@@ -309,7 +307,6 @@ export function ChannelPage() {
             </button>
           ) : null}
         </div>
-        <ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />
         <ChannelComposer
           key={`${channelId}:${currentSession.data?.identityId ?? currentSession.status}`}
           participants={participants}
@@ -317,6 +314,7 @@ export function ChannelPage() {
           channelId={channelId}
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
+          activity={<ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />}
         />
       </section>
       <div className="hidden lg:block">

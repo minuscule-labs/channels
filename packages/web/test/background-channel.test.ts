@@ -1,11 +1,11 @@
 import type { ChannelEvent, ChannelMessage } from "@minu/channels-core/types";
 import { describe, expect, it } from "vitest";
-import { runBackgroundChannelConnection } from "../src/lib/background-channel";
+import { runBackgroundChannelsConnection } from "../src/lib/background-channel";
 import { mergeMessages } from "../src/lib/messages";
 
-const message = (sequence: number): ChannelMessage => ({
-  id: `message-${sequence}`,
-  channelId: "channel-a",
+const message = (sequence: number, channelId = "channel-a"): ChannelMessage => ({
+  id: `${channelId}-message-${sequence}`,
+  channelId,
   sequence,
   participantId: "agent-a",
   to: [],
@@ -21,9 +21,29 @@ async function overtakingConnection(initial: ChannelMessage[], older: ChannelMes
   const catchUpDelivered: number[] = [];
   let resolveLive!: () => void;
   const liveMerged = new Promise<void>((resolve) => { resolveLive = resolve; });
-  await runBackgroundChannelConnection({
+  await runBackgroundChannelsConnection({
     signal: controller.signal,
-    currentMessages: () => cached,
+    channels: [{
+      channelId: "channel-a",
+      currentMessages: () => cached,
+      listMessages: async ({ afterSequence }) => {
+        requested.push(afterSequence);
+        // Hold older history until the higher live event has overtaken it.
+        await liveMerged;
+        expect(cached.at(-1)?.sequence).toBe(liveSequence);
+        return older;
+      },
+      onLiveMessage: (next) => {
+        liveDelivered.push(next.sequence);
+        cached = mergeMessages(cached, [next]);
+        if (next.sequence === liveSequence) resolveLive();
+      },
+      onCatchUpMessage: (next) => {
+        catchUpDelivered.push(next.sequence);
+        cached = mergeMessages(cached, [next]);
+      },
+      onRosterUpdated: () => undefined,
+    }],
     events: async function* ({ onReady }) {
       onReady();
       yield {
@@ -34,23 +54,6 @@ async function overtakingConnection(initial: ChannelMessage[], older: ChannelMes
         createdAt: new Date().toISOString(),
       } satisfies ChannelEvent;
     },
-    listMessages: async ({ afterSequence }) => {
-      requested.push(afterSequence);
-      // Hold older history until the higher live event has overtaken it.
-      await liveMerged;
-      expect(cached.at(-1)?.sequence).toBe(liveSequence);
-      return older;
-    },
-    onLiveMessage: (next) => {
-      liveDelivered.push(next.sequence);
-      cached = mergeMessages(cached, [next]);
-      if (next.sequence === liveSequence) resolveLive();
-    },
-    onCatchUpMessage: (next) => {
-      catchUpDelivered.push(next.sequence);
-      cached = mergeMessages(cached, [next]);
-    },
-    onRosterUpdated: () => undefined,
   });
   return { cached, requested, liveDelivered, catchUpDelivered };
 }
@@ -72,15 +75,69 @@ describe("inactive Channel catch-up ordering", () => {
     expect(result.catchUpDelivered).toEqual([101, 149]);
   });
 
-  it("rejects a stream that closes before readiness", async () => {
-    await expect(runBackgroundChannelConnection({
+  it("routes one shared stream to independent Channel state", async () => {
+    const live: string[] = [];
+    const caughtUp: string[] = [];
+    await runBackgroundChannelsConnection({
       signal: new AbortController().signal,
-      currentMessages: () => [],
+      channels: ["channel-a", "channel-b"].map((channelId) => ({
+        channelId,
+        currentMessages: () => [],
+        listMessages: async () => [message(1, channelId)],
+        onLiveMessage: (next: ChannelMessage) => live.push(next.id),
+        onCatchUpMessage: (next: ChannelMessage) => caughtUp.push(next.id),
+        onRosterUpdated: () => undefined,
+      })),
+      events: async function* ({ onReady }) {
+        onReady();
+        yield {
+          id: "live-b",
+          type: "message.created",
+          channelId: "channel-b",
+          message: message(2, "channel-b"),
+          createdAt: new Date().toISOString(),
+        } satisfies ChannelEvent;
+      },
+    });
+    expect(live).toEqual(["channel-b-message-2"]);
+    expect(caughtUp).toEqual(["channel-a-message-1", "channel-b-message-1"]);
+  });
+
+  it("aborts the shared stream when catch-up fails", async () => {
+    let streamAborted = false;
+    await expect(runBackgroundChannelsConnection({
+      signal: new AbortController().signal,
+      channels: [{
+        channelId: "channel-a",
+        currentMessages: () => [],
+        listMessages: async () => { throw new Error("catch-up failed"); },
+        onLiveMessage: () => undefined,
+        onCatchUpMessage: () => undefined,
+        onRosterUpdated: () => undefined,
+      }],
+      events: async function* ({ signal, onReady }) {
+        onReady();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => {
+          streamAborted = true;
+          resolve();
+        }, { once: true }));
+      },
+    })).rejects.toThrow("catch-up failed");
+    expect(streamAborted).toBe(true);
+  });
+
+  it("rejects a stream that closes before readiness", async () => {
+    await expect(runBackgroundChannelsConnection({
+      signal: new AbortController().signal,
+      channels: [{
+        channelId: "channel-a",
+        currentMessages: () => [],
+        listMessages: async () => [],
+        onLiveMessage: () => undefined,
+        onCatchUpMessage: () => undefined,
+        onRosterUpdated: () => undefined,
+      }],
       events: async function* () { return; },
-      listMessages: async () => [],
-      onLiveMessage: () => undefined,
-      onCatchUpMessage: () => undefined,
-      onRosterUpdated: () => undefined,
     })).rejects.toThrow("before readiness");
   });
 });

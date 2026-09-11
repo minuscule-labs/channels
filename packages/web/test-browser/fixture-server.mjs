@@ -48,6 +48,13 @@ const alternateChannel = await service.createChannel({
   name: "alternate-collaboration",
   participantIds: [human.id, agent.id],
 });
+for (let index = 1; index <= 6; index += 1) {
+  await service.createChannel({
+    workspaceId: workspace.id,
+    name: `connection-pool-${index}`,
+    participantIds: [human.id, agent.id],
+  });
+}
 const secondaryWorkspace = await service.createWorkspace({ slug: "browser-secondary", name: "Browser Secondary" });
 await service.addWorkspaceMember(secondaryWorkspace.id, {
   identityId: human.id,

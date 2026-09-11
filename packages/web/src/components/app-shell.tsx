@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { mergeMessages } from "../lib/messages";
-import { runBackgroundChannelConnection } from "../lib/background-channel";
+import { runBackgroundChannelsConnection } from "../lib/background-channel";
 import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/channel-notifications";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
@@ -160,49 +160,52 @@ export function AppShell() {
   }, [currentSession.data?.identityId, selectedChannels.data, selectedWorkspaceId]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
-    if (!identityId) return;
-    const controllers = observedChannels.filter(({ id }) => id !== activeChannelId).map((channel) => {
-      const controller = new AbortController();
+    const backgroundChannels = observedChannels.filter(({ id }) => id !== activeChannelId);
+    if (!identityId || backgroundChannels.length === 0) return;
+    const controller = new AbortController();
+    const connections = backgroundChannels.map((channel) => {
       const mergeMessage = (message: ChannelMessage) => {
         queryClient.setQueryData<ChannelMessage[]>(
           queryKeys.channelMessages(channel.id),
           (current) => mergeMessages(current, [message]),
         );
       };
-      const mergeLiveMessage = (message: ChannelMessage) => {
-        mergeMessage(message);
-        window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { channel, message } }));
-      };
-      void (async () => {
-        while (!controller.signal.aborted) {
-          try {
-            await runBackgroundChannelConnection({
-              signal: controller.signal,
-              currentMessages: () => queryClient.getQueryData<ChannelMessage[]>(queryKeys.channelMessages(channel.id)),
-              events: (options) => channels.events(channel.id, options),
-              listMessages: (options) => channels.listMessages(channel.id, options),
-              onLiveMessage: mergeLiveMessage,
-              onCatchUpMessage: mergeMessage,
-              onRosterUpdated: () => {
-                void channels.getChannel(channel.id).then((updated) => {
-                  queryClient.setQueryData(queryKeys.channel(channel.id), updated);
-                  setKnownChannels((current) => {
-                    const next = current.map((item) => item.id === updated.id ? updated : item);
-                    localStorage.setItem(`minu-channels:known-channels:${identityId}`, JSON.stringify(next));
-                    return next;
-                  });
-                }).catch(() => undefined);
-              },
+      return {
+        channelId: channel.id,
+        currentMessages: () => queryClient.getQueryData<ChannelMessage[]>(queryKeys.channelMessages(channel.id)),
+        listMessages: (options: { afterSequence: number; limit: number }) => channels.listMessages(channel.id, options),
+        onLiveMessage: (message: ChannelMessage) => {
+          mergeMessage(message);
+          window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { channel, message } }));
+        },
+        onCatchUpMessage: mergeMessage,
+        onRosterUpdated: () => {
+          void channels.getChannel(channel.id).then((updated) => {
+            queryClient.setQueryData(queryKeys.channel(channel.id), updated);
+            setKnownChannels((current) => {
+              const next = current.map((item) => item.id === updated.id ? updated : item);
+              localStorage.setItem(`minu-channels:known-channels:${identityId}`, JSON.stringify(next));
+              return next;
             });
-          } catch {
-            // The next bounded catch-up reconciles messages missed while disconnected.
-          }
-          if (!controller.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 1_000));
-        }
-      })();
-      return controller;
+          }).catch(() => undefined);
+        },
+      };
     });
-    return () => controllers.forEach((controller) => controller.abort());
+    void (async () => {
+      while (!controller.signal.aborted) {
+        try {
+          await runBackgroundChannelsConnection({
+            signal: controller.signal,
+            channels: connections,
+            events: (options) => channels.eventsMany(backgroundChannels.map(({ id }) => id), options),
+          });
+        } catch {
+          // The next bounded catch-up reconciles messages missed while disconnected.
+        }
+        if (!controller.signal.aborted) await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    })();
+    return () => controller.abort();
   }, [activeChannelId, currentSession.data?.identityId, observedChannels, queryClient]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
