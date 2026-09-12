@@ -532,7 +532,7 @@ export class LocalAgentHost {
           const current = await this.options.store.getBinding(binding.id);
           throw new LocalConfigurationRequestError(
             current?.state === "offline"
-              ? "Existing Runtime session is unreachable; start fresh instead"
+              ? "Existing Runtime session is unreachable; use New session instead"
               : "Existing Runtime session could not be reconnected",
             409,
             "unavailable",

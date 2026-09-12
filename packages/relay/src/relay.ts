@@ -673,7 +673,7 @@ export class ChannelRuntimeRelay {
     // Checking here would turn a storage failure into a silently dropped outcome.
     await this.commitResponse(state, {
       participantId: state.binding.participantId,
-      body: "I couldn't complete this request because the Runtime turn failed. The agent remains available; retry or start fresh if the problem continues.",
+      body: "I couldn't complete this request because the Runtime turn failed. The agent remains available; retry or use New session if the problem continues.",
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     });

@@ -1080,6 +1080,8 @@ test("terminal Runtime failure is recorded visibly before the cursor advances", 
     await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === trigger.sequence);
     const messages = await client.listMessages(channel.id);
     assert.match(messages[1]!.body, /Runtime turn failed/);
+    assert.match(messages[1]!.body, /use New session/);
+    assert.doesNotMatch(messages[1]!.body, /start fresh/i);
   } finally { await relay.stop(); await server.close(); }
 });
 

@@ -91,7 +91,7 @@ class ManagedFakeRuntime {
   readonly stops: string[] = [];
   readonly interruptions: string[] = [];
   private readonly transcripts = new Map<string, Array<{ role: "user" | "assistant"; content: string }>>();
-  private readonly statuses = new Map<string, "idle" | "working">();
+  private readonly statuses = new Map<string, "idle" | "working" | "offline">();
   private readonly statusFailures = new Map<string, Error[]>();
   private readonly heldSends = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
   private readonly heldStatuses = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
@@ -142,7 +142,7 @@ class ManagedFakeRuntime {
     return { entered: held.entered, release: held.complete };
   }
 
-  setStatus(sessionId: string, status: "idle" | "working"): void {
+  setStatus(sessionId: string, status: "idle" | "working" | "offline"): void {
     if (!this.transcripts.has(sessionId)) throw new Error("Unknown managed session");
     this.statuses.set(sessionId, status);
   }
@@ -1550,6 +1550,13 @@ test("agent host starts isolated Channel sessions with private roots and persona
     assert.equal(runtime.starts.length, 4);
     assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
 
+    runtime.setStatus("managed-session-4", "offline");
+    await assert.rejects(
+      restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
+      /use New session instead/,
+    );
+    assert.equal((await store.listChannelBindings(channelA.id))[0]!.state, "offline");
+
     assert.doesNotMatch(
       JSON.stringify(audit),
       /PRIVATE MANAGED PERSONA|managed-session|agent-host-source/,
@@ -1565,6 +1572,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
       { action: "agent.session.replaced", outcome: "accepted" },
       { action: "agent.session.stopped", outcome: "accepted" },
       { action: "agent.session.replaced", outcome: "accepted" },
+      { action: "agent.session.reconnected", outcome: "rejected" },
       { action: "agent.session.reconnected", outcome: "rejected" },
     ]);
 
