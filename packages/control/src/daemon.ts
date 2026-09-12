@@ -5,7 +5,11 @@ import {
 } from "@minu/channels-relay-storage-drizzle";
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { LocalAgentHost, type LocalManagedRuntimePort } from "./agent-host.ts";
+import {
+  LocalAgentHost,
+  type LocalAgentHostDiagnosticEvent,
+  type LocalManagedRuntimePort,
+} from "./agent-host.ts";
 import { LocalAgentHostConfiguration } from "./configuration.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
@@ -35,6 +39,7 @@ export interface LocalControlDaemonOptions {
   sessionTtlMs?: number;
   now?: () => Date;
   onAudit?(event: LocalControlAuditEvent): void;
+  onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
 }
 
 export interface LocalControlDaemon {
@@ -85,6 +90,7 @@ export async function createLocalControlDaemon(
       now: options.now,
       stopStartedSessionsOnClose: options.stopStartedSessionsOnClose,
       onAudit: options.onAudit,
+      onDiagnostic: options.onDiagnostic,
     });
     await agentHost.restore();
     const service = new LocalControlService({

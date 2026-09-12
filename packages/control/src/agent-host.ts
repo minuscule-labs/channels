@@ -8,6 +8,7 @@ import {
   type LocalWorkspaceConfig,
   type RelayBindingStore,
   type RestoredChannelBindings,
+  type RestoreBindingOutcome,
   type RelayAgentActivity,
   type WorkspaceAgentConfig,
 } from "@minu/channels-relay";
@@ -54,6 +55,26 @@ interface BulkLifecycleTarget {
 
 class BulkSnapshotChangedError extends Error {}
 
+type AttachmentResult = "attached" | RestoreBindingOutcome | "failed";
+
+export interface LocalAgentHostDiagnosticEvent {
+  category: "binding_restore" | "binding_lease";
+  outcome: "attached" | "reattached" | "retrying" | "offline" | "uncertain" | "conflict" | "invalid" | "failed";
+  channelId: string;
+  agentIdentityId: string;
+  timestamp: string;
+  attempt?: number;
+}
+
+interface BindingRecovery {
+  channelId: string;
+  bindingId: string;
+  agentIdentityId: string;
+  generation: number;
+  attempt: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface ChannelRunner {
   relay: ChannelRuntimeRelay;
   /** Relay ownership transitions are serialized per Channel and readiness is explicit. */
@@ -74,7 +95,9 @@ export interface LocalAgentHostOptions {
   stopStartedSessionsOnClose?: boolean;
   bindingLeaseDurationMs?: number;
   runtimeStatusTimeoutMs?: number;
+  recoveryBackoffMs?: readonly number[];
   onAudit?(event: LocalControlAuditEvent): void;
+  onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
   onError?(error: Error): void;
 }
 
@@ -151,6 +174,8 @@ export class LocalAgentHost {
   private readonly runners = new Map<string, ChannelRunner>();
   private readonly pending = new Map<string, Promise<unknown>>();
   private readonly attachingBindings = new Set<string>();
+  private readonly recoveries = new Map<string, BindingRecovery>();
+  private readonly recoveryBackoffMs: readonly number[];
   private readonly startedSessions = new Map<string, {
     bindingId: string;
     runtime: LocalManagedRuntimePort;
@@ -162,6 +187,12 @@ export class LocalAgentHost {
     this.directory = new LocalRelayDirectory(options.client, options.store, options.now);
     this.now = options.now ?? (() => new Date());
     this.leaseOwner = options.leaseOwner ?? `local-agent-host:${process.pid}:${randomUUID()}`;
+    this.recoveryBackoffMs = options.recoveryBackoffMs ?? [250, 500, 1_000, 2_000, 5_000];
+    if (this.recoveryBackoffMs.length === 0 || this.recoveryBackoffMs.some(
+      (delayMs) => !Number.isSafeInteger(delayMs) || delayMs < 1,
+    )) {
+      throw new RangeError("recoveryBackoffMs must contain positive integers");
+    }
   }
 
   get available(): boolean {
@@ -189,10 +220,15 @@ export class LocalAgentHost {
       workspaces.map((workspace) => this.options.store.listWorkspaceBindings(workspace.id)),
     );
     const channelIds = [...new Set(bindingGroups.flat()
-      .filter((binding) => executableRuntime(this.options.runtimes[binding.runtimeAdapter]))
+      .filter((binding) => binding.state !== "disabled")
       .map((binding) => binding.channelId))];
-    await Promise.all(channelIds.map((channelId) => this.refreshChannel(channelId).catch((error) => {
-      this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    const records = bindingGroups.flat();
+    await Promise.all(channelIds.map((channelId) => this.refreshChannel(channelId).catch(() => {
+      for (const record of records.filter(
+        (candidate) => candidate.channelId === channelId && candidate.state !== "disabled",
+      )) {
+        this.handleAttachmentResult(record, "failed", "binding_restore");
+      }
     })));
   }
 
@@ -287,7 +323,7 @@ export class LocalAgentHost {
             runtimeSessionId: session.id,
           });
           bindingId = binding.id;
-          if (!await this.attachBinding(channelId, binding.id)) {
+          if (await this.attachBinding(channelId, binding.id) !== "attached") {
             throw new Error("Agent binding could not be attached to the Channel Relay");
           }
           this.startedSessions.set(this.sessionKey(binding.id, session.id), {
@@ -409,7 +445,7 @@ export class LocalAgentHost {
         await this.retireBinding(channelId, agentIdentityId).catch((error) => {
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
         });
-        if (!await this.attachBinding(channelId, replaced.id)) {
+        if (await this.attachBinding(channelId, replaced.id) !== "attached") {
           throw new LocalConfigurationRequestError(
             "Replacement Runtime could not be attached; its binding requires reconciliation",
             409,
@@ -492,7 +528,7 @@ export class LocalAgentHost {
         if (this.isAttached(channelId, agentIdentityId)) {
           throw new LocalConfigurationRequestError("Agent session is already connected", 409, "unavailable");
         }
-        if (!await this.attachBinding(channelId, binding.id, true)) {
+        if (await this.attachBinding(channelId, binding.id) !== "attached") {
           const current = await this.options.store.getBinding(binding.id);
           throw new LocalConfigurationRequestError(
             current?.state === "offline"
@@ -648,6 +684,8 @@ export class LocalAgentHost {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const recovery of this.recoveries.values()) clearTimeout(recovery.timer);
+    this.recoveries.clear();
     // Operations that passed their availability check own their transition through completion.
     // Drain them (including Relay mutations they enqueue) before taking the shutdown snapshot.
     while (this.pending.size > 0) {
@@ -984,17 +1022,25 @@ export class LocalAgentHost {
     const records = await this.options.store.listChannelBindings(channelId);
     await Promise.all(records
       .filter((record) => record.state !== "disabled")
-      .map((record) => this.attachBinding(channelId, record.id)));
+      .map(async (record) => {
+        let result: AttachmentResult;
+        try {
+          result = await this.attachBinding(channelId, record.id);
+        } catch {
+          result = "failed";
+        }
+        this.handleAttachmentResult(record, result, "binding_restore");
+      }));
   }
 
-  private async attachBinding(channelId: string, bindingId: string, markOfflineOnFailure = false): Promise<boolean> {
+  private async attachBinding(channelId: string, bindingId: string): Promise<AttachmentResult> {
     const lockKey = `relay:${channelId}`;
     const reserved = await this.exclusive(lockKey, async () => {
       if (this.attachingBindings.has(bindingId)) return false;
       this.attachingBindings.add(bindingId);
       return true;
     });
-    if (!reserved) return false;
+    if (!reserved) return "lease_unavailable";
 
     const runtimes = Object.fromEntries(
       Object.entries(this.options.runtimes).filter((entry): entry is [string, AgentRuntimePort] =>
@@ -1014,10 +1060,13 @@ export class LocalAgentHost {
         leaseOwner: this.leaseOwner,
         leaseDurationMs: this.options.bindingLeaseDurationMs,
         statusTimeoutMs: this.options.runtimeStatusTimeoutMs,
+        now: this.now,
         runtimes,
       });
       const binding = restored.bindings[0];
-      if (!binding) return false;
+      if (!binding) return restored.outcomes.get(bindingId) ?? "failed";
+      const recoveryRecord = await this.options.store.getBinding(bindingId);
+      if (!recoveryRecord) throw new Error("Agent binding disappeared during attachment");
 
       ({ runner, ownsStartup } = await this.exclusive(lockKey, async () => {
         let current = this.runners.get(channelId);
@@ -1075,11 +1124,11 @@ export class LocalAgentHost {
       });
       restored.startAutoRenew(async () => {
         await this.retireBinding(channelId, binding.participantId);
-        this.options.onError?.(new Error(`Agent host lease was lost for binding ${binding.participantId}`));
+        this.scheduleRecovery(recoveryRecord, 0, "binding_lease");
       });
-      return true;
+      this.cancelRecovery(bindingId);
+      return "attached";
     } catch (error) {
-      if (markOfflineOnFailure) await restored?.markOffline().catch(() => undefined);
       if (attached && runner) await runner.relay.retire(
         restored?.bindings[0]?.participantId ?? "",
       ).catch(() => undefined);
@@ -1102,6 +1151,132 @@ export class LocalAgentHost {
         await restored?.close().catch(() => undefined);
       }
       await this.exclusive(lockKey, async () => { this.attachingBindings.delete(bindingId); });
+    }
+  }
+
+  private handleAttachmentResult(
+    record: ChannelAgentBindingRecord,
+    result: AttachmentResult,
+    category: LocalAgentHostDiagnosticEvent["category"],
+    attempt = 0,
+  ): void {
+    if (result === "attached") {
+      this.cancelRecovery(record.id);
+      this.diagnostic({
+        category,
+        outcome: category === "binding_lease" ? "reattached" : "attached",
+        channelId: record.channelId,
+        agentIdentityId: record.agentIdentityId,
+      });
+      return;
+    }
+    if (result === "runtime_offline") {
+      this.cancelRecovery(record.id);
+      this.diagnostic({
+        category,
+        outcome: "offline",
+        channelId: record.channelId,
+        agentIdentityId: record.agentIdentityId,
+      });
+      return;
+    }
+    if (result === "invalid_binding") {
+      this.cancelRecovery(record.id);
+      this.diagnostic({
+        category,
+        outcome: "invalid",
+        channelId: record.channelId,
+        agentIdentityId: record.agentIdentityId,
+      });
+      return;
+    }
+    if (result === "runtime_unavailable") {
+      this.cancelRecovery(record.id);
+      this.diagnostic({
+        category,
+        outcome: "uncertain",
+        channelId: record.channelId,
+        agentIdentityId: record.agentIdentityId,
+      });
+      return;
+    }
+    this.scheduleRecovery(record, attempt, category, result);
+  }
+
+  private scheduleRecovery(
+    record: ChannelAgentBindingRecord,
+    attempt: number,
+    category: LocalAgentHostDiagnosticEvent["category"],
+    result: AttachmentResult = "runtime_uncertain",
+  ): void {
+    if (this.closed || record.state === "disabled" || this.recoveries.has(record.id)) return;
+    const delayMs = this.recoveryBackoffMs[Math.min(attempt, this.recoveryBackoffMs.length - 1)]!;
+    const timer = setTimeout(() => {
+      this.recoveries.delete(record.id);
+      void this.recoverBinding(record, attempt + 1, category).catch(() => {
+        this.handleAttachmentResult(record, "failed", category, attempt + 1);
+      });
+    }, delayMs);
+    timer.unref();
+    this.recoveries.set(record.id, {
+      channelId: record.channelId,
+      bindingId: record.id,
+      agentIdentityId: record.agentIdentityId,
+      generation: record.generation,
+      attempt,
+      timer,
+    });
+    if (attempt < this.recoveryBackoffMs.length) {
+      this.diagnostic({
+        category,
+        outcome: result === "lease_unavailable" ? "conflict" : result === "failed" ? "failed" : "retrying",
+        channelId: record.channelId,
+        agentIdentityId: record.agentIdentityId,
+        attempt: attempt + 1,
+      });
+    }
+  }
+
+  private async recoverBinding(
+    expected: ChannelAgentBindingRecord,
+    attempt: number,
+    category: LocalAgentHostDiagnosticEvent["category"],
+  ): Promise<void> {
+    if (this.closed) return;
+    const key = this.bindingKey(expected.channelId, expected.agentIdentityId);
+    await this.exclusive(key, async () => {
+      if (this.closed) return;
+      const current = await this.options.store.getBinding(expected.id);
+      if (!current || current.generation !== expected.generation || current.state === "disabled") {
+        this.cancelRecovery(expected.id);
+        return;
+      }
+      if (this.isAttached(current.channelId, current.agentIdentityId)) {
+        this.handleAttachmentResult(current, "attached", category);
+        return;
+      }
+      let result: AttachmentResult;
+      try {
+        result = await this.attachBinding(current.channelId, current.id);
+      } catch {
+        result = "failed";
+      }
+      this.handleAttachmentResult(current, result, category, attempt);
+    });
+  }
+
+  private cancelRecovery(bindingId: string): void {
+    const recovery = this.recoveries.get(bindingId);
+    if (!recovery) return;
+    clearTimeout(recovery.timer);
+    this.recoveries.delete(bindingId);
+  }
+
+  private diagnostic(event: Omit<LocalAgentHostDiagnosticEvent, "timestamp">): void {
+    try {
+      this.options.onDiagnostic?.({ ...event, timestamp: this.now().toISOString() });
+    } catch {
+      // Diagnostics must never alter attachment or lease ownership.
     }
   }
 

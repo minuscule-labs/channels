@@ -437,6 +437,7 @@ test("private bindings isolate Channel sessions and restore them under generatio
       ["reviewer-channel-a", "session-channel-a"],
     );
     assert.equal(competitor.bindings.length, 0);
+    assert.equal(competitor.outcomes.get(bindingA.id), "lease_unavailable");
     assert.deepEqual(
       otherChannel.bindings.map(({ sessionId }) => sessionId).sort(),
       ["reviewer-channel-b", "session-channel-b"],
@@ -529,8 +530,28 @@ test("private bindings isolate Channel sessions and restore them under generatio
     offline.bindings.map(({ sessionId }) => sessionId),
     ["reviewer-channel-a"],
   );
+  assert.equal(offline.outcomes.get(bindingA.id), "runtime_offline");
   assert.equal((await store.getBinding(bindingA.id))?.state, "offline");
   await offline.close();
+
+  runtime.setStatus("replacement-channel-a", "idle");
+  const status = runtime.status.bind(runtime);
+  runtime.status = async (sessionId) => {
+    if (sessionId === "replacement-channel-a") throw new Error("SECRET Runtime transport failure");
+    return status(sessionId);
+  };
+  const uncertain = await restoreChannelBindings({
+    client,
+    store,
+    channelId: channelA.id,
+    bindingIds: [bindingA.id],
+    leaseOwner: "relay-uncertain",
+    runtimes: { fake: runtime },
+  });
+  assert.equal(uncertain.outcomes.get(bindingA.id), "runtime_uncertain");
+  assert.equal(uncertain.bindings.length, 0);
+  assert.equal((await store.getBinding(bindingA.id))?.leaseOwner, undefined);
+  await uncertain.close();
   await server.close();
 });
 

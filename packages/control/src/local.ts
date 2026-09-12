@@ -16,7 +16,7 @@ import {
 import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { LocalManagedRuntimePort } from "./agent-host.ts";
+import type { LocalAgentHostDiagnosticEvent, LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import {
@@ -64,6 +64,7 @@ export interface LocalProductAppOptions {
   runtime: LocalManagedRuntimePort;
   personaPrompt?: string;
   onAudit?(event: LocalControlAuditEvent): void;
+  onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
 }
 
 export interface LocalProductApp {
@@ -413,6 +414,7 @@ export async function createLocalProductApp(
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },
       onAudit: options.onAudit,
+      onDiagnostic: options.onDiagnostic,
     });
 
     let closed = false;

@@ -21,7 +21,8 @@ function runtimeStateLabel(state: LocalChannelAgent["state"]): string {
     case "running": return "Running";
     case "idle": return "Idle";
     case "unbound": return "Not started";
-    case "uncertain": return "Status uncertain";
+    case "disconnected": return "Disconnected";
+    case "uncertain": return "Connection uncertain";
     case "offline": return "Offline";
     case "disabled": return "Stopped";
   }
@@ -90,7 +91,7 @@ export function MemberRoster({
   const agentValues = [...(localAgents?.values() ?? [])];
   const hasActivity = agentValues.some((agent) => agent.activity);
   const startEligible = agentValues.filter(({ state }) => state === "unbound" || state === "disabled").length;
-  const stopEligible = agentValues.filter(({ state }) => state === "idle" || state === "running" || state === "offline").length;
+  const stopEligible = agentValues.filter(({ state }) => state === "idle" || state === "running" || state === "disconnected" || state === "offline").length;
   useEffect(() => {
     if (!hasActivity) return;
     const interval = window.setInterval(() => setNow(Date.now()), 1_000);

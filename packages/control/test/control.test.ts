@@ -10,7 +10,11 @@ import { createChannelHttpServer } from "@minu/channels-core";
 import type { ChannelMetadata } from "@minu/channels-core/types";
 import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
-import { LocalAgentHost, type ManagedRuntimeStartConfig } from "../src/agent-host.ts";
+import {
+  LocalAgentHost,
+  type LocalAgentHostDiagnosticEvent,
+  type ManagedRuntimeStartConfig,
+} from "../src/agent-host.ts";
 import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
@@ -88,6 +92,7 @@ class ManagedFakeRuntime {
   readonly interruptions: string[] = [];
   private readonly transcripts = new Map<string, Array<{ role: "user" | "assistant"; content: string }>>();
   private readonly statuses = new Map<string, "idle" | "working">();
+  private readonly statusFailures = new Map<string, Error[]>();
   private readonly heldSends = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
   private readonly heldStatuses = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
 
@@ -108,6 +113,10 @@ class ManagedFakeRuntime {
   }
 
   async status(sessionId: string): Promise<"idle" | "working" | "offline"> {
+    const failures = this.statusFailures.get(sessionId);
+    const failure = failures?.shift();
+    if (failures?.length === 0) this.statusFailures.delete(sessionId);
+    if (failure) throw failure;
     const held = this.heldStatuses.get(sessionId);
     if (held) {
       held.enter();
@@ -115,6 +124,10 @@ class ManagedFakeRuntime {
       this.heldStatuses.delete(sessionId);
     }
     return this.transcripts.has(sessionId) ? this.statuses.get(sessionId) ?? "idle" : "offline";
+  }
+
+  failNextStatus(sessionId: string, error: Error): void {
+    this.statusFailures.set(sessionId, [...(this.statusFailures.get(sessionId) ?? []), error]);
   }
 
   holdStatus(sessionId: string) {
@@ -270,7 +283,7 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
   assert.equal(cancelCalls, 1);
 });
 
-test("maps missing, failed, and stalled Runtime bridges to offline without leaking errors", async () => {
+test("distinguishes failed and stalled Runtime verification from confirmed offline without leaking errors", async () => {
   const control = new LocalControlService({
     channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
     bindings: { async listChannelBindings() { return records; } },
@@ -279,7 +292,9 @@ test("maps missing, failed, and stalled Runtime bridges to offline without leaki
     },
   });
   const result = await control.listChannelAgents(channel.id);
-  assert.equal(result.agents[0]?.state, "offline");
+  assert.equal(result.agents[0]?.state, "uncertain");
+  assert.equal(result.agents[0]?.diagnostics?.connection, "uncertain");
+  assert.equal(result.agents[0]?.capabilities.replace, false);
   assert.doesNotMatch(JSON.stringify(result), /secret-token|credential/);
 
   const stalled = new LocalControlService({
@@ -288,7 +303,14 @@ test("maps missing, failed, and stalled Runtime bridges to offline without leaki
     runtimes: { "pi-private-adapter": { async status() { return new Promise<"idle">(() => {}); } } },
     statusTimeoutMs: 1,
   });
-  assert.equal((await stalled.listChannelAgents(channel.id)).agents[0]?.state, "offline");
+  assert.equal((await stalled.listChannelAgents(channel.id)).agents[0]?.state, "uncertain");
+
+  const offline = new LocalControlService({
+    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
+    bindings: { async listChannelBindings() { return records; } },
+    runtimes: { "pi-private-adapter": { async status() { return "offline" as const; } } },
+  });
+  assert.equal((await offline.listChannelAgents(channel.id)).agents[0]?.state, "offline");
 });
 
 test("validates browser identity and bounded client and Runtime status options", () => {
@@ -316,7 +338,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 11 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 12 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -398,7 +420,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 11, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 12, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -622,7 +644,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 11,
+      protocolVersion: 12,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -630,7 +652,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     });
     assert.equal(response.status, 200);
     const body = await response.json() as { agents: Array<{ state: string }> };
-    assert.deepEqual(body.agents.map(({ state }) => state), ["offline", "unbound"]);
+    assert.deepEqual(body.agents.map(({ state }) => state), ["disconnected", "unbound"]);
     assert.doesNotMatch(JSON.stringify(body), /review-builder-session|review-mode:builder|rootUri/);
   } finally {
     await app.close();
@@ -1417,15 +1439,48 @@ test("agent host starts isolated Channel sessions with private roots and persona
 
     await host.close();
     host = undefined;
+    let restoredNow = Date.now();
+    const diagnostics: LocalAgentHostDiagnosticEvent[] = [];
+    runtime.failNextStatus(originalBinding.runtimeSessionId, new Error(
+      "SECRET startup failure with runtime id, endpoint, token, and transcript path",
+    ));
     restoredHost = new LocalAgentHost({
       client,
       store,
       runtimes: { "managed-test": runtime },
+      now: () => new Date(restoredNow),
       bindingLeaseDurationMs: 30,
       runtimeStatusTimeoutMs: 100,
+      recoveryBackoffMs: [5],
       onAudit: (event) => audit.push(event),
+      onDiagnostic: (event) => diagnostics.push(event),
     });
     await restoredHost.restore();
+    assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
+    assert.equal((await store.getBinding(originalBinding.id))?.leaseOwner, undefined);
+    await waitUntil(async () => restoredHost!.isAttached(channelA.id, agent.id));
+    assert.deepEqual(diagnostics.slice(0, 2).map(({ category, outcome }) => ({ category, outcome })), [
+      { category: "binding_restore", outcome: "retrying" },
+      { category: "binding_restore", outcome: "attached" },
+    ]);
+    assert.doesNotMatch(JSON.stringify(diagnostics), /SECRET|runtime id|endpoint|token|transcript path/i);
+
+    const startsBeforeSleep = runtime.starts.length;
+    const stopsBeforeSleep = runtime.stops.length;
+    const beforeSleep = await store.getBinding(originalBinding.id);
+    const cursorBeforeSleep = await store.getCursor(channelA.id, agent.id);
+    restoredNow += 31;
+    await waitUntil(async () => diagnostics.some(
+      ({ category, outcome }) => category === "binding_lease" && outcome === "reattached",
+    ));
+    const afterSleep = await store.getBinding(originalBinding.id);
+    assert.equal(restoredHost.isAttached(channelA.id, agent.id), true);
+    assert.equal(afterSleep?.generation, beforeSleep?.generation);
+    assert.equal(afterSleep?.runtimeSessionId, beforeSleep?.runtimeSessionId);
+    assert.equal(await store.getCursor(channelA.id, agent.id), cursorBeforeSleep);
+    assert.equal(runtime.starts.length, startsBeforeSleep);
+    assert.equal(runtime.stops.length, stopsBeforeSleep);
+
     await client.postMessage(channelA.id, {
       participantId: owner.id,
       body: "@builder resume only A",
@@ -1484,12 +1539,12 @@ test("agent host starts isolated Channel sessions with private roots and persona
     const timeoutStartedAt = Date.now();
     await assert.rejects(
       restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
-      /unreachable; start fresh instead/,
+      /could not be reconnected/,
     );
     assert.equal(Date.now() - timeoutStartedAt < 500, true);
     neverResolvingStatus.release();
     const unreachableBinding = (await store.listChannelBindings(channelA.id))[0]!;
-    assert.equal(unreachableBinding.state, "offline");
+    assert.equal(unreachableBinding.state, "connected");
     assert.equal(unreachableBinding.generation, 4);
     assert.equal(unreachableBinding.runtimeSessionId, "managed-session-4");
     assert.equal(runtime.starts.length, 4);
@@ -1530,6 +1585,40 @@ test("agent host starts isolated Channel sessions with private roots and persona
       /Agent host is unavailable/,
     );
     restoredHost = undefined;
+
+    const startsBeforeRecoveryFences = runtime.starts.length;
+    const stopsBeforeRecoveryFences = runtime.stops.length;
+    runtime.failNextStatus("managed-session-4", new Error("transient shutdown recovery failure"));
+    const shutdownRecoveryHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      recoveryBackoffMs: [30],
+    });
+    await shutdownRecoveryHost.restore();
+    await shutdownRecoveryHost.close();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+    assert.equal(shutdownRecoveryHost.isAttached(channelA.id, agent.id), false);
+
+    runtime.failNextStatus("managed-session-4", new Error("transient generation recovery failure"));
+    const generationRecoveryHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      recoveryBackoffMs: [30],
+    });
+    await generationRecoveryHost.restore();
+    const beforeGenerationFence = (await store.listChannelBindings(channelA.id))[0]!;
+    await store.disableBinding(
+      beforeGenerationFence.id,
+      beforeGenerationFence.generation,
+      new Date().toISOString(),
+    );
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+    assert.equal(generationRecoveryHost.isAttached(channelA.id, agent.id), false);
+    assert.equal(runtime.starts.length, startsBeforeRecoveryFences);
+    assert.equal(runtime.stops.length, stopsBeforeRecoveryFences);
+    await generationRecoveryHost.close();
   } finally {
     await host?.close().catch(() => undefined);
     await restoredHost?.close().catch(() => undefined);
@@ -1814,7 +1903,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 11,
+      protocolVersion: 12,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -1827,7 +1916,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 11,
+      protocolVersion: 12,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
@@ -1931,7 +2020,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       workspaceId: workspace.id,
       channelId: createdChannel.id,
       identityId: agent.id,
-      state: "offline",
+      state: "disconnected",
       wakePolicy: "mentions",
       diagnostics: {
         connection: "disconnected",

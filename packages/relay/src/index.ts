@@ -7,6 +7,7 @@ export {
   type ChannelAgentBindingState,
   type LocalWorkspaceConfig,
   type RelayBindingStore,
+  type RestoreBindingOutcome,
   type RestoreChannelBindingsOptions,
   type RuntimeModelRef,
   type WorkspaceAgentConfig,

@@ -519,7 +519,7 @@ export class LocalControlService {
         return {
           ...base,
           ...details,
-          state: "offline",
+          state: "disconnected",
           diagnostics: {
             connection: "disconnected",
             queuedTurns: 0,
@@ -571,16 +571,15 @@ export class LocalControlService {
       return {
         ...base,
         ...details,
-        state: "offline",
+        state: "uncertain",
         diagnostics: {
-          connection: "offline",
+          connection: "uncertain",
           queuedTurns: 0,
           lastVerifiedAt: binding.lastVerifiedAt,
           capabilities: diagnosticCapabilities,
         },
         capabilities: {
           ...disabledCapabilities,
-          replace: Boolean(this.options.lifecycle?.available),
           stop: Boolean(this.options.lifecycle?.available),
         },
       };

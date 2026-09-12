@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 11 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 12 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -126,6 +126,7 @@ export type LocalChannelAgentState =
   | "unbound"
   | "idle"
   | "running"
+  | "disconnected"
   | "offline"
   | "disabled"
   | "uncertain";

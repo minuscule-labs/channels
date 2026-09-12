@@ -401,7 +401,8 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   });
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await request.post(`${fixtureBase}/detach-agent`);
-  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTitle("Runtime: Disconnected")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Start fresh/ })).toHaveCount(0);
   await page.getByText("Diagnostics").click();
@@ -418,7 +419,8 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
 
   await request.post(`${fixtureBase}/detach-agent`);
   await request.post(`${fixtureBase}/runtime-reachable?value=false`);
-  await expect(page.getByRole("button", { name: "Start fresh with Builder Agent" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTitle("Runtime: Offline")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Start fresh with Builder Agent" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
   await request.post(`${fixtureBase}/runtime-reachable?value=true`);
@@ -462,7 +464,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 11,
+      protocolVersion: 12,
       channelId,
       agents: [
         {
@@ -486,7 +488,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 11,
+        protocolVersion: 12,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -529,7 +531,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 11,
+      protocolVersion: 12,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -701,7 +703,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 11,
+        protocolVersion: 12,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,

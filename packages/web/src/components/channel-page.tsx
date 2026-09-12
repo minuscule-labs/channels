@@ -108,7 +108,7 @@ export function ChannelPage() {
       setPendingBulkTargets(new Set((localAgents.data ?? [])
         .filter(({ state }) => action === "start"
           ? state === "unbound" || state === "disabled"
-          : state === "idle" || state === "running" || state === "offline")
+          : state === "idle" || state === "running" || state === "disconnected" || state === "offline")
         .map(({ identityId }) => identityId)));
     },
     onSuccess: (response) => {

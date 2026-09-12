@@ -25,13 +25,13 @@ PUT   /local/workspaces/:workspaceId/agents/:identityId/runtime-options
 It combines the public Channel roster with private binding and Runtime reachability internally, then returns only UI-safe state:
 
 - stable Workspace, Channel, and identity IDs;
-- `unbound`, `idle`, `running`, `offline`, `disabled`, or `uncertain` state;
+- `unbound`, `idle`, `running`, `disconnected`, `offline`, `disabled`, or `uncertain` state;
 - wake policy;
 - start for unbound agents, replace for idle/offline/stopped agents, and stop for bound agents when managed execution is available;
 - disabled steering flags plus capability-gated interruption and existing-session reconnect;
 - last verification timestamp when available.
 
-Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, Runtime adapter, and saved model/reasoning selections are write-only inputs: they are persisted in private local storage but never returned. Protocol v5 added an authenticated agent-specific Runtime-options endpoint that discovers currently available model labels and reasoning choices from the configured adapter; it does not reveal which saved selection is active. Protocol v6 adds a persisted Workspace model allowlist scoped to that adapter, filters agent selectors, and rejects newly configured or launched models that have been disabled. Protocol v7 adds sanitized harness skill discovery and per-agent selected skill ids; native skill paths and contents remain inside Runtime, and changes apply only to new or **Start fresh** sessions. Control never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
+Workspace configuration summaries return only `configured` booleans, status, and bound-Channel counts. Root URI, notes-folder routing, persona prompt, Runtime adapter, and saved model/reasoning selections are write-only inputs: they are persisted in private local storage but never returned. Protocol v5 added an authenticated agent-specific Runtime-options endpoint that discovers currently available model labels and reasoning choices from the configured adapter; it does not reveal which saved selection is active. Protocol v6 adds a persisted Workspace model allowlist scoped to that adapter, filters agent selectors, and rejects newly configured or launched models that have been disabled. Protocol v7 adds sanitized harness skill discovery and per-agent selected skill ids; native skill paths and contents remain inside Runtime, and changes apply only to new or **Start fresh** sessions. Protocol v12 distinguishes a confirmed offline worker from a reachable-but-detached binding and uncertain status verification. Control never returns Runtime session IDs, adapter names, leases, credentials, prompts, local roots, or private database paths.
 
 ## Exports and executable
 
@@ -44,7 +44,7 @@ Workspace configuration summaries return only `configured` booleans, status, and
 - `minu-channels-control` — local control launcher executable.
 - `minu-channels-review` — coordinated developer review launcher.
 
-The daemon opens the private Relay database, connects to the public Channels endpoint, accepts structural status-only or managed Runtime adapters, restores reachable bindings under leases, and always enables browser-session authentication. Managed adapters may start one isolated session per `(Workspace, Channel, agent)` and are connected to normal Channel delivery by the internal agent host. Browser bundles continue to import only `client` and `contracts`.
+The daemon opens the private Relay database, connects to the public Channels endpoint, accepts structural status-only or managed Runtime adapters, restores reachable bindings under leases, and always enables browser-session authentication. Transient startup verification failures retry with capped backoff. If system sleep lets a lease expire, the host retires stale routing and generation-safely reacquires and reattaches the same reachable Runtime session without starting or stopping a worker. Confirmed dead workers remain offline. Production launchers emit only typed, allowlisted restore and lease outcomes; raw Runtime errors, session identifiers, endpoints, tokens, and transcript paths are excluded. Managed adapters may start one isolated session per `(Workspace, Channel, agent)` and are connected to normal Channel delivery by the internal agent host. Browser bundles continue to import only `client` and `contracts`.
 
 ## Browser-session launch
 

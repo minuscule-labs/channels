@@ -505,6 +505,14 @@ export class LocalRelayDirectory {
   }
 }
 
+export type RestoreBindingOutcome =
+  | "attached"
+  | "lease_unavailable"
+  | "invalid_binding"
+  | "runtime_unavailable"
+  | "runtime_offline"
+  | "runtime_uncertain";
+
 export interface RestoreChannelBindingsOptions {
   client: ChannelClient;
   store: RelayBindingStore;
@@ -529,6 +537,7 @@ export class RestoredChannelBindings {
 
   constructor(
     bindings: AgentChannelBinding[],
+    readonly outcomes: ReadonlyMap<string, RestoreBindingOutcome>,
     private readonly records: ChannelAgentBindingRecord[],
     private readonly store: RelayBindingStore,
     private readonly leaseOwner: string,
@@ -646,6 +655,7 @@ export async function restoreChannelBindings(
   if (!workspaceConfig) throw new Error("Private Workspace configuration is required");
   const bindings: AgentChannelBinding[] = [];
   const records: ChannelAgentBindingRecord[] = [];
+  const outcomes = new Map<string, RestoreBindingOutcome>();
   const provisionalRenewals = new Map<string, {
     record: ChannelAgentBindingRecord;
     timer: NodeJS.Timeout;
@@ -680,7 +690,10 @@ export async function restoreChannelBindings(
       timestamp.toISOString(),
       new Date(timestamp.getTime() + leaseDurationMs).toISOString(),
     );
-    if (!leased) continue;
+    if (!leased) {
+      outcomes.set(candidate.id, "lease_unavailable");
+      continue;
+    }
     const renewalIntervalMs = Math.max(1, Math.floor(leaseDurationMs / 3));
     const inFlight = new Set<Promise<unknown>>();
     const provisionalRenewal = setInterval(() => {
@@ -709,31 +722,41 @@ export async function restoreChannelBindings(
       || (identity.type !== "agent" && identity.type !== "service")
       || !config || config.status !== "active" || config.workspaceId !== leased.workspaceId
       || config.agentIdentityId !== leased.agentIdentityId) {
+      outcomes.set(leased.id, "invalid_binding");
       await release();
       continue;
     }
     const runtime = options.runtimes[leased.runtimeAdapter];
-    let reachable = false;
-    if (runtime) {
+    if (!runtime) {
+      outcomes.set(leased.id, "runtime_unavailable");
+      await release();
+      continue;
+    }
+    let status: "idle" | "working" | "offline" | "uncertain";
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try {
-          reachable = (await Promise.race([
-            runtime.status(leased.runtimeSessionId),
-            new Promise<"offline">((resolve) => {
-              timer = setTimeout(() => resolve("offline"), statusTimeoutMs);
-              timer.unref();
-            }),
-          ])) !== "offline";
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      } catch {
-        reachable = false;
+        status = await Promise.race([
+          runtime.status(leased.runtimeSessionId),
+          new Promise<"uncertain">((resolve) => {
+            timer = setTimeout(() => resolve("uncertain"), statusTimeoutMs);
+            timer.unref();
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
       }
+    } catch {
+      status = "uncertain";
     }
     const verifiedAt = now().toISOString();
-    if (!runtime || !reachable) {
+    if (status === "uncertain") {
+      outcomes.set(leased.id, "runtime_uncertain");
+      await release();
+      continue;
+    }
+    if (status === "offline") {
+      outcomes.set(leased.id, "runtime_offline");
       await options.store.updateBindingState(
         leased.id,
         leased.generation,
@@ -759,6 +782,7 @@ export async function restoreChannelBindings(
       await release();
       continue;
     }
+    outcomes.set(connected.id, "attached");
     records.push(connected);
     bindings.push({
       participantId: connected.agentIdentityId,
@@ -783,6 +807,7 @@ export async function restoreChannelBindings(
     await Promise.all([...provisionalRenewals.keys()].map(stopProvisional));
     return new RestoredChannelBindings(
       bindings,
+      outcomes,
       records,
       options.store,
       options.leaseOwner,
