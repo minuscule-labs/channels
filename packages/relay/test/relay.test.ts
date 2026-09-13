@@ -181,6 +181,74 @@ class ManualActivityTimers {
   }
 }
 
+interface ControlledActivityStream {
+  events: unknown[];
+  terminal?: "end" | "fail";
+  wake?: () => void;
+}
+
+class RecoveringActivityRuntime extends FakeRuntime {
+  readonly streams: ControlledActivityStream[] = [];
+  private statusValue: "idle" | "working" = "idle";
+  private readonly transcript: RuntimePortMessage[] = [];
+  private releaseSend: (() => void) | undefined;
+
+  override async send(_sessionId: string, input: string): Promise<void> {
+    this.transcript.push({ role: "user", content: input });
+    this.statusValue = "working";
+    await new Promise<void>((resolve) => { this.releaseSend = resolve; });
+    this.transcript.push({ role: "assistant", content: "Recovered stream turn complete" });
+    this.statusValue = "idle";
+  }
+
+  override async status(): Promise<"idle" | "working"> {
+    return this.statusValue;
+  }
+
+  override async messages(): Promise<RuntimePortMessage[]> {
+    return [...this.transcript];
+  }
+
+  complete(): void {
+    this.releaseSend?.();
+  }
+
+  async *activityEvents(_sessionId: string, { signal }: { signal: AbortSignal }) {
+    const stream: ControlledActivityStream = { events: [] };
+    this.streams.push(stream);
+    while (!signal.aborted) {
+      if (stream.events.length > 0) {
+        yield stream.events.shift() as {
+          phase: "working" | "using_tools" | "responding";
+          observedAt: string;
+        };
+        continue;
+      }
+      if (stream.terminal === "fail") throw new Error("private adapter failure");
+      if (stream.terminal === "end") return;
+      await new Promise<void>((resolve) => {
+        stream.wake = resolve;
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      stream.wake = undefined;
+    }
+  }
+
+  publish(candidate: unknown, streamIndex = this.streams.length - 1): void {
+    const stream = this.streams[streamIndex];
+    if (!stream) throw new Error("No activity stream");
+    stream.events.push(candidate);
+    stream.wake?.();
+  }
+
+  finish(terminal: "end" | "fail", streamIndex = this.streams.length - 1): void {
+    const stream = this.streams[streamIndex];
+    if (!stream) throw new Error("No activity stream");
+    stream.terminal = terminal;
+    stream.wake?.();
+  }
+}
+
 class ControlledActivityRuntime implements AgentRuntimePort {
   private statusValue: "idle" | "working" = "idle";
   private readonly transcript: RuntimePortMessage[] = [];
@@ -1660,6 +1728,147 @@ test("activity silence timers clear on retry, retirement, and shutdown without a
   } finally {
     await retryRelay.stop();
     await retryServer.close();
+  }
+});
+
+test("activity streams recover from failure and normal end with bounded resettable backoff", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new RecoveringActivityRuntime();
+  const retryTimers = new ManualActivityTimers();
+  const silenceTimers = new ManualActivityTimers();
+  const errors: Error[] = [];
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    scheduleActivitySilenceTimer: silenceTimers.schedule,
+    scheduleActivityStreamRetryTimer: retryTimers.schedule,
+    onError: (_binding, error) => errors.push(error),
+  });
+  try {
+    await relay.start();
+    await waitUntil(async () => runtime.streams.length === 1);
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a work" });
+    await waitUntil(async () => (await runtime.status()) === "working");
+
+    runtime.publish({ phase: "using_tools", observedAt: new Date().toISOString() });
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
+    runtime.finish("fail");
+    await waitUntil(async () => retryTimers.entries.length === 1);
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+    assert.equal(retryTimers.entries[0]?.milliseconds, 250);
+    assert.deepEqual(errors.map((error) => error.message), ["Runtime activity stream unavailable"]);
+
+    retryTimers.invoke(0);
+    await waitUntil(async () => runtime.streams.length === 2);
+    runtime.publish({ phase: "private_phase", observedAt: "not-a-date" });
+    runtime.finish("end");
+    await waitUntil(async () => retryTimers.entries.length === 2);
+    assert.equal(retryTimers.entries[1]?.milliseconds, 500);
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+
+    retryTimers.invoke(1);
+    await waitUntil(async () => runtime.streams.length === 3);
+    runtime.publish({ phase: "responding", observedAt: new Date().toISOString() });
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "responding");
+    runtime.finish("end");
+    await waitUntil(async () => retryTimers.entries.length === 3);
+    assert.equal(retryTimers.entries[2]?.milliseconds, 250);
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+    assert.equal(errors.length, 1);
+
+    retryTimers.invoke(2);
+    await waitUntil(async () => runtime.streams.length === 4);
+    runtime.complete();
+    await waitUntil(async () => relay.activity("agent-a") === undefined);
+
+    for (const [offset, expected] of [500, 1_000, 2_000, 5_000, 5_000].entries()) {
+      runtime.finish("end");
+      const timerIndex = offset + 3;
+      await waitUntil(async () => retryTimers.entries.length === timerIndex + 1);
+      assert.equal(retryTimers.entries[timerIndex]?.milliseconds, expected);
+      if (offset < 4) {
+        retryTimers.invoke(timerIndex);
+        await waitUntil(async () => runtime.streams.length === offset + 5);
+      }
+    }
+  } finally {
+    runtime.complete();
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("activity stream recovery is binding-local and aborts on retirement and shutdown", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtimeA = new RecoveringActivityRuntime();
+  const runtimeB = new RecoveringActivityRuntime();
+  const retryTimers = new ManualActivityTimers();
+  const cursorStore = new InMemoryChannelStorage();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" },
+    { id: "agent-a", type: "agent" },
+    { id: "agent-b", type: "agent" },
+  ] });
+  const bindingA = { participantId: "agent-a", sessionId: "session-a", runtime: runtimeA };
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [bindingA, { participantId: "agent-b", sessionId: "session-b", runtime: runtimeB }],
+    cursorStore,
+    scheduleActivityStreamRetryTimer: retryTimers.schedule,
+  });
+  let stopped = false;
+  try {
+    await relay.start();
+    await waitUntil(async () => runtimeA.streams.length === 1 && runtimeB.streams.length === 1);
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a @agent-b work" });
+    await waitUntil(async () => (await runtimeA.status()) === "working" && (await runtimeB.status()) === "working");
+    runtimeB.publish({ phase: "responding", observedAt: new Date().toISOString() });
+    await waitUntil(async () => relay.activity("agent-b")?.phase === "responding");
+
+    runtimeA.finish("fail");
+    await waitUntil(async () => retryTimers.entries.length === 1);
+    assert.equal(relay.activity("agent-b")?.phase, "responding");
+    const firstRetirement = relay.retire("agent-a");
+    assert.equal(retryTimers.entries[0]?.canceled, true);
+    retryTimers.invoke(0);
+    assert.equal(runtimeA.streams.length, 1);
+    runtimeA.complete();
+    await firstRetirement;
+
+    await relay.attach(bindingA);
+    await waitUntil(async () => runtimeA.streams.length === 2);
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a new generation" });
+    await waitUntil(async () => (await runtimeA.status()) === "working");
+    runtimeA.publish({ phase: "using_tools", observedAt: new Date().toISOString() }, 0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+    const secondRetirement = relay.retire("agent-a");
+    runtimeA.complete();
+    await secondRetirement;
+    assert.equal(retryTimers.entries.length, 1);
+
+    runtimeB.finish("end");
+    await waitUntil(async () => retryTimers.entries.length === 2);
+    const stopping = relay.stop();
+    stopped = true;
+    assert.equal(retryTimers.entries[1]?.canceled, true);
+    retryTimers.invoke(1);
+    runtimeA.complete();
+    runtimeB.complete();
+    await stopping;
+    assert.equal(runtimeB.streams.length, 1);
+  } finally {
+    runtimeA.complete();
+    runtimeB.complete();
+    if (!stopped) await relay.stop();
+    await server.close();
   }
 });
 

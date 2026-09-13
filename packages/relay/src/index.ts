@@ -17,6 +17,7 @@ export {
   type AgentChannelBinding,
   type AgentRuntimePort,
   type ChannelRuntimeRelayOptions,
+  type RuntimeActivityEvent,
   type RuntimePortMessage,
   type RuntimePortTurn,
   type RelayAgentActivity,
