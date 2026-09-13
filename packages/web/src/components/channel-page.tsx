@@ -108,7 +108,7 @@ export function ChannelPage() {
       setPendingBulkTargets(new Set((localAgents.data ?? [])
         .filter(({ state }) => action === "start"
           ? state === "unbound" || state === "disabled"
-          : state === "idle" || state === "running" || state === "offline")
+          : state === "idle" || state === "running" || state === "disconnected" || state === "offline")
         .map(({ identityId }) => identityId)));
     },
     onSuccess: (response) => {
@@ -247,19 +247,11 @@ export function ChannelPage() {
               localStatus={localStatus}
               showDiagnostics={currentSession.isSuccess}
               drawer
-              onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
-              onReconnectAgent={(identityId) => agentAction.mutate({ action: "reconnect", identityId })}
-              onReplaceAgent={(identityId) => {
-                if (window.confirm("Start a fresh agent session? The current Runtime transcript will not carry over. Channel history and filesystem effects remain.")) {
-                  agentAction.mutate({ action: "replace", identityId });
-                }
-              }}
-              onCancelAgent={(identityId) => agentAction.mutate({ action: "cancel", identityId })}
-              onStopAgent={(identityId) => {
-                if (window.confirm("Stop and disable this agent for this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
-                  agentAction.mutate({ action: "stop", identityId });
-                }
-              }}
+              onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
+              onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
+              onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
+              onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
+              onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
               onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
               pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
@@ -325,19 +317,11 @@ export function ChannelPage() {
           localAgents={localAgentMap}
           localStatus={localStatus}
           showDiagnostics={currentSession.isSuccess}
-          onStartAgent={(identityId) => agentAction.mutate({ action: "start", identityId })}
-          onReconnectAgent={(identityId) => agentAction.mutate({ action: "reconnect", identityId })}
-          onReplaceAgent={(identityId) => {
-            if (window.confirm("Start a fresh agent session? The current Runtime transcript will not carry over. Channel history and filesystem effects remain.")) {
-              agentAction.mutate({ action: "replace", identityId });
-            }
-          }}
-          onCancelAgent={(identityId) => agentAction.mutate({ action: "cancel", identityId })}
-          onStopAgent={(identityId) => {
-            if (window.confirm("Stop and disable this agent for this Channel? Active work will be interrupted, queued turns will be discarded, and external tool or filesystem effects cannot be rolled back.")) {
-              agentAction.mutate({ action: "stop", identityId });
-            }
-          }}
+          onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
+          onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
+          onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
+          onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
+          onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
           onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
           pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}

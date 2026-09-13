@@ -222,6 +222,9 @@ async function main(): Promise<void> {
       onAudit(event) {
         process.stderr.write(`${JSON.stringify({ source: "minu-channels", ...event })}\n`);
       },
+      onDiagnostic(event) {
+        process.stderr.write(`${JSON.stringify({ source: "minu-channels", type: "agent-host-diagnostic", ...event })}\n`);
+      },
     });
   } catch (error) {
     await installationInstance.close();

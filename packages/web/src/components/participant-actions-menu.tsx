@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
-import { LoaderCircle, MoreHorizontal, Play, Square } from "lucide-react";
+import { EllipsisVertical, LoaderCircle, Play, Square } from "lucide-react";
 import { useRef, useState } from "react";
 
 export function ParticipantActionsMenu({
@@ -56,7 +56,7 @@ export function ParticipantActionsMenu({
             aria-label="Open participant actions"
             title="Participant actions"
           >
-            <MoreHorizontal className="h-4 w-4" />
+            <EllipsisVertical className="h-4 w-4" />
           </button>
         </Popover.Trigger>
         <Popover.Portal>

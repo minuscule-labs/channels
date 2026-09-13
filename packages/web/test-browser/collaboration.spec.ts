@@ -16,6 +16,10 @@ async function launchAuthenticated(
   await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
 }
 
+async function openParticipantActions(page: Page, participantName: string): Promise<void> {
+  await page.getByRole("button", { name: `Open actions for ${participantName}` }).first().click();
+}
+
 test("sends idempotently, refreshes rosters, and catches up after reconnect", async ({ page, request }) => {
   const workspacesResponse = await request.get(`${channelsBase}/workspaces`);
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
@@ -382,7 +386,8 @@ test("summarizes Channel-wide agent activity below the composer", async ({ page,
   await expect(strip).toContainText(/@builder is responding.*1 turn queued/, { timeout: 10_000 });
   await request.post(`${fixtureBase}/agent-activity?phase=retrying&queued=1`);
   await expect(strip).toContainText(/@builder is retrying \(attempt 2\).*1 turn queued/, { timeout: 10_000 });
-  await page.getByRole("button", { name: "Cancel current request for Builder Agent" }).first().click();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Cancel current", exact: true }).click();
   await expect(strip).toContainText("@builder is canceling", { timeout: 10_000 });
   await request.post(`${fixtureBase}/agent-activity?phase=idle`);
   await expect(strip).toHaveCount(0, { timeout: 10_000 });
@@ -401,29 +406,38 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   });
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await request.post(`${fixtureBase}/detach-agent`);
-  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTitle("Runtime: Disconnected")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Open actions for Builder Agent" }).first()).toBeVisible();
+  await openParticipantActions(page, "Builder Agent");
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Start fresh/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New session", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await page.getByText("Diagnostics").click();
   await expect(page.getByText("disconnected", { exact: true })).toBeVisible();
   await expect(page.getByText("Not verified", { exact: true }).first()).toBeVisible();
   expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp/);
 
-  await page.getByRole("button", { name: "Reconnect Builder Agent" }).click();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toHaveCount(0);
   expect(lifecycleRequests).toHaveLength(1);
   expect(lifecycleRequests[0]).toMatch(new RegExp(`^/local/channels/${channelId}/agents/[^/]+/reconnect$`));
   expect(lifecycleRequests.some((path) => path.endsWith("/replace"))).toBe(false);
 
   await request.post(`${fixtureBase}/detach-agent`);
   await request.post(`${fixtureBase}/runtime-reachable?value=false`);
-  await expect(page.getByRole("button", { name: "Start fresh with Builder Agent" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toHaveCount(0);
+  await expect(page.getByTitle("Runtime: Offline")).toBeVisible({ timeout: 10_000 });
+  await openParticipantActions(page, "Builder Agent");
+  await expect(page.getByRole("button", { name: "New session", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await request.post(`${fixtureBase}/runtime-reachable?value=true`);
-  await expect(page.getByRole("button", { name: "Reconnect Builder Agent" })).toBeVisible({ timeout: 10_000 });
-  await page.getByRole("button", { name: "Reconnect Builder Agent" }).click();
+  await expect(page.getByTitle("Runtime: Offline")).toBeVisible({ timeout: 10_000 });
+  await openParticipantActions(page, "Builder Agent");
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toBeVisible({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 });
 
@@ -462,7 +476,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 11,
+      protocolVersion: 12,
       channelId,
       agents: [
         {
@@ -486,7 +500,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 11,
+        protocolVersion: 12,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -497,6 +511,20 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
   });
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
+  const unboundRow = page.getByRole("listitem").filter({
+    has: page.getByText("@unbound-agent · agent", { exact: true }),
+  }).first();
+  await expect(unboundRow.getByText("Unbound Agent", { exact: true })).toBeVisible();
+  await expect(unboundRow.getByTitle("Runtime: Not started")).toBeVisible();
+  const rowText = await unboundRow.textContent() ?? "";
+  expect(rowText.indexOf("Unbound Agent")).toBeLessThan(rowText.indexOf("@unbound-agent · agent"));
+  expect(rowText.indexOf("@unbound-agent · agent")).toBeLessThan(rowText.indexOf("Not started"));
+  const unboundActions = page.getByRole("button", { name: "Open actions for Unbound Agent" }).first();
+  await unboundActions.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Start", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(unboundActions).toBeFocused();
   const actions = page.getByRole("button", { name: "Open participant actions" });
   await actions.click();
   await expect(page.getByRole("button", { name: "Start eligible agents (1)" })).toBeVisible();
@@ -529,7 +557,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 11,
+      protocolVersion: 12,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -552,7 +580,8 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open participant actions" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Stop agent/ })).toBeVisible();
+  await openParticipantActions(page, "Builder Agent");
+  await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toBeVisible();
 });
 
 test("configures Workspace agent startup without reflecting saved values", async ({ page, request }) => {
@@ -701,7 +730,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 11,
+        protocolVersion: 12,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,
@@ -805,28 +834,58 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const startResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/start`));
-  await page.getByRole("button", { name: "Start Builder Agent" }).click();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Start", exact: true }).click();
   expect((await startResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
-  page.once("dialog", (dialog) => dialog.accept());
+  const replacePath = `/local/channels/${channel.id}/agents/${builder.identityId}/replace`;
+  await page.route(`**${replacePath}`, (route) => route.fulfill({
+    status: 409,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "Replacement temporarily unavailable" }),
+  }), { times: 1 });
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  let lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
+  await expect(lifecycleDialog).toContainText("at most 20 recent Channel messages");
+  await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
+  await expect(lifecycleDialog.getByRole("alert")).toHaveText("Replacement temporarily unavailable");
+
+  let releaseReplace!: () => void;
+  const replaceGate = new Promise<void>((resolve) => { releaseReplace = resolve; });
+  await page.route(`**${replacePath}`, async (route) => {
+    await replaceGate;
+    await route.continue();
+  }, { times: 1 });
   const replaceResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "POST"
-    && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/replace`));
-  await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
+    response.request().method() === "POST" && response.url().endsWith(replacePath));
+  await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
+  await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await expect(lifecycleDialog.getByRole("button", { name: "New session", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(lifecycleDialog).toBeVisible();
+  releaseReplace();
   expect((await replaceResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open actions for Builder Agent" }).first()).toBeFocused();
 
-  page.once("dialog", (dialog) => dialog.accept());
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
     && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/stop`));
-  await page.getByRole("button", { name: "Stop agent Builder Agent" }).click();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Stop agent", exact: true }).click();
+  lifecycleDialog = page.getByRole("dialog", { name: "Stop Builder Agent?" });
+  await expect(lifecycleDialog).toContainText("filesystem effects cannot be rolled back");
+  await lifecycleDialog.getByRole("button", { name: "Stop agent", exact: true }).click();
   expect((await stopResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: Stopped")).toBeVisible();
 
-  page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Start fresh with Builder Agent" }).click();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
+  await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {

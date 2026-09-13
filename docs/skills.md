@@ -1,6 +1,6 @@
 # Agent Skills
 
-**Status:** Harness discovery, per-agent selection, persistence, and new/Start fresh session loading are implemented. Explicit invocation, Channels-authored skills, and dynamic session mutation are fast follows.
+**Status:** Harness discovery, per-agent selection, persistence, and loading for newly started sessions and **New session** replacements are implemented. Explicit invocation, Channels-authored skills, and dynamic session mutation are fast follows.
 
 ## BLUF
 
@@ -17,7 +17,7 @@ Channels shows the sanitized catalog
         ↓
 Workspace owner selects skills for an agent
         ↓
-New or Start fresh session receives those selections
+A newly started session or **New session** replacement receives those selections
         ↓
 Harness exposes compact metadata and loads skill instructions when needed
 ```
@@ -33,7 +33,7 @@ The Runtime start contract should accept selected skill ids. Each adapter resolv
 
 Selected skill ids are restricted Workspace-agent configuration. Browser reads may return the selected ids and sanitized availability because they are not secrets, but skill source paths, credential-related errors, and private skill contents should not enter collaboration messages or public Channels metadata.
 
-Configuration changes apply only to new or **Start fresh** sessions. Existing sessions retain the skill set with which they were initialized. If a selected skill is no longer available, launch fails with a sanitized, actionable configuration error instead of silently dropping it.
+Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the skill set with which they were initialized. If a selected skill is no longer available, launch fails with a sanitized, actionable configuration error instead of silently dropping it.
 
 ## Context behavior
 
@@ -58,7 +58,7 @@ Channels should parse this into a structured invocation and let the Runtime adap
 
 ### Dynamic session mutation
 
-Adding or removing skills from an already-running session is deferred. It requires adapter support, an auditable update protocol, and clear behavior for in-progress turns. Until then, the UI must explain that **Start fresh** applies changed selections.
+Adding or removing skills from an already-running session is deferred. It requires adapter support, an auditable update protocol, and clear behavior for in-progress turns. Until then, the UI must explain that **New session** applies changed selections.
 
 ### Workspace-authored skills
 

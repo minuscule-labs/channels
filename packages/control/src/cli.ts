@@ -119,6 +119,9 @@ async function main(): Promise<void> {
     onAudit(event) {
       process.stderr.write(`${JSON.stringify({ source: "minu-channels-control", ...event })}\n`);
     },
+    onDiagnostic(event) {
+      process.stderr.write(`${JSON.stringify({ source: "minu-channels-control", type: "agent-host-diagnostic", ...event })}\n`);
+    },
   });
   try {
     const launchUrl = daemon.issueBrowserLaunchUrl();
