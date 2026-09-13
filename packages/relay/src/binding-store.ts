@@ -1,5 +1,12 @@
-import { createResourceId, type ChannelClient, type ChannelCursorStore } from "@minu/channels-core";
-import type { AgentChannelBinding, AgentRuntimePort, WakePolicy } from "./relay.ts";
+import { createResourceId, type ChannelClient } from "@minu/channels-core";
+import type {
+  AgentChannelBinding,
+  AgentRuntimePort,
+  DeliveryDeadLetterInput,
+  DeliveryDeadLetterReason,
+  RelayCursorStore,
+  WakePolicy,
+} from "./relay.ts";
 
 export interface RuntimeModelRef {
   provider: string;
@@ -52,7 +59,17 @@ export interface ChannelAgentBindingRecord {
   updatedAt: string;
 }
 
-export interface RelayBindingStore extends ChannelCursorStore {
+export interface DeliveryDeadLetterRecord {
+  channelId: string;
+  participantId: string;
+  triggerMessageId: string;
+  triggerSequence: number;
+  reason: DeliveryDeadLetterReason;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RelayBindingStore extends RelayCursorStore {
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
   putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig>;
@@ -101,6 +118,8 @@ export interface RelayBindingStore extends ChannelCursorStore {
     expectedGeneration: number,
     updatedAt: string,
   ): Promise<ChannelAgentBindingRecord | undefined>;
+  commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void>;
+  listDeliveryDeadLetters(channelId: string, participantId: string): Promise<DeliveryDeadLetterRecord[]>;
   close?(): Promise<void> | void;
 }
 
@@ -125,6 +144,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
   private readonly bindings = new Map<string, ChannelAgentBindingRecord>();
   private readonly cursors = new Map<string, number>();
+  private readonly deliveryDeadLetters = new Map<string, DeliveryDeadLetterRecord>();
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
     this.workspaceConfigs.set(config.workspaceId, copyWorkspaceConfig(config));
@@ -307,6 +327,35 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
     const key = `${channelId}:${participantId}`;
     this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, sequence));
+  }
+
+  async commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void> {
+    const key = JSON.stringify([input.channelId, input.participantId, input.triggerMessageId]);
+    const existing = this.deliveryDeadLetters.get(key);
+    this.deliveryDeadLetters.set(key, existing ?? {
+      channelId: input.channelId,
+      participantId: input.participantId,
+      triggerMessageId: input.triggerMessageId,
+      triggerSequence: input.triggerSequence,
+      reason: input.reason,
+      createdAt: input.recordedAt,
+      updatedAt: input.recordedAt,
+    });
+    const cursorKey = `${input.channelId}:${input.participantId}`;
+    this.cursors.set(
+      cursorKey,
+      Math.max(this.cursors.get(cursorKey) ?? 0, input.triggerSequence),
+    );
+  }
+
+  async listDeliveryDeadLetters(
+    channelId: string,
+    participantId: string,
+  ): Promise<DeliveryDeadLetterRecord[]> {
+    return [...this.deliveryDeadLetters.values()]
+      .filter((record) => record.channelId === channelId && record.participantId === participantId)
+      .sort((left, right) => left.triggerSequence - right.triggerSequence)
+      .map((record) => ({ ...record }));
   }
 
   async disableBinding(

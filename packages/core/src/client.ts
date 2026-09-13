@@ -41,10 +41,21 @@ export interface ChannelClientOptions {
 
 /** HTTP failures retain their status without exposing response internals to callers. */
 export class ChannelClientError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = "ChannelClientError";
   }
+}
+
+function retryAfterMilliseconds(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) return Number(value) * 1_000;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : undefined;
 }
 
 export class ChannelClient {
@@ -270,7 +281,11 @@ export class ChannelClient {
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new ChannelClientError(body.error ?? `Channel request failed (${response.status})`, response.status);
+      throw new ChannelClientError(
+        body.error ?? `Channel request failed (${response.status})`,
+        response.status,
+        retryAfterMilliseconds(response.headers.get("retry-after")),
+      );
     }
     return response;
   }

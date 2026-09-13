@@ -121,6 +121,17 @@ test("private relay storage preserves configs and arbitrates binding leases acro
       ),
       undefined,
     );
+    const deadLetter = {
+      channelId: record.channelId,
+      participantId: record.agentIdentityId,
+      triggerMessageId: "message-poison",
+      triggerSequence: 7,
+      reason: "delivery_rejected" as const,
+      recordedAt: "2026-01-01T00:00:05.500Z",
+    };
+    await first.commitDeliveryDeadLetter(deadLetter);
+    // Replaying after an acknowledgement loss remains exactly-once and monotonic.
+    await second.commitDeliveryDeadLetter(deadLetter);
   } finally {
     await Promise.all([first.close(), second.close()]);
   }
@@ -146,7 +157,19 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     assert.equal(persisted?.runtimeSessionId, "runtime-session-b");
     assert.equal(persisted?.generation, 2);
     assert.equal(persisted?.leaseOwner, undefined);
-    assert.equal(await reopened.getCursor(record.channelId, record.agentIdentityId), 3);
+    assert.equal(await reopened.getCursor(record.channelId, record.agentIdentityId), 7);
+    assert.deepEqual(await reopened.listDeliveryDeadLetters(
+      record.channelId,
+      record.agentIdentityId,
+    ), [{
+      channelId: record.channelId,
+      participantId: record.agentIdentityId,
+      triggerMessageId: "message-poison",
+      triggerSequence: 7,
+      reason: "delivery_rejected",
+      createdAt: "2026-01-01T00:00:05.500Z",
+      updatedAt: "2026-01-01T00:00:05.500Z",
+    }]);
     const disabled = await reopened.disableBinding(
       record.id,
       2,
