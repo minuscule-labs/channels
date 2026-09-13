@@ -157,6 +157,85 @@ async function waitUntil(assertion: () => Promise<boolean>, timeoutMs = 2_000): 
   throw new Error("Condition was not met before timeout");
 }
 
+class ManualActivityTimers {
+  readonly entries: Array<{
+    callback: () => void;
+    milliseconds: number;
+    canceled: boolean;
+  }> = [];
+
+  readonly schedule = (callback: () => void, milliseconds: number): { cancel(): void } => {
+    const entry = { callback, milliseconds, canceled: false };
+    this.entries.push(entry);
+    return { cancel: () => { entry.canceled = true; } };
+  };
+
+  invoke(index: number): void {
+    const entry = this.entries[index]!;
+    entry.canceled = true;
+    entry.callback();
+  }
+
+  activeCount(): number {
+    return this.entries.filter(({ canceled }) => !canceled).length;
+  }
+}
+
+class ControlledActivityRuntime implements AgentRuntimePort {
+  private statusValue: "idle" | "working" = "idle";
+  private readonly transcript: RuntimePortMessage[] = [];
+  private readonly events: Array<{ phase: "working" | "using_tools" | "responding"; observedAt: string }> = [];
+  private releaseSend: (() => void) | undefined;
+  private wakeActivity: (() => void) | undefined;
+  private response: string | undefined;
+
+  async send(_sessionId: string, input: string): Promise<void> {
+    this.transcript.push({ role: "user", content: input });
+    this.statusValue = "working";
+    await new Promise<void>((resolve) => { this.releaseSend = resolve; });
+    if (this.response) this.transcript.push({ role: "assistant", content: this.response });
+    this.response = undefined;
+    this.statusValue = "idle";
+    this.releaseSend = undefined;
+  }
+
+  async status(): Promise<"idle" | "working"> {
+    return this.statusValue;
+  }
+
+  async messages(): Promise<RuntimePortMessage[]> {
+    return [...this.transcript];
+  }
+
+  async *activityEvents(_sessionId: string, { signal }: { signal: AbortSignal }) {
+    while (!signal.aborted) {
+      if (this.events.length) {
+        yield this.events.shift()!;
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        this.wakeActivity = resolve;
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    }
+  }
+
+  publish(phase: "working" | "using_tools" | "responding", observedAt = new Date().toISOString()): void {
+    this.events.push({ phase, observedAt });
+    this.wakeActivity?.();
+    this.wakeActivity = undefined;
+  }
+
+  complete(response = "Completed activity turn"): void {
+    this.response = response;
+    this.releaseSend?.();
+  }
+
+  finishWithoutResponse(): void {
+    this.releaseSend?.();
+  }
+}
+
 test("relay routes Workspace-local handles to stable agent identity ids", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -886,6 +965,10 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
     () => new ChannelRuntimeRelay({ ...baseOptions, turnTimeoutMs: 1.5 }),
     /turnTimeoutMs must be a positive integer/,
   );
+  assert.throws(
+    () => new ChannelRuntimeRelay({ ...baseOptions, activitySilenceTimeoutMs: 0 }),
+    /activitySilenceTimeoutMs must be a positive integer/,
+  );
   const errors: Error[] = [];
   const relay = new ChannelRuntimeRelay({
     ...baseOptions,
@@ -1350,6 +1433,7 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new InterruptibleRuntime() as InterruptibleRuntime & Required<Pick<AgentRuntimePort, "activityEvents">>;
+  const timers = new ManualActivityTimers();
   const activityEvents: Array<{ phase: "working" | "using_tools" | "responding"; observedAt: string }> = [];
   let wakeActivity: (() => void) | undefined;
   let activitySubscriptions = 0;
@@ -1380,6 +1464,7 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
     channelId: channel.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore,
+    scheduleActivitySilenceTimer: timers.schedule,
   });
   try {
     await relay.start();
@@ -1407,9 +1492,11 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
     await waitUntil(async () => relay.activity("agent-a")?.queuedTurns === 1);
     assert.equal(relay.activity("agent-a")?.startedAt, startedAt);
 
+    assert.equal(timers.activeCount(), 1);
     await relay.cancelCurrent("agent-a", "user");
     await relay.cancelCurrent("agent-a", "user");
     assert.equal(relay.activity("agent-a")?.phase, "canceling");
+    assert.equal(timers.activeCount(), 0);
     await waitUntil(async () => runtime.interruptCount === 1);
     await waitUntil(async () => (await client.listMessages(channel.id)).length === 4);
     const messages = await client.listMessages(channel.id);
@@ -1425,6 +1512,154 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
   } finally {
     await relay.stop();
     await server.close();
+  }
+});
+
+test("safe activity enrichment expires by receipt time and stale timers cannot overwrite newer state", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new ControlledActivityRuntime();
+  const timers = new ManualActivityTimers();
+  const cursorStore = new InMemoryChannelStorage();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore,
+    scheduleActivitySilenceTimer: timers.schedule,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a work" });
+    await waitUntil(async () => (await runtime.status()) === "working");
+
+    runtime.publish("using_tools", "2099-01-01T00:00:00.000Z");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
+    assert.equal(timers.entries[0]?.milliseconds, 30_000);
+    assert.equal(timers.activeCount(), 1);
+
+    runtime.publish("responding", "2000-01-01T00:00:00.000Z");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "responding");
+    assert.equal(timers.entries[0]?.canceled, true);
+    assert.equal(timers.activeCount(), 1);
+    timers.invoke(0);
+    assert.equal(relay.activity("agent-a")?.phase, "responding");
+
+    timers.invoke(1);
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+    runtime.publish("using_tools");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
+    runtime.publish("working");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "running");
+    assert.equal(timers.entries[2]?.canceled, true);
+    timers.invoke(2);
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+
+    runtime.publish("responding");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "responding");
+    runtime.complete();
+    await waitUntil(async () => relay.activity("agent-a") === undefined);
+    assert.equal(timers.entries[3]?.canceled, true);
+    timers.invoke(3);
+    assert.equal(relay.activity("agent-a"), undefined);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("activity silence timers clear on retry, retirement, and shutdown without affecting peers", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtimeA = new ControlledActivityRuntime();
+  const runtimeB = new ControlledActivityRuntime();
+  const timers = new ManualActivityTimers();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" },
+    { id: "agent-a", type: "agent" },
+    { id: "agent-b", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [
+      { participantId: "agent-a", sessionId: "session-a", runtime: runtimeA },
+      { participantId: "agent-b", sessionId: "session-b", runtime: runtimeB },
+    ],
+    cursorStore: new InMemoryChannelStorage(),
+    activitySilenceTimeoutMs: 25,
+    scheduleActivitySilenceTimer: timers.schedule,
+  });
+  let stopped = false;
+  try {
+    await relay.start();
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a @agent-b work" });
+    await waitUntil(async () => (await runtimeA.status()) === "working" && (await runtimeB.status()) === "working");
+    runtimeA.publish("using_tools");
+    runtimeB.publish("responding");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools"
+      && relay.activity("agent-b")?.phase === "responding");
+
+    timers.invoke(0);
+    assert.equal(relay.activity("agent-a")?.phase, "running");
+    assert.equal(relay.activity("agent-b")?.phase, "responding");
+
+    runtimeA.publish("using_tools");
+    await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
+    const retiring = relay.retire("agent-a");
+    assert.equal(timers.entries[2]?.canceled, true);
+    assert.equal(relay.activity("agent-a"), undefined);
+    timers.invoke(2);
+    assert.equal(relay.activity("agent-a"), undefined);
+    runtimeA.complete();
+    await retiring;
+
+    runtimeB.complete();
+    await waitUntil(async () => relay.activity("agent-b") === undefined);
+    assert.equal(timers.entries[1]?.canceled, true);
+
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-b again" });
+    await waitUntil(async () => (await runtimeB.status()) === "working");
+    runtimeB.publish("using_tools");
+    await waitUntil(async () => relay.activity("agent-b")?.phase === "using_tools");
+    const stopping = relay.stop();
+    stopped = true;
+    assert.equal(timers.entries[3]?.canceled, true);
+    runtimeB.complete();
+    await stopping;
+  } finally {
+    if (!stopped) await relay.stop();
+    await server.close();
+  }
+
+  const retryServer = await createChannelHttpServer();
+  const retryClient = new ChannelClient(retryServer.endpoint, { serviceToken: retryServer.serviceToken });
+  const retryRuntime = new ControlledActivityRuntime();
+  const retryTimers = new ManualActivityTimers();
+  const retryChannel = await retryClient.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const retryRelay = new ChannelRuntimeRelay({
+    client: retryClient,
+    channelId: retryChannel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime: retryRuntime }],
+    scheduleActivitySilenceTimer: retryTimers.schedule,
+  });
+  try {
+    await retryRelay.start();
+    await retryClient.postMessage(retryChannel.id, { participantId: "user", body: "@agent-a retry" });
+    await waitUntil(async () => (await retryRuntime.status()) === "working");
+    retryRuntime.publish("using_tools");
+    await waitUntil(async () => retryRelay.activity("agent-a")?.phase === "using_tools");
+    retryRuntime.finishWithoutResponse();
+    await waitUntil(async () => retryRelay.activity("agent-a")?.phase === "retrying");
+    assert.equal(retryTimers.entries[0]?.canceled, true);
+  } finally {
+    await retryRelay.stop();
+    await retryServer.close();
   }
 });
 
