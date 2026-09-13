@@ -1,6 +1,7 @@
 import type {
   LocalBulkAgentLifecycleResult,
   LocalChannelAgent,
+  LocalLiveCapabilityState,
 } from "@minu/channels-control/contracts";
 import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 import { useEffect, useState } from "react";
@@ -17,15 +18,26 @@ function elapsedLabel(startedAt: string, now: number): string {
   return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-function runtimeStateLabel(state: LocalChannelAgent["state"]): string {
-  switch (state) {
-    case "running": return "Running";
+function runtimeStateLabel(agent: LocalChannelAgent): string {
+  switch (agent.state) {
+    case "running": return agent.activity
+      && agent.diagnostics?.capabilities.safeActivityEvents === "available"
+      ? "Working"
+      : "Working · activity unavailable";
     case "idle": return "Idle";
     case "unbound": return "Not started";
     case "disconnected": return "Disconnected";
     case "uncertain": return "Connection uncertain";
     case "offline": return "Offline";
     case "disabled": return "Stopped";
+  }
+}
+
+function liveCapabilityLabel(state: LocalLiveCapabilityState): string {
+  switch (state) {
+    case "available": return "Available";
+    case "unavailable": return "Unavailable";
+    case "not_verified": return "Not verified";
   }
 }
 
@@ -197,9 +209,9 @@ export function MemberRoster({
                       <span
                         className="local-agent-state"
                         data-state={localAgent.state}
-                        title={`Runtime: ${runtimeStateLabel(localAgent.state)}`}
+                        title={`Runtime: ${runtimeStateLabel(localAgent)}`}
                       >
-                        {runtimeStateLabel(localAgent.state)}
+                        {runtimeStateLabel(localAgent)}
                       </span>
                       {phase && localAgent.activity ? (
                         <span className="truncate text-[11px] text-[var(--muted)]">
@@ -244,11 +256,12 @@ export function MemberRoster({
                     <dt>Connection</dt><dd>{localAgent.diagnostics.connection}</dd>
                     <dt>Queue</dt><dd>{queuedTurnsSummary(localAgent.diagnostics) || "0 queued"}</dd>
                     <dt>Last binding verification</dt><dd>{localAgent.diagnostics.lastVerifiedAt ?? "Not verified"}</dd>
-                    <dt>Events</dt><dd>{localAgent.diagnostics.capabilities.events ? "Supported" : "Not supported"}</dd>
-                    <dt>Interrupt</dt><dd>{localAgent.diagnostics.capabilities.interrupt ? "Supported" : "Not supported"}</dd>
-                    <dt>Reconnect implementation</dt><dd>{localAgent.diagnostics.capabilities.hostReconnect ? "Supported" : "Not supported"}</dd>
-                    <dt>Interactive attach</dt><dd>{localAgent.diagnostics.capabilities.attach ? "Supported" : "Not available"}</dd>
-                    <dt>Live tools</dt><dd>Not verified</dd>
+                    <dt>Safe activity</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.safeActivityEvents)}</dd>
+                    <dt>Interrupt</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.interrupt)}</dd>
+                    <dt>Reconnect existing</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.reconnectExisting)}</dd>
+                    <dt>Interactive attach</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.interactiveAttach)}</dd>
+                    <dt>Open diagnostic</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.openDiagnostic)}</dd>
+                    <dt>Live skill verification</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.liveSkillVerification)}</dd>
                   </dl>
                 </details>
               ) : null}

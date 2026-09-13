@@ -32,6 +32,7 @@ import {
   LocalControlService,
   type LocalControlAuditEvent,
   type LocalControlBindingRecord,
+  type LocalControlRuntimePort,
 } from "../src/server.ts";
 
 const channel: ChannelMetadata = {
@@ -249,6 +250,17 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
     runtimes: {
       "pi-private-adapter": {
         async status() { return "working" as const; },
+        async sessionCapabilities() {
+          return {
+            version: 1 as const,
+            safeActivityEvents: true,
+            interrupt: true,
+            reconnectExisting: true,
+            interactiveAttach: false,
+            openDiagnostic: false,
+            liveSkillVerification: false,
+          };
+        },
         async interrupt() {},
       },
     },
@@ -291,6 +303,87 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
   assert.equal(cancelCalls, 1);
 });
 
+test("projects verified live capabilities and treats missing or failed queries as not verified", async () => {
+  const verified = {
+    version: 1 as const,
+    safeActivityEvents: true,
+    interrupt: true,
+    reconnectExisting: true,
+    interactiveAttach: false,
+    openDiagnostic: false,
+    liveSkillVerification: false,
+  };
+  const lifecycle = {
+    available: true,
+    async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
+    async reconnectChannelAgent() {}, async cancelCurrentChannelAgent() {},
+    isAttached() { return false; },
+  };
+  const createControl = (runtime: LocalControlRuntimePort) => new LocalControlService({
+    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
+    bindings: { async listChannelBindings() { return records; } },
+    runtimes: { "pi-private-adapter": runtime },
+    lifecycle,
+    statusTimeoutMs: 10,
+  });
+
+  const available = await createControl({
+    async status() { return "idle"; },
+    async sessionCapabilities() {
+      return { ...verified, privateProvider: "SECRET_PROVIDER" };
+    },
+  }).listChannelAgents(channel.id);
+  assert.equal(available.agents[0]?.state, "disconnected");
+  assert.equal(available.agents[0]?.capabilities.reconnect, true);
+  assert.deepEqual(available.agents[0]?.diagnostics?.capabilities, {
+    safeActivityEvents: "available",
+    interrupt: "available",
+    reconnectExisting: "available",
+    interactiveAttach: "unavailable",
+    openDiagnostic: "unavailable",
+    liveSkillVerification: "unavailable",
+  });
+  assert.doesNotMatch(JSON.stringify(available), /SECRET_PROVIDER|privateProvider/);
+
+  const absent = await createControl({ async status() { return "idle"; } })
+    .listChannelAgents(channel.id);
+  assert.equal(absent.agents[0]?.capabilities.reconnect, false);
+  assert.deepEqual(
+    new Set(Object.values(absent.agents[0]!.diagnostics!.capabilities)),
+    new Set(["not_verified"]),
+  );
+
+  const failed = await createControl({
+    async status() { return "idle"; },
+    async sessionCapabilities() { throw new Error("SECRET_CAPABILITY_TRANSPORT"); },
+  }).listChannelAgents(channel.id);
+  assert.deepEqual(
+    new Set(Object.values(failed.agents[0]!.diagnostics!.capabilities)),
+    new Set(["not_verified"]),
+  );
+  assert.doesNotMatch(JSON.stringify(failed), /SECRET_CAPABILITY_TRANSPORT/);
+
+  const malformed = await createControl({
+    async status() { return "idle"; },
+    async sessionCapabilities() { return { ...verified, version: 2 as 1 }; },
+  }).listChannelAgents(channel.id);
+  assert.deepEqual(
+    new Set(Object.values(malformed.agents[0]!.diagnostics!.capabilities)),
+    new Set(["not_verified"]),
+  );
+
+  const timeoutStartedAt = Date.now();
+  const timedOut = await createControl({
+    async status() { return "idle"; },
+    async sessionCapabilities() { return await new Promise<never>(() => {}); },
+  }).listChannelAgents(channel.id);
+  assert.ok(Date.now() - timeoutStartedAt < 500);
+  assert.deepEqual(
+    new Set(Object.values(timedOut.agents[0]!.diagnostics!.capabilities)),
+    new Set(["not_verified"]),
+  );
+});
+
 test("distinguishes failed and stalled Runtime verification from confirmed offline without leaking errors", async () => {
   const control = new LocalControlService({
     channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
@@ -318,7 +411,12 @@ test("distinguishes failed and stalled Runtime verification from confirmed offli
     bindings: { async listChannelBindings() { return records; } },
     runtimes: { "pi-private-adapter": { async status() { return "offline" as const; } } },
   });
-  assert.equal((await offline.listChannelAgents(channel.id)).agents[0]?.state, "offline");
+  const offlineAgent = (await offline.listChannelAgents(channel.id)).agents[0]!;
+  assert.equal(offlineAgent.state, "offline");
+  assert.deepEqual(
+    new Set(Object.values(offlineAgent.diagnostics!.capabilities)),
+    new Set(["unavailable"]),
+  );
 });
 
 test("validates browser identity and bounded client and Runtime status options", () => {
@@ -346,7 +444,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 13 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 14 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -428,7 +526,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 13, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 14, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -730,7 +828,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 13,
+      protocolVersion: 14,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -2009,7 +2107,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 13,
+      protocolVersion: 14,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -2022,7 +2120,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 13,
+      protocolVersion: 14,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
@@ -2132,7 +2230,14 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
         connection: "disconnected",
         queuedTurns: 0,
         queuedTurnsExact: true,
-        capabilities: { events: false, interrupt: false, hostReconnect: true, attach: false, diagnostics: false },
+        capabilities: {
+          safeActivityEvents: "not_verified",
+          interrupt: "not_verified",
+          reconnectExisting: "not_verified",
+          interactiveAttach: "not_verified",
+          openDiagnostic: "not_verified",
+          liveSkillVerification: "not_verified",
+        },
       },
       capabilities: { start: false, replace: false, stop: false, steer: false, interrupt: false, reconnect: false },
     }]);

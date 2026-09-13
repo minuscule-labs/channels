@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 13 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 14 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -144,6 +144,8 @@ export interface LocalAgentActivity {
   retryAttempt?: number;
 }
 
+export type LocalLiveCapabilityState = "available" | "unavailable" | "not_verified";
+
 export interface LocalAgentDiagnostics {
   connection: "connected" | "disconnected" | "offline" | "uncertain";
   phase?: LocalAgentActivity["phase"];
@@ -152,11 +154,12 @@ export interface LocalAgentDiagnostics {
   queuedTurnsExact: boolean;
   lastVerifiedAt?: string;
   capabilities: {
-    events: boolean;
-    interrupt: boolean;
-    hostReconnect: boolean;
-    attach: boolean;
-    diagnostics: boolean;
+    safeActivityEvents: LocalLiveCapabilityState;
+    interrupt: LocalLiveCapabilityState;
+    reconnectExisting: LocalLiveCapabilityState;
+    interactiveAttach: LocalLiveCapabilityState;
+    openDiagnostic: LocalLiveCapabilityState;
+    liveSkillVerification: LocalLiveCapabilityState;
   };
 }
 

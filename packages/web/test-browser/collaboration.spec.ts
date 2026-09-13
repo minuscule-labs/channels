@@ -377,6 +377,7 @@ test("summarizes Channel-wide agent activity below the composer", async ({ page,
   await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
   const strip = page.getByRole("region", { name: "Channel agent activity" });
   await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 queued/, { timeout: 10_000 });
+  await expect(page.getByTitle("Runtime: Working · activity unavailable")).toBeVisible();
   await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
   expect((await strip.boundingBox())!.y).toBeGreaterThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
 
@@ -419,10 +420,21 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await page.keyboard.press("Escape");
   await page.getByText("Diagnostics").click();
   await expect(page.getByText("disconnected", { exact: true })).toBeVisible();
-  await expect(page.getByText("Not verified", { exact: true }).first()).toBeVisible();
+  await expect(page.locator("dt", { hasText: "Safe activity" }).locator("+ dd")).toHaveText("Unavailable");
+  await expect(page.locator("dt", { hasText: "Interrupt" }).locator("+ dd")).toHaveText("Available");
+  await expect(page.locator("dt", { hasText: "Reconnect existing" }).locator("+ dd")).toHaveText("Available");
   expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp/);
 
+  await request.post(`${fixtureBase}/runtime-capabilities?mode=failed`);
+  await expect(page.getByText("Not verified", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+  expect(await page.locator("body").innerText()).not.toContain("SECRET_RUNTIME_CAPABILITY_TRANSPORT");
   await openParticipantActions(page, "Builder Agent");
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await request.post(`${fixtureBase}/runtime-capabilities?mode=available`);
+
+  await openParticipantActions(page, "Builder Agent");
+  await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   expect(lifecycleRequests).toHaveLength(1);
@@ -480,7 +492,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 13,
+      protocolVersion: 14,
       channelId,
       agents: [
         {
@@ -504,7 +516,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 13,
+        protocolVersion: 14,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -561,7 +573,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 13,
+      protocolVersion: 14,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -734,7 +746,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 13,
+        protocolVersion: 14,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,
