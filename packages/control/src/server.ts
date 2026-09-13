@@ -57,6 +57,7 @@ import {
   type LocalChannelAgentsResponse,
   type LocalControlCapabilities,
   type LocalControlHealth,
+  type LocalLiveCapabilityState,
   type LocalRuntimeOptions,
   type LocalWakePolicy,
   type ProvisionLocalWorkspaceResult,
@@ -80,8 +81,21 @@ export interface LocalControlBindingDirectory {
   listChannelBindings(channelId: string): Promise<LocalControlBindingRecord[]>;
 }
 
+export interface LocalControlRuntimeSessionCapabilities {
+  version: 1;
+  safeActivityEvents: boolean;
+  interrupt: boolean;
+  reconnectExisting: boolean;
+  interactiveAttach: boolean;
+  openDiagnostic: boolean;
+  liveSkillVerification: boolean;
+}
+
 export interface LocalControlRuntimePort {
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
+  sessionCapabilities?(
+    sessionId: string,
+  ): Promise<LocalControlRuntimeSessionCapabilities>;
   activityEvents?(
     sessionId: string,
     options: { signal: AbortSignal },
@@ -180,6 +194,40 @@ const disabledCapabilities = {
   interrupt: false,
   reconnect: false,
 } as const;
+
+const unavailableLiveCapabilities = {
+  safeActivityEvents: "unavailable",
+  interrupt: "unavailable",
+  reconnectExisting: "unavailable",
+  interactiveAttach: "unavailable",
+  openDiagnostic: "unavailable",
+  liveSkillVerification: "unavailable",
+} as const;
+
+const notVerifiedLiveCapabilities = {
+  safeActivityEvents: "not_verified",
+  interrupt: "not_verified",
+  reconnectExisting: "not_verified",
+  interactiveAttach: "not_verified",
+  openDiagnostic: "not_verified",
+  liveSkillVerification: "not_verified",
+} as const;
+
+function presentLiveCapabilities(
+  capabilities: LocalControlRuntimeSessionCapabilities | undefined,
+): NonNullable<LocalChannelAgent["diagnostics"]>["capabilities"] {
+  if (!capabilities) return notVerifiedLiveCapabilities;
+  const state = (available: boolean): LocalLiveCapabilityState =>
+    available ? "available" : "unavailable";
+  return {
+    safeActivityEvents: state(capabilities.safeActivityEvents),
+    interrupt: state(capabilities.interrupt),
+    reconnectExisting: state(capabilities.reconnectExisting),
+    interactiveAttach: state(capabilities.interactiveAttach),
+    openDiagnostic: state(capabilities.openDiagnostic),
+    liveSkillVerification: state(capabilities.liveSkillVerification),
+  };
+}
 
 export class LocalControlService {
   private readonly statusTimeoutMs: number;
@@ -471,7 +519,7 @@ export class LocalControlService {
           queuedTurns: 0,
           queuedTurnsExact: true,
           lastVerifiedAt: binding.lastVerifiedAt,
-          capabilities: { events: false, interrupt: false, hostReconnect: false, attach: false, diagnostics: false },
+          capabilities: unavailableLiveCapabilities,
         },
         capabilities: {
           ...disabledCapabilities,
@@ -482,14 +530,9 @@ export class LocalControlService {
     }
     const activity = this.options.lifecycle?.activity?.(channel.id, identityId);
     const attached = this.options.lifecycle?.isAttached?.(channel.id, identityId);
-    const diagnosticCapabilities = {
-      events: Boolean(runtime.activityEvents),
-      interrupt: Boolean(runtime.interrupt),
-      hostReconnect: Boolean(this.options.lifecycle?.reconnectChannelAgent),
-      attach: false,
-      diagnostics: false,
-    };
     if (activity) {
+      const liveCapabilities = await this.readRuntimeCapabilities(runtime, binding.runtimeSessionId);
+      const diagnosticCapabilities = presentLiveCapabilities(liveCapabilities);
       const safeActivity = {
         phase: activity.phase,
         triggerMessageId: activity.triggerMessageId,
@@ -521,13 +564,18 @@ export class LocalControlService {
           interrupt: Boolean(
             this.options.lifecycle?.available
             && runtime.interrupt
+            && liveCapabilities?.interrupt === true
             && activity.phase !== "canceling",
           ),
         },
       };
     }
     try {
-      const status = await this.readRuntimeStatus(runtime, binding.runtimeSessionId);
+      const [status, liveCapabilities] = await Promise.all([
+        this.readRuntimeStatus(runtime, binding.runtimeSessionId),
+        this.readRuntimeCapabilities(runtime, binding.runtimeSessionId),
+      ]);
+      const diagnosticCapabilities = presentLiveCapabilities(liveCapabilities);
       if (attached === false && status !== "offline") {
         return {
           ...base,
@@ -542,7 +590,11 @@ export class LocalControlService {
           },
           capabilities: {
             ...disabledCapabilities,
-            reconnect: Boolean(this.options.lifecycle?.available && this.options.lifecycle.reconnectChannelAgent),
+            reconnect: Boolean(
+              this.options.lifecycle?.available
+              && this.options.lifecycle.reconnectChannelAgent
+              && liveCapabilities?.reconnectExisting === true
+            ),
             replace: false,
             stop: Boolean(this.options.lifecycle?.available),
           },
@@ -575,7 +627,9 @@ export class LocalControlService {
           queuedTurns: 0,
           queuedTurnsExact: true,
           lastVerifiedAt: binding.lastVerifiedAt,
-          capabilities: diagnosticCapabilities,
+          capabilities: status === "offline"
+            ? unavailableLiveCapabilities
+            : diagnosticCapabilities,
         },
         capabilities: {
           ...disabledCapabilities,
@@ -593,13 +647,56 @@ export class LocalControlService {
           queuedTurns: 0,
           queuedTurnsExact: true,
           lastVerifiedAt: binding.lastVerifiedAt,
-          capabilities: diagnosticCapabilities,
+          capabilities: notVerifiedLiveCapabilities,
         },
         capabilities: {
           ...disabledCapabilities,
           stop: Boolean(this.options.lifecycle?.available),
         },
       };
+    }
+  }
+
+  private async readRuntimeCapabilities(
+    runtime: LocalControlRuntimePort,
+    sessionId: string,
+  ): Promise<LocalControlRuntimeSessionCapabilities | undefined> {
+    if (!runtime.sessionCapabilities) return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const value = await Promise.race([
+        runtime.sessionCapabilities(sessionId),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Runtime capability query timed out")),
+            this.statusTimeoutMs,
+          );
+        }),
+      ]);
+      const fields = [
+        "safeActivityEvents",
+        "interrupt",
+        "reconnectExisting",
+        "interactiveAttach",
+        "openDiagnostic",
+        "liveSkillVerification",
+      ] as const;
+      if (value?.version !== 1 || fields.some((field) => typeof value[field] !== "boolean")) {
+        return undefined;
+      }
+      return {
+        version: 1,
+        safeActivityEvents: value.safeActivityEvents,
+        interrupt: value.interrupt,
+        reconnectExisting: value.reconnectExisting,
+        interactiveAttach: value.interactiveAttach,
+        openDiagnostic: value.openDiagnostic,
+        liveSkillVerification: value.liveSkillVerification,
+      };
+    } catch {
+      return undefined;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

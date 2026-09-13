@@ -57,6 +57,18 @@ class SimulatedReviewRuntime implements AgentRuntimePort {
     return this.working ? "working" : "idle";
   }
 
+  async sessionCapabilities() {
+    return {
+      version: 1 as const,
+      safeActivityEvents: false,
+      interrupt: false,
+      reconnectExisting: true,
+      interactiveAttach: false,
+      openDiagnostic: false,
+      liveSkillVerification: false,
+    };
+  }
+
   async messages(sessionId: string): Promise<RuntimePortMessage[]> {
     return sessionId === "review-builder-session" ? this.transcript.map((message) => ({ ...message })) : [];
   }

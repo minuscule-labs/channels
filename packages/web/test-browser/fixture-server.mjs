@@ -81,8 +81,23 @@ const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
 const attachedAgents = new Set([`${channel.id}:${agent.id}`]);
 let agentActivity;
 let runtimeReachable = true;
+let runtimeCapabilityMode = "available";
 const fixtureRuntime = {
   async status() { return runtimeReachable ? (agentActivity ? "working" : "idle") : "offline"; },
+  async sessionCapabilities() {
+    if (runtimeCapabilityMode === "failed") {
+      throw new Error("SECRET_RUNTIME_CAPABILITY_TRANSPORT");
+    }
+    return {
+      version: runtimeCapabilityMode === "malformed" ? 2 : 1,
+      safeActivityEvents: false,
+      interrupt: true,
+      reconnectExisting: true,
+      interactiveAttach: false,
+      openDiagnostic: false,
+      liveSkillVerification: false,
+    };
+  },
   async interrupt() {},
   async capabilities() {
     return {
@@ -229,6 +244,11 @@ const controlServer = createServer(async (request, response) => {
   }
   if (request.method === "POST" && url.pathname === "/runtime-reachable") {
     runtimeReachable = url.searchParams.get("value") !== "false";
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/runtime-capabilities") {
+    runtimeCapabilityMode = url.searchParams.get("mode") ?? "available";
     response.writeHead(204).end();
     return;
   }
