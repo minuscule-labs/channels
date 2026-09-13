@@ -53,6 +53,11 @@ export interface ChannelRuntimeRelayOptions {
   turnPollIntervalMs?: number;
   turnTimeoutMs?: number;
   runtimeRequestTimeoutMs?: number;
+  activitySilenceTimeoutMs?: number;
+  scheduleActivitySilenceTimer?(
+    callback: () => void,
+    milliseconds: number,
+  ): { cancel(): void };
   onAgentResponse?(binding: AgentChannelBinding, message: ChannelMessage): void;
   onError?(binding: AgentChannelBinding | undefined, error: Error): void;
 }
@@ -93,6 +98,8 @@ interface BindingState {
   queue: Promise<void>;
   activityController?: AbortController;
   activityTask?: Promise<void>;
+  activitySilenceTimer?: { cancel(): void };
+  activitySilenceVersion: number;
 }
 
 function isExplicitlyAddressed(message: ChannelMessage, participantId: string): boolean {
@@ -240,6 +247,7 @@ export class ChannelRuntimeRelay {
     validatePositiveMilliseconds("turnPollIntervalMs", options.turnPollIntervalMs);
     validatePositiveMilliseconds("turnTimeoutMs", options.turnTimeoutMs);
     validatePositiveMilliseconds("runtimeRequestTimeoutMs", options.runtimeRequestTimeoutMs);
+    validatePositiveMilliseconds("activitySilenceTimeoutMs", options.activitySilenceTimeoutMs);
     this.states = options.bindings.map((binding) => ({
       binding,
       lastProcessedSequence: 0,
@@ -248,6 +256,7 @@ export class ChannelRuntimeRelay {
       initializing: true,
       bufferedEvents: [],
       queue: Promise.resolve(),
+      activitySilenceVersion: 0,
     }));
   }
 
@@ -296,7 +305,10 @@ export class ChannelRuntimeRelay {
 
   async stop(): Promise<void> {
     this.controller?.abort();
-    for (const state of this.states) state.activityController?.abort();
+    for (const state of this.states) {
+      this.clearActivitySilence(state);
+      state.activityController?.abort();
+    }
     await this.task?.catch(() => {});
     await this.waitForIdle();
     await Promise.all(this.states.map((state) => state.activityTask?.catch(() => undefined)));
@@ -327,6 +339,7 @@ export class ChannelRuntimeRelay {
       initializing: true,
       bufferedEvents: [],
       queue: Promise.resolve(),
+      activitySilenceVersion: 0,
     };
     // Install before catch-up and buffer live events. The final synchronous merge below
     // prevents a newer event from advancing lastEnqueuedSequence ahead of an older trigger.
@@ -336,6 +349,7 @@ export class ChannelRuntimeRelay {
       if (this.task) await this.catchUpState(state);
       else state.initializing = false;
     } catch (error) {
+      this.clearActivitySilence(state);
       state.activityController?.abort();
       await state.activityTask?.catch(() => undefined);
       const index = this.states.indexOf(state);
@@ -349,6 +363,7 @@ export class ChannelRuntimeRelay {
     const index = this.states.findIndex((state) => state.binding.participantId === participantId);
     if (index < 0) return;
     const [state] = this.states.splice(index, 1);
+    this.clearActivitySilence(state!);
     state!.activityController?.abort();
     await Promise.all([
       state!.queue.catch(() => undefined),
@@ -438,6 +453,7 @@ export class ChannelRuntimeRelay {
     if (state.phase === "canceling" && state.activeTrigger) return;
     await this.assertInterruptible(state, participantId);
     if (!state.activeTrigger) throw new Error(`Agent has no active Channel turn: ${participantId}`);
+    this.clearActivitySilence(state);
     state.phase = "canceling";
     state.cancelActorId = actorId;
     this.requestRuntimeInterrupt(state, participantId);
@@ -499,19 +515,64 @@ export class ChannelRuntimeRelay {
         for await (const event of state.binding.runtime.activityEvents!(state.binding.sessionId, {
           signal: controller.signal,
         })) {
+          if (controller.signal.aborted) break;
           if (!state.activeTrigger || state.phase === "retrying" || state.phase === "canceling") continue;
-          state.phase = event.phase === "working" ? "running" : event.phase;
+          switch (event.phase) {
+            case "working":
+              this.clearActivitySilence(state);
+              state.phase = "running";
+              break;
+            case "using_tools":
+            case "responding":
+              state.phase = event.phase;
+              this.armActivitySilence(state);
+              break;
+          }
         }
       } catch {
         if (!controller.signal.aborted) {
           this.options.onError?.(state.binding, new Error("Runtime activity stream unavailable"));
         }
       } finally {
+        this.clearActivitySilence(state);
         if (state.activeTrigger && state.phase !== "retrying" && state.phase !== "canceling") {
           state.phase = "running";
         }
       }
     })();
+  }
+
+  private armActivitySilence(state: BindingState): void {
+    this.clearActivitySilence(state);
+    const triggerId = state.activeTrigger?.id;
+    if (!triggerId) return;
+    const version = state.activitySilenceVersion;
+    const callback = () => {
+      if (state.activitySilenceVersion !== version
+        || state.activeTrigger?.id !== triggerId
+        || !this.states.includes(state)) return;
+      state.activitySilenceVersion += 1;
+      state.activitySilenceTimer = undefined;
+      if (state.phase === "using_tools" || state.phase === "responding") {
+        state.phase = "running";
+      }
+    };
+    if (this.options.scheduleActivitySilenceTimer) {
+      state.activitySilenceTimer = this.options.scheduleActivitySilenceTimer(
+        callback,
+        this.options.activitySilenceTimeoutMs ?? 30_000,
+      );
+      return;
+    }
+    const timer = setTimeout(callback, this.options.activitySilenceTimeoutMs ?? 30_000);
+    timer.unref();
+    state.activitySilenceTimer = { cancel: () => clearTimeout(timer) };
+  }
+
+  private clearActivitySilence(state: BindingState): void {
+    state.activitySilenceVersion += 1;
+    state.activitySilenceTimer?.cancel();
+    state.activitySilenceTimer = undefined;
   }
 
   private stateFor(participantId: string): BindingState {
@@ -599,6 +660,7 @@ export class ChannelRuntimeRelay {
     state.queuedTurns += 1;
     const run = async (): Promise<void> => {
       state.queuedTurns -= 1;
+      this.clearActivitySilence(state);
       state.activeTrigger = message;
       state.startedAt = new Date().toISOString();
       state.phase = "running";
@@ -659,6 +721,7 @@ export class ChannelRuntimeRelay {
           }
           return;
         }
+        this.clearActivitySilence(state);
         state.phase = "retrying";
         state.retryAttempt = attempts + 1;
         const backoffMs = [250, 500, 1_000, 2_000, 5_000][Math.min(attempts - 1, 4)]!;
@@ -684,6 +747,7 @@ export class ChannelRuntimeRelay {
   }
 
   private clearActive(state: BindingState): void {
+    this.clearActivitySilence(state);
     state.activeTrigger = undefined;
     state.startedAt = undefined;
     state.phase = undefined;
