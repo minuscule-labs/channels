@@ -30,6 +30,10 @@ export interface PostMessageOptions {
   idempotencyKey?: string;
 }
 
+export interface ClientMessageListOptions extends MessageListOptions {
+  signal?: AbortSignal;
+}
+
 export interface ChannelClientOptions {
   serviceToken?: string;
   actorIdentityId?: string;
@@ -201,13 +205,15 @@ export class ChannelClient {
     return (await response.json()) as ResponseResult;
   }
 
-  async listMessages(channelId: string, options: MessageListOptions = {}): Promise<ChannelMessage[]> {
+  async listMessages(channelId: string, options: ClientMessageListOptions = {}): Promise<ChannelMessage[]> {
     const query = new URLSearchParams();
     if (options.afterSequence !== undefined) query.set("afterSequence", String(options.afterSequence));
     if (options.beforeSequence !== undefined) query.set("beforeSequence", String(options.beforeSequence));
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     const suffix = query.size > 0 ? `?${query}` : "";
-    const response = await this.request(`/channels/${channelId}/messages${suffix}`);
+    const response = await this.request(`/channels/${channelId}/messages${suffix}`, {
+      signal: options.signal,
+    });
     return ((await response.json()) as { messages: ChannelMessage[] }).messages;
   }
 

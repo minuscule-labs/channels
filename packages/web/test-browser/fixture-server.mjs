@@ -193,6 +193,7 @@ const controlServer = createServer(async (request, response) => {
         triggerSequence: initialTrigger.sequence,
         startedAt: new Date(Date.now() - 62_000).toISOString(),
         queuedTurns: Number(url.searchParams.get("queued") ?? 0),
+        queuedTurnsExact: url.searchParams.get("exact") !== "false",
         ...(phase === "retrying" ? { retryAttempt: 2 } : {}),
       };
     }

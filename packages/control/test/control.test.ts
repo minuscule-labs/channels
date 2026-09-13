@@ -265,6 +265,7 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
           triggerSequence: 37,
           startedAt: "2026-08-28T00:00:00.000Z",
           queuedTurns: 2,
+          queuedTurnsExact: false,
         };
       },
     },
@@ -276,6 +277,7 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
     triggerSequence: 37,
     startedAt: "2026-08-28T00:00:00.000Z",
     queuedTurns: 2,
+    queuedTurnsExact: false,
   });
   assert.equal(result.agents[0]?.capabilities.interrupt, true);
   assert.doesNotMatch(JSON.stringify(result), /runtime-session-secret|pi-private-adapter/);
@@ -338,7 +340,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 12 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 13 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -420,7 +422,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 12, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 13, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -460,7 +462,7 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
       activity() {
         return {
           phase: "canceling", triggerMessageId: "message-37", triggerSequence: 37,
-          startedAt: "2026-08-28T00:00:00.000Z", queuedTurns: 0,
+          startedAt: "2026-08-28T00:00:00.000Z", queuedTurns: 0, queuedTurnsExact: true,
         };
       },
     },
@@ -644,7 +646,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 12,
+      protocolVersion: 13,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -1911,7 +1913,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 12,
+      protocolVersion: 13,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -1924,7 +1926,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 12,
+      protocolVersion: 13,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
@@ -2033,6 +2035,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       diagnostics: {
         connection: "disconnected",
         queuedTurns: 0,
+        queuedTurnsExact: true,
         capabilities: { events: false, interrupt: false, hostReconnect: true, attach: false, diagnostics: false },
       },
       capabilities: { start: false, replace: false, stop: false, steer: false, interrupt: false, reconnect: false },

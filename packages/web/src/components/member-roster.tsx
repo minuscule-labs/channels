@@ -6,6 +6,7 @@ import type { ChannelMessage, Participant } from "@minu/channels-core/types";
 import { useEffect, useState } from "react";
 import { participantLabel } from "../lib/participants";
 import { shortId } from "../lib/messages";
+import { queuedTurnsSummary } from "./channel-activity-strip";
 import { ParticipantActionsMenu } from "./participant-actions-menu";
 import { ParticipantSessionActionsMenu } from "./participant-session-actions-menu";
 import { DrawerCloseButton } from "./ui/drawer";
@@ -203,8 +204,8 @@ export function MemberRoster({
                       {phase && localAgent.activity ? (
                         <span className="truncate text-[11px] text-[var(--muted)]">
                           <span aria-live="polite">{phase}</span> · {elapsedLabel(localAgent.activity.startedAt, now)}
-                          {localAgent.activity.queuedTurns > 0
-                            ? ` · ${localAgent.activity.queuedTurns} ${localAgent.activity.queuedTurns === 1 ? "turn" : "turns"} queued`
+                          {queuedTurnsSummary(localAgent.activity)
+                            ? ` · ${queuedTurnsSummary(localAgent.activity)}`
                             : ""}
                         </span>
                       ) : null}
@@ -241,7 +242,7 @@ export function MemberRoster({
                   <summary className="cursor-pointer font-medium text-[var(--text)]">Diagnostics</summary>
                   <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
                     <dt>Connection</dt><dd>{localAgent.diagnostics.connection}</dd>
-                    <dt>Queue</dt><dd>{localAgent.diagnostics.queuedTurns}</dd>
+                    <dt>Queue</dt><dd>{queuedTurnsSummary(localAgent.diagnostics) || "0 queued"}</dd>
                     <dt>Last binding verification</dt><dd>{localAgent.diagnostics.lastVerifiedAt ?? "Not verified"}</dd>
                     <dt>Events</dt><dd>{localAgent.diagnostics.capabilities.events ? "Supported" : "Not supported"}</dd>
                     <dt>Interrupt</dt><dd>{localAgent.diagnostics.capabilities.interrupt ? "Supported" : "Not supported"}</dd>

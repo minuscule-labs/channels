@@ -768,7 +768,196 @@ test("relay catch-up paginates beyond one bounded message page", async () => {
   } finally { await server.close(); }
 });
 
-test("dynamic attach orders buffered live events behind catch-up", async () => {
+test("bounded catch-up retains one fixed-size page while live events raise only a sequence high-water mark", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new RecoverableRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  for (let index = 0; index < 2; index += 1) {
+    await server.service.createMessage(channel.id, {
+      participantId: "user",
+      body: `@agent-a retained-${index}`,
+    });
+  }
+  const originalListMessages = client.listMessages.bind(client);
+  let catchUpRequests = 0;
+  let largestReturnedPage = 0;
+  client.listMessages = (async (channelId, options) => {
+    const messages = await originalListMessages(channelId, options);
+    if (options?.afterSequence !== undefined) {
+      catchUpRequests += 1;
+      largestReturnedPage = Math.max(largestReturnedPage, messages.length);
+      assert.equal(options.limit, 2);
+    }
+    return messages;
+  }) as ChannelClient["listMessages"];
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    catchUpPageSize: 2,
+    turnPollIntervalMs: 5,
+  });
+  try {
+    await relay.start();
+    await waitUntil(async () => runtime.startCount === 1);
+    assert.equal(catchUpRequests, 1);
+    assert.equal(largestReturnedPage, 2);
+    assert.equal(relay.activity("agent-a")?.queuedTurns, 1);
+    assert.equal(relay.activity("agent-a")?.queuedTurnsExact, false);
+
+    for (let index = 0; index < 50; index += 1) {
+      await server.service.createMessage(channel.id, {
+        participantId: "user",
+        body: `@agent-a live-${index}`,
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(catchUpRequests, 1);
+    assert.equal(largestReturnedPage, 2);
+    assert.equal(relay.activity("agent-a")?.queuedTurns, 1);
+    assert.equal(relay.activity("agent-a")?.queuedTurnsExact, false);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("retiring a slow catch-up aborts its generation without blocking a peer or replacement", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const oldRuntime = new FakeRuntime();
+  const peerRuntime = new FakeRuntime();
+  const replacementRuntime = new FakeRuntime();
+  const cursors = new InMemoryChannelStorage();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" },
+    { id: "agent-a", type: "agent" },
+    { id: "agent-b", type: "agent" },
+  ] });
+  for (let index = 0; index < 10; index += 1) {
+    await server.service.createMessage(channel.id, { participantId: "agent-a", body: `self-${index}` });
+  }
+  await cursors.setCursor(channel.id, "agent-b", 10);
+  const peerTrigger = await server.service.createMessage(channel.id, {
+    participantId: "user",
+    to: ["agent-b"],
+    body: "peer work",
+  });
+  const originalListMessages = client.listMessages.bind(client);
+  let blockedOnce = false;
+  let oldSignal: AbortSignal | undefined;
+  client.listMessages = (async (channelId, options) => {
+    if (!blockedOnce && options?.afterSequence === 0) {
+      blockedOnce = true;
+      oldSignal = options.signal;
+      return await new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      });
+    }
+    return originalListMessages(channelId, options);
+  }) as ChannelClient["listMessages"];
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [
+      { participantId: "agent-a", sessionId: "old-a", runtime: oldRuntime },
+      { participantId: "agent-b", sessionId: "peer-b", runtime: peerRuntime },
+    ],
+    cursorStore: cursors,
+  });
+  try {
+    await relay.start();
+    await waitUntil(async () => relay.cursor("agent-b") === peerTrigger.sequence);
+    assert.equal(peerRuntime.prompts.get("peer-b")?.length, 1);
+    assert.equal(oldSignal?.aborted, false);
+
+    await relay.retire("agent-a");
+    assert.equal(oldSignal?.aborted, true);
+    await relay.attach({ participantId: "agent-a", sessionId: "new-a", runtime: replacementRuntime });
+    const replacementTrigger = await client.postMessage(channel.id, {
+      participantId: "user",
+      to: ["agent-a"],
+      body: "replacement work",
+    });
+    await waitUntil(async () => relay.cursor("agent-a") === replacementTrigger.sequence);
+    assert.equal(oldRuntime.prompts.get("old-a"), undefined);
+    assert.equal(replacementRuntime.prompts.get("new-a")?.length, 1);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("catch-up retries use capped abortable backoff and sanitize failures", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime();
+  const timers = new ManualActivityTimers();
+  const errors: Error[] = [];
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const trigger = await server.service.createMessage(channel.id, {
+    participantId: "user",
+    body: "@agent-a recover",
+  });
+  const originalListMessages = client.listMessages.bind(client);
+  let failuresRemaining = 6;
+  let blockedSignal: AbortSignal | undefined;
+  let block = false;
+  client.listMessages = (async (channelId, options) => {
+    if (options?.afterSequence !== undefined && failuresRemaining > 0) {
+      failuresRemaining -= 1;
+      throw new Error("private endpoint and credential");
+    }
+    if (options?.afterSequence !== undefined && block) {
+      blockedSignal = options.signal;
+      return await new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      });
+    }
+    return originalListMessages(channelId, options);
+  }) as ChannelClient["listMessages"];
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    scheduleCatchUpRetryTimer: timers.schedule,
+    onError: (_binding, error) => errors.push(error),
+  });
+  try {
+    await relay.start();
+    for (let index = 0; index < 6; index += 1) {
+      await waitUntil(async () => timers.entries.length > index);
+      assert.equal(timers.entries[index]?.milliseconds, [250, 500, 1_000, 2_000, 5_000, 5_000][index]);
+      timers.invoke(index);
+    }
+    await waitUntil(async () => relay.cursor("agent-a") === trigger.sequence);
+    assert.deepEqual(errors.map(({ message }) => message), ["Channel catch-up unavailable"]);
+
+    failuresRemaining = 1;
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a reset" });
+    await waitUntil(async () => timers.entries.length === 7);
+    assert.equal(timers.entries[6]?.milliseconds, 250);
+    timers.invoke(6);
+    await waitUntil(async () => (runtime.prompts.get("session-a")?.length ?? 0) === 2);
+
+    block = true;
+    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a blocked" });
+    await waitUntil(async () => blockedSignal !== undefined);
+    const stopping = relay.stop();
+    await waitUntil(async () => blockedSignal!.aborted);
+    await stopping;
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("dynamic attach orders high-water live events behind catch-up", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
@@ -1036,6 +1225,14 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
   assert.throws(
     () => new ChannelRuntimeRelay({ ...baseOptions, activitySilenceTimeoutMs: 0 }),
     /activitySilenceTimeoutMs must be a positive integer/,
+  );
+  assert.throws(
+    () => new ChannelRuntimeRelay({ ...baseOptions, catchUpPageSize: 0 }),
+    /catchUpPageSize must be an integer between 1 and 500/,
+  );
+  assert.throws(
+    () => new ChannelRuntimeRelay({ ...baseOptions, catchUpPageSize: 501 }),
+    /catchUpPageSize must be an integer between 1 and 500/,
   );
   const errors: Error[] = [];
   const relay = new ChannelRuntimeRelay({
@@ -1551,13 +1748,15 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
       queuedTurns: 0,
     });
     assert.ok(initial?.startedAt);
+    assert.equal(initial?.queuedTurnsExact, true);
     const startedAt = initial!.startedAt;
     publishActivity("using_tools");
     await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
     publishActivity("responding");
     await waitUntil(async () => relay.activity("agent-a")?.phase === "responding");
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
-    await waitUntil(async () => relay.activity("agent-a")?.queuedTurns === 1);
+    await waitUntil(async () => relay.activity("agent-a")?.queuedTurnsExact === false);
+    assert.equal(relay.activity("agent-a")?.queuedTurns, 0);
     assert.equal(relay.activity("agent-a")?.startedAt, startedAt);
 
     assert.equal(timers.activeCount(), 1);
@@ -1946,7 +2145,7 @@ test("a delayed session interrupt cannot reach the next queued turn", async () =
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
     await waitUntil(async () => starts === 1);
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
-    await waitUntil(async () => relay.activity("agent-a")?.queuedTurns === 1);
+    await waitUntil(async () => relay.activity("agent-a")?.queuedTurnsExact === false);
     await relay.cancelCurrent("agent-a", "user");
     await waitUntil(async () => typeof releaseInterrupt === "function");
     assert.equal(starts, 1);

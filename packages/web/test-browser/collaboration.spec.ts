@@ -376,16 +376,20 @@ test("summarizes Channel-wide agent activity below the composer", async ({ page,
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
   const strip = page.getByRole("region", { name: "Channel agent activity" });
-  await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 turns queued/, { timeout: 10_000 });
+  await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 queued/, { timeout: 10_000 });
   await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
   expect((await strip.boundingBox())!.y).toBeGreaterThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
 
+  await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2&exact=false`);
+  await expect(strip).toContainText("At least 2 queued", { timeout: 10_000 });
+  await request.post(`${fixtureBase}/agent-activity?phase=running&queued=0&exact=false`);
+  await expect(strip).toContainText("Checking backlog", { timeout: 10_000 });
   await request.post(`${fixtureBase}/agent-activity?phase=using_tools&queued=1`);
-  await expect(strip).toContainText(/@builder is using tools.*1 turn queued/, { timeout: 10_000 });
+  await expect(strip).toContainText(/@builder is using tools.*1 queued/, { timeout: 10_000 });
   await request.post(`${fixtureBase}/agent-activity?phase=responding&queued=1`);
-  await expect(strip).toContainText(/@builder is responding.*1 turn queued/, { timeout: 10_000 });
+  await expect(strip).toContainText(/@builder is responding.*1 queued/, { timeout: 10_000 });
   await request.post(`${fixtureBase}/agent-activity?phase=retrying&queued=1`);
-  await expect(strip).toContainText(/@builder is retrying \(attempt 2\).*1 turn queued/, { timeout: 10_000 });
+  await expect(strip).toContainText(/@builder is retrying \(attempt 2\).*1 queued/, { timeout: 10_000 });
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "Cancel current", exact: true }).click();
   await expect(strip).toContainText("@builder is canceling", { timeout: 10_000 });
@@ -476,7 +480,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 12,
+      protocolVersion: 13,
       channelId,
       agents: [
         {
@@ -500,7 +504,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 12,
+        protocolVersion: 13,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -557,7 +561,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 12,
+      protocolVersion: 13,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -730,7 +734,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 12,
+        protocolVersion: 13,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,
