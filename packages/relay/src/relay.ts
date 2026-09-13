@@ -18,6 +18,11 @@ export interface RuntimePortTurn {
 }
 
 /** Minimal structural contract required to wake a bound agent session. */
+export interface RuntimeActivityEvent {
+  phase: "working" | "using_tools" | "responding";
+  observedAt: string;
+}
+
 export interface AgentRuntimePort {
   send(sessionId: string, input: string): Promise<void>;
   startTurn?(sessionId: string, turnId: string, input: string): Promise<RuntimePortTurn>;
@@ -28,7 +33,7 @@ export interface AgentRuntimePort {
   activityEvents?(
     sessionId: string,
     options: { signal: AbortSignal },
-  ): AsyncIterable<{ phase: "working" | "using_tools" | "responding"; observedAt: string }>;
+  ): AsyncIterable<RuntimeActivityEvent>;
   messages(sessionId: string): Promise<RuntimePortMessage[]>;
 }
 
@@ -55,6 +60,10 @@ export interface ChannelRuntimeRelayOptions {
   runtimeRequestTimeoutMs?: number;
   activitySilenceTimeoutMs?: number;
   scheduleActivitySilenceTimer?(
+    callback: () => void,
+    milliseconds: number,
+  ): { cancel(): void };
+  scheduleActivityStreamRetryTimer?(
     callback: () => void,
     milliseconds: number,
   ): { cancel(): void };
@@ -100,6 +109,7 @@ interface BindingState {
   activityTask?: Promise<void>;
   activitySilenceTimer?: { cancel(): void };
   activitySilenceVersion: number;
+  lastActivityStreamDiagnosticAt?: number;
 }
 
 function isExplicitlyAddressed(message: ChannelMessage, participantId: string): boolean {
@@ -222,11 +232,20 @@ ${transcript}`;
 async function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return;
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, milliseconds);
-    signal?.addEventListener("abort", () => {
-      clearTimeout(timer);
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", abort);
       resolve();
-    }, { once: true });
+    };
+    const timer = setTimeout(finish, milliseconds);
+    const abort = (): void => {
+      clearTimeout(timer);
+      finish();
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
@@ -235,6 +254,19 @@ function validatePositiveMilliseconds(name: string, value: number | undefined): 
     throw new RangeError(`${name} must be a positive integer`);
   }
 }
+
+function isRuntimeActivityEvent(event: unknown): event is RuntimeActivityEvent {
+  if (!event || typeof event !== "object") return false;
+  const candidate = event as Partial<RuntimeActivityEvent>;
+  return (candidate.phase === "working"
+      || candidate.phase === "using_tools"
+      || candidate.phase === "responding")
+    && typeof candidate.observedAt === "string"
+    && Number.isFinite(Date.parse(candidate.observedAt));
+}
+
+const ACTIVITY_STREAM_RETRY_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
+const ACTIVITY_STREAM_DIAGNOSTIC_INTERVAL_MS = 30_000;
 
 export class ChannelRuntimeRelay {
   private readonly states: BindingState[];
@@ -511,35 +543,83 @@ export class ChannelRuntimeRelay {
     const controller = new AbortController();
     state.activityController = controller;
     state.activityTask = (async () => {
-      try {
-        for await (const event of state.binding.runtime.activityEvents!(state.binding.sessionId, {
-          signal: controller.signal,
-        })) {
-          if (controller.signal.aborted) break;
-          if (!state.activeTrigger || state.phase === "retrying" || state.phase === "canceling") continue;
-          switch (event.phase) {
-            case "working":
-              this.clearActivitySilence(state);
-              state.phase = "running";
-              break;
-            case "using_tools":
-            case "responding":
-              state.phase = event.phase;
-              this.armActivitySilence(state);
-              break;
+      let failures = 0;
+      while (!controller.signal.aborted && this.states.includes(state)) {
+        try {
+          for await (const candidate of state.binding.runtime.activityEvents!(state.binding.sessionId, {
+            signal: controller.signal,
+          })) {
+            if (controller.signal.aborted || !this.states.includes(state)) break;
+            if (!isRuntimeActivityEvent(candidate)) continue;
+            failures = 0;
+            if (!state.activeTrigger || state.phase === "retrying" || state.phase === "canceling") continue;
+            switch (candidate.phase) {
+              case "working":
+                this.clearActivitySilence(state);
+                state.phase = "running";
+                break;
+              case "using_tools":
+              case "responding":
+                state.phase = candidate.phase;
+                this.armActivitySilence(state);
+                break;
+            }
+          }
+        } catch {
+          // Activity is optional presentation enrichment. Recovery below intentionally
+          // does not alter the authoritative turn or expose adapter failure details.
+        } finally {
+          this.clearActivitySilence(state);
+          if (state.activeTrigger && state.phase !== "retrying" && state.phase !== "canceling") {
+            state.phase = "running";
           }
         }
-      } catch {
-        if (!controller.signal.aborted) {
-          this.options.onError?.(state.binding, new Error("Runtime activity stream unavailable"));
-        }
-      } finally {
-        this.clearActivitySilence(state);
-        if (state.activeTrigger && state.phase !== "retrying" && state.phase !== "canceling") {
-          state.phase = "running";
-        }
+        if (controller.signal.aborted || !this.states.includes(state)) break;
+        failures += 1;
+        this.reportActivityStreamUnavailable(state);
+        const backoffMs = ACTIVITY_STREAM_RETRY_BACKOFF_MS[
+          Math.min(failures - 1, ACTIVITY_STREAM_RETRY_BACKOFF_MS.length - 1)
+        ]!;
+        await this.waitForActivityStreamRetry(controller.signal, backoffMs);
       }
     })();
+  }
+
+  private reportActivityStreamUnavailable(state: BindingState): void {
+    const now = Date.now();
+    if (state.lastActivityStreamDiagnosticAt !== undefined
+      && now - state.lastActivityStreamDiagnosticAt < ACTIVITY_STREAM_DIAGNOSTIC_INTERVAL_MS) return;
+    state.lastActivityStreamDiagnosticAt = now;
+    this.options.onError?.(state.binding, new Error("Runtime activity stream unavailable"));
+  }
+
+  private async waitForActivityStreamRetry(signal: AbortSignal, milliseconds: number): Promise<void> {
+    if (!this.options.scheduleActivityStreamRetryTimer) {
+      await delay(milliseconds, signal);
+      return;
+    }
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      let timer: { cancel(): void } | undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = (): void => {
+        timer?.cancel();
+        finish();
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      timer = this.options.scheduleActivityStreamRetryTimer!(finish, milliseconds);
+      if (settled) timer.cancel();
+    });
   }
 
   private armActivitySilence(state: BindingState): void {
