@@ -39,6 +39,24 @@ export interface AgentRuntimePort {
 
 export type WakePolicy = "mentions" | "direct_mentions" | "all_messages" | "muted";
 
+export type DeliveryDeadLetterReason =
+  | "delivery_rejected"
+  | "delivery_timed_out"
+  | "cursor_commit_failed";
+
+export interface DeliveryDeadLetterInput {
+  channelId: string;
+  participantId: string;
+  triggerMessageId: string;
+  triggerSequence: number;
+  reason: DeliveryDeadLetterReason;
+  recordedAt: string;
+}
+
+export interface RelayCursorStore extends ChannelCursorStore {
+  commitDeliveryDeadLetter?(input: DeliveryDeadLetterInput): Promise<void>;
+}
+
 export interface AgentChannelBinding {
   participantId: string;
   sessionId: string;
@@ -54,10 +72,17 @@ export interface ChannelRuntimeRelayOptions {
   client: ChannelClient;
   channelId: string;
   bindings: AgentChannelBinding[];
-  cursorStore?: ChannelCursorStore;
+  cursorStore?: RelayCursorStore;
   turnPollIntervalMs?: number;
   turnTimeoutMs?: number;
   runtimeRequestTimeoutMs?: number;
+  turnRetryBudgetMs?: number;
+  terminalOutcomeTimeoutMs?: number;
+  monotonicNow?: () => number;
+  scheduleTurnRetryTimer?(
+    callback: () => void,
+    milliseconds: number,
+  ): { cancel(): void };
   activitySilenceTimeoutMs?: number;
   scheduleActivitySilenceTimer?(
     callback: () => void,
@@ -77,6 +102,9 @@ export interface ChannelRuntimeRelayOptions {
 }
 
 class PermanentTurnError extends Error {}
+class PermanentDeliveryError extends Error {}
+class CommittedResponseCursorError extends Error {}
+class RetryDeadlineExceededError extends Error {}
 class FencedTurnError extends Error {}
 
 export type RelayAgentActivityPhase = "running" | "using_tools" | "responding" | "retrying" | "canceling";
@@ -103,6 +131,7 @@ interface BindingState {
   startedAt?: string;
   phase?: RelayAgentActivityPhase;
   retryAttempt?: number;
+  retryDeadline?: number;
   queuedTurns: number;
   /** Retained for the legacy interrupt-and-replace operation. */
   interruptedTriggerId?: string;
@@ -278,6 +307,17 @@ const ACTIVITY_STREAM_DIAGNOSTIC_INTERVAL_MS = 30_000;
 const CATCH_UP_RETRY_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const CATCH_UP_DIAGNOSTIC_INTERVAL_MS = 30_000;
 const DEFAULT_CATCH_UP_PAGE_SIZE = 100;
+const DEFAULT_TURN_RETRY_BUDGET_MS = 2 * 60_000;
+const DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS = 15_000;
+const MAX_RETRY_AFTER_MS = 30_000;
+
+function isPermanentDeliveryStatus(status: number): boolean {
+  return status >= 400
+    && status < 500
+    && status !== 408
+    && status !== 425
+    && status !== 429;
+}
 
 export class ChannelRuntimeRelay {
   private readonly states: BindingState[];
@@ -290,6 +330,8 @@ export class ChannelRuntimeRelay {
     validatePositiveMilliseconds("turnPollIntervalMs", options.turnPollIntervalMs);
     validatePositiveMilliseconds("turnTimeoutMs", options.turnTimeoutMs);
     validatePositiveMilliseconds("runtimeRequestTimeoutMs", options.runtimeRequestTimeoutMs);
+    validatePositiveMilliseconds("turnRetryBudgetMs", options.turnRetryBudgetMs);
+    validatePositiveMilliseconds("terminalOutcomeTimeoutMs", options.terminalOutcomeTimeoutMs);
     validatePositiveMilliseconds("activitySilenceTimeoutMs", options.activitySilenceTimeoutMs);
     if (options.catchUpPageSize !== undefined
       && (!Number.isSafeInteger(options.catchUpPageSize)
@@ -487,7 +529,10 @@ export class ChannelRuntimeRelay {
       state.interruptedTriggerId = undefined;
       throw error;
     }
-    await this.waitUntilIdle(state.binding);
+    await this.waitUntilIdle(
+      state.binding,
+      this.monotonicNow() + (this.options.turnRetryBudgetMs ?? DEFAULT_TURN_RETRY_BUDGET_MS),
+    );
     await this.options.client.postMessage(this.options.channelId, {
       participantId: actorId,
       body: `@${participantId} [replacement after interrupt] ${replacement}`,
@@ -536,14 +581,21 @@ export class ChannelRuntimeRelay {
   private requestRuntimeInterrupt(state: BindingState, participantId: string): void {
     if (!state.runtimeTurnAccepted || state.interruptIssued) return;
     state.interruptIssued = true;
-    state.interruptPromise = this.invokeCancellation(state, participantId);
+    state.interruptPromise = this.invokeCancellation(state, participantId, state.retryDeadline);
   }
 
-  private async invokeCancellation(state: BindingState, participantId: string): Promise<boolean> {
+  private async invokeCancellation(
+    state: BindingState,
+    participantId: string,
+    deadline?: number,
+  ): Promise<boolean> {
     try {
+      if (deadline !== undefined) this.assertBeforeDeadline(deadline);
       await this.awaitRuntime(
         state.binding.runtime.interrupt!(state.binding.sessionId),
         `interrupt agent turn for ${participantId}`,
+        undefined,
+        deadline,
       );
       return true;
     } catch (error) {
@@ -878,25 +930,24 @@ export class ChannelRuntimeRelay {
 
   private async handleWithRetry(state: BindingState, message: ChannelMessage): Promise<void> {
     let attempts = 0;
-    let firstFailureAt: number | undefined;
+    const deadline = this.monotonicNow()
+      + (this.options.turnRetryBudgetMs ?? DEFAULT_TURN_RETRY_BUDGET_MS);
+    state.retryDeadline = deadline;
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
       attempts += 1;
       try {
-        await this.handle(state, message);
+        await this.handle(state, message, deadline);
         return;
       } catch (error) {
         const normalized = error instanceof Error ? error : new Error(String(error));
         this.options.onError?.(state.binding, normalized);
         if (!this.states.includes(state) || error instanceof FencedTurnError) return;
-        if (error instanceof PermanentTurnError) {
-          try {
-            await this.recordTerminalFailure(state, message);
-          } catch (persistenceError) {
-            this.options.onError?.(
-              state.binding,
-              persistenceError instanceof Error ? persistenceError : new Error(String(persistenceError)),
-            );
-          }
+        if (error instanceof CommittedResponseCursorError) {
+          await this.persistCommittedResponseCursor(state, message);
+          return;
+        }
+        if (error instanceof PermanentTurnError || error instanceof PermanentDeliveryError) {
+          await this.persistTerminalFailure(state, message);
           return;
         }
         // An interruption may have reached Runtime even if its acknowledgement or a
@@ -906,38 +957,73 @@ export class ChannelRuntimeRelay {
           await delay(1_000, this.controller?.signal);
           continue;
         }
-        const now = Date.now();
-        firstFailureAt ??= now;
-        if (attempts >= 5 || now - firstFailureAt >= 2 * 60_000) {
-          try {
-            await this.recordTerminalFailure(state, message);
-          } catch (persistenceError) {
-            this.options.onError?.(
-              state.binding,
-              persistenceError instanceof Error ? persistenceError : new Error(String(persistenceError)),
-            );
-          }
+        if (error instanceof RetryDeadlineExceededError || attempts >= 5) {
+          await this.persistTerminalFailure(state, message);
           return;
         }
         this.clearActivitySilence(state);
         state.phase = "retrying";
         state.retryAttempt = attempts + 1;
         const backoffMs = [250, 500, 1_000, 2_000, 5_000][Math.min(attempts - 1, 4)]!;
-        await delay(backoffMs, this.controller?.signal);
+        try {
+          await this.delayBeforeDeadline(backoffMs, deadline);
+        } catch (delayError) {
+          if (delayError instanceof RetryDeadlineExceededError) {
+            await this.persistTerminalFailure(state, message);
+            return;
+          }
+          throw delayError;
+        }
         if (state.phase === "retrying") state.phase = "running";
       }
     }
   }
 
-  private async recordTerminalFailure(state: BindingState, trigger: ChannelMessage): Promise<void> {
-    // commitResponse owns lease/participant fencing and retries transient lease errors.
-    // Checking here would turn a storage failure into a silently dropped outcome.
-    await this.commitResponse(state, {
-      participantId: state.binding.participantId,
-      body: "I couldn't complete this request because the Runtime turn failed. The agent remains available; retry or use New session if the problem continues.",
-      triggerMessageId: trigger.id,
-      triggerSequence: trigger.sequence,
-    });
+  private async persistCommittedResponseCursor(
+    state: BindingState,
+    trigger: ChannelMessage,
+  ): Promise<void> {
+    while (!this.controller?.signal.aborted && this.states.includes(state)) {
+      const deadline = this.monotonicNow()
+        + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS);
+      try {
+        await this.commitDeliveryDeadLetter(
+          state,
+          { triggerMessageId: trigger.id, triggerSequence: trigger.sequence },
+          "cursor_commit_failed",
+          deadline,
+        );
+        return;
+      } catch {
+        this.options.onError?.(
+          state.binding,
+          new Error("Committed Channel response recovery unavailable"),
+        );
+        await delay(1_000, this.controller?.signal);
+      }
+    }
+  }
+
+  private async persistTerminalFailure(state: BindingState, trigger: ChannelMessage): Promise<void> {
+    while (!this.controller?.signal.aborted && this.states.includes(state)) {
+      const deadline = this.monotonicNow()
+        + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS);
+      try {
+        await this.commitResponse(state, {
+          participantId: state.binding.participantId,
+          body: "I couldn't complete this request because the Runtime turn failed. The agent remains available; retry or use New session if the problem continues.",
+          triggerMessageId: trigger.id,
+          triggerSequence: trigger.sequence,
+        }, deadline, true);
+        return;
+      } catch {
+        this.options.onError?.(
+          state.binding,
+          new Error("Terminal Channel outcome unavailable"),
+        );
+        await delay(1_000, this.controller?.signal);
+      }
+    }
   }
 
   private isCanceling(state: BindingState): boolean {
@@ -950,6 +1036,7 @@ export class ChannelRuntimeRelay {
     state.startedAt = undefined;
     state.phase = undefined;
     state.retryAttempt = undefined;
+    state.retryDeadline = undefined;
     state.interruptedTriggerId = undefined;
     state.cancelActorId = undefined;
     state.runtimeTurnAccepted = undefined;
@@ -957,8 +1044,13 @@ export class ChannelRuntimeRelay {
     state.interruptPromise = undefined;
   }
 
-  private async handle(state: BindingState, trigger: ChannelMessage): Promise<void> {
+  private async handle(
+    state: BindingState,
+    trigger: ChannelMessage,
+    deadline: number,
+  ): Promise<void> {
     const { binding } = state;
+    this.assertBeforeDeadline(deadline);
     if (binding.verifyLease && !(await binding.verifyLease())) {
       throw new FencedTurnError(`Agent binding lease was lost: ${binding.participantId}`);
     }
@@ -982,32 +1074,38 @@ export class ChannelRuntimeRelay {
       binding.maxTokens ?? 4_000,
     );
     let response: RuntimePortMessage | undefined;
+    this.assertBeforeDeadline(deadline);
     if (binding.runtime.startTurn && binding.runtime.turn) {
       const turnId = `channel:${this.options.channelId}:${binding.participantId}:${trigger.id}`;
       let turn = await this.awaitRuntime(
         binding.runtime.turn(binding.sessionId, turnId),
         `read turn for ${binding.participantId}`,
+        undefined,
+        deadline,
       );
       if (!turn) {
         // Cancellation may win while the recoverable-turn lookup is in flight. Never
         // dispatch a new Runtime turn after that marker; no side effect has started.
         if (state.phase === "canceling") {
-          await this.completeCancellation(state, trigger);
+          await this.completeCancellation(state, trigger, deadline);
           return;
         }
-        await this.waitUntilIdle(binding);
+        await this.waitUntilIdle(binding, deadline);
         if (this.isCanceling(state)) {
-          await this.completeCancellation(state, trigger);
+          await this.completeCancellation(state, trigger, deadline);
           return;
         }
+        this.assertBeforeDeadline(deadline);
         turn = await this.awaitRuntime(
           binding.runtime.startTurn(binding.sessionId, turnId, prompt),
           `start turn for ${binding.participantId}`,
+          undefined,
+          deadline,
         );
       }
       state.runtimeTurnAccepted = true;
       if (this.isCanceling(state)) this.requestRuntimeInterrupt(state, binding.participantId);
-      turn = await this.waitForTurn(binding, turnId, turn);
+      turn = await this.waitForTurn(binding, turnId, turn, deadline);
       if (turn.status === "failed") {
         throw new PermanentTurnError(`Agent ${binding.participantId} turn failed: ${turn.error ?? "unknown error"}`);
       }
@@ -1017,30 +1115,35 @@ export class ChannelRuntimeRelay {
       // A legacy Runtime cannot expose a stable turn id. Once cancellation has begun,
       // only reconcile it to idle; never send the original prompt again.
       if (state.phase === "canceling") {
-        await this.waitUntilIdle(binding);
-        await this.completeCancellation(state, trigger);
+        await this.waitUntilIdle(binding, deadline);
+        await this.completeCancellation(state, trigger, deadline);
         return;
       }
-      await this.waitUntilIdle(binding);
+      await this.waitUntilIdle(binding, deadline);
       if (this.isCanceling(state)) {
-        await this.completeCancellation(state, trigger);
+        await this.completeCancellation(state, trigger, deadline);
         return;
       }
+      this.assertBeforeDeadline(deadline);
       const before = await this.awaitRuntime(
         binding.runtime.messages(binding.sessionId),
         `read messages for ${binding.participantId}`,
+        undefined,
+        deadline,
       );
       let ambiguousSendFailure = false;
       if (this.isCanceling(state)) {
-        await this.completeCancellation(state, trigger);
+        await this.completeCancellation(state, trigger, deadline);
         return;
       }
       state.runtimeTurnAccepted = true;
       try {
+        this.assertBeforeDeadline(deadline);
         await this.awaitRuntime(
           binding.runtime.send(binding.sessionId, prompt),
           `send to ${binding.participantId}`,
           this.options.turnTimeoutMs ?? 30 * 60_000,
+          deadline,
         );
       } catch (error) {
         if (state.interruptedTriggerId !== trigger.id && !this.isCanceling(state)) {
@@ -1050,9 +1153,12 @@ export class ChannelRuntimeRelay {
           ambiguousSendFailure = true;
         }
       }
+      this.assertBeforeDeadline(deadline);
       const after = await this.awaitRuntime(
         binding.runtime.messages(binding.sessionId),
         `read messages for ${binding.participantId}`,
+        undefined,
+        deadline,
       );
       response = latestAssistant(after, before);
       if (ambiguousSendFailure && !response) {
@@ -1068,9 +1174,9 @@ export class ChannelRuntimeRelay {
     }
     if (state.phase === "canceling") {
       if (!binding.runtime.startTurn || !binding.runtime.turn) {
-        await this.waitUntilIdle(binding);
+        await this.waitUntilIdle(binding, deadline);
       }
-      await this.completeCancellation(state, trigger);
+      await this.completeCancellation(state, trigger, deadline);
       return;
     }
     if (state.interruptedTriggerId === trigger.id) {
@@ -1084,11 +1190,15 @@ export class ChannelRuntimeRelay {
       body: response.content,
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
-    });
+    }, deadline, false);
     if (committed?.created) this.options.onAgentResponse?.(binding, committed.message);
   }
 
-  private async completeCancellation(state: BindingState, trigger: ChannelMessage): Promise<void> {
+  private async completeCancellation(
+    state: BindingState,
+    trigger: ChannelMessage,
+    deadline: number,
+  ): Promise<void> {
     const interrupted = await state.interruptPromise;
     if (interrupted === false) {
       // An acknowledgement loss can deliver a session-level interrupt late. Do not let
@@ -1096,18 +1206,27 @@ export class ChannelRuntimeRelay {
       while (!this.controller?.signal.aborted) await delay(1_000, this.controller?.signal);
       return;
     }
-    await this.commitCancellation(state, trigger);
+    await this.commitCancellation(state, trigger, deadline);
   }
 
-  private async commitCancellation(state: BindingState, trigger: ChannelMessage): Promise<void> {
+  private async commitCancellation(
+    state: BindingState,
+    trigger: ChannelMessage,
+    deadline: number,
+  ): Promise<void> {
     const actor = this.roster?.participants.find((participant) => participant.id === state.cancelActorId);
     const label = actor?.handle ?? state.cancelActorId ?? "a Channel member";
+    const outcomeDeadline = Math.max(
+      deadline,
+      this.monotonicNow()
+        + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS),
+    );
     await this.commitResponse(state, {
       participantId: state.binding.participantId,
       body: `Current request was canceled by @${label}.`,
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
-    });
+    }, outcomeDeadline, true);
   }
 
   private async commitResponse(
@@ -1118,34 +1237,94 @@ export class ChannelRuntimeRelay {
       triggerMessageId: string;
       triggerSequence: number;
     },
+    deadline: number,
+    terminal: boolean,
   ) {
     // Delivery is idempotent by trigger. Never re-run a Runtime turn merely because the
     // Channel service acknowledgement was lost. A stopped/fenced Relay has no authority
     // to continue delivery and must let shutdown complete normally.
-    while (!this.controller?.signal.aborted) {
+    while (!this.controller?.signal.aborted && this.states.includes(state)) {
+      if (!await this.mayDeliverResponse(state)) return undefined;
+      let committed;
       try {
-        if (!await this.mayDeliverResponse(state)) return undefined;
-        const committed = await this.awaitRuntime(
+        this.assertBeforeDeadline(deadline);
+        const terminalAttemptTimeout = terminal
+          ? Math.max(1, Math.floor((deadline - this.monotonicNow()) / 2))
+          : undefined;
+        committed = await this.awaitRuntime(
           this.options.client.postResponse(this.options.channelId, input),
           `deliver Channel response for ${state.binding.participantId}`,
+          terminalAttemptTimeout,
+          deadline,
         );
-        // postResponse atomically records the durable Channel outcome and its public
-        // cursor. Mirror that committed result into Relay's private recovery cursor only
-        // after delivery succeeds; a retry uses the same idempotent response key.
-        await this.markProcessed(state, input.triggerSequence);
-        return committed;
       } catch (error) {
-        if (this.controller?.signal.aborted) return undefined;
+        if (this.controller?.signal.aborted || !this.states.includes(state)) return undefined;
         this.options.onError?.(
           state.binding,
-          error instanceof Error ? error : new Error(String(error)),
+          new Error("Channel response delivery unavailable"),
         );
-        // A validated client rejection cannot be fixed by replaying the same outcome.
-        if (error instanceof ChannelClientError && error.status < 500) return undefined;
-        await delay(1_000, this.controller?.signal);
+        const permanent = error instanceof ChannelClientError
+          && isPermanentDeliveryStatus(error.status);
+        const expired = error instanceof RetryDeadlineExceededError
+          || this.monotonicNow() >= deadline;
+        if (terminal) {
+          await this.commitDeliveryDeadLetter(
+            state,
+            input,
+            permanent ? "delivery_rejected" : "delivery_timed_out",
+            deadline,
+          );
+          return undefined;
+        }
+        if (permanent) throw new PermanentDeliveryError("Channel response was rejected");
+        if (expired) throw new RetryDeadlineExceededError("Channel response delivery deadline expired");
+        const retryAfterMs = error instanceof ChannelClientError ? error.retryAfterMs : undefined;
+        await this.delayBeforeDeadline(
+          retryAfterMs === undefined ? 1_000 : Math.min(retryAfterMs, MAX_RETRY_AFTER_MS),
+          deadline,
+        );
+        continue;
       }
+      // postResponse atomically records the durable Channel outcome and its public
+      // cursor. Mirror that committed result into Relay's private recovery cursor only
+      // after delivery succeeds; a retry uses the same idempotent response key.
+      try {
+        await this.markProcessed(
+          state,
+          input.triggerSequence,
+          Math.max(
+            deadline,
+            this.monotonicNow()
+              + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS),
+          ),
+        );
+      } catch {
+        throw new CommittedResponseCursorError("Committed response cursor could not be finalized");
+      }
+      return committed;
     }
     return undefined;
+  }
+
+  private async commitDeliveryDeadLetter(
+    state: BindingState,
+    input: { triggerMessageId: string; triggerSequence: number },
+    reason: DeliveryDeadLetterReason,
+    deadline: number,
+  ): Promise<void> {
+    if (!await this.mayDeliverResponse(state)) return;
+    const commit = this.options.cursorStore?.commitDeliveryDeadLetter;
+    if (!commit) throw new Error("Private delivery dead-letter storage is unavailable");
+    this.assertBeforeDeadline(deadline);
+    await this.awaitRuntime(commit.call(this.options.cursorStore, {
+      channelId: this.options.channelId,
+      participantId: state.binding.participantId,
+      triggerMessageId: input.triggerMessageId,
+      triggerSequence: input.triggerSequence,
+      reason,
+      recordedAt: new Date().toISOString(),
+    }), "commit private delivery outcome", undefined, deadline);
+    state.lastProcessedSequence = Math.max(state.lastProcessedSequence, input.triggerSequence);
   }
 
   private async mayDeliverResponse(state: BindingState): Promise<boolean> {
@@ -1156,53 +1335,143 @@ export class ChannelRuntimeRelay {
     return this.isActiveParticipant(state.binding.participantId);
   }
 
-  private async markProcessed(state: BindingState, sequence: number): Promise<void> {
-    await this.options.cursorStore?.setCursor(
+  private async markProcessed(
+    state: BindingState,
+    sequence: number,
+    deadline?: number,
+  ): Promise<void> {
+    if (deadline !== undefined) this.assertBeforeDeadline(deadline);
+    const operation = this.options.cursorStore?.setCursor(
       this.options.channelId,
       state.binding.participantId,
       sequence,
     );
-    state.lastProcessedSequence = sequence;
+    if (operation) {
+      await this.awaitRuntime(operation, "advance private delivery cursor", undefined, deadline);
+    }
+    state.lastProcessedSequence = Math.max(state.lastProcessedSequence, sequence);
   }
 
   private async waitForTurn(
     binding: AgentChannelBinding,
     turnId: string,
     initial: RuntimePortTurn,
+    retryDeadline: number,
   ): Promise<RuntimePortTurn> {
     let turn = initial;
-    const deadline = Date.now() + (this.options.turnTimeoutMs ?? 30 * 60_000);
-    while (Date.now() < deadline) {
-      if (turn.status !== "running") return turn;
-      await delay(this.options.turnPollIntervalMs ?? 250);
-      const recovered = await this.awaitRuntime(
-        binding.runtime.turn!(binding.sessionId, turnId),
-        `recover turn for ${binding.participantId}`,
-        Math.min(this.options.runtimeRequestTimeoutMs ?? 15_000, Math.max(1, deadline - Date.now())),
-      );
-      if (!recovered) throw new Error(`Runtime lost accepted turn: ${turnId}`);
-      turn = recovered;
+    const turnDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? 30 * 60_000);
+    const deadline = Math.min(retryDeadline, turnDeadline);
+    try {
+      while (this.monotonicNow() < deadline) {
+        if (turn.status !== "running") return turn;
+        await this.delayBeforeDeadline(this.options.turnPollIntervalMs ?? 250, deadline);
+        const recovered = await this.awaitRuntime(
+          binding.runtime.turn!(binding.sessionId, turnId),
+          `recover turn for ${binding.participantId}`,
+          undefined,
+          deadline,
+        );
+        if (!recovered) throw new Error(`Runtime lost accepted turn: ${turnId}`);
+        turn = recovered;
+      }
+    } catch (error) {
+      if (error instanceof RetryDeadlineExceededError && turnDeadline < retryDeadline) {
+        throw new Error(`Timed out waiting for agent turn: ${binding.participantId}`);
+      }
+      throw error;
+    }
+    if (retryDeadline <= turnDeadline) {
+      throw new RetryDeadlineExceededError("Agent turn retry deadline expired");
     }
     throw new Error(`Timed out waiting for agent turn: ${binding.participantId}`);
   }
 
-  private async waitUntilIdle(binding: AgentChannelBinding): Promise<void> {
-    const deadline = Date.now() + (this.options.turnTimeoutMs ?? 30 * 60_000);
-    while (Date.now() < deadline) {
-      const status = await this.awaitRuntime(
-        binding.runtime.status(binding.sessionId),
-        `read status for ${binding.participantId}`,
-        Math.min(this.options.runtimeRequestTimeoutMs ?? 15_000, Math.max(1, deadline - Date.now())),
-      );
-      if (status === "idle") return;
-      if (status === "offline") throw new Error(`Agent session is offline: ${binding.sessionId}`);
-      await delay(this.options.turnPollIntervalMs ?? 250);
+  private async waitUntilIdle(binding: AgentChannelBinding, retryDeadline: number): Promise<void> {
+    const idleDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? 30 * 60_000);
+    const deadline = Math.min(retryDeadline, idleDeadline);
+    try {
+      while (this.monotonicNow() < deadline) {
+        this.assertBeforeDeadline(deadline);
+        const status = await this.awaitRuntime(
+          binding.runtime.status(binding.sessionId),
+          `read status for ${binding.participantId}`,
+          undefined,
+          deadline,
+        );
+        if (status === "idle") return;
+        if (status === "offline") throw new Error(`Agent session is offline: ${binding.sessionId}`);
+        await this.delayBeforeDeadline(this.options.turnPollIntervalMs ?? 250, deadline);
+      }
+    } catch (error) {
+      if (error instanceof RetryDeadlineExceededError && idleDeadline < retryDeadline) {
+        throw new Error(`Timed out waiting for agent to become idle: ${binding.participantId}`);
+      }
+      throw error;
+    }
+    if (retryDeadline <= idleDeadline) {
+      throw new RetryDeadlineExceededError("Agent idle retry deadline expired");
     }
     throw new Error(`Timed out waiting for agent to become idle: ${binding.participantId}`);
   }
 
-  private async awaitRuntime<T>(operation: Promise<T>, label: string, timeoutMs = this.options.runtimeRequestTimeoutMs ?? 15_000): Promise<T> {
+  private monotonicNow(): number {
+    return this.options.monotonicNow?.() ?? performance.now();
+  }
+
+  private assertBeforeDeadline(deadline: number): void {
+    if (this.monotonicNow() >= deadline) {
+      throw new RetryDeadlineExceededError("Turn retry deadline expired");
+    }
+  }
+
+  private async delayBeforeDeadline(milliseconds: number, deadline: number): Promise<void> {
+    const remaining = deadline - this.monotonicNow();
+    if (remaining <= 0) throw new RetryDeadlineExceededError("Turn retry deadline expired");
+    const boundedDelay = Math.min(milliseconds, remaining);
+    if (!this.options.scheduleTurnRetryTimer) {
+      await delay(boundedDelay, this.controller?.signal);
+    } else {
+      const signal = this.controller?.signal;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        let timer: { cancel(): void } | undefined;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        };
+        const abort = (): void => {
+          timer?.cancel();
+          finish();
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        timer = this.options.scheduleTurnRetryTimer!(finish, boundedDelay);
+        if (settled) timer.cancel();
+      });
+    }
+    if (this.monotonicNow() >= deadline) {
+      throw new RetryDeadlineExceededError("Turn retry deadline expired");
+    }
+  }
+
+  private async awaitRuntime<T>(
+    operation: Promise<T>,
+    label: string,
+    timeoutMs = this.options.runtimeRequestTimeoutMs ?? 15_000,
+    deadline?: number,
+  ): Promise<T> {
     const signal = this.controller?.signal;
+    const remaining = deadline === undefined ? undefined : deadline - this.monotonicNow();
+    if (remaining !== undefined && remaining <= 0) {
+      throw new RetryDeadlineExceededError(`Operation deadline expired: ${label}`);
+    }
+    const effectiveTimeout = remaining === undefined ? timeoutMs : Math.min(timeoutMs, remaining);
+    const deadlineLimited = remaining !== undefined && remaining <= timeoutMs;
     return await new Promise<T>((resolve, reject) => {
       let settled = false;
       const finish = (callback: () => void): void => {
@@ -1212,7 +1481,9 @@ export class ChannelRuntimeRelay {
         signal?.removeEventListener("abort", abort);
         callback();
       };
-      const timer = setTimeout(() => finish(() => reject(new Error(`Runtime request timed out: ${label}`))), timeoutMs);
+      const timer = setTimeout(() => finish(() => reject(deadlineLimited
+        ? new RetryDeadlineExceededError(`Operation deadline expired: ${label}`)
+        : new Error(`Runtime request timed out: ${label}`))), effectiveTimeout);
       const abort = () => finish(() => reject(new Error(`Runtime request cancelled: ${label}`)));
       signal?.addEventListener("abort", abort, { once: true });
       operation.then(

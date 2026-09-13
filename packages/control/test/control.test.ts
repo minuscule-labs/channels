@@ -266,6 +266,9 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
           startedAt: "2026-08-28T00:00:00.000Z",
           queuedTurns: 2,
           queuedTurnsExact: false,
+          privateToolName: "SECRET_TOOL_NAME",
+          prompt: "SECRET_PROMPT",
+          providerPayload: "SECRET_PROVIDER_PAYLOAD",
         };
       },
     },
@@ -280,7 +283,10 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
     queuedTurnsExact: false,
   });
   assert.equal(result.agents[0]?.capabilities.interrupt, true);
-  assert.doesNotMatch(JSON.stringify(result), /runtime-session-secret|pi-private-adapter/);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /runtime-session-secret|pi-private-adapter|SECRET_TOOL_NAME|SECRET_PROMPT|SECRET_PROVIDER_PAYLOAD/,
+  );
   await control.cancelCurrentChannelAgent(channel.id, "agent-running", "human-1");
   assert.equal(cancelCalls, 1);
 });
@@ -495,6 +501,84 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
   });
   assert.equal(reconnected.status, 200);
   assert.deepEqual(reconnectActors, ["human-1"]);
+});
+
+test("authenticated control responses allowlist activity and sanitize lifecycle and status failures", async (context) => {
+  const secret = "SECRET_RUNTIME_ID_ENDPOINT_TOKEN_PROMPT_TOOL_PROVIDER_PATH";
+  let exposeActivity = true;
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/",
+    currentHumanIdentityId: "human-1",
+  });
+  const fail = async (): Promise<void> => { throw new Error(secret); };
+  const control = new LocalControlService({
+    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
+    bindings: { async listChannelBindings() { return records; } },
+    runtimes: { "pi-private-adapter": { async status() { throw new Error(secret); } } },
+    lifecycle: {
+      available: true,
+      startChannelAgent: fail,
+      replaceChannelAgent: fail,
+      stopChannelAgent: fail,
+      reconnectChannelAgent: fail,
+      cancelCurrentChannelAgent: fail,
+      activity() {
+        if (!exposeActivity) return undefined;
+        return {
+          phase: "using_tools" as const,
+          triggerMessageId: "message-public",
+          triggerSequence: 9,
+          startedAt: "2026-08-28T00:00:00.000Z",
+          queuedTurns: 1,
+          queuedTurnsExact: false,
+          runtimeSessionId: secret,
+          toolName: secret,
+          providerPayload: secret,
+          rawError: secret,
+        };
+      },
+    },
+  });
+  const server = await createLocalControlHttpServer({
+    service: control,
+    port: 0,
+    allowedOrigins: [sessions.browserOrigin],
+    browserSessions: sessions,
+  });
+  context.after(() => server.close());
+  const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+  const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+  const headers = { cookie, origin: sessions.browserOrigin };
+  const agentsPath = `/local/channels/${channel.id}/agents`;
+
+  const activeResponse = await fetch(`${server.endpoint}${agentsPath}`, { headers });
+  assert.equal(activeResponse.status, 200);
+  const activeBody = await activeResponse.json() as { agents: Array<{ activity: Record<string, unknown> }> };
+  assert.deepEqual(activeBody.agents[0]?.activity, {
+    phase: "using_tools",
+    triggerMessageId: "message-public",
+    triggerSequence: 9,
+    startedAt: "2026-08-28T00:00:00.000Z",
+    queuedTurns: 1,
+    queuedTurnsExact: false,
+  });
+  assert.doesNotMatch(JSON.stringify(activeBody), new RegExp(secret));
+
+  exposeActivity = false;
+  const uncertainResponse = await fetch(`${server.endpoint}${agentsPath}`, { headers });
+  assert.equal(uncertainResponse.status, 200);
+  const uncertainBody = await uncertainResponse.json();
+  assert.doesNotMatch(JSON.stringify(uncertainBody), new RegExp(secret));
+  assert.equal((uncertainBody as { agents: Array<{ state: string }> }).agents[0]?.state, "uncertain");
+
+  for (const action of ["start", "reconnect", "replace", "stop", "cancel-current"]) {
+    const response = await fetch(
+      `${server.endpoint}${agentsPath}/agent-running/${action}`,
+      { method: "POST", headers },
+    );
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: "Local control status unavailable" });
+  }
 });
 
 test("serves authenticated bulk lifecycle partial results", async (context) => {
@@ -1115,6 +1199,18 @@ test("agent host sanitizes unexpected cancellation failures and audit output", a
       && error.message === "Agent turn could not be canceled",
   );
   assert.doesNotMatch(JSON.stringify(audit), /SECRET_DATABASE_URL|private\/path/);
+  assert.equal(audit.length, 1);
+  const [{ timestamp: auditAt, ...auditFields }] = audit;
+  assert.match(auditAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(auditFields, {
+    action: "agent.turn.cancel.requested",
+    outcome: "rejected",
+    reason: "unavailable",
+    actorIdentityId: "owner-safe",
+    workspaceId: "workspace-safe",
+    channelId: "channel-safe",
+    targetIdentityId: "agent-safe",
+  });
 });
 
 test("one binding queue drain does not hold the shared Relay ownership lock", async () => {

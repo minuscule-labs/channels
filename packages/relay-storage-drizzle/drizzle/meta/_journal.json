@@ -43,6 +43,13 @@
       "when": 1788627600000,
       "tag": "0005_agent_skills",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789315200000,
+      "tag": "0006_delivery_dead_letters",
+      "breakpoints": true
     }
   ]
 }

@@ -1259,6 +1259,55 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
   }
 });
 
+test("an absolute retry budget bounds a stalled Runtime attempt while peer work continues", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const recoveryStore = new InMemoryRelayBindingStore();
+  let stalledTurnReads = 0;
+  const stalledRuntime: AgentRuntimePort = {
+    async send() {}, async messages() { return []; }, async status() { return "idle"; },
+    async turn() {
+      stalledTurnReads += 1;
+      return await new Promise<RuntimePortTurn | undefined>(() => {});
+    },
+    async startTurn() { throw new Error("stalled lookup must not start a turn"); },
+  };
+  const peerRuntime = new FakeRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" },
+    { id: "agent-a", type: "agent" },
+    { id: "agent-b", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [
+      { participantId: "agent-a", sessionId: "session-a", runtime: stalledRuntime },
+      { participantId: "agent-b", sessionId: "session-b", runtime: peerRuntime },
+    ],
+    cursorStore: recoveryStore,
+    turnRetryBudgetMs: 30,
+    runtimeRequestTimeoutMs: 1_000,
+    terminalOutcomeTimeoutMs: 100,
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a @agent-b bounded",
+    });
+    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-b")) === trigger.sequence);
+    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    assert.equal(stalledTurnReads, 1);
+    assert.equal(peerRuntime.prompts.get("session-b")?.length, 1);
+    const messages = await client.listMessages(channel.id);
+    assert.equal(messages.some(({ body }) => body.includes("Runtime turn failed")), true);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("relay restart does not duplicate a committed response after its acknowledgement is lost", async () => {
   const storage = new InMemoryChannelStorage();
   const server = await createChannelHttpServer({ service: new ChannelService(storage) });
@@ -1433,7 +1482,64 @@ test("terminal Runtime failure is recorded visibly before the cursor advances", 
   } finally { await relay.stop(); await server.close(); }
 });
 
-test("permanent response delivery rejection does not retry or block Relay shutdown", async () => {
+test("response delivery retries only transient classes and caps Retry-After by the deadline policy", async () => {
+  const cases: Array<{ failure: Error; expectedDelay: number }> = [
+    { failure: new Error("private network failure"), expectedDelay: 1_000 },
+    { failure: new ChannelClientError("private timeout body", 408), expectedDelay: 1_000 },
+    { failure: new ChannelClientError("private early body", 425), expectedDelay: 1_000 },
+    { failure: new ChannelClientError("private rate body", 429, 60_000), expectedDelay: 30_000 },
+    { failure: new ChannelClientError("private server body", 503), expectedDelay: 1_000 },
+  ];
+  for (const [index, { failure, expectedDelay }] of cases.entries()) {
+    const server = await createChannelHttpServer();
+    const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const timers = new ManualActivityTimers();
+    const recoveryStore = new InMemoryRelayBindingStore();
+    class TransientClient extends ChannelClient {
+      calls = 0;
+      override async postResponse(channelId: string, input: CreateResponseInput): Promise<ResponseResult> {
+        this.calls += 1;
+        if (this.calls === 1) throw failure;
+        return reliableClient.postResponse(channelId, input);
+      }
+    }
+    const client = new TransientClient(server.endpoint, { serviceToken: server.serviceToken });
+    const runtime = new RecoverableRuntime();
+    const channel = await reliableClient.createChannel({ participants: [
+      { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+    ] });
+    const relay = new ChannelRuntimeRelay({
+      client,
+      channelId: channel.id,
+      bindings: [{ participantId: "agent-a", sessionId: `session-${index}`, runtime }],
+      cursorStore: recoveryStore,
+      scheduleTurnRetryTimer: timers.schedule,
+    });
+    try {
+      await relay.start();
+      const trigger = await reliableClient.postMessage(channel.id, {
+        participantId: "user",
+        body: "@agent-a retry delivery",
+      });
+      await waitUntil(async () => runtime.startCount === 1);
+      runtime.complete("delivered after retry");
+      await waitUntil(async () => timers.entries.length === 1);
+      assert.equal(timers.entries[0]?.milliseconds, 250);
+      timers.invoke(0);
+      await waitUntil(async () => timers.entries.length === 2);
+      assert.equal(timers.entries[1]?.milliseconds, expectedDelay);
+      timers.invoke(1);
+      await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+      assert.equal(client.calls, 2);
+      assert.deepEqual(await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a"), []);
+    } finally {
+      await relay.stop();
+      await server.close();
+    }
+  }
+});
+
+test("permanent response delivery rejection records one private dead letter and advances", async () => {
   const server = await createChannelHttpServer();
   const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
   class RejectingClient extends ChannelClient {
@@ -1452,23 +1558,131 @@ test("permanent response delivery rejection does not retry or block Relay shutdo
     async status() { return "idle"; }, async send() {}, async messages() { return []; },
     async turn() { return undefined; },
     async startTurn(_sessionId, turnId, input) {
-      return { id: turnId, input, status: "failed", createdAt: timestamp, updatedAt: timestamp };
+      return {
+        id: turnId,
+        input,
+        status: "completed",
+        response: { role: "assistant" as const, content: "private response body" },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
     },
   };
   const channel = await reliableClient.createChannel({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
+  const recoveryStore = new InMemoryRelayBindingStore();
   const relay = new ChannelRuntimeRelay({
     client, channelId: channel.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: recoveryStore,
   });
   try {
     await relay.start();
-    await reliableClient.postMessage(channel.id, { participantId: "user", body: "@agent-a fail" });
-    await waitUntil(async () => client.calls === 1);
+    const trigger = await reliableClient.postMessage(channel.id, { participantId: "user", body: "@agent-a fail" });
+    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
     await relay.waitForIdle();
-    assert.equal(client.calls, 1);
+    assert.equal(client.calls, 2);
+    const deadLetters = await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a");
+    assert.equal(deadLetters.length, 1);
+    assert.deepEqual({
+      ...deadLetters[0],
+      createdAt: "<time>",
+      updatedAt: "<time>",
+    }, {
+      channelId: channel.id,
+      participantId: "agent-a",
+      triggerMessageId: trigger.id,
+      triggerSequence: trigger.sequence,
+      reason: "delivery_rejected",
+      createdAt: "<time>",
+      updatedAt: "<time>",
+    });
+    assert.doesNotMatch(JSON.stringify(deadLetters), /private response body|response validation failed/);
   } finally { await relay.stop(); await server.close(); }
+});
+
+test("a committed public response uses private dead-letter recovery when cursor mirroring fails", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  class CursorFailureStore extends InMemoryRelayBindingStore {
+    override async setCursor(): Promise<void> { throw new Error("private cursor storage failed"); }
+  }
+  const recoveryStore = new CursorFailureStore();
+  const runtime = new RecoverableRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: recoveryStore,
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a preserve visible outcome",
+    });
+    await waitUntil(async () => runtime.startCount === 1);
+    runtime.complete("public response survived");
+    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    const messages = await client.listMessages(channel.id);
+    assert.equal(messages.filter(({ body }) => body === "public response survived").length, 1);
+    assert.equal(messages.some(({ body }) => body.includes("Runtime turn failed")), false);
+    assert.deepEqual(
+      (await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a")).map(({ reason }) => reason),
+      ["cursor_commit_failed"],
+    );
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("a stalled response delivery dead-letters within bounded finalization without rerunning Runtime", async () => {
+  const server = await createChannelHttpServer();
+  const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  class StalledClient extends ChannelClient {
+    calls = 0;
+    override async postResponse(): Promise<ResponseResult> {
+      this.calls += 1;
+      return await new Promise<ResponseResult>(() => {});
+    }
+  }
+  const client = new StalledClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new RecoverableRuntime();
+  const recoveryStore = new InMemoryRelayBindingStore();
+  const channel = await reliableClient.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: recoveryStore,
+    turnPollIntervalMs: 5,
+    turnRetryBudgetMs: 40,
+    runtimeRequestTimeoutMs: 1_000,
+    terminalOutcomeTimeoutMs: 80,
+  });
+  try {
+    await relay.start();
+    const trigger = await reliableClient.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a bounded delivery",
+    });
+    await waitUntil(async () => runtime.startCount === 1);
+    runtime.complete("private undelivered response");
+    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    assert.equal(runtime.startCount, 1);
+    assert.equal(client.calls, 2);
+    assert.equal(
+      (await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a"))[0]?.reason,
+      "delivery_timed_out",
+    );
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
 });
 
 test("legacy Runtime does not resend after an ambiguous send failure", async () => {
@@ -2193,7 +2407,7 @@ test("a lease check failure does not poison later queued turns", async () => {
   try {
     await relay.start();
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
-    await waitUntil(async () => errors.some((error) => error.message === "db temporarily unavailable"));
+    await waitUntil(async () => errors.some((error) => error.message === "Terminal Channel outcome unavailable"));
     await waitUntil(async () => (await client.listMessages(channel.id)).some((message) => message.body.includes("Runtime turn failed")));
     await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
     await waitUntil(async () => (await client.listMessages(channel.id)).some((message) => message.body === "second completed"));

@@ -490,17 +490,28 @@ export class LocalControlService {
       diagnostics: false,
     };
     if (activity) {
+      const safeActivity = {
+        phase: activity.phase,
+        triggerMessageId: activity.triggerMessageId,
+        triggerSequence: activity.triggerSequence,
+        startedAt: activity.startedAt,
+        queuedTurns: activity.queuedTurns,
+        queuedTurnsExact: activity.queuedTurnsExact,
+        ...(activity.phase === "retrying" && activity.retryAttempt !== undefined
+          ? { retryAttempt: activity.retryAttempt }
+          : {}),
+      };
       return {
         ...base,
         ...details,
         state: "running",
-        activity,
+        activity: safeActivity,
         diagnostics: {
           connection: "connected",
-          phase: activity.phase,
-          startedAt: activity.startedAt,
-          queuedTurns: activity.queuedTurns,
-          queuedTurnsExact: activity.queuedTurnsExact,
+          phase: safeActivity.phase,
+          startedAt: safeActivity.startedAt,
+          queuedTurns: safeActivity.queuedTurns,
+          queuedTurnsExact: safeActivity.queuedTurnsExact,
           lastVerifiedAt: binding.lastVerifiedAt,
           capabilities: diagnosticCapabilities,
         },

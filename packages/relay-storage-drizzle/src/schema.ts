@@ -39,6 +39,23 @@ export const agentHostCursors = sqliteTable("agent_host_cursors", {
   uniqueIndex("agent_host_cursors_route_unique").on(table.channelId, table.participantId),
 ]);
 
+export const deliveryDeadLetters = sqliteTable("delivery_dead_letters", {
+  channelId: text("channel_id").notNull(),
+  participantId: text("participant_id").notNull(),
+  triggerMessageId: text("trigger_message_id").notNull(),
+  triggerSequence: integer("trigger_sequence").notNull(),
+  reason: text("reason", {
+    enum: ["delivery_rejected", "delivery_timed_out", "cursor_commit_failed"],
+  }).notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("delivery_dead_letters_trigger_unique")
+    .on(table.channelId, table.participantId, table.triggerMessageId),
+  index("delivery_dead_letters_route_sequence_idx")
+    .on(table.channelId, table.participantId, table.triggerSequence),
+]);
+
 export const channelAgentBindings = sqliteTable("channel_agent_bindings", {
   id: text("id").primaryKey(),
   workspaceAgentConfigId: text("workspace_agent_config_id").notNull()

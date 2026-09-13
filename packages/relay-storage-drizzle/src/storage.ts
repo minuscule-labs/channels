@@ -2,6 +2,8 @@ import { createClient, type Client } from "@libsql/client";
 import type {
   ChannelAgentBindingRecord,
   ChannelAgentBindingState,
+  DeliveryDeadLetterInput,
+  DeliveryDeadLetterRecord,
   LocalWorkspaceConfig,
   RelayBindingStore,
   RuntimeModelRef,
@@ -348,6 +350,50 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         updatedAt: new Date().toISOString(),
       },
     });
+  }
+
+  async commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      await transaction.insert(schema.deliveryDeadLetters).values({
+        channelId: input.channelId,
+        participantId: input.participantId,
+        triggerMessageId: input.triggerMessageId,
+        triggerSequence: input.triggerSequence,
+        reason: input.reason,
+        createdAt: input.recordedAt,
+        updatedAt: input.recordedAt,
+      }).onConflictDoNothing({
+        target: [
+          schema.deliveryDeadLetters.channelId,
+          schema.deliveryDeadLetters.participantId,
+          schema.deliveryDeadLetters.triggerMessageId,
+        ],
+      });
+      await transaction.insert(schema.agentHostCursors).values({
+        channelId: input.channelId,
+        participantId: input.participantId,
+        lastProcessedSequence: input.triggerSequence,
+        updatedAt: input.recordedAt,
+      }).onConflictDoUpdate({
+        target: [schema.agentHostCursors.channelId, schema.agentHostCursors.participantId],
+        set: {
+          lastProcessedSequence: sql`max(${schema.agentHostCursors.lastProcessedSequence}, ${input.triggerSequence})`,
+          updatedAt: input.recordedAt,
+        },
+      });
+    });
+  }
+
+  async listDeliveryDeadLetters(
+    channelId: string,
+    participantId: string,
+  ): Promise<DeliveryDeadLetterRecord[]> {
+    return await this.database.select().from(schema.deliveryDeadLetters)
+      .where(and(
+        eq(schema.deliveryDeadLetters.channelId, channelId),
+        eq(schema.deliveryDeadLetters.participantId, participantId),
+      ))
+      .orderBy(asc(schema.deliveryDeadLetters.triggerSequence));
   }
 
   async close(): Promise<void> {

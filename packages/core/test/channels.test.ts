@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
-import { ChannelClient } from "../src/client.ts";
+import { ChannelClient, ChannelClientError } from "../src/client.ts";
 import { createChannelHttpServer, type ChannelHttpServer } from "../src/http-server.ts";
 import { createResourceId, isResourceId, RESOURCE_ID_PREFIXES } from "../src/ids.ts";
 import type { ChannelEvent } from "../src/types.ts";
@@ -888,6 +888,29 @@ test("ChannelClient forwards message-list cancellation to fetch", async () => {
     controller.abort(new DOMException("Stopped", "AbortError"));
     await assert.rejects(pending, { name: "AbortError" });
     assert.equal(receivedSignal, controller.signal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ChannelClient exposes only bounded retry metadata from failed responses", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(
+    JSON.stringify({ error: "private upstream response" }),
+    { status: 429, headers: { "content-type": "application/json", "retry-after": "45" } },
+  )) as typeof fetch;
+  try {
+    await assert.rejects(
+      new ChannelClient("http://127.0.0.1:1").postResponse("channel-a", {
+        participantId: "agent-a",
+        body: "response",
+        triggerMessageId: "message-a",
+        triggerSequence: 1,
+      }),
+      (error: unknown) => error instanceof ChannelClientError
+        && error.status === 429
+        && error.retryAfterMs === 45_000,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

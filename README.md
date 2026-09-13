@@ -103,6 +103,8 @@ The public Channels core remains communication-only. The product composes it wit
 
 Workspace agents can participate in multiple Channels. Each Channel binding owns an isolated Runtime session and transcript. Addressed messages wake agents; ordinary messages in a two-participant human-agent Channel implicitly address the sole agent.
 
+Relay delivery uses one absolute per-trigger retry budget across Runtime and Channel operations. Transient network, timeout, `408`, `425`, `429`, and `5xx` failures retry within that budget; other authenticated `4xx` responses are permanent. If a generic public terminal outcome cannot be committed, the private Relay store atomically records a sanitized dead letter and advances the durable cursor so poison delivery cannot block later work.
+
 ## Packages
 
 - `core` — Channel model, storage interface, HTTP/SSE service, and client
