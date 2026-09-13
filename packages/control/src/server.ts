@@ -469,6 +469,7 @@ export class LocalControlService {
         diagnostics: {
           connection: "offline",
           queuedTurns: 0,
+          queuedTurnsExact: true,
           lastVerifiedAt: binding.lastVerifiedAt,
           capabilities: { events: false, interrupt: false, hostReconnect: false, attach: false, diagnostics: false },
         },
@@ -499,6 +500,7 @@ export class LocalControlService {
           phase: activity.phase,
           startedAt: activity.startedAt,
           queuedTurns: activity.queuedTurns,
+          queuedTurnsExact: activity.queuedTurnsExact,
           lastVerifiedAt: binding.lastVerifiedAt,
           capabilities: diagnosticCapabilities,
         },
@@ -523,6 +525,7 @@ export class LocalControlService {
           diagnostics: {
             connection: "disconnected",
             queuedTurns: 0,
+            queuedTurnsExact: true,
             lastVerifiedAt: binding.lastVerifiedAt,
             capabilities: diagnosticCapabilities,
           },
@@ -542,6 +545,7 @@ export class LocalControlService {
           diagnostics: {
             connection: "connected",
             queuedTurns: 0,
+            queuedTurnsExact: true,
             lastVerifiedAt: binding.lastVerifiedAt,
             capabilities: diagnosticCapabilities,
           },
@@ -558,6 +562,7 @@ export class LocalControlService {
         diagnostics: {
           connection: status === "idle" ? "connected" : "offline",
           queuedTurns: 0,
+          queuedTurnsExact: true,
           lastVerifiedAt: binding.lastVerifiedAt,
           capabilities: diagnosticCapabilities,
         },
@@ -575,6 +580,7 @@ export class LocalControlService {
         diagnostics: {
           connection: "uncertain",
           queuedTurns: 0,
+          queuedTurnsExact: true,
           lastVerifiedAt: binding.lastVerifiedAt,
           capabilities: diagnosticCapabilities,
         },

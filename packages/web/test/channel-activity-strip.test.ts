@@ -13,6 +13,7 @@ const agent = (
   identityId: string,
   phase: "running" | "using_tools" | "responding" | "retrying" | "canceling",
   queuedTurns: number,
+  queuedTurnsExact = true,
 ): LocalChannelAgent => ({
   workspaceId: "workspace-a",
   channelId: "channel-a",
@@ -24,6 +25,7 @@ const agent = (
     triggerSequence: 42,
     startedAt: "2026-09-10T12:00:00.000Z",
     queuedTurns,
+    queuedTurnsExact,
     ...(phase === "retrying" ? { retryAttempt: 3 } : {}),
   },
   capabilities: { start: false, replace: false, stop: true, steer: false, interrupt: true, reconnect: false },
@@ -45,13 +47,24 @@ describe("Channel activity summary", () => {
       Date.parse("2026-09-10T12:01:02.000Z"),
     );
     expect(items).toEqual([
-      "@builder is working · 1m 2s · 2 turns queued",
+      "@builder is working · 1m 2s · 2 queued",
       "@reviewer is retrying (attempt 3) · 1m 2s",
-      "@writer is canceling · 1m 2s · 1 turn queued",
+      "@writer is canceling · 1m 2s · 1 queued",
       "@tools is using tools · 1m 2s",
       "@responder is responding · 1m 2s",
     ]);
     expect(items.join(" ")).not.toMatch(/message-private-trigger|42|private-tool-name|prompt|path|error/i);
+  });
+
+  it("labels bounded backlog counts without presenting them as exact", () => {
+    expect(activitySummaryItems(
+      [agent("builder", "running", 2, false), agent("reviewer", "running", 0, false)],
+      [participant("builder", "builder"), participant("reviewer", "reviewer")],
+      Date.parse("2026-09-10T12:01:02.000Z"),
+    )).toEqual([
+      "@builder is working · 1m 2s · At least 2 queued",
+      "@reviewer is working · 1m 2s · Checking backlog",
+    ]);
   });
 
   it("omits idle agents", () => {

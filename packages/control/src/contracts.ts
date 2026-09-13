@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 12 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 13 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -140,6 +140,7 @@ export interface LocalAgentActivity {
   triggerSequence: number;
   startedAt: string;
   queuedTurns: number;
+  queuedTurnsExact: boolean;
   retryAttempt?: number;
 }
 
@@ -148,6 +149,7 @@ export interface LocalAgentDiagnostics {
   phase?: LocalAgentActivity["phase"];
   startedAt?: string;
   queuedTurns: number;
+  queuedTurnsExact: boolean;
   lastVerifiedAt?: string;
   capabilities: {
     events: boolean;

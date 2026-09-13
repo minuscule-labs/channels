@@ -10,6 +10,17 @@ function elapsed(startedAt: string, now: number): string {
   return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
+export function queuedTurnsSummary(
+  activity: Pick<NonNullable<LocalChannelAgent["activity"]>, "queuedTurns" | "queuedTurnsExact">,
+): string {
+  if (!activity.queuedTurnsExact) {
+    return activity.queuedTurns > 0
+      ? `At least ${activity.queuedTurns} queued`
+      : "Checking backlog";
+  }
+  return activity.queuedTurns > 0 ? `${activity.queuedTurns} queued` : "";
+}
+
 export function activitySummaryItems(
   agents: readonly LocalChannelAgent[],
   participants: readonly Participant[],
@@ -27,9 +38,8 @@ export function activitySummaryItems(
         : activity.phase === "using_tools"
           ? "is using tools"
           : activity.phase === "responding" ? "is responding" : "is working";
-    const queue = activity.queuedTurns > 0
-      ? ` · ${activity.queuedTurns} ${activity.queuedTurns === 1 ? "turn" : "turns"} queued`
-      : "";
+    const queueSummary = queuedTurnsSummary(activity);
+    const queue = queueSummary ? ` · ${queueSummary}` : "";
     return [`${handle} ${phase} · ${elapsed(activity.startedAt, now)}${queue}`];
   });
 }

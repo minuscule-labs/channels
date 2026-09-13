@@ -67,6 +67,11 @@ export interface ChannelRuntimeRelayOptions {
     callback: () => void,
     milliseconds: number,
   ): { cancel(): void };
+  catchUpPageSize?: number;
+  scheduleCatchUpRetryTimer?(
+    callback: () => void,
+    milliseconds: number,
+  ): { cancel(): void };
   onAgentResponse?(binding: AgentChannelBinding, message: ChannelMessage): void;
   onError?(binding: AgentChannelBinding | undefined, error: Error): void;
 }
@@ -83,13 +88,17 @@ export interface RelayAgentActivity {
   triggerSequence: number;
   startedAt: string;
   queuedTurns: number;
+  queuedTurnsExact: boolean;
   retryAttempt?: number;
 }
 
 interface BindingState {
   binding: AgentChannelBinding;
   lastProcessedSequence: number;
-  lastEnqueuedSequence: number;
+  scanSequence: number;
+  observedHighWaterSequence: number;
+  knownThroughSequence: number;
+  needsHeadScan: boolean;
   activeTrigger?: ChannelMessage;
   startedAt?: string;
   phase?: RelayAgentActivityPhase;
@@ -101,10 +110,9 @@ interface BindingState {
   runtimeTurnAccepted?: boolean;
   interruptIssued?: boolean;
   interruptPromise?: Promise<boolean>;
-  /** Live events are buffered until attach catch-up has a contiguous ordered view. */
-  initializing?: boolean;
-  bufferedEvents?: ChannelMessage[];
-  queue: Promise<void>;
+  drainController?: AbortController;
+  drainTask?: Promise<void>;
+  lastCatchUpDiagnosticAt?: number;
   activityController?: AbortController;
   activityTask?: Promise<void>;
   activitySilenceTimer?: { cancel(): void };
@@ -267,6 +275,9 @@ function isRuntimeActivityEvent(event: unknown): event is RuntimeActivityEvent {
 
 const ACTIVITY_STREAM_RETRY_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const ACTIVITY_STREAM_DIAGNOSTIC_INTERVAL_MS = 30_000;
+const CATCH_UP_RETRY_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
+const CATCH_UP_DIAGNOSTIC_INTERVAL_MS = 30_000;
+const DEFAULT_CATCH_UP_PAGE_SIZE = 100;
 
 export class ChannelRuntimeRelay {
   private readonly states: BindingState[];
@@ -280,14 +291,20 @@ export class ChannelRuntimeRelay {
     validatePositiveMilliseconds("turnTimeoutMs", options.turnTimeoutMs);
     validatePositiveMilliseconds("runtimeRequestTimeoutMs", options.runtimeRequestTimeoutMs);
     validatePositiveMilliseconds("activitySilenceTimeoutMs", options.activitySilenceTimeoutMs);
+    if (options.catchUpPageSize !== undefined
+      && (!Number.isSafeInteger(options.catchUpPageSize)
+        || options.catchUpPageSize < 1
+        || options.catchUpPageSize > 500)) {
+      throw new RangeError("catchUpPageSize must be an integer between 1 and 500");
+    }
     this.states = options.bindings.map((binding) => ({
       binding,
       lastProcessedSequence: 0,
-      lastEnqueuedSequence: 0,
+      scanSequence: 0,
+      observedHighWaterSequence: 0,
+      knownThroughSequence: 0,
+      needsHeadScan: true,
       queuedTurns: 0,
-      initializing: true,
-      bufferedEvents: [],
-      queue: Promise.resolve(),
       activitySilenceVersion: 0,
     }));
   }
@@ -305,9 +322,11 @@ export class ChannelRuntimeRelay {
             this.options.channelId,
             state.binding.participantId,
           )) ?? 0;
-        state.lastEnqueuedSequence = state.lastProcessedSequence;
-        state.initializing = true;
-        state.bufferedEvents = [];
+        state.scanSequence = state.lastProcessedSequence;
+        state.observedHighWaterSequence = state.lastProcessedSequence;
+        state.knownThroughSequence = state.lastProcessedSequence;
+        state.needsHeadScan = true;
+        state.queuedTurns = 0;
       }),
     );
     this.controller = new AbortController();
@@ -332,7 +351,7 @@ export class ChannelRuntimeRelay {
     } finally {
       resolveRosterReady();
     }
-    await Promise.all([...this.states].map((state) => this.catchUpState(state)));
+    for (const state of this.states) this.startDrain(state);
   }
 
   async stop(): Promise<void> {
@@ -340,6 +359,7 @@ export class ChannelRuntimeRelay {
     for (const state of this.states) {
       this.clearActivitySilence(state);
       state.activityController?.abort();
+      state.drainController?.abort();
     }
     await this.task?.catch(() => {});
     await this.waitForIdle();
@@ -347,13 +367,19 @@ export class ChannelRuntimeRelay {
     for (const state of this.states) {
       state.activityController = undefined;
       state.activityTask = undefined;
+      state.drainController = undefined;
+      state.drainTask = undefined;
     }
     this.controller = undefined;
     this.task = undefined;
   }
 
   async waitForIdle(): Promise<void> {
-    await Promise.all(this.states.map((state) => state.queue));
+    while (true) {
+      const tasks = this.states.flatMap((state) => state.drainTask ? [state.drainTask] : []);
+      if (tasks.length === 0) return;
+      await Promise.all(tasks.map((task) => task.catch(() => undefined)));
+    }
   }
 
   /** Attach one binding without recreating the shared Channel subscription. */
@@ -366,28 +392,18 @@ export class ChannelRuntimeRelay {
     const state: BindingState = {
       binding,
       lastProcessedSequence,
-      lastEnqueuedSequence: lastProcessedSequence,
+      scanSequence: lastProcessedSequence,
+      observedHighWaterSequence: lastProcessedSequence,
+      knownThroughSequence: lastProcessedSequence,
+      needsHeadScan: true,
       queuedTurns: 0,
-      initializing: true,
-      bufferedEvents: [],
-      queue: Promise.resolve(),
       activitySilenceVersion: 0,
     };
-    // Install before catch-up and buffer live events. The final synchronous merge below
-    // prevents a newer event from advancing lastEnqueuedSequence ahead of an older trigger.
+    // Install before starting the background scan so live events can raise only the
+    // durable high-water mark without retaining their message bodies.
     this.states.push(state);
     this.startActivityEvents(state);
-    try {
-      if (this.task) await this.catchUpState(state);
-      else state.initializing = false;
-    } catch (error) {
-      this.clearActivitySilence(state);
-      state.activityController?.abort();
-      await state.activityTask?.catch(() => undefined);
-      const index = this.states.indexOf(state);
-      if (index >= 0) this.states.splice(index, 1);
-      throw error;
-    }
+    if (this.task) this.startDrain(state);
   }
 
   /** Stop routing future messages to one binding and return after its existing queue settles. */
@@ -397,8 +413,9 @@ export class ChannelRuntimeRelay {
     const [state] = this.states.splice(index, 1);
     this.clearActivitySilence(state!);
     state!.activityController?.abort();
+    state!.drainController?.abort();
     await Promise.all([
-      state!.queue.catch(() => undefined),
+      state!.drainTask?.catch(() => undefined),
       state!.activityTask?.catch(() => undefined),
     ]);
   }
@@ -418,6 +435,8 @@ export class ChannelRuntimeRelay {
       triggerSequence: state.activeTrigger.sequence,
       startedAt: state.startedAt,
       queuedTurns: state.queuedTurns,
+      queuedTurnsExact: !state.needsHeadScan
+        && state.knownThroughSequence >= state.observedHighWaterSequence,
       ...(state.phase === "retrying" && state.retryAttempt ? { retryAttempt: state.retryAttempt } : {}),
     };
   }
@@ -692,7 +711,14 @@ export class ChannelRuntimeRelay {
           const headSequence = messages.at(-1)?.sequence ?? 0;
           for (const state of retired) {
             state.lastProcessedSequence = Math.max(state.lastProcessedSequence, headSequence);
-            state.lastEnqueuedSequence = Math.max(state.lastEnqueuedSequence, headSequence);
+            state.scanSequence = Math.max(state.scanSequence, headSequence);
+            state.knownThroughSequence = Math.max(state.knownThroughSequence, headSequence);
+            state.observedHighWaterSequence = Math.max(
+              state.observedHighWaterSequence,
+              headSequence,
+            );
+            state.needsHeadScan = false;
+            state.queuedTurns = 0;
             await this.options.cursorStore?.setCursor(
               this.options.channelId,
               state.binding.participantId,
@@ -702,66 +728,158 @@ export class ChannelRuntimeRelay {
         }
         continue;
       }
-      for (const state of this.states) this.enqueue(state, event.message);
+      for (const state of this.states) this.observeMessage(state, event.message.sequence);
     }
   }
 
-  private async catchUpState(state: BindingState): Promise<void> {
-    let afterSequence = state.lastProcessedSequence;
-    const catchUp: ChannelMessage[] = [];
-    while (!this.controller?.signal.aborted && this.states.includes(state)) {
-      const messages = await this.options.client.listMessages(this.options.channelId, {
-        afterSequence,
-        limit: 500,
+  private observeMessage(state: BindingState, sequence: number): void {
+    if (sequence <= state.observedHighWaterSequence) return;
+    state.observedHighWaterSequence = sequence;
+    this.startDrain(state);
+  }
+
+  private startDrain(state: BindingState): void {
+    if (state.drainTask || !this.task || !this.states.includes(state)) return;
+    state.drainController ??= new AbortController();
+    if (state.drainController.signal.aborted) return;
+    let task!: Promise<void>;
+    task = this.drainState(state, state.drainController.signal)
+      .catch(() => {
+        if (!state.drainController?.signal.aborted) {
+          this.options.onError?.(state.binding, new Error("Channel catch-up stopped unexpectedly"));
+        }
+      })
+      .finally(() => {
+        if (state.drainTask !== task) return;
+        state.drainTask = undefined;
+        // No await between clearing and rechecking: a concurrent event either sees the
+        // active task or leaves a high-water mark that starts the next bounded pass.
+        if (this.task && this.states.includes(state) && !state.drainController?.signal.aborted
+          && (state.needsHeadScan
+            || state.scanSequence < state.observedHighWaterSequence)) {
+          this.startDrain(state);
+        }
       });
-      catchUp.push(...messages);
-      if (messages.length < 500) break;
-      afterSequence = messages.at(-1)!.sequence;
-    }
-    if (!this.states.includes(state)) return;
-    const ordered = [...new Map([...catchUp, ...(state.bufferedEvents ?? [])]
-      .map((message) => [message.sequence, message])).values()]
-      .sort((left, right) => left.sequence - right.sequence);
-    // No await after this point: transition and enqueue are atomic relative to event delivery.
-    state.initializing = false;
-    state.bufferedEvents = undefined;
-    for (const message of ordered) this.enqueue(state, message);
+    state.drainTask = task;
   }
 
-  private enqueue(state: BindingState, message: ChannelMessage): void {
-    if (state.initializing) {
-      state.bufferedEvents?.push(message);
+  private async drainState(state: BindingState, signal: AbortSignal): Promise<void> {
+    const pageSize = this.options.catchUpPageSize ?? DEFAULT_CATCH_UP_PAGE_SIZE;
+    let failures = 0;
+    while (!signal.aborted && this.states.includes(state)) {
+      let messages: ChannelMessage[];
+      try {
+        messages = await this.options.client.listMessages(this.options.channelId, {
+          afterSequence: state.scanSequence,
+          limit: pageSize,
+          signal,
+        });
+      } catch {
+        if (signal.aborted || !this.states.includes(state)) return;
+        failures += 1;
+        this.reportCatchUpUnavailable(state);
+        const backoffMs = CATCH_UP_RETRY_BACKOFF_MS[
+          Math.min(failures - 1, CATCH_UP_RETRY_BACKOFF_MS.length - 1)
+        ]!;
+        await this.waitForCatchUpRetry(signal, backoffMs);
+        continue;
+      }
+      if (signal.aborted || !this.states.includes(state)) return;
+      const pageEnd = messages.at(-1)?.sequence;
+      if (pageEnd === undefined || pageEnd <= state.scanSequence) {
+        state.needsHeadScan = false;
+        if (state.scanSequence >= state.observedHighWaterSequence) return;
+        failures += 1;
+        this.reportCatchUpUnavailable(state);
+        const backoffMs = CATCH_UP_RETRY_BACKOFF_MS[
+          Math.min(failures - 1, CATCH_UP_RETRY_BACKOFF_MS.length - 1)
+        ]!;
+        await this.waitForCatchUpRetry(signal, backoffMs);
+        continue;
+      }
+
+      failures = 0;
+      state.knownThroughSequence = Math.max(state.knownThroughSequence, pageEnd);
+      if (messages.length < pageSize) state.needsHeadScan = false;
+      const isActive = this.isActiveParticipant(state.binding.participantId);
+      state.queuedTurns += messages.reduce((count, message) => count + Number(
+        message.sequence > state.scanSequence
+          && isActive
+          && shouldWake(message, state.binding, this.roster?.participants ?? []),
+      ), 0);
+
+      for (const message of messages) {
+        if (signal.aborted || !this.states.includes(state)) return;
+        if (message.sequence <= state.scanSequence) continue;
+        const wake = isActive
+          && shouldWake(message, state.binding, this.roster?.participants ?? []);
+        if (wake) {
+          state.queuedTurns = Math.max(0, state.queuedTurns - 1);
+          await this.runTurn(state, message);
+        }
+        state.scanSequence = Math.max(state.scanSequence, message.sequence);
+      }
+      if (!state.needsHeadScan
+        && state.scanSequence >= state.observedHighWaterSequence) return;
+    }
+  }
+
+  private async runTurn(state: BindingState, message: ChannelMessage): Promise<void> {
+    this.clearActivitySilence(state);
+    state.activeTrigger = message;
+    state.startedAt = new Date().toISOString();
+    state.phase = "running";
+    state.retryAttempt = undefined;
+    try {
+      await this.handleWithRetry(state, message);
+    } catch (error) {
+      this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.clearActive(state);
+    }
+  }
+
+  private reportCatchUpUnavailable(state: BindingState): void {
+    const now = Date.now();
+    if (state.lastCatchUpDiagnosticAt !== undefined
+      && now - state.lastCatchUpDiagnosticAt < CATCH_UP_DIAGNOSTIC_INTERVAL_MS) return;
+    state.lastCatchUpDiagnosticAt = now;
+    this.options.onError?.(state.binding, new Error("Channel catch-up unavailable"));
+  }
+
+  private async waitForCatchUpRetry(signal: AbortSignal, milliseconds: number): Promise<void> {
+    if (!this.options.scheduleCatchUpRetryTimer) {
+      await delay(milliseconds, signal);
       return;
     }
-    if (!this.isActiveParticipant(state.binding.participantId)) return;
-    if (message.sequence <= state.lastEnqueuedSequence) return;
-    if (!shouldWake(message, state.binding, this.roster?.participants ?? [])) return;
-    state.lastEnqueuedSequence = message.sequence;
-    state.queuedTurns += 1;
-    const run = async (): Promise<void> => {
-      state.queuedTurns -= 1;
-      this.clearActivitySilence(state);
-      state.activeTrigger = message;
-      state.startedAt = new Date().toISOString();
-      state.phase = "running";
-      state.retryAttempt = undefined;
-      try {
-        await this.handleWithRetry(state, message);
-      } catch (error) {
-        this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
-      } finally {
-        this.clearActive(state);
+    if (signal.aborted) return;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      let timer: { cancel(): void } | undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = (): void => {
+        timer?.cancel();
+        finish();
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
+        abort();
+        return;
       }
-    };
-    state.queue = state.queue.catch((error) => {
-      this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
-    }).then(run);
+      timer = this.options.scheduleCatchUpRetryTimer!(finish, milliseconds);
+      if (settled) timer.cancel();
+    });
   }
 
   private async handleWithRetry(state: BindingState, message: ChannelMessage): Promise<void> {
     let attempts = 0;
     let firstFailureAt: number | undefined;
-    while (!this.controller?.signal.aborted) {
+    while (!this.controller?.signal.aborted && this.states.includes(state)) {
       attempts += 1;
       try {
         await this.handle(state, message);
@@ -769,7 +887,7 @@ export class ChannelRuntimeRelay {
       } catch (error) {
         const normalized = error instanceof Error ? error : new Error(String(error));
         this.options.onError?.(state.binding, normalized);
-        if (error instanceof FencedTurnError) return;
+        if (!this.states.includes(state) || error instanceof FencedTurnError) return;
         if (error instanceof PermanentTurnError) {
           try {
             await this.recordTerminalFailure(state, message);
@@ -1033,6 +1151,7 @@ export class ChannelRuntimeRelay {
   private async mayDeliverResponse(state: BindingState): Promise<boolean> {
     // A definitive false fences delivery. Storage/lease failures are transient and must
     // reach commitResponse's retry loop rather than silently dropping this outcome.
+    if (!this.states.includes(state)) return false;
     if (state.binding.verifyLease && !(await state.binding.verifyLease())) return false;
     return this.isActiveParticipant(state.binding.participantId);
   }

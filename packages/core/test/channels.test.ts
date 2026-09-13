@@ -871,6 +871,28 @@ test("lists messages with bounded sequence pagination", async () => {
   } finally { await server.close(); }
 });
 
+test("ChannelClient forwards message-list cancellation to fetch", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  let receivedSignal: AbortSignal | null | undefined;
+  globalThis.fetch = ((_input: URL | RequestInfo, init?: RequestInit) => {
+    receivedSignal = init?.signal;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    });
+  }) as typeof fetch;
+  try {
+    const pending = new ChannelClient("http://127.0.0.1:1").listMessages("channel-a", {
+      signal: controller.signal,
+    });
+    controller.abort(new DOMException("Stopped", "AbortError"));
+    await assert.rejects(pending, { name: "AbortError" });
+    assert.equal(receivedSignal, controller.signal);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("returns 404 for an unknown channel", async () => {
   const server = await createChannelHttpServer();
   try {
