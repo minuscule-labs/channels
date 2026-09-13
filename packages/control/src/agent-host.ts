@@ -1160,47 +1160,41 @@ export class LocalAgentHost {
     category: LocalAgentHostDiagnosticEvent["category"],
     attempt = 0,
   ): void {
-    if (result === "attached") {
-      this.cancelRecovery(record.id);
-      this.diagnostic({
-        category,
-        outcome: category === "binding_lease" ? "reattached" : "attached",
-        channelId: record.channelId,
-        agentIdentityId: record.agentIdentityId,
-      });
-      return;
+    switch (result) {
+      case "attached":
+        this.cancelRecovery(record.id);
+        this.diagnostic({
+          category,
+          outcome: category === "binding_lease" ? "reattached" : "attached",
+          channelId: record.channelId,
+          agentIdentityId: record.agentIdentityId,
+        });
+        return;
+      case "runtime_offline":
+      case "invalid_binding":
+      case "runtime_unavailable":
+        this.cancelRecovery(record.id);
+        this.diagnostic({
+          category,
+          outcome: result === "runtime_offline"
+            ? "offline"
+            : result === "invalid_binding"
+              ? "invalid"
+              : "uncertain",
+          channelId: record.channelId,
+          agentIdentityId: record.agentIdentityId,
+        });
+        return;
+      case "runtime_uncertain":
+      case "lease_unavailable":
+      case "failed":
+        this.scheduleRecovery(record, attempt, category, result);
+        return;
+      default: {
+        const exhaustive: never = result;
+        throw new Error(`Unhandled attachment result: ${exhaustive}`);
+      }
     }
-    if (result === "runtime_offline") {
-      this.cancelRecovery(record.id);
-      this.diagnostic({
-        category,
-        outcome: "offline",
-        channelId: record.channelId,
-        agentIdentityId: record.agentIdentityId,
-      });
-      return;
-    }
-    if (result === "invalid_binding") {
-      this.cancelRecovery(record.id);
-      this.diagnostic({
-        category,
-        outcome: "invalid",
-        channelId: record.channelId,
-        agentIdentityId: record.agentIdentityId,
-      });
-      return;
-    }
-    if (result === "runtime_unavailable") {
-      this.cancelRecovery(record.id);
-      this.diagnostic({
-        category,
-        outcome: "uncertain",
-        channelId: record.channelId,
-        agentIdentityId: record.agentIdentityId,
-      });
-      return;
-    }
-    this.scheduleRecovery(record, attempt, category, result);
   }
 
   private scheduleRecovery(
