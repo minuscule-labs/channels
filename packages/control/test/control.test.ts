@@ -444,7 +444,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 14 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 15 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -526,7 +526,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 14, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 15, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -547,8 +547,9 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   assert.doesNotMatch(JSON.stringify(audit), /minu_local_session|code=|runtime-session-secret/);
 });
 
-test("accepts authenticated cancel-current requests and returns the canceling agent", async (context) => {
+test("accepts authenticated local session actions with opaque diagnostic responses", async (context) => {
   let cancelCalls = 0;
+  let diagnosticCalls = 0;
   const reconnectActors: string[] = [];
   const sessions = new LocalControlBrowserSessions({
     browserUrl: "http://127.0.0.1:5174/",
@@ -563,6 +564,7 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
       async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
       async reconnectChannelAgent(_channelId, _identityId, actorIdentityId) { reconnectActors.push(actorIdentityId); },
       async cancelCurrentChannelAgent() { cancelCalls += 1; },
+      async openChannelAgentDiagnostic() { diagnosticCalls += 1; },
       activity() {
         return {
           phase: "canceling", triggerMessageId: "message-37", triggerSequence: 37,
@@ -599,6 +601,16 @@ test("accepts authenticated cancel-current requests and returns the canceling ag
   });
   assert.equal(reconnected.status, 200);
   assert.deepEqual(reconnectActors, ["human-1"]);
+
+  const diagnosticEndpoint = `/local/channels/${channel.id}/agents/agent-running/open-diagnostic`;
+  assert.equal((await fetch(`${server.endpoint}${diagnosticEndpoint}`, { method: "POST" })).status, 401);
+  const opened = await fetch(`${server.endpoint}${diagnosticEndpoint}`, {
+    method: "POST",
+    headers: { cookie, origin: sessions.browserOrigin },
+  });
+  assert.equal(opened.status, 202);
+  assert.deepEqual(await opened.json(), { protocolVersion: 15, status: "opened" });
+  assert.equal(diagnosticCalls, 1);
 });
 
 test("authenticated control responses allowlist activity and sanitize lifecycle and status failures", async (context) => {
@@ -620,6 +632,7 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
       stopChannelAgent: fail,
       reconnectChannelAgent: fail,
       cancelCurrentChannelAgent: fail,
+      openChannelAgentDiagnostic: fail,
       activity() {
         if (!exposeActivity) return undefined;
         return {
@@ -669,7 +682,7 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
   assert.doesNotMatch(JSON.stringify(uncertainBody), new RegExp(secret));
   assert.equal((uncertainBody as { agents: Array<{ state: string }> }).agents[0]?.state, "uncertain");
 
-  for (const action of ["start", "reconnect", "replace", "stop", "cancel-current"]) {
+  for (const action of ["start", "reconnect", "replace", "stop", "cancel-current", "open-diagnostic"]) {
     const response = await fetch(
       `${server.endpoint}${agentsPath}/agent-running/${action}`,
       { method: "POST", headers },
@@ -828,7 +841,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 14,
+      protocolVersion: 15,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -1309,6 +1322,95 @@ test("agent host sanitizes unexpected cancellation failures and audit output", a
     channelId: "channel-safe",
     targetIdentityId: "agent-safe",
   });
+});
+
+test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic opening", async () => {
+  const audit: LocalControlAuditEvent[] = [];
+  let openCalls = 0;
+  let capabilityAvailable = true;
+  let failOpening = false;
+  const runtime: LocalControlRuntimePort = {
+    async status() { return "idle"; },
+    async sessionCapabilities() {
+      return {
+        version: 1,
+        safeActivityEvents: true,
+        interrupt: true,
+        reconnectExisting: true,
+        interactiveAttach: false,
+        openDiagnostic: capabilityAvailable,
+        liveSkillVerification: false,
+      };
+    },
+    async openDiagnostic() {
+      openCalls += 1;
+      if (failOpening) throw new Error("SECRET_DIAGNOSTIC_PATH=/private/runtime.log");
+    },
+  };
+  const host = new LocalAgentHost({
+    client: {} as ChannelClient,
+    store: {} as InMemoryRelayBindingStore,
+    runtimes: { "private-adapter": runtime },
+    onAudit: (event) => audit.push(event),
+  });
+  const internals = host as unknown as {
+    baseContext(): Promise<{
+      channel: { workspaceId: string };
+      bindings: Array<{
+        id: string;
+        agentIdentityId: string;
+        runtimeAdapter: string;
+        runtimeSessionId: string;
+        state: "connected";
+      }>;
+    }>;
+  };
+  internals.baseContext = async () => ({
+    channel: { workspaceId: "workspace-safe" },
+    bindings: [{
+      id: "binding-private",
+      agentIdentityId: "agent-safe",
+      runtimeAdapter: "private-adapter",
+      runtimeSessionId: "SECRET_RUNTIME_SESSION",
+      state: "connected",
+    }],
+  });
+
+  await host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "owner-safe");
+  assert.equal(openCalls, 1);
+
+  capabilityAvailable = false;
+  await assert.rejects(
+    host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "owner-safe"),
+    (error: unknown) => error instanceof LocalConfigurationRequestError
+      && error.message === "Agent diagnostic unavailable",
+  );
+  assert.equal(openCalls, 1);
+
+  capabilityAvailable = true;
+  failOpening = true;
+  await assert.rejects(
+    host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "owner-safe"),
+    (error: unknown) => error instanceof LocalConfigurationRequestError
+      && error.message === "Agent diagnostic could not be opened",
+  );
+  assert.equal(openCalls, 2);
+
+  internals.baseContext = async () => {
+    throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
+  };
+  await assert.rejects(
+    host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "member-safe"),
+    (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
+  );
+  assert.equal(openCalls, 2);
+  assert.doesNotMatch(JSON.stringify(audit), /SECRET_|private-adapter|runtime\.log|binding-private/);
+  assert.deepEqual(audit.map(({ action, outcome, reason }) => ({ action, outcome, reason })), [
+    { action: "agent.diagnostic.opened", outcome: "accepted", reason: undefined },
+    { action: "agent.diagnostic.opened", outcome: "rejected", reason: "unavailable" },
+    { action: "agent.diagnostic.opened", outcome: "rejected", reason: "unavailable" },
+    { action: "agent.diagnostic.opened", outcome: "rejected", reason: "forbidden" },
+  ]);
 });
 
 test("one binding queue drain does not hold the shared Relay ownership lock", async () => {
@@ -2107,7 +2209,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 14,
+      protocolVersion: 15,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -2120,7 +2222,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 14,
+      protocolVersion: 15,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

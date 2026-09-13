@@ -64,10 +64,12 @@ class SimulatedReviewRuntime implements AgentRuntimePort {
       interrupt: false,
       reconnectExisting: true,
       interactiveAttach: false,
-      openDiagnostic: false,
+      openDiagnostic: true,
       liveSkillVerification: false,
     };
   }
+
+  async openDiagnostic(): Promise<void> {}
 
   async messages(sessionId: string): Promise<RuntimePortMessage[]> {
     return sessionId === "review-builder-session" ? this.transcript.map((message) => ({ ...message })) : [];

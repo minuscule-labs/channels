@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 const channelsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
+const controlBase = `http://127.0.0.1:${process.env.MINU_TEST_CONTROL_PORT ?? 58411}`;
 const fixtureBase = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
 
 async function launchAuthenticated(
@@ -409,6 +410,10 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   page.on("request", (outgoing) => {
     if (/\/(reconnect|replace)$/.test(new URL(outgoing.url()).pathname)) lifecycleRequests.push(new URL(outgoing.url()).pathname);
   });
+  const unauthorizedDiagnostic = await request.post(
+    `${controlBase}/local/channels/${channelId}/agents/agent-private/open-diagnostic`,
+  );
+  expect(unauthorizedDiagnostic.status()).toBe(401);
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await request.post(`${fixtureBase}/detach-agent`);
   await expect(page.getByTitle("Runtime: Disconnected")).toBeVisible({ timeout: 10_000 });
@@ -423,7 +428,12 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await expect(page.locator("dt", { hasText: "Safe activity" }).locator("+ dd")).toHaveText("Unavailable");
   await expect(page.locator("dt", { hasText: "Interrupt" }).locator("+ dd")).toHaveText("Available");
   await expect(page.locator("dt", { hasText: "Reconnect existing" }).locator("+ dd")).toHaveText("Available");
-  expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp/);
+  await expect(page.locator("dt", { hasText: "Open diagnostic" }).locator("+ dd")).toHaveText("Available");
+  await page.getByRole("button", { name: "Open diagnostic", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Diagnostic opened", exact: true })).toBeVisible();
+  const diagnosticOpens = await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number };
+  expect(diagnosticOpens.count).toBe(1);
+  expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp|SECRET_DIAGNOSTIC/);
 
   await request.post(`${fixtureBase}/runtime-capabilities?mode=failed`);
   await expect(page.getByText("Not verified", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
@@ -444,6 +454,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await request.post(`${fixtureBase}/detach-agent`);
   await request.post(`${fixtureBase}/runtime-reachable?value=false`);
   await expect(page.getByTitle("Runtime: Offline")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole("button", { name: "Open diagnostic", exact: true })).toHaveCount(0);
   await openParticipantActions(page, "Builder Agent");
   await expect(page.getByRole("button", { name: "New session", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
@@ -492,7 +503,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 14,
+      protocolVersion: 15,
       channelId,
       agents: [
         {
@@ -516,7 +527,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 14,
+        protocolVersion: 15,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -573,7 +584,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 14,
+      protocolVersion: 15,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -746,7 +757,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 14,
+        protocolVersion: 15,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,

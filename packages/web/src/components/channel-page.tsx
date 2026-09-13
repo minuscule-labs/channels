@@ -99,6 +99,12 @@ export function ChannelPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
     },
   });
+  const diagnosticAction = useMutation({
+    mutationFn: async (target: { channelId: string; identityId: string }) => {
+      await localControl.openChannelAgentDiagnostic(target.channelId, target.identityId);
+      return target;
+    },
+  });
   const bulkAgentAction = useMutation({
     mutationFn: (action: "start" | "stop") => action === "start"
       ? localControl.startAllChannelAgents(channelId)
@@ -148,6 +154,11 @@ export function ChannelPage() {
     [localAgents.data],
   );
   const localStatus = localAgents.isSuccess ? "available" : localAgents.isError ? "unavailable" : "loading";
+  const currentMembership = workspaceMembers.data?.find(
+    ({ identityId }) => identityId === currentSession.data?.identityId,
+  );
+  const canOpenDiagnostics = currentMembership?.status === "active"
+    && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
 
   useEffect(() => {
     nearEndRef.current = true;
@@ -252,6 +263,16 @@ export function ChannelPage() {
               onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
               onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
+              onOpenAgentDiagnostic={canOpenDiagnostics
+                ? (identityId) => diagnosticAction.mutateAsync({ channelId, identityId })
+                : undefined}
+              openedDiagnosticIdentityId={diagnosticAction.data?.channelId === channelId
+                ? diagnosticAction.data.identityId
+                : undefined}
+              pendingDiagnosticIdentityId={diagnosticAction.isPending
+                && diagnosticAction.variables.channelId === channelId
+                ? diagnosticAction.variables.identityId
+                : undefined}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
               onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
               pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
@@ -262,9 +283,9 @@ export function ChannelPage() {
             />
           </Drawer>
         </header>
-        {agentAction.error || bulkAgentAction.error ? (
+        {agentAction.error || diagnosticAction.error || bulkAgentAction.error ? (
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
-            {(agentAction.error ?? bulkAgentAction.error)?.message}
+            {(agentAction.error ?? diagnosticAction.error ?? bulkAgentAction.error)?.message}
           </div>
         ) : null}
         <div className="relative min-h-0 flex-1">
@@ -322,6 +343,16 @@ export function ChannelPage() {
           onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
           onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
+          onOpenAgentDiagnostic={canOpenDiagnostics
+            ? (identityId) => diagnosticAction.mutateAsync({ channelId, identityId })
+            : undefined}
+          openedDiagnosticIdentityId={diagnosticAction.data?.channelId === channelId
+            ? diagnosticAction.data.identityId
+            : undefined}
+          pendingDiagnosticIdentityId={diagnosticAction.isPending
+            && diagnosticAction.variables.channelId === channelId
+            ? diagnosticAction.variables.identityId
+            : undefined}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
           onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
           pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}

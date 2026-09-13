@@ -82,6 +82,7 @@ const attachedAgents = new Set([`${channel.id}:${agent.id}`]);
 let agentActivity;
 let runtimeReachable = true;
 let runtimeCapabilityMode = "available";
+let diagnosticOpenCount = 0;
 const fixtureRuntime = {
   async status() { return runtimeReachable ? (agentActivity ? "working" : "idle") : "offline"; },
   async sessionCapabilities() {
@@ -94,11 +95,12 @@ const fixtureRuntime = {
       interrupt: true,
       reconnectExisting: true,
       interactiveAttach: false,
-      openDiagnostic: false,
+      openDiagnostic: true,
       liveSkillVerification: false,
     };
   },
   async interrupt() {},
+  async openDiagnostic() { diagnosticOpenCount += 1; },
   async capabilities() {
     return {
       models: [
@@ -175,6 +177,10 @@ const localControl = await createLocalControlHttpServer({
         if (channelId !== channel.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
         agentActivity = { ...agentActivity, phase: "canceling" };
       },
+      async openChannelAgentDiagnostic(channelId, identityId) {
+        if (channelId !== channel.id || identityId !== agent.id) throw new Error("Unknown fixture agent");
+        await fixtureRuntime.openDiagnostic();
+      },
       activity(channelId, identityId) {
         return channelId === channel.id && identityId === agent.id ? agentActivity : undefined;
       },
@@ -245,6 +251,11 @@ const controlServer = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/runtime-reachable") {
     runtimeReachable = url.searchParams.get("value") !== "false";
     response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/diagnostic-opens") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ count: diagnosticOpenCount }));
     return;
   }
   if (request.method === "POST" && url.pathname === "/runtime-capabilities") {

@@ -72,6 +72,9 @@ export function MemberRoster({
   onReplaceAgent,
   onCancelAgent,
   onStopAgent,
+  onOpenAgentDiagnostic,
+  openedDiagnosticIdentityId,
+  pendingDiagnosticIdentityId,
   onStartAllAgents,
   onStopAllAgents,
   pendingAgentAction,
@@ -92,6 +95,9 @@ export function MemberRoster({
   onReplaceAgent?(identityId: string): void | Promise<unknown>;
   onCancelAgent?(identityId: string): void | Promise<unknown>;
   onStopAgent?(identityId: string): void | Promise<unknown>;
+  onOpenAgentDiagnostic?(identityId: string): void | Promise<unknown>;
+  openedDiagnosticIdentityId?: string;
+  pendingDiagnosticIdentityId?: string;
   onStartAllAgents?(): void;
   onStopAllAgents?(): Promise<void>;
   pendingAgentAction?: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string };
@@ -263,6 +269,23 @@ export function MemberRoster({
                     <dt>Open diagnostic</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.openDiagnostic)}</dd>
                     <dt>Live skill verification</dt><dd>{liveCapabilityLabel(localAgent.diagnostics.capabilities.liveSkillVerification)}</dd>
                   </dl>
+                  {localAgent.diagnostics.capabilities.openDiagnostic === "available"
+                    && onOpenAgentDiagnostic ? (
+                      <button
+                        type="button"
+                        className="button-secondary mt-2"
+                        disabled={pendingDiagnosticIdentityId === participant.id}
+                        onClick={() => {
+                          void Promise.resolve(onOpenAgentDiagnostic(participant.id)).catch(() => undefined);
+                        }}
+                      >
+                        {pendingDiagnosticIdentityId === participant.id
+                          ? "Opening…"
+                          : openedDiagnosticIdentityId === participant.id
+                            ? "Diagnostic opened"
+                            : "Open diagnostic"}
+                      </button>
+                    ) : null}
                 </details>
               ) : null}
               {participant.role || participant.profile ? (
