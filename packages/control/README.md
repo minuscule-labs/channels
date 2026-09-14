@@ -71,13 +71,15 @@ This builds the workspace and coordinates disposable in-memory Channels data, te
 
 Review mode demonstrates the application and Relay boundary. The `review-mode` Runtime response is deterministic—not live model execution. Use `pnpm dev -- --no-open` for a manual one-time URL, and pass custom ports after `--` if defaults are occupied. `pnpm app:review` is the explicit equivalent; `pnpm web:dev` remains frontend-only.
 
-For fresh persistent local use with genuine Pi:
+For fresh persistent local use with genuine Pi from source:
 
 ```bash
 pnpm local
 ```
 
-This uses the dedicated `minu-channels` foreground entry point with owner-only persistent state under `~/.minu/channels`. First launch creates the stable local human identity and opens browser onboarding; selecting a private source folder provisions the first Workspace and empty **General** Channel. Passing `--cwd /absolute/path/to/workspace` remains a non-interactive shortcut that also seeds the configured but stopped `@builder` agent. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The process serves the production web build, proxies collaboration/control/SSE traffic through one loopback URL, and retains browser bootstrap, audit output, live Pi integration, and coordinated Ctrl-C shutdown. Vite remains review/development-only.
+The packaged macOS CLI also supports `minu-channels start`, `stop`, `restart`, `status`, `open`, `enable-login`, `disable-login`, and `remove-service`. Background registration is scoped to the resolved data directory, never enables login startup implicitly, uses argument-only `launchctl` calls, and keeps bounded owner-only service output beneath that data directory. `open` exchanges its short-lived browser bootstrap URL through owner-private files rather than process arguments or service metadata. Removing the service preserves product data. Linux service supervision remains a separately gated adapter; foreground operation continues to support macOS and Linux.
+
+The source command uses the dedicated `minu-channels` foreground entry point with owner-only persistent state under `~/.minu/channels`. First launch creates the stable local human identity and opens browser onboarding; selecting a private source folder provisions the first Workspace and empty **General** Channel. Passing `--cwd /absolute/path/to/workspace` remains a non-interactive shortcut that also seeds the configured but stopped `@builder` agent. It stores a versioned local profile, collaboration in `channels.db`, and restricted agent-host state in `relay.db`. Later launches validate and reopen the same records rather than reseeding them. `--data-dir` selects an independent installation. The process serves the production web build, proxies collaboration/control/SSE traffic through one loopback URL, and retains browser bootstrap, audit output, live Pi integration, and coordinated Ctrl-C shutdown. `minu-channels run` is the explicit packaged foreground form; bare `minu-channels` remains a compatibility alias. Vite remains review/development-only.
 
 No hosted database is required for local MVP use. Collaboration database adapters are independent of the private agent-host store; PostgreSQL and other adapters remain documented future work.
 

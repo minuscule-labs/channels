@@ -10,8 +10,14 @@ import { createLocalProductApp } from "./local.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
+import { LocalServiceLifecycle, type LocalServiceStatus } from "./service-lifecycle.ts";
+import { BoundedServiceLog } from "./service-log.ts";
+import { requestServiceBrowserLaunchUrl, startServiceOpenBroker } from "./service-open.ts";
 import { confirmStoppedChannels } from "./update-confirmation.ts";
 import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
+
+let backgroundServiceLog: BoundedServiceLog | undefined;
+let backgroundServiceMode = false;
 
 interface LocalCliOptions {
   channelsPort: number;
@@ -23,6 +29,7 @@ interface LocalCliOptions {
   webDir?: string;
   runtimeModule?: string;
   open: boolean;
+  serviceMode: boolean;
 }
 
 function port(value: string): number {
@@ -77,7 +84,7 @@ async function loadPiRuntime(specifier?: string): Promise<LocalManagedRuntimePor
 
 async function openBrowser(url: string): Promise<void> {
   const [command, args] = process.platform === "darwin"
-    ? ["open", [url]] as const
+    ? ["/usr/bin/open", [url]] as const
     : process.platform === "win32"
       ? ["cmd.exe", ["/c", "start", "", url]] as const
       : ["xdg-open", [url]] as const;
@@ -117,10 +124,46 @@ function printUpdate(update: UpdateCheck, json: boolean): void {
   }
 }
 
+function serviceStatusSummary(status: LocalServiceStatus): string {
+  if (status.running) return status.ready ? "running" : "starting";
+  if (status.loaded) return "stopped";
+  return status.installed ? "installed" : "not installed";
+}
+
 async function utilityCommand(args: string[]): Promise<boolean> {
   const command = args[0];
   if (command === "--version" || command === "-V" || command === "version") {
     console.log(await currentVersion());
+    return true;
+  }
+  const serviceCommands = new Set([
+    "start", "stop", "restart", "status", "open", "enable-login", "disable-login", "remove-service",
+  ]);
+  if (serviceCommands.has(command ?? "")) {
+    const utility = new Command().name(`minu-channels ${command}`).option("--data-dir <path>").option("--json");
+    utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
+    const options = utility.opts<{ dataDir?: string; json?: boolean }>();
+    const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+    const service = new LocalServiceLifecycle({
+      dataDirectory,
+      nodeExecutable: process.execPath,
+      cliEntryPoint: fileURLToPath(import.meta.url),
+    });
+    let status: LocalServiceStatus;
+    if (command === "start") status = await service.start();
+    else if (command === "stop") status = await service.stop();
+    else if (command === "restart") status = await service.restart();
+    else if (command === "enable-login") status = await service.setLoginEnabled(true);
+    else if (command === "disable-login") status = await service.setLoginEnabled(false);
+    else if (command === "remove-service") status = await service.remove();
+    else if (command === "open") {
+      status = await service.start();
+      const launchUrl = await requestServiceBrowserLaunchUrl(dataDirectory);
+      await openBrowser(launchUrl);
+    } else status = await service.status();
+    if (options.json) console.log(JSON.stringify(status));
+    else if (command === "open") console.log("Opened the authenticated local Workspace in your browser.");
+    else console.log(`MinuChannels is ${serviceStatusSummary(status)}${status.loginEnabled ? " and enabled at login" : ""}.`);
     return true;
   }
   if (command !== "paths" && command !== "doctor" && command !== "update") return false;
@@ -169,7 +212,8 @@ async function utilityCommand(args: string[]): Promise<boolean> {
 async function main(): Promise<void> {
   const rawArguments = process.argv.slice(2).filter((argument) => argument !== "--");
   if (await utilityCommand(rawArguments)) return;
-  const argv = process.argv.slice(0, 2).concat(rawArguments);
+  const runArguments = rawArguments[0] === "run" ? rawArguments.slice(1) : rawArguments;
+  const argv = process.argv.slice(0, 2).concat(runArguments);
   const program = new Command()
     .name("minu-channels")
     .description("Start the persistent local MinuChannels product")
@@ -183,6 +227,15 @@ async function main(): Promise<void> {
     .option("--web-dir <path>", "production web asset directory")
     .option("--runtime-module <module>", "Pi Runtime module")
     .option("--no-open", "print the one-time launch URL instead of opening a browser")
+    .option("--service-mode", "run under the product-owned background supervisor")
+    .addHelpText("after", `
+Lifecycle commands (macOS):
+  start, stop, restart, status, open
+  enable-login, disable-login, remove-service
+
+Other commands:
+  run, paths, doctor, update, version
+`)
     .showHelpAfterError();
   program.parse(argv);
   const options = program.opts<LocalCliOptions>();
@@ -191,6 +244,19 @@ async function main(): Promise<void> {
   }
   const directoryArgumentProvided = Boolean(options.cwd ?? program.args[0]);
   const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+  const serviceLog = options.serviceMode
+    ? new BoundedServiceLog(join(dataDirectory, "logs", "service.log"))
+    : undefined;
+  backgroundServiceLog = serviceLog;
+  backgroundServiceMode = options.serviceMode;
+  const output = (message: string): void => {
+    if (serviceLog) void serviceLog.append(message).catch(() => undefined);
+    else console.log(message);
+  };
+  const diagnostic = (message: string): void => {
+    if (serviceLog) void serviceLog.append(message).catch(() => undefined);
+    else process.stderr.write(message.endsWith("\n") ? message : `${message}\n`);
+  };
   const freshInstallation = !existsSync(join(dataDirectory, "local-profile.json"));
   const workspaceInput = options.cwd ?? program.args[0];
   const workspaceRoot = workspaceInput ? resolve(workspaceInput) : undefined;
@@ -220,10 +286,10 @@ async function main(): Promise<void> {
       channelsMigrationsFolder: defaultMigrationsFolder("channels"),
       relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
       onAudit(event) {
-        process.stderr.write(`${JSON.stringify({ source: "minu-channels", ...event })}\n`);
+        diagnostic(JSON.stringify({ source: "minu-channels", ...event }));
       },
       onDiagnostic(event) {
-        process.stderr.write(`${JSON.stringify({ source: "minu-channels", type: "agent-host-diagnostic", ...event })}\n`);
+        diagnostic(JSON.stringify({ source: "minu-channels", type: "agent-host-diagnostic", ...event }));
       },
     });
   } catch (error) {
@@ -231,13 +297,16 @@ async function main(): Promise<void> {
     throw error;
   }
   let web: Awaited<ReturnType<typeof createLocalWebServer>> | undefined;
+  let serviceOpenBroker: Awaited<ReturnType<typeof startServiceOpenBroker>> | undefined;
   let closing = false;
   const close = async (): Promise<void> => {
     if (closing) return;
     closing = true;
+    await serviceOpenBroker?.close().catch(() => undefined);
     await web?.close().catch(() => undefined);
     await app.close();
     await installationInstance.close();
+    await serviceLog?.close().catch(() => undefined);
   };
   try {
     web = await createLocalWebServer({
@@ -248,25 +317,30 @@ async function main(): Promise<void> {
       webDirectory: resolve(options.webDir ?? defaultWebDirectory()),
       port: options.webPort,
     });
-    const launchUrl = app.issueBrowserLaunchUrl();
-    console.log("\nMinuChannels is ready");
-    console.log(`  Web:      ${webUrl}`);
-    console.log(`  Data:     ${app.dataDirectory}`);
-    console.log(`  Workspace: ${workspaceRoot ?? "choose or create one in the browser"}`);
-    console.log(`  Setup:    ${app.initialized
+    if (options.serviceMode) {
+      serviceOpenBroker = await startServiceOpenBroker(dataDirectory, () => app.issueBrowserLaunchUrl());
+    }
+    output("MinuChannels is ready");
+    output(`  Web:      ${webUrl}`);
+    output(`  Data:     ${app.dataDirectory}`);
+    output(`  Workspace: ${workspaceRoot ?? "choose or create one in the browser"}`);
+    output(`  Setup:    ${app.initialized
       ? (app.workspaceId ? "created a fresh local Workspace" : "ready for browser Workspace setup")
       : "reopened existing local data"}`);
     if (app.workspaceId) {
-      console.log("  Agent:    click Start for @builder, then send a message for a live Pi response");
+      output("  Agent:    click Start for @builder, then send a message for a live Pi response");
     }
-    if (options.open) {
-      await openBrowser(launchUrl);
-      console.log("\nOpened the authenticated local Workspace in your browser.");
-    } else {
-      console.log("\nOpen this one-time URL within 60 seconds:");
-      console.log(launchUrl);
+    if (!options.serviceMode) {
+      const launchUrl = app.issueBrowserLaunchUrl();
+      if (options.open) {
+        await openBrowser(launchUrl);
+        output("Opened the authenticated local Workspace in your browser.");
+      } else {
+        output("Open this one-time URL within 60 seconds:");
+        output(launchUrl);
+      }
+      output("Press Ctrl-C to stop MinuChannels.");
     }
-    console.log("Press Ctrl-C to stop MinuChannels.");
   } catch (error) {
     await close();
     throw error;
@@ -276,7 +350,11 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void close().then(() => process.exit(0)));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+main().catch(async (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (backgroundServiceLog) await backgroundServiceLog.append(`MinuChannels stopped: ${message}`).catch(() => undefined);
+  else console.error(message);
+  // A launchd job that cannot initialize exits successfully so KeepAlive does not
+  // turn a persistent configuration or lock conflict into a restart loop.
+  process.exitCode = backgroundServiceMode ? 0 : 1;
 });

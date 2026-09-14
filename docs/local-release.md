@@ -17,8 +17,16 @@ Download and install the immutable `.tgz` attached to the approved GitHub Releas
 
 ```bash
 npm install -g <github-release-tarball-url>
-minu-channels
+
+# macOS background service
+minu-channels start
+minu-channels open
+
+# Linux or explicit foreground operation
+minu-channels run
 ```
+
+The background lifecycle is currently supported on macOS. `start` installs or refreshes a data-directory-scoped user LaunchAgent and starts it without enabling login startup. `open` starts it if needed and obtains a fresh authenticated browser launch through owner-private state. Use `stop`, `restart`, and `status` for normal lifecycle; opt into login startup with `enable-login`, reverse it with `disable-login`, and unregister it with `remove-service`. Service removal preserves all product data. Use `minu-channels run` for explicit foreground operation; bare `minu-channels` remains a compatibility alias and Linux remains foreground-capable.
 
 Choose the first Workspace source folder in browser onboarding. Passing an absolute Workspace path remains available as a non-interactive shortcut. Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Channels and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
 
@@ -30,6 +38,7 @@ Installing from a release tarball is supported. Installing directly from a Git b
 minu-channels --version
 minu-channels paths
 minu-channels doctor
+minu-channels status
 minu-channels update --check
 ```
 
@@ -39,7 +48,7 @@ minu-channels update --check
 
 The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. It refuses source checkouts, unsupported package-manager layouts, concurrent updates, and updates while any registered process from the same installation is still running. Interrupted update locks are recovered only after their owner process is confirmed dead.
 
-1. Stop MinuChannels with Ctrl-C.
+1. Stop foreground MinuChannels with Ctrl-C or background MinuChannels with `minu-channels stop`.
 2. Back up the data directory.
 3. Run the updater and confirm that every MinuChannels process has stopped.
 4. Start MinuChannels with the same data directory.
@@ -50,7 +59,12 @@ minu-channels update
 # MinuChannels must be stopped before updating.
 # Have you stopped all running MinuChannels processes? [y/N]
 
-minu-channels
+# macOS service
+minu-channels start
+minu-channels open
+
+# Linux/foreground alternative
+minu-channels run
 
 # Manual fallback:
 npm install -g <new-github-release-tarball-url>
@@ -91,9 +105,13 @@ The next launch creates a fresh local identity and opens browser Workspace onboa
 
 ## Uninstall
 
-Stop the foreground process, then remove the global package:
+Stop and unregister the background service (or stop the foreground process), then remove the global package:
 
 ```bash
+# macOS service, when installed
+minu-channels stop
+minu-channels remove-service
+
 npm uninstall -g @minu/channels
 ```
 

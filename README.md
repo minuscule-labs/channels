@@ -32,10 +32,18 @@ Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://
 
 ```bash
 npm install -g ./minu-channels-0.0.3.tgz
-minu-channels
+
+# macOS background service
+minu-channels start
+minu-channels open
+
+# Linux or explicit foreground operation
+minu-channels run
 ```
 
-The browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Channel; the source path remains private.
+On macOS, `start`, `stop`, `restart`, `status`, and `open` manage a user-owned background service. Login startup remains off until `minu-channels enable-login`; `disable-login` reverses it, and `remove-service` unregisters the service without deleting product data. `minu-channels run` is the explicit foreground command, while bare `minu-channels` remains its compatibility alias.
+
+The authenticated browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Channel; the source path remains private.
 
 Useful commands:
 
@@ -43,6 +51,7 @@ Useful commands:
 minu-channels --version
 minu-channels paths
 minu-channels doctor
+minu-channels status
 minu-channels update --check
 ```
 
