@@ -58,6 +58,7 @@ import {
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalLiveCapabilityState,
+  type LocalOpenDiagnosticResponse,
   type LocalRuntimeOptions,
   type LocalWakePolicy,
   type ProvisionLocalWorkspaceResult,
@@ -101,6 +102,7 @@ export interface LocalControlRuntimePort {
     options: { signal: AbortSignal },
   ): AsyncIterable<{ phase: "working" | "using_tools" | "responding"; observedAt: string }>;
   interrupt?(sessionId: string): Promise<void>;
+  openDiagnostic?(sessionId: string): Promise<void>;
 }
 
 export interface LocalControlAgentLifecyclePort {
@@ -135,6 +137,11 @@ export interface LocalControlAgentLifecyclePort {
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]>;
   cancelCurrentChannelAgent(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void>;
+  openChannelAgentDiagnostic?(
     channelId: string,
     agentIdentityId: string,
     actorIdentityId: string,
@@ -444,6 +451,18 @@ export class LocalControlService {
     }
     await this.options.lifecycle.cancelCurrentChannelAgent(channelId, identityId, actorIdentityId);
     return this.channelAgent(channelId, identityId);
+  }
+
+  async openChannelAgentDiagnostic(
+    channelId: string,
+    identityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalOpenDiagnosticResponse> {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.openChannelAgentDiagnostic) {
+      throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 404, "unavailable");
+    }
+    await this.options.lifecycle.openChannelAgentDiagnostic(channelId, identityId, actorIdentityId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, status: "opened" };
   }
 
   private async channelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
@@ -798,7 +817,7 @@ export async function createLocalControlHttpServer(
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAllowedPost = request.method === "POST" && (
-      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
+      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current|open-diagnostic)$/.test(requestPath)
       || /^\/local\/channels\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
@@ -999,6 +1018,16 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
         );
         json(response, 202, { agent }, origin);
+        return;
+      }
+      const agentDiagnosticMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/open-diagnostic$/);
+      if (agentDiagnosticMatch && browserSession && request.method === "POST") {
+        const result = await options.service.openChannelAgentDiagnostic(
+          decodeURIComponent(agentDiagnosticMatch[1]!),
+          decodeURIComponent(agentDiagnosticMatch[2]!),
+          browserSession.identityId,
+        );
+        json(response, 202, result, origin);
         return;
       }
       const match = path.match(/^\/local\/channels\/([^/]+)\/agents$/);

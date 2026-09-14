@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 14 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 15 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -186,6 +186,11 @@ export interface LocalChannelAgentsResponse {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   channelId: string;
   agents: LocalChannelAgent[];
+}
+
+export interface LocalOpenDiagnosticResponse {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  status: "opened";
 }
 
 export type LocalBulkAgentLifecycleReason =

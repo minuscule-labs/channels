@@ -6,6 +6,7 @@ import type {
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
+  LocalOpenDiagnosticResponse,
   LocalRuntimeOptions,
   LocalWorkspaceConfigurationSummary,
   ProvisionLocalWorkspaceInput,
@@ -131,6 +132,17 @@ export class LocalControlClient {
       this.lifecycleTimeoutMs,
     );
     return response.agent;
+  }
+
+  async openChannelAgentDiagnostic(
+    channelId: string,
+    identityId: string,
+  ): Promise<LocalOpenDiagnosticResponse> {
+    return this.request<LocalOpenDiagnosticResponse>(
+      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/open-diagnostic`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
   }
 
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {

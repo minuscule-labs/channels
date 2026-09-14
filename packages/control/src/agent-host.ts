@@ -112,6 +112,22 @@ function launchableRuntime(runtime: LocalManagedRuntimePort | undefined): runtim
   return executableRuntime(runtime) && typeof runtime.start === "function";
 }
 
+function supportsOpenDiagnostic(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  const fields = [
+    "safeActivityEvents",
+    "interrupt",
+    "reconnectExisting",
+    "interactiveAttach",
+    "openDiagnostic",
+    "liveSkillVerification",
+  ];
+  return candidate.version === 1
+    && fields.every((field) => typeof candidate[field] === "boolean")
+    && candidate.openDiagnostic === true;
+}
+
 function launchFailureMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : "";
   return /model|reasoning|thinking|skill/i.test(message)
@@ -601,6 +617,72 @@ export class LocalAgentHost {
         "unavailable",
       );
     }
+  }
+
+  async openChannelAgentDiagnostic(
+    channelId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<void> {
+    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+      let workspaceId: string | undefined;
+      try {
+        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+        workspaceId = context.channel.workspaceId;
+        const matches = context.bindings.filter(
+          ({ agentIdentityId: candidate }) => candidate === agentIdentityId,
+        );
+        if (matches.length !== 1 || matches[0]!.state !== "connected") {
+          throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 409, "unavailable");
+        }
+        const binding = matches[0]!;
+        const runtime = this.options.runtimes[binding.runtimeAdapter];
+        if (!runtime?.sessionCapabilities || !runtime.openDiagnostic) {
+          throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 409, "unavailable");
+        }
+        const [status, capabilities] = await Promise.all([
+          this.runtimeStatus(runtime, binding.runtimeSessionId),
+          this.withTimeout(
+            runtime.sessionCapabilities(binding.runtimeSessionId),
+            2_000,
+            "Runtime capability query timed out",
+          ),
+        ]);
+        if (status === "offline" || !supportsOpenDiagnostic(capabilities)) {
+          throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 409, "unavailable");
+        }
+        await this.withTimeout(
+          runtime.openDiagnostic(binding.runtimeSessionId),
+          2_000,
+          "Runtime diagnostic opening timed out",
+        );
+        this.audit({
+          action: "agent.diagnostic.opened",
+          outcome: "accepted",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+      } catch (error) {
+        this.audit({
+          action: "agent.diagnostic.opened",
+          outcome: "rejected",
+          reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+        if (error instanceof LocalConfigurationRequestError) throw error;
+        throw new LocalConfigurationRequestError(
+          "Agent diagnostic could not be opened",
+          409,
+          "unavailable",
+        );
+      }
+    });
   }
 
   async stopChannelAgent(
