@@ -101,6 +101,10 @@ try {
   }
   const restartHelp = await capture(executable, ["restart", "--help"]);
   if (!restartHelp.includes("--when-idle")) throw new Error("Packaged restart help is missing --when-idle");
+  const updateHelp = await capture(executable, ["update", "--help"]);
+  if (!updateHelp.includes("--check") || !updateHelp.includes("--yes")) {
+    throw new Error("Packaged update help is missing safe update controls");
+  }
   const paths = JSON.parse(await capture(executable, ["paths", "--data-dir", dataDirectory, "--json"]));
   if (paths.dataDirectory !== dataDirectory) throw new Error("Packaged paths command returned the wrong data directory");
   await capture(executable, ["doctor", "--data-dir", dataDirectory, "--json"]);

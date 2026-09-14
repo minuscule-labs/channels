@@ -6,6 +6,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
+import { coordinateChannelsUpdate } from "./coordinated-update.ts";
 import { createLocalProductApp } from "./local.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import { resolveChannelsDataDirectory } from "./local-paths.ts";
@@ -13,9 +14,9 @@ import { createLocalWebServer } from "./local-web-server.ts";
 import { LocalServiceLifecycle, type LocalServiceStatus } from "./service-lifecycle.ts";
 import { BoundedServiceLog } from "./service-log.ts";
 import { requestServiceBrowserLaunchUrl, startServiceOpenBroker } from "./service-open.ts";
-import { requestServiceRestart, startServiceRestartBroker } from "./service-restart.ts";
-import { confirmStoppedChannels } from "./update-confirmation.ts";
-import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
+import { requestServiceRestart, startServiceRestartBroker, type ServiceQuiesceAction } from "./service-restart.ts";
+import { confirmChannelsUpdate } from "./update-confirmation.ts";
+import { checkForUpdate, compareVersions, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
 
 let backgroundServiceLog: BoundedServiceLog | undefined;
 let backgroundServiceMode = false;
@@ -118,7 +119,7 @@ function printUpdate(update: UpdateCheck, json: boolean): void {
   if (update.updateAvailable) {
     console.log(`MinuChannels ${update.latestVersion} is available (installed: ${update.currentVersion}).`);
     console.log(`Release: ${update.releaseUrl}`);
-    console.log("Stop any running MinuChannels server, then run `minu-channels update`.");
+    console.log("Run `minu-channels update`; a running background service will be coordinated safely.");
   } else {
     const qualifier = compareVersions(update.currentVersion, update.latestVersion) > 0 ? ` (latest release: ${update.latestVersion})` : "";
     console.log(`MinuChannels ${update.currentVersion} is up to date${qualifier}.`);
@@ -187,7 +188,7 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   if (command !== "paths" && command !== "doctor" && command !== "update") return false;
   const utility = new Command().name(`minu-channels ${command}`).option("--data-dir <path>").option("--json");
   if (command === "update") {
-    utility.option("--check").option("-y, --yes", "confirm MinuChannels has been stopped");
+    utility.option("--check").option("-y, --yes", "confirm installation of the verified update");
   }
   utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
   const options = utility.opts<{ dataDir?: string; json?: boolean; check?: boolean; yes?: boolean }>();
@@ -217,12 +218,17 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   }
   const update = await checkForUpdate({ currentVersion: await currentVersion() });
   if (options.check || !update.updateAvailable) printUpdate(update, Boolean(options.json));
-  else if (await confirmStoppedChannels({ assumeYes: Boolean(options.yes), json: Boolean(options.json) })) {
-    const installed = await installUpdate(update);
+  else if (await confirmChannelsUpdate({ assumeYes: Boolean(options.yes), json: Boolean(options.json) })) {
+    const service = process.platform === "darwin" ? new LocalServiceLifecycle({
+      dataDirectory,
+      nodeExecutable: process.execPath,
+      cliEntryPoint: fileURLToPath(import.meta.url),
+    }) : undefined;
+    const installed = await coordinateChannelsUpdate(update, { dataDirectory, service });
     if (options.json) console.log(JSON.stringify(installed));
-    else console.log(`Updated MinuChannels from ${installed.previousVersion} to ${installed.version}.`);
+    else console.log(`Updated MinuChannels from ${installed.previousVersion} to ${installed.version}${installed.serviceRestarted ? " and restarted the background service" : ""}.`);
   } else {
-    console.log("Update cancelled. Stop MinuChannels before trying again.");
+    console.log("Update cancelled.");
   }
   return true;
 }
@@ -288,7 +294,10 @@ Other commands:
   }
   const webUrl = localChannelsUrl(options.webPort);
   const runtime = await loadPiRuntime(options.runtimeModule);
-  const installationInstance = await registerInstallationInstance();
+  const installationInstance = await registerInstallationInstance({
+    kind: options.serviceMode ? "service" : "foreground",
+    dataDirectory,
+  });
   let app: Awaited<ReturnType<typeof createLocalProductApp>>;
   try {
     app = await createLocalProductApp({
@@ -330,14 +339,13 @@ Other commands:
     await installationInstance.close();
     await serviceLog?.close().catch(() => undefined);
   };
-  const exitForSupervisedRestart = async (): Promise<void> => {
+  const exitAfterQuiesce = async (action: ServiceQuiesceAction): Promise<void> => {
     try {
       await close();
     } finally {
-      // D1 launchd policy restarts only unsuccessful exits. This private, explicit
-      // operation uses a dedicated code so the service owns restart even if the
-      // initiating CLI exits after its request is accepted.
-      process.exitCode = 75;
+      // launchd restarts only unsuccessful exits. Updates use a successful exit so
+      // executable replacement happens while no process from this install is live.
+      process.exitCode = action === "restart" ? 75 : 0;
     }
   };
   try {
@@ -356,7 +364,7 @@ Other commands:
         dataDirectory,
         () => app.workSnapshot(),
         () => app.waitForQuiesced(),
-        { onRestartReady: exitForSupervisedRestart },
+        { onQuiesced: exitAfterQuiesce },
       );
     }
     output("MinuChannels is ready");

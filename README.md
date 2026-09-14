@@ -41,7 +41,7 @@ minu-channels open
 minu-channels run
 ```
 
-On macOS, `start`, `stop`, `restart`, `status`, and `open` manage a user-owned background service. `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, lets already-active work finish, and leaves queued Channel work durable for recovery after restart. Login startup remains off until `minu-channels enable-login`; `disable-login` reverses it, and `remove-service` unregisters the service without deleting product data. `minu-channels run` is the explicit foreground command, while bare `minu-channels` remains its compatibility alias.
+On macOS, `start`, `stop`, `restart`, `status`, and `open` manage a user-owned background service. `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, lets already-active work finish, and leaves queued Channel work durable for recovery after restart. A checksum-verified global npm `update` safely coordinates the selected service and restarts it only when it was previously running; foreground or unrelated service instances block executable replacement. Login startup remains off until `minu-channels enable-login`; `disable-login` reverses it, and `remove-service` unregisters the service without deleting product data. `minu-channels run` is the explicit foreground command, while bare `minu-channels` remains its compatibility alias.
 
 The authenticated browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Channel; the source path remains private.
 

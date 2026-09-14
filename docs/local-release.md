@@ -46,31 +46,30 @@ minu-channels update --check
 
 ## Upgrade
 
-The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. It refuses source checkouts, unsupported package-manager layouts, concurrent updates, and updates while any registered process from the same installation is still running. Interrupted update locks are recovered only after their owner process is confirmed dead.
+The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. A selected running macOS service is quiesced only after verification, stopped without terminating Runtime workers, and restarted only after the installed version is verified. A selected service that was already stopped remains stopped. Foreground processes, other data-directory services, legacy or unverified live markers, source checkouts, unsupported package-manager layouts, and concurrent updates are refused. Interrupted update locks are recovered only after their owner process is confirmed dead.
 
-1. Stop foreground MinuChannels with Ctrl-C or background MinuChannels with `minu-channels stop`.
+1. Stop any foreground MinuChannels process; a running selected macOS service may remain running.
 2. Back up the data directory.
-3. Run the updater and confirm that every MinuChannels process has stopped.
-4. Start MinuChannels with the same data directory.
+3. Run the updater and confirm installation.
+4. If the selected service was running, require the updater to report that it restarted successfully.
 5. Verify Channels, messages, agents, and configuration before removing the backup.
 
 ```bash
 minu-channels update
-# MinuChannels must be stopped before updating.
-# Have you stopped all running MinuChannels processes? [y/N]
+# MinuChannels will verify the release and safely coordinate any running background service.
+# Install this update? [y/N]
 
-# macOS service
-minu-channels start
+# Open a restarted macOS service
 minu-channels open
 
-# Linux/foreground alternative
+# Linux/foreground alternative after update
 minu-channels run
 
 # Manual fallback:
 npm install -g <new-github-release-tarball-url>
 ```
 
-The confirmation defaults to **No**. Use `minu-channels update --yes` only after intentionally stopping Channels, such as in controlled automation. Non-interactive and `--json` installation require `--yes`. Confirmation does not bypass active-instance protection: the updater still refuses if it detects a running process from the installation.
+The confirmation defaults to **No**. Use `minu-channels update --yes` for intentional non-interactive automation; `--json` installation also requires `--yes`. Confirmation never bypasses installation-instance protection. If installation succeeds but service restart fails, the command reports the installed version and directs you to `minu-channels start`. Automatic rollback is not claimed; restore a compatible backup if a database migration makes downgrade unsafe.
 
 Database migrations run during startup. Downgrading an already-migrated data directory is unsupported; restore the pre-upgrade backup instead.
 

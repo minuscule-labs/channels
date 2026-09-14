@@ -65,6 +65,7 @@ async function fixture(options: { ready?: boolean } = {}) {
       await mkdir(join(data, "run", "open"), { recursive: true });
       await writeFile(join(data, "run", "open", "ready.json"), JSON.stringify({ pid }));
     },
+    stopProcess() { running = false; },
   };
 }
 
@@ -123,6 +124,16 @@ test("waits for a different ready launchd process after service-owned restart", 
       installed: true, loaded: true, running: true, ready: true, loginEnabled: false,
     });
     assert.equal(await service.processId(), 456);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("waits for the selected launchd process to stop before updating", async () => {
+  const { root, service, stopProcess } = await fixture();
+  try {
+    await service.start();
+    const waiting = service.waitForStop(123);
+    stopProcess();
+    assert.equal((await waiting).running, false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -222,7 +233,7 @@ test("service restart exchange refuses active work or quiesces and waits when re
           pendingLifecycle: 0,
         };
       },
-      { intervalMs: 5, onRestartReady: () => { restartReadyCalls += 1; } },
+      { intervalMs: 5, onQuiesced: (action) => { assert.equal(action, "restart"); restartReadyCalls += 1; } },
     );
     const busy = await requestServiceRestart(root, {
       waitForIdle: false,
@@ -256,6 +267,72 @@ test("service restart exchange refuses active work or quiesces and waits when re
     assert.equal((await stat(join(root, "run", "restart"))).mode & 0o777, 0o700);
     await broker.close();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("update shutdown requests require an explicit recovery owner", async () => {
+  await assert.rejects(requestServiceRestart("/unused", {
+    action: "stop_for_update", waitForIdle: true,
+  }), /requires a recovery owner/);
+});
+
+test("service quiesce exchange distinguishes update stop from supervised restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-service-update-stop-"));
+  try {
+    let action: string | undefined;
+    const broker = await startServiceRestartBroker(
+      root,
+      () => ({ state: "running", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0 }),
+      async () => ({ state: "quiesced", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0 }),
+      { intervalMs: 5, onQuiesced: (value) => { action = value; } },
+    );
+    let claimed = false;
+    assert.equal((await requestServiceRestart(root, {
+      action: "stop_for_update", waitForIdle: true, timeoutMs: 1_000, intervalMs: 5,
+      onUpdateStopClaimed() { claimed = true; },
+    })).status, "ready");
+    assert.equal(claimed, true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(action, "stop_for_update");
+    await broker.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("timed-out update quiesce falls back to supervised restart after late completion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-service-update-timeout-"));
+  let releaseQuiesce!: () => void;
+  let reportQuiesceStarted!: () => void;
+  const quiesceGate = new Promise<void>((resolve) => { releaseQuiesce = resolve; });
+  const quiesceStarted = new Promise<void>((resolve) => { reportQuiesceStarted = resolve; });
+  let reportAction!: (action: string) => void;
+  const actionReported = new Promise<string>((resolve) => { reportAction = resolve; });
+  try {
+    const broker = await startServiceRestartBroker(
+      root,
+      () => ({ state: "running", activeTurns: 1, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0 }),
+      async () => {
+        reportQuiesceStarted();
+        await quiesceGate;
+        return { state: "quiesced", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0 };
+      },
+      { intervalMs: 2, onQuiesced: reportAction },
+    );
+    const request = requestServiceRestart(root, {
+      action: "stop_for_update", waitForIdle: true, timeoutMs: 25, intervalMs: 2,
+      onUpdateStopClaimed() {},
+    });
+    await quiesceStarted;
+    await assert.rejects(request, /did not become ready to restart in time/);
+    releaseQuiesce();
+    const action = await Promise.race([
+      actionReported,
+      new Promise<string>((_, reject) => setTimeout(() => reject(new Error("restart action was not reported")), 1_000)),
+    ]);
+    assert.equal(action, "restart");
+    await broker.close();
+  } finally {
+    releaseQuiesce?.();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("service open exchanges a bootstrap URL only through owner-private files", async () => {

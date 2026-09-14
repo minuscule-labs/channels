@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,7 @@ export async function checkForUpdate(options: {
 }): Promise<UpdateCheck> {
   parseVersion(options.currentVersion);
   const response = await fetchWithTimeout(options.fetch ?? fetch, options.releaseApiUrl ?? DEFAULT_RELEASE_API);
+  assertGithubResponse(response, "release check");
   if (!response.ok) throw new Error(`GitHub release check failed with HTTP ${response.status}`);
   const body = JSON.parse((await readResponseBytes(response, MAX_RELEASE_RESPONSE_BYTES, "release response")).toString("utf8")) as unknown;
   if (!isObject(body)) throw new Error("GitHub returned an invalid release response");
@@ -53,7 +54,17 @@ export async function checkForUpdate(options: {
   };
 }
 
+export type InstallationInstanceKind = "foreground" | "service";
 export interface InstallationInstanceRegistration { close(): Promise<void>; }
+export interface InstallationInstanceOptions {
+  packageRoot?: string;
+  kind: InstallationInstanceKind;
+  dataDirectory: string;
+}
+
+export function installationDataDirectoryId(dataDirectory: string): string {
+  return createHash("sha256").update(resolve(dataDirectory)).digest("hex").slice(0, 24);
+}
 
 function coordinationDirectory(packageRoot = defaultPackageRoot()): string {
   const key = createHash("sha256").update(resolve(packageRoot)).digest("hex").slice(0, 24);
@@ -65,20 +76,40 @@ function processIsRunning(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-export async function registerInstallationInstance(packageRoot?: string): Promise<InstallationInstanceRegistration> {
-  const directory = coordinationDirectory(packageRoot);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await chmod(directory, 0o700);
+export async function registerInstallationInstance(options: InstallationInstanceOptions): Promise<InstallationInstanceRegistration> {
+  const directory = coordinationDirectory(options.packageRoot);
+  await prepareCoordinationDirectory(directory);
+  const lock = join(directory, "update.lock");
+  if (await pathExists(lock)) throw new Error("MinuChannels is being updated; try again after the update finishes");
   const token = randomBytes(16).toString("hex");
   const marker = join(directory, `instance-${process.pid}-${token}.json`);
-  await writeFile(marker, `${JSON.stringify({ pid: process.pid, token })}\n`, { mode: 0o600 });
+  await writeFile(marker, `${JSON.stringify({
+    version: 1,
+    pid: process.pid,
+    token,
+    kind: options.kind,
+    dataDirectoryId: installationDataDirectoryId(options.dataDirectory),
+  })}\n`, { mode: 0o600, flag: "wx" });
+  await chmod(marker, 0o600);
+  if (await pathExists(lock)) {
+    await rm(marker, { force: true });
+    throw new Error("MinuChannels is being updated; try again after the update finishes");
+  }
   let closed = false;
   return { async close() { if (!closed) { closed = true; await rm(marker, { force: true }); } } };
 }
 
-async function acquireUpdateCoordination(packageRoot: string): Promise<() => Promise<void>> {
+interface UpdateCoordination {
+  assertExclusive(): Promise<void>;
+  release(): Promise<void>;
+}
+
+async function acquireUpdateCoordination(
+  packageRoot: string,
+  allowedServiceDataDirectoryId?: string,
+): Promise<UpdateCoordination> {
   const directory = coordinationDirectory(packageRoot);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await prepareCoordinationDirectory(directory);
   const lock = join(directory, "update.lock");
   let acquired = false;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -88,6 +119,10 @@ async function acquireUpdateCoordination(packageRoot: string): Promise<() => Pro
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lockMetadata = await lstat(lock);
+      if (!lockMetadata.isDirectory() || lockMetadata.isSymbolicLink()) {
+        throw new Error("The MinuChannels update lock is invalid");
+      }
       let pid: number | undefined;
       let observedOwner: string | undefined;
       try {
@@ -121,21 +156,11 @@ async function acquireUpdateCoordination(packageRoot: string): Promise<() => Pro
   if (!acquired) throw new Error("Unable to acquire the MinuChannels update lock");
   try {
     await writeFile(join(lock, "owner.json"), `${JSON.stringify({ pid: process.pid })}\n`, { mode: 0o600 });
-    for (const name of await readdir(directory)) {
-      if (!/^instance-.*\.json$/.test(name)) continue;
-      const marker = join(directory, name);
-      try {
-        const record = JSON.parse(await readFile(marker, "utf8")) as { pid?: unknown };
-        if (typeof record.pid === "number" && processIsRunning(record.pid)) {
-          throw new Error(`MinuChannels is still running (pid ${record.pid}). Stop it before updating.`);
-        }
-        await rm(marker, { force: true });
-      } catch (error) {
-        if (error instanceof SyntaxError) await rm(marker, { force: true });
-        else throw error;
-      }
-    }
-    return async () => rm(lock, { recursive: true, force: true });
+    await assertInstallationInstances(directory, allowedServiceDataDirectoryId);
+    return {
+      assertExclusive: () => assertInstallationInstances(directory),
+      release: async () => rm(lock, { recursive: true, force: true }),
+    };
   } catch (error) {
     await rm(lock, { recursive: true, force: true });
     throw error;
@@ -148,13 +173,15 @@ export async function installUpdate(update: UpdateCheck, options: {
   runCommand?: RunCommand;
   fetch?: typeof fetch;
   temporaryDirectory?: string;
+  allowedServiceDataDirectoryId?: string;
+  beforeInstall?(): Promise<void>;
 } = {}): Promise<{ previousVersion: string; version: string }> {
   if (!update.updateAvailable) return { previousVersion: update.currentVersion, version: update.currentVersion };
   const packageRoot = resolve(options.packageRoot ?? defaultPackageRoot());
   const npmCommand = options.npmCommand ?? "npm";
   const runCommand = options.runCommand ?? defaultRunCommand;
   await assertGlobalNpmInstall(packageRoot, npmCommand, runCommand, update.latestVersion);
-  const releaseUpdate = await acquireUpdateCoordination(packageRoot);
+  const coordination = await acquireUpdateCoordination(packageRoot, options.allowedServiceDataDirectoryId);
   let temporaryRoot: string | undefined;
   try {
     temporaryRoot = await mkdtemp(join(options.temporaryDirectory ?? tmpdir(), "minu-channels-update-"));
@@ -163,6 +190,8 @@ export async function installUpdate(update: UpdateCheck, options: {
       fetchWithTimeout(options.fetch ?? fetch, update.artifactUrl),
       fetchWithTimeout(options.fetch ?? fetch, update.checksumUrl),
     ]);
+    assertGithubResponse(artifactResponse, "release artifact");
+    assertGithubResponse(checksumResponse, "release checksum");
     if (!artifactResponse.ok) throw new Error(`Release artifact download failed with HTTP ${artifactResponse.status}`);
     if (!checksumResponse.ok) throw new Error(`Release checksum download failed with HTTP ${checksumResponse.status}`);
     const [artifact, checksumFile] = await Promise.all([
@@ -174,13 +203,26 @@ export async function installUpdate(update: UpdateCheck, options: {
     if (actual !== expected) throw new Error(`Release artifact checksum mismatch: expected ${expected}, received ${actual}`);
     const artifactPath = join(temporaryRoot, basename(update.artifactName));
     await writeFile(artifactPath, artifact, { mode: 0o600 });
-    await runCommand(npmCommand, ["install", "-g", "--ignore-scripts", artifactPath]);
-    const installed = await runCommand(process.execPath, [join(packageRoot, "dist", "bin", "minu-channels.js"), "--version"]);
-    if (installed.stdout.trim() !== update.latestVersion) throw new Error(`Installed CLI reported ${installed.stdout.trim() || "no version"}; expected ${update.latestVersion}`);
+    await options.beforeInstall?.();
+    await coordination.assertExclusive();
+    try {
+      await runCommand(npmCommand, ["install", "-g", "--ignore-scripts", artifactPath]);
+    } catch {
+      throw new Error("Global npm update failed; the installed version could not be verified");
+    }
+    let installed: CommandResult;
+    try {
+      installed = await runCommand(process.execPath, [join(packageRoot, "dist", "bin", "minu-channels.js"), "--version"]);
+    } catch {
+      throw new Error("The updated MinuChannels version could not be verified");
+    }
+    if (installed.stdout.trim() !== update.latestVersion) {
+      throw new Error(`The updated MinuChannels version did not match ${update.latestVersion}`);
+    }
     return { previousVersion: update.currentVersion, version: update.latestVersion };
   } finally {
     if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
-    await releaseUpdate();
+    await coordination.release();
   }
 }
 
@@ -206,11 +248,66 @@ async function assertGlobalNpmInstall(packageRoot: string, npm: string, run: Run
   catch { throw new Error(`The global npm installation is not writable. Install manually from the v${version} GitHub Release.`); }
 }
 
+async function assertInstallationInstances(
+  directory: string,
+  allowedServiceDataDirectoryId?: string,
+): Promise<void> {
+  for (const name of await readdir(directory)) {
+    if (!name.startsWith("instance-") || !name.endsWith(".json")) continue;
+    const match = /^instance-(\d+)-([a-f0-9]{32})\.json$/.exec(name);
+    const marker = join(directory, name);
+    if (!match) {
+      const metadata = await lstat(marker);
+      if (metadata.isFile() && !metadata.isSymbolicLink()
+        && Date.now() - metadata.mtimeMs > 30_000) {
+        await rm(marker, { force: true });
+        continue;
+      }
+      throw new Error("An unverified MinuChannels instance blocks this update");
+    }
+    const pid = Number(match[1]);
+    if (!Number.isSafeInteger(pid) || pid < 1 || !processIsRunning(pid)) {
+      await rm(marker, { force: true });
+      continue;
+    }
+    try {
+      const metadata = await lstat(marker);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1_024) {
+        throw new Error("invalid marker");
+      }
+      const record = JSON.parse(await readFile(marker, "utf8")) as Record<string, unknown>;
+      const allowed = record.version === 1
+        && record.pid === pid
+        && record.token === match[2]
+        && record.kind === "service"
+        && record.dataDirectoryId === allowedServiceDataDirectoryId;
+      if (allowed) continue;
+    } catch {
+      // A live but malformed or legacy marker is intentionally conservative.
+    }
+    throw new Error("Another MinuChannels instance is still running; stop it before updating");
+  }
+}
+
+async function prepareCoordinationDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const metadata = await lstat(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("The MinuChannels update coordination directory is invalid");
+  }
+  await chmod(directory, 0o700);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try { await lstat(path); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
 function defaultPackageRoot(): string { return resolve(dirname(fileURLToPath(import.meta.url)), "../.."); }
 async function defaultRunCommand(command: string, args: string[]): Promise<CommandResult> { return executeFile(command, args, { encoding: "utf8" }); }
 async function fetchWithTimeout(fetchImpl: typeof fetch, url: string): Promise<Response> {
   try { return await fetchImpl(url, { headers: { Accept: "application/vnd.github+json", "User-Agent": "minu-channels-update-check", "X-GitHub-Api-Version": "2022-11-28" }, redirect: "follow", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) }); }
-  catch (error) { throw new Error(`Unable to reach GitHub releases: ${error instanceof Error ? error.message : String(error)}`); }
+  catch { throw new Error("Unable to reach GitHub releases"); }
 }
 async function readResponseBytes(response: Response, maximum: number, description: string): Promise<Buffer> {
   const declared = Number(response.headers.get("content-length"));
@@ -225,6 +322,15 @@ function checksumForArtifact(contents: string, artifact: string): string {
   throw new Error(`SHA256SUMS does not contain ${artifact}`);
 }
 function releaseAssetUrl(assets: unknown[], name: string): string { const asset = assets.find((value) => isObject(value) && value.name === name); if (!isObject(asset)) throw new Error(`GitHub release is missing required asset ${name}`); return requiredGithubUrl(asset.browser_download_url, `${name} download URL`); }
+function assertGithubResponse(response: Response, description: string): void {
+  if (!response.url) return; // Injected test responses have no transport URL.
+  const hostname = new URL(response.url).hostname;
+  if (hostname !== "api.github.com" && hostname !== "github.com"
+    && hostname !== "objects.githubusercontent.com"
+    && hostname !== "release-assets.githubusercontent.com") {
+    throw new Error(`${description} redirected outside the approved GitHub hosts`);
+  }
+}
 function requiredString(value: unknown, description: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`GitHub returned an invalid ${description}`); return value.trim(); }
 function requiredHttpsUrl(value: unknown, description: string): string { const url = new URL(requiredString(value, description)); if (url.protocol !== "https:") throw new Error(`${description} must use HTTPS`); return url.href; }
 function requiredGithubUrl(value: unknown, description: string): string { const url = new URL(requiredHttpsUrl(value, description)); if (url.hostname !== "github.com") throw new Error(`${description} must use github.com`); return url.href; }
