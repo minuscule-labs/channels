@@ -7,6 +7,7 @@
 - Move the default Channels, control, and web ports to `47410–47412`.
 - Preserve the authenticated browser session when the production web gateway proxies private control requests.
 - Restart the macOS background service safely: refuse active work by default or quiesce with `restart --when-idle` while preserving queued messages and Runtime sessions.
+- Coordinate checksum-verified global npm updates with a selected running service while refusing foreground and unrelated installation instances.
 
 ## 0.0.2
 

@@ -100,6 +100,16 @@ export class LocalServiceLifecycle {
     throw new Error("MinuChannels did not restart in time");
   }
 
+  async waitForStop(previousPid: number, timeoutMs = this.lifecycleTimeoutMs): Promise<LocalServiceStatus> {
+    const deadline = performance.now() + positiveInteger(timeoutMs, "timeoutMs");
+    while (performance.now() < deadline) {
+      const [status, pid] = await Promise.all([this.status(), this.processId()]);
+      if (!status.running || pid !== previousPid) return status;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, this.pollIntervalMs));
+    }
+    throw new Error("MinuChannels did not stop for update in time");
+  }
+
   async start(): Promise<LocalServiceStatus> {
     const before = await this.status();
     const changed = await this.ensureDefinition(before.loginEnabled);

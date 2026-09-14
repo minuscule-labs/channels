@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { confirmStoppedChannels } from "../src/update-confirmation.ts";
-import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance } from "../src/updater.ts";
+import { coordinateChannelsUpdate } from "../src/coordinated-update.ts";
+import { confirmChannelsUpdate } from "../src/update-confirmation.ts";
+import { checkForUpdate, compareVersions, installationDataDirectoryId, installUpdate, registerInstallationInstance } from "../src/updater.ts";
 
 const release = {
   tag_name: "v1.2.3",
@@ -23,24 +24,24 @@ test("requires explicit update confirmation unless --yes is supplied", async () 
   input.isTTY = true;
   output.isTTY = true;
   input.end("yes\n");
-  assert.equal(await confirmStoppedChannels({ assumeYes: false, json: false, input, output }), true);
+  assert.equal(await confirmChannelsUpdate({ assumeYes: false, json: false, input, output }), true);
 
   const declinedInput = new PassThrough() as PassThrough & { isTTY?: boolean };
   const declinedOutput = new PassThrough() as PassThrough & { isTTY?: boolean };
   declinedInput.isTTY = true;
   declinedOutput.isTTY = true;
   declinedInput.end("\n");
-  assert.equal(await confirmStoppedChannels({
+  assert.equal(await confirmChannelsUpdate({
     assumeYes: false, json: false, input: declinedInput, output: declinedOutput,
   }), false);
 
-  assert.equal(await confirmStoppedChannels({ assumeYes: true, json: true }), true);
+  assert.equal(await confirmChannelsUpdate({ assumeYes: true, json: true }), true);
   await assert.rejects(
-    confirmStoppedChannels({ assumeYes: false, json: true }),
+    confirmChannelsUpdate({ assumeYes: false, json: true }),
     /requires --yes/,
   );
   await assert.rejects(
-    confirmStoppedChannels({
+    confirmChannelsUpdate({
       assumeYes: false,
       json: false,
       input: new PassThrough(),
@@ -104,7 +105,11 @@ test("refuses self-update while the same installation has a running instance", a
   const globalRoot = join(root, "node_modules");
   const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
-  const instance = await registerInstallationInstance(packageRoot);
+  const instance = await registerInstallationInstance({
+    packageRoot,
+    kind: "foreground",
+    dataDirectory: join(root, "foreground-data"),
+  });
   try {
     await assert.rejects(installUpdate({
       currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
@@ -121,6 +126,290 @@ test("refuses self-update while the same installation has a running instance", a
     await instance.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("refuses an unrelated running service from the same installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-unrelated-"));
+  const globalRoot = join(root, "node_modules");
+  const packageRoot = join(globalRoot, "@minu", "channels");
+  await mkdir(packageRoot, { recursive: true });
+  const instance = await registerInstallationInstance({
+    packageRoot, kind: "service", dataDirectory: join(root, "other-data"),
+  });
+  try {
+    await assert.rejects(installUpdate({
+      currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+      releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+      artifactUrl: release.assets[0]!.browser_download_url,
+      checksumUrl: release.assets[1]!.browser_download_url,
+    }, {
+      packageRoot,
+      allowedServiceDataDirectoryId: installationDataDirectoryId(join(root, "selected-data")),
+      runCommand: async (_command, args) => args.join(" ") === "root -g"
+        ? { stdout: globalRoot, stderr: "" }
+        : { stdout: "", stderr: "" },
+    }), /Another MinuChannels instance/);
+  } finally {
+    await instance.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("treats a live legacy installation marker as unverified", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-legacy-"));
+  const globalRoot = join(root, "node_modules");
+  const packageRoot = join(globalRoot, "@minu", "channels");
+  await mkdir(packageRoot, { recursive: true });
+  const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
+  const coordination = join(tmpdir(), `minu-channels-install-${key}`);
+  const token = "a".repeat(32);
+  await mkdir(coordination, { recursive: true });
+  await writeFile(join(coordination, `instance-${process.pid}-${token}.json`), JSON.stringify({ pid: process.pid, token }));
+  try {
+    await assert.rejects(installUpdate({
+      currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+      releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+      artifactUrl: release.assets[0]!.browser_download_url,
+      checksumUrl: release.assets[1]!.browser_download_url,
+    }, {
+      packageRoot,
+      allowedServiceDataDirectoryId: installationDataDirectoryId(join(root, "data")),
+      runCommand: async (_command, args) => args.join(" ") === "root -g"
+        ? { stdout: globalRoot, stderr: "" }
+        : { stdout: "", stderr: "" },
+    }), /Another MinuChannels instance/);
+  } finally {
+    await Promise.all([
+      rm(coordination, { recursive: true, force: true }),
+      rm(root, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("rejects a symlinked installation coordination directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-symlink-"));
+  const packageRoot = join(root, "node_modules", "@minu", "channels");
+  await mkdir(packageRoot, { recursive: true });
+  const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
+  const coordination = join(tmpdir(), `minu-channels-install-${key}`);
+  const outside = join(root, "outside");
+  await mkdir(outside);
+  await symlink(outside, coordination);
+  try {
+    await assert.rejects(registerInstallationInstance({
+      packageRoot, kind: "foreground", dataDirectory: join(root, "data"),
+    }), /coordination directory is invalid/);
+  } finally {
+    await Promise.all([
+      rm(coordination, { force: true }),
+      rm(root, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("downloads and verifies before coordinating the selected running service", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-service-"));
+  const globalRoot = join(root, "node_modules");
+  const packageRoot = join(globalRoot, "@minu", "channels");
+  const dataDirectory = join(root, "service-data");
+  await mkdir(packageRoot, { recursive: true });
+  const artifact = Buffer.from("coordinated verified artifact");
+  const checksum = createHash("sha256").update(artifact).digest("hex");
+  const events: string[] = [];
+  const instance = await registerInstallationInstance({ packageRoot, kind: "service", dataDirectory });
+  const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
+  const coordination = join(tmpdir(), `minu-channels-install-${key}`);
+  try {
+    const markerName = (await readdir(coordination)).find((name) => name.startsWith("instance-"));
+    assert.ok(markerName);
+    const markerPath = join(coordination, markerName);
+    assert.equal((await stat(markerPath)).mode & 0o777, 0o600);
+    assert.equal((await readFile(markerPath, "utf8")).includes(dataDirectory), false);
+    await installUpdate({
+      currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+      releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+      artifactUrl: release.assets[0]!.browser_download_url,
+      checksumUrl: release.assets[1]!.browser_download_url,
+    }, {
+      packageRoot,
+      temporaryDirectory: root,
+      allowedServiceDataDirectoryId: installationDataDirectoryId(dataDirectory),
+      fetch: async (input) => {
+        events.push("download");
+        return String(input).endsWith("SHA256SUMS")
+          ? new Response(`${checksum}  minu-channels-1.2.3.tgz\n`)
+          : new Response(artifact);
+      },
+      beforeInstall: async () => {
+        events.push("quiesce");
+        await instance.close();
+      },
+      runCommand: async (command, args) => {
+        if (args.join(" ") === "root -g") return { stdout: globalRoot, stderr: "" };
+        if (command === process.execPath) return { stdout: "1.2.3\n", stderr: "" };
+        if (args[0] === "install") events.push("install");
+        return { stdout: "", stderr: "" };
+      },
+    });
+    assert.ok(events.lastIndexOf("download") < events.indexOf("quiesce"));
+    assert.ok(events.indexOf("quiesce") < events.indexOf("install"));
+  } finally {
+    await instance.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("coordinates update shutdown and restarts only a previously running service", async () => {
+  const events: string[] = [];
+  const service = {
+    async status() { return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false }; },
+    async processId() { return 123; },
+    async waitForStop(pid: number) {
+      assert.equal(pid, 123);
+      events.push("stopped");
+      return { installed: true, loaded: true, running: false, ready: false, loginEnabled: false };
+    },
+    async start() {
+      events.push("started");
+      return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false };
+    },
+  };
+  const update = {
+    currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+    releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+    artifactUrl: release.assets[0]!.browser_download_url,
+    checksumUrl: release.assets[1]!.browser_download_url,
+  };
+  const result = await coordinateChannelsUpdate(update, {
+    dataDirectory: "/private/data-is-never-returned",
+    service,
+    requestQuiesce: async (_directory, options) => {
+      assert.equal(options.action, "stop_for_update");
+      events.push("quiesced");
+      return { status: "ready", activeTurns: 0, queuedTurns: 2, queuedTurnsExact: false, pendingLifecycle: 0 };
+    },
+    install: async (_update, options) => {
+      assert.ok(options);
+      assert.equal(options.allowedServiceDataDirectoryId, installationDataDirectoryId("/private/data-is-never-returned"));
+      events.push("downloaded");
+      await options.beforeInstall?.();
+      events.push("installed");
+      return { previousVersion: "1.2.2", version: "1.2.3" };
+    },
+  });
+  assert.deepEqual(events, ["downloaded", "quiesced", "stopped", "installed", "started"]);
+  assert.deepEqual(result, { previousVersion: "1.2.2", version: "1.2.3", serviceRestarted: true });
+});
+
+test("restarts the service when installation fails after coordinated shutdown", async () => {
+  let starts = 0;
+  const service = {
+    async status() { return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false }; },
+    async processId() { return 123; },
+    async waitForStop() { return { installed: true, loaded: true, running: false, ready: false, loginEnabled: false }; },
+    async start() { starts += 1; return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false }; },
+  };
+  await assert.rejects(coordinateChannelsUpdate({
+    currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+    releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+    artifactUrl: release.assets[0]!.browser_download_url,
+    checksumUrl: release.assets[1]!.browser_download_url,
+  }, {
+    dataDirectory: "/selected",
+    service,
+    requestQuiesce: async () => ({ status: "ready", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0 }),
+    install: async (_update, options) => {
+      assert.ok(options);
+      await options.beforeInstall?.();
+      throw new Error("sanitized install failure");
+    },
+  }), /sanitized install failure/);
+  assert.equal(starts, 1);
+});
+
+test("restarts after a claimed update stop even when the quiesce caller times out", async () => {
+  const events: string[] = [];
+  await assert.rejects(coordinateChannelsUpdate({
+    currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+    releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+    artifactUrl: release.assets[0]!.browser_download_url,
+    checksumUrl: release.assets[1]!.browser_download_url,
+  }, {
+    dataDirectory: "/selected",
+    service: {
+      async status() { return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false }; },
+      async processId() { return 123; },
+      async waitForStop(pid: number) {
+        assert.equal(pid, 123);
+        events.push("stopped");
+        return { installed: true, loaded: true, running: false, ready: false, loginEnabled: false };
+      },
+      async start() {
+        events.push("started");
+        return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false };
+      },
+    },
+    requestQuiesce: async (_directory, options) => {
+      options.onUpdateStopClaimed?.();
+      throw new Error("MinuChannels did not accept update shutdown in time");
+    },
+    install: async (_update, options) => {
+      assert.ok(options);
+      await options.beforeInstall?.();
+      throw new Error("installation must not begin");
+    },
+  }), /did not accept update shutdown in time/);
+  assert.deepEqual(events, ["stopped", "started"]);
+});
+
+test("reports the installed version when service restart fails", async () => {
+  await assert.rejects(coordinateChannelsUpdate({
+    currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+    releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+    artifactUrl: release.assets[0]!.browser_download_url,
+    checksumUrl: release.assets[1]!.browser_download_url,
+  }, {
+    dataDirectory: "/selected",
+    service: {
+      async status() { return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false }; },
+      async processId() { return 123; },
+      async waitForStop() { return { installed: true, loaded: true, running: false, ready: false, loginEnabled: false }; },
+      async start() { throw new Error("private launch failure"); },
+    },
+    requestQuiesce: async () => ({ status: "ready", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0 }),
+    install: async (_update, options) => {
+      assert.ok(options);
+      await options.beforeInstall?.();
+      return { previousVersion: "1.2.2", version: "1.2.3" };
+    },
+  }), (error: unknown) => error instanceof Error
+    && error.message === "Updated MinuChannels to 1.2.3, but the background service did not restart. Run `minu-channels start`.");
+});
+
+test("leaves a stopped service stopped after update", async () => {
+  let starts = 0;
+  const result = await coordinateChannelsUpdate({
+    currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+    releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+    artifactUrl: release.assets[0]!.browser_download_url,
+    checksumUrl: release.assets[1]!.browser_download_url,
+  }, {
+    dataDirectory: "/stopped",
+    service: {
+      async status() { return { installed: true, loaded: true, running: false, ready: false, loginEnabled: false }; },
+      async processId() { return undefined; },
+      async waitForStop() { throw new Error("not called"); },
+      async start() { starts += 1; throw new Error("not called"); },
+    },
+    install: async (_update, options) => {
+      assert.ok(options);
+      assert.equal(options.allowedServiceDataDirectoryId, undefined);
+      await options.beforeInstall?.();
+      return { previousVersion: "1.2.2", version: "1.2.3" };
+    },
+  });
+  assert.equal(starts, 0);
+  assert.equal(result.serviceRestarted, false);
 });
 
 test("serializes concurrent self-updates for one installation", async () => {
@@ -196,6 +485,36 @@ test("recovers an interrupted update lock owned by a dead process", async () => 
     });
   } finally {
     await Promise.all([rm(coordination, { recursive: true, force: true }), rm(root, { recursive: true, force: true })]);
+  }
+});
+
+test("sanitizes global npm failures after verification", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-npm-failure-"));
+  const globalRoot = join(root, "node_modules");
+  const packageRoot = join(globalRoot, "@minu", "channels");
+  await mkdir(packageRoot, { recursive: true });
+  const artifact = Buffer.from("verified but install fails");
+  const checksum = createHash("sha256").update(artifact).digest("hex");
+  try {
+    await assert.rejects(installUpdate({
+      currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
+      releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
+      artifactUrl: release.assets[0]!.browser_download_url,
+      checksumUrl: release.assets[1]!.browser_download_url,
+    }, {
+      packageRoot,
+      temporaryDirectory: root,
+      fetch: async (input) => String(input).endsWith("SHA256SUMS")
+        ? new Response(`${checksum}  minu-channels-1.2.3.tgz\n`)
+        : new Response(artifact),
+      runCommand: async (_command, args) => {
+        if (args.join(" ") === "root -g") return { stdout: globalRoot, stderr: "" };
+        throw new Error("private package-manager failure");
+      },
+    }), (error: unknown) => error instanceof Error
+      && error.message === "Global npm update failed; the installed version could not be verified");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
