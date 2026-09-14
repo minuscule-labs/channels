@@ -13,6 +13,7 @@ import { createLocalWebServer } from "./local-web-server.ts";
 import { LocalServiceLifecycle, type LocalServiceStatus } from "./service-lifecycle.ts";
 import { BoundedServiceLog } from "./service-log.ts";
 import { requestServiceBrowserLaunchUrl, startServiceOpenBroker } from "./service-open.ts";
+import { requestServiceRestart, startServiceRestartBroker } from "./service-restart.ts";
 import { confirmStoppedChannels } from "./update-confirmation.ts";
 import { checkForUpdate, compareVersions, installUpdate, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
 
@@ -141,8 +142,9 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   ]);
   if (serviceCommands.has(command ?? "")) {
     const utility = new Command().name(`minu-channels ${command}`).option("--data-dir <path>").option("--json");
+    if (command === "restart") utility.option("--when-idle", "wait for currently active agent turns before restarting");
     utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
-    const options = utility.opts<{ dataDir?: string; json?: boolean }>();
+    const options = utility.opts<{ dataDir?: string; json?: boolean; whenIdle?: boolean }>();
     const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
     const service = new LocalServiceLifecycle({
       dataDirectory,
@@ -152,7 +154,23 @@ async function utilityCommand(args: string[]): Promise<boolean> {
     let status: LocalServiceStatus;
     if (command === "start") status = await service.start();
     else if (command === "stop") status = await service.stop();
-    else if (command === "restart") status = await service.restart();
+    else if (command === "restart") {
+      const before = await service.status();
+      if (before.running) {
+        const previousPid = await service.processId();
+        if (previousPid === undefined) throw new Error("MinuChannels service state could not be verified");
+        const preparation = await requestServiceRestart(dataDirectory, {
+          waitForIdle: Boolean(options.whenIdle),
+          timeoutMs: options.whenIdle ? 135_000 : 10_000,
+        });
+        if (preparation.status === "busy") {
+          throw new Error(`${preparation.activeTurns} active agent turn${preparation.activeTurns === 1 ? "" : "s"}; run \`minu-channels restart --when-idle\` to wait safely`);
+        }
+        status = await service.waitForRestart(previousPid);
+      } else {
+        status = await service.restart();
+      }
+    }
     else if (command === "enable-login") status = await service.setLoginEnabled(true);
     else if (command === "disable-login") status = await service.setLoginEnabled(false);
     else if (command === "remove-service") status = await service.remove();
@@ -298,27 +316,48 @@ Other commands:
   }
   let web: Awaited<ReturnType<typeof createLocalWebServer>> | undefined;
   let serviceOpenBroker: Awaited<ReturnType<typeof startServiceOpenBroker>> | undefined;
+  let serviceRestartBroker: Awaited<ReturnType<typeof startServiceRestartBroker>> | undefined;
   let closing = false;
   const close = async (): Promise<void> => {
     if (closing) return;
     closing = true;
-    await serviceOpenBroker?.close().catch(() => undefined);
+    await Promise.all([
+      serviceOpenBroker?.close().catch(() => undefined),
+      serviceRestartBroker?.close().catch(() => undefined),
+    ]);
     await web?.close().catch(() => undefined);
     await app.close();
     await installationInstance.close();
     await serviceLog?.close().catch(() => undefined);
+  };
+  const exitForSupervisedRestart = async (): Promise<void> => {
+    try {
+      await close();
+    } finally {
+      // D1 launchd policy restarts only unsuccessful exits. This private, explicit
+      // operation uses a dedicated code so the service owns restart even if the
+      // initiating CLI exits after its request is accepted.
+      process.exitCode = 75;
+    }
   };
   try {
     web = await createLocalWebServer({
       channelsEndpoint: app.channelsEndpoint,
       channelsServiceToken: app.channelsServiceToken,
       authenticateBrowser: app.authenticateBrowser,
+      isQuiescing: () => app.workSnapshot().state !== "running",
       controlEndpoint: app.controlEndpoint,
       webDirectory: resolve(options.webDir ?? defaultWebDirectory()),
       port: options.webPort,
     });
     if (options.serviceMode) {
       serviceOpenBroker = await startServiceOpenBroker(dataDirectory, () => app.issueBrowserLaunchUrl());
+      serviceRestartBroker = await startServiceRestartBroker(
+        dataDirectory,
+        () => app.workSnapshot(),
+        () => app.waitForQuiesced(),
+        { onRestartReady: exitForSupervisedRestart },
+      );
     }
     output("MinuChannels is ready");
     output(`  Web:      ${webUrl}`);

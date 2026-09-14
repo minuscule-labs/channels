@@ -7,6 +7,7 @@ import { acquireChannelsDataDirectoryLock, prepareChannelsDataDirectory } from "
 import { LocalServiceLifecycle, type ServiceCommandRunner } from "../src/service-lifecycle.ts";
 import { BoundedServiceLog } from "../src/service-log.ts";
 import { requestServiceBrowserLaunchUrl, startServiceOpenBroker } from "../src/service-open.ts";
+import { requestServiceRestart, startServiceRestartBroker } from "../src/service-restart.ts";
 
 async function fixture(options: { ready?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-service-"));
@@ -18,13 +19,14 @@ async function fixture(options: { ready?: boolean } = {}) {
   await chmod(node, 0o700);
   let loaded = false;
   let running = false;
+  let pid = 123;
   const calls: string[][] = [];
   const runCommand: ServiceCommandRunner = async (command, args) => {
     assert.equal(command, "/bin/launchctl");
     calls.push(args);
     if (args[0] === "print") {
       if (!loaded) throw new Error("not loaded");
-      return { stdout: running ? "state = running\npid = 123\n" : "state = exited\n", stderr: "" };
+      return { stdout: running ? `state = running\npid = ${pid}\n` : "state = exited\n", stderr: "" };
     }
     if (args[0] === "bootstrap") { loaded = true; return { stdout: "", stderr: "" }; }
     if (args[0] === "kickstart") {
@@ -32,7 +34,7 @@ async function fixture(options: { ready?: boolean } = {}) {
       running = true;
       if (options.ready !== false) {
         await mkdir(join(data, "run", "open"), { recursive: true });
-        await writeFile(join(data, "run", "open", "ready.json"), JSON.stringify({ pid: 123 }));
+        await writeFile(join(data, "run", "open", "ready.json"), JSON.stringify({ pid }));
       }
       return { stdout: "", stderr: "" };
     }
@@ -52,7 +54,18 @@ async function fixture(options: { ready?: boolean } = {}) {
     lifecycleTimeoutMs: 25,
     pollIntervalMs: 1,
   });
-  return { root, data, service, calls };
+  return {
+    root,
+    data,
+    service,
+    calls,
+    async replaceProcess(nextPid: number) {
+      pid = nextPid;
+      running = true;
+      await mkdir(join(data, "run", "open"), { recursive: true });
+      await writeFile(join(data, "run", "open", "ready.json"), JSON.stringify({ pid }));
+    },
+  };
 }
 
 test("starts an owner-scoped launch agent without enabling login", async () => {
@@ -96,6 +109,20 @@ test("lifecycle commands are idempotent and removal preserves product data", asy
       installed: false, loaded: false, running: false, ready: false, loginEnabled: false,
     });
     assert.equal(await readFile(join(data, "channels.db"), "utf8"), "preserve");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("waits for a different ready launchd process after service-owned restart", async () => {
+  const { root, service, replaceProcess } = await fixture();
+  try {
+    await service.start();
+    assert.equal(await service.processId(), 123);
+    const waiting = service.waitForRestart(123);
+    await replaceProcess(456);
+    assert.deepEqual(await waiting, {
+      installed: true, loaded: true, running: true, ready: true, loginEnabled: false,
+    });
+    assert.equal(await service.processId(), 456);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -157,6 +184,77 @@ test("private service output rejects symlink destinations", async () => {
     await mkdir(join(data, "run"));
     await symlink(outside, join(data, "run", "open"));
     await assert.rejects(startServiceOpenBroker(data, () => "http://minu-channels.localhost:47412/"), /private local directory/);
+    await symlink(outside, join(data, "run", "restart"));
+    await assert.rejects(
+      startServiceRestartBroker(data, () => ({
+        state: "running", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0,
+      }), async () => ({
+        state: "quiesced", activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, pendingLifecycle: 0,
+      })),
+      /private local directory/,
+    );
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("service restart exchange refuses active work or quiesces and waits when requested", async () => {
+  const root = await mkdtemp(join(tmpdir(), "minu-channels-service-restart-"));
+  try {
+    let activeTurns = 1;
+    let quiesceCalls = 0;
+    let restartReadyCalls = 0;
+    const broker = await startServiceRestartBroker(
+      root,
+      () => ({
+        state: "running",
+        activeTurns,
+        queuedTurns: 3,
+        queuedTurnsExact: false,
+        pendingLifecycle: 0,
+      }),
+      async () => {
+        quiesceCalls += 1;
+        activeTurns = 0;
+        return {
+          state: "quiesced",
+          activeTurns: 0,
+          queuedTurns: 3,
+          queuedTurnsExact: false,
+          pendingLifecycle: 0,
+        };
+      },
+      { intervalMs: 5, onRestartReady: () => { restartReadyCalls += 1; } },
+    );
+    const busy = await requestServiceRestart(root, {
+      waitForIdle: false,
+      timeoutMs: 1_000,
+      intervalMs: 5,
+    });
+    assert.deepEqual(busy, {
+      status: "busy",
+      activeTurns: 1,
+      queuedTurns: 3,
+      queuedTurnsExact: false,
+      pendingLifecycle: 0,
+    });
+    assert.equal(quiesceCalls, 0);
+
+    const ready = await requestServiceRestart(root, {
+      waitForIdle: true,
+      timeoutMs: 1_000,
+      intervalMs: 5,
+    });
+    assert.deepEqual(ready, {
+      status: "ready",
+      activeTurns: 0,
+      queuedTurns: 3,
+      queuedTurnsExact: false,
+      pendingLifecycle: 0,
+    });
+    assert.equal(quiesceCalls, 1);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(restartReadyCalls, 1);
+    assert.equal((await stat(join(root, "run", "restart"))).mode & 0o777, 0o700);
+    await broker.close();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

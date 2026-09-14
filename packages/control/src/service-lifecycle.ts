@@ -84,6 +84,22 @@ export class LocalServiceLifecycle {
     };
   }
 
+  async processId(): Promise<number | undefined> {
+    const inspection = await this.tryLaunchctl(["print", this.target]);
+    const match = /\bpid\s*=\s*(\d+)\b/.exec(inspection.stdout);
+    return inspection.ok && match ? Number(match[1]) : undefined;
+  }
+
+  async waitForRestart(previousPid: number): Promise<LocalServiceStatus> {
+    const deadline = performance.now() + this.lifecycleTimeoutMs;
+    while (performance.now() < deadline) {
+      const [status, pid] = await Promise.all([this.status(), this.processId()]);
+      if (status.ready && pid !== undefined && pid !== previousPid) return status;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, this.pollIntervalMs));
+    }
+    throw new Error("MinuChannels did not restart in time");
+  }
+
   async start(): Promise<LocalServiceStatus> {
     const before = await this.status();
     const changed = await this.ensureDefinition(before.loginEnabled);

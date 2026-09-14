@@ -99,6 +99,8 @@ try {
   for (const command of ["start", "stop", "restart", "status", "open", "enable-login", "disable-login", "remove-service", "run"]) {
     if (!help.includes(command)) throw new Error(`Packaged CLI help is missing ${command}`);
   }
+  const restartHelp = await capture(executable, ["restart", "--help"]);
+  if (!restartHelp.includes("--when-idle")) throw new Error("Packaged restart help is missing --when-idle");
   const paths = JSON.parse(await capture(executable, ["paths", "--data-dir", dataDirectory, "--json"]));
   if (paths.dataDirectory !== dataDirectory) throw new Error("Packaged paths command returned the wrong data directory");
   await capture(executable, ["doctor", "--data-dir", dataDirectory, "--json"]);

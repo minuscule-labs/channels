@@ -26,5 +26,6 @@ export {
   type RuntimePortTurn,
   type RelayAgentActivity,
   type RelayAgentActivityPhase,
+  type RelayWorkSnapshot,
   type WakePolicy,
 } from "./relay.ts";

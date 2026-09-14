@@ -1740,6 +1740,69 @@ test("legacy Runtime response recovery survives transcript compaction", async ()
   } finally { await relay.stop(); await server.close(); }
 });
 
+test("Relay quiescing finishes the active turn without admitting queued work", async () => {
+  const server = await createChannelHttpServer();
+  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new RecoverableRuntime();
+  const channel = await client.createChannel({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const binding = { participantId: "agent-a", sessionId: "session-a", runtime };
+  const firstRelay = new ChannelRuntimeRelay({
+    client,
+    channelId: channel.id,
+    bindings: [binding],
+    cursorStore: server.service.storage,
+    turnPollIntervalMs: 5,
+  });
+  try {
+    await firstRelay.start();
+    const active = await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a active before restart",
+    });
+    await waitUntil(async () => runtime.startCount === 1);
+    const queued = await client.postMessage(channel.id, {
+      participantId: "user",
+      body: "@agent-a queued across restart",
+    });
+
+    const snapshot = firstRelay.quiesce();
+    assert.equal(snapshot.quiescing, true);
+    assert.equal(snapshot.activeTurns, 1);
+    runtime.complete("active response");
+    assert.deepEqual(await firstRelay.waitForQuiesced(), {
+      activeTurns: 0,
+      queuedTurns: 0,
+      queuedTurnsExact: false,
+      quiescing: true,
+    });
+    assert.equal(runtime.startCount, 1);
+    assert.equal(await server.service.storage.getCursor(channel.id, "agent-a"), active.sequence);
+
+    await firstRelay.stop();
+    const restartedRelay = new ChannelRuntimeRelay({
+      client,
+      channelId: channel.id,
+      bindings: [binding],
+      cursorStore: server.service.storage,
+      turnPollIntervalMs: 5,
+    });
+    try {
+      await restartedRelay.start();
+      await waitUntil(async () => runtime.startCount === 2);
+      runtime.complete("queued response");
+      await waitUntil(async () => server.service.storage.getCursor(channel.id, "agent-a")
+        .then((sequence) => sequence === queued.sequence));
+    } finally {
+      await restartedRelay.stop();
+    }
+  } finally {
+    await firstRelay.stop();
+    await server.close();
+  }
+});
+
 test("Relay shutdown is bounded when a Runtime request stalls", async () => {
   const server = await createChannelHttpServer();
   const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });

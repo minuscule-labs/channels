@@ -6,6 +6,7 @@
 - Advertise the dedicated `minu-channels.localhost` browser origin while retaining loopback-only socket binding.
 - Move the default Channels, control, and web ports to `47410–47412`.
 - Preserve the authenticated browser session when the production web gateway proxies private control requests.
+- Restart the macOS background service safely: refuse active work by default or quiesce with `restart --when-idle` while preserving queued messages and Runtime sessions.
 
 ## 0.0.2
 

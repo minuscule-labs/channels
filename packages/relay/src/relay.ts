@@ -120,6 +120,14 @@ export interface RelayAgentActivity {
   retryAttempt?: number;
 }
 
+/** Aggregate, presentation-safe work state used to coordinate graceful shutdown. */
+export interface RelayWorkSnapshot {
+  activeTurns: number;
+  queuedTurns: number;
+  queuedTurnsExact: boolean;
+  quiescing: boolean;
+}
+
 interface BindingState {
   binding: AgentChannelBinding;
   lastProcessedSequence: number;
@@ -325,6 +333,7 @@ export class ChannelRuntimeRelay {
   private task: Promise<void> | undefined;
   private roster: ChannelMetadata | undefined;
   private rosterReady: Promise<void> = Promise.resolve();
+  private quiescing = false;
 
   constructor(private readonly options: ChannelRuntimeRelayOptions) {
     validatePositiveMilliseconds("turnPollIntervalMs", options.turnPollIntervalMs);
@@ -353,6 +362,7 @@ export class ChannelRuntimeRelay {
 
   async start(): Promise<void> {
     if (this.task) return;
+    this.quiescing = false;
     let resolveRosterReady!: () => void;
     this.rosterReady = new Promise<void>((resolve) => {
       resolveRosterReady = resolve;
@@ -424,6 +434,30 @@ export class ChannelRuntimeRelay {
     }
   }
 
+  workSnapshot(): RelayWorkSnapshot {
+    return {
+      activeTurns: this.states.reduce((count, state) => count + Number(state.activeTrigger !== undefined), 0),
+      queuedTurns: this.states.reduce((count, state) => count + state.queuedTurns, 0),
+      queuedTurnsExact: this.states.every((state) => !state.needsHeadScan
+        && state.knownThroughSequence >= state.observedHighWaterSequence),
+      quiescing: this.quiescing,
+    };
+  }
+
+  /** Stop admitting unstarted turns while allowing already-active turns to settle. */
+  quiesce(): RelayWorkSnapshot {
+    if (this.quiescing) return this.workSnapshot();
+    this.quiescing = true;
+    for (const state of this.states) state.drainController?.abort();
+    return this.workSnapshot();
+  }
+
+  async waitForQuiesced(): Promise<RelayWorkSnapshot> {
+    this.quiesce();
+    await this.waitForIdle();
+    return this.workSnapshot();
+  }
+
   /** Attach one binding without recreating the shared Channel subscription. */
   async attach(binding: AgentChannelBinding): Promise<void> {
     if (this.states.some((state) => state.binding.participantId === binding.participantId)) {
@@ -444,7 +478,7 @@ export class ChannelRuntimeRelay {
     // Install before starting the background scan so live events can raise only the
     // durable high-water mark without retaining their message bodies.
     this.states.push(state);
-    this.startActivityEvents(state);
+    if (!this.quiescing) this.startActivityEvents(state);
     if (this.task) this.startDrain(state);
   }
 
@@ -791,7 +825,7 @@ export class ChannelRuntimeRelay {
   }
 
   private startDrain(state: BindingState): void {
-    if (state.drainTask || !this.task || !this.states.includes(state)) return;
+    if (this.quiescing || state.drainTask || !this.task || !this.states.includes(state)) return;
     state.drainController ??= new AbortController();
     if (state.drainController.signal.aborted) return;
     let task!: Promise<void>;
@@ -806,7 +840,7 @@ export class ChannelRuntimeRelay {
         state.drainTask = undefined;
         // No await between clearing and rechecking: a concurrent event either sees the
         // active task or leaves a high-water mark that starts the next bounded pass.
-        if (this.task && this.states.includes(state) && !state.drainController?.signal.aborted
+        if (!this.quiescing && this.task && this.states.includes(state) && !state.drainController?.signal.aborted
           && (state.needsHeadScan
             || state.scanSequence < state.observedHighWaterSequence)) {
           this.startDrain(state);
@@ -818,7 +852,7 @@ export class ChannelRuntimeRelay {
   private async drainState(state: BindingState, signal: AbortSignal): Promise<void> {
     const pageSize = this.options.catchUpPageSize ?? DEFAULT_CATCH_UP_PAGE_SIZE;
     let failures = 0;
-    while (!signal.aborted && this.states.includes(state)) {
+    while (!this.quiescing && !signal.aborted && this.states.includes(state)) {
       let messages: ChannelMessage[];
       try {
         messages = await this.options.client.listMessages(this.options.channelId, {

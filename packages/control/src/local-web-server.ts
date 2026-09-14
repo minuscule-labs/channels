@@ -27,6 +27,7 @@ export interface LocalWebServerOptions {
   port?: number;
   channelsServiceToken: string;
   authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
+  isQuiescing?(): boolean;
 }
 
 export interface LocalWebServer {
@@ -169,6 +170,14 @@ export async function createLocalWebServer(
         return;
       }
       const url = new URL(request.url ?? "/", "http://minu.local");
+      const mutation = request.method !== "GET" && request.method !== "HEAD";
+      const durableChannelMessage = request.method === "POST"
+        && /^\/channels\/[^/]+\/messages$/.test(url.pathname);
+      if (options.isQuiescing?.() && mutation && !durableChannelMessage) {
+        response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(`${JSON.stringify({ error: "MinuChannels is restarting" })}\n`);
+        return;
+      }
       const target = targetFor(url.pathname, options);
       if (target === options.channelsEndpoint) {
         const session = options.authenticateBrowser(request.headers.cookie);
