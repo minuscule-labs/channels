@@ -16,7 +16,7 @@ import {
 import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { LocalAgentHostDiagnosticEvent, LocalManagedRuntimePort } from "./agent-host.ts";
+import type { LocalAgentHostDiagnosticEvent, LocalAgentHostWorkSnapshot, LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
 import {
@@ -79,6 +79,8 @@ export interface LocalProductApp {
   initialized: boolean;
   issueBrowserLaunchUrl(): string;
   authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
+  workSnapshot(): LocalAgentHostWorkSnapshot;
+  waitForQuiesced(): Promise<LocalAgentHostWorkSnapshot>;
   close(): Promise<void>;
 }
 
@@ -433,6 +435,8 @@ export async function createLocalProductApp(
           : "/",
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
+      workSnapshot: () => controlDaemon!.workSnapshot(),
+      waitForQuiesced: () => controlDaemon!.waitForQuiesced(),
       async close() {
         if (closed) return;
         closed = true;

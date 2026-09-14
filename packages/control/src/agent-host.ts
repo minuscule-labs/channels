@@ -75,6 +75,14 @@ interface BindingRecovery {
   timer: ReturnType<typeof setTimeout>;
 }
 
+export interface LocalAgentHostWorkSnapshot {
+  state: "running" | "quiescing" | "quiesced" | "closed";
+  activeTurns: number;
+  queuedTurns: number;
+  queuedTurnsExact: boolean;
+  pendingLifecycle: number;
+}
+
 interface ChannelRunner {
   relay: ChannelRuntimeRelay;
   /** Relay ownership transitions are serialized per Channel and readiness is explicit. */
@@ -197,6 +205,8 @@ export class LocalAgentHost {
     runtime: LocalManagedRuntimePort;
     sessionId: string;
   }>();
+  private quiescing = false;
+  private quiesced = false;
   private closed = false;
 
   constructor(private readonly options: LocalAgentHostOptions) {
@@ -212,7 +222,40 @@ export class LocalAgentHost {
   }
 
   get available(): boolean {
-    return Object.values(this.options.runtimes).some(launchableRuntime);
+    return !this.closed && !this.quiescing
+      && Object.values(this.options.runtimes).some(launchableRuntime);
+  }
+
+  workSnapshot(): LocalAgentHostWorkSnapshot {
+    const relays = [...this.runners.values()].map(({ relay }) => relay.workSnapshot());
+    return {
+      state: this.closed ? "closed" : this.quiesced ? "quiesced" : this.quiescing ? "quiescing" : "running",
+      activeTurns: relays.reduce((count, relay) => count + relay.activeTurns, 0),
+      queuedTurns: relays.reduce((count, relay) => count + relay.queuedTurns, 0),
+      queuedTurnsExact: relays.every((relay) => relay.queuedTurnsExact),
+      pendingLifecycle: this.pending.size,
+    };
+  }
+
+  async beginQuiesce(): Promise<LocalAgentHostWorkSnapshot> {
+    if (this.closed) return this.workSnapshot();
+    this.quiescing = true;
+    for (const recovery of this.recoveries.values()) clearTimeout(recovery.timer);
+    this.recoveries.clear();
+    // Freeze Relay admission at the boundary. Operations already serialized before
+    // it may still finish durable lifecycle changes, including a quiesced attach.
+    for (const { relay } of this.runners.values()) relay.quiesce();
+    while (this.pending.size > 0) {
+      await Promise.allSettled([...this.pending.values()]);
+    }
+    return this.workSnapshot();
+  }
+
+  async waitForQuiesced(): Promise<LocalAgentHostWorkSnapshot> {
+    await this.beginQuiesce();
+    await Promise.all([...this.runners.values()].map(({ relay }) => relay.waitForQuiesced()));
+    this.quiesced = true;
+    return this.workSnapshot();
   }
 
   async startAllChannelAgents(
@@ -256,7 +299,7 @@ export class LocalAgentHost {
   ): Promise<void> {
     return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
       try {
-        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const channel = await this.options.client.getChannel(channelId).catch(() => {
           throw new LocalConfigurationRequestError("Channel is unavailable", 404, "unavailable");
         });
@@ -402,7 +445,7 @@ export class LocalAgentHost {
       let previousSessionId: string | undefined;
       let workspaceId: string | undefined;
       try {
-        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.configuredContext(channelId, agentIdentityId, actorIdentityId);
         workspaceId = context.channel.workspaceId;
         assertModelPolicy(context.workspaceConfig, context.agentConfig);
@@ -530,7 +573,7 @@ export class LocalAgentHost {
     return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       try {
-        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
         workspaceId = context.channel.workspaceId;
         const matches = context.bindings.filter(({ agentIdentityId: candidate }) => candidate === agentIdentityId);
@@ -582,41 +625,43 @@ export class LocalAgentHost {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void> {
-    let workspaceId: string | undefined;
-    try {
-      if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-      const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
-      workspaceId = context.channel.workspaceId;
-      const runner = this.runners.get(channelId);
-      if (!runner) {
-        throw new LocalConfigurationRequestError("Agent Channel session is unavailable", 409, "unavailable");
+    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+      let workspaceId: string | undefined;
+      try {
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+        workspaceId = context.channel.workspaceId;
+        const runner = this.runners.get(channelId);
+        if (!runner) {
+          throw new LocalConfigurationRequestError("Agent Channel session is unavailable", 409, "unavailable");
+        }
+        await runner.relay.cancelCurrent(agentIdentityId, actorIdentityId);
+        this.audit({
+          action: "agent.turn.cancel.requested",
+          outcome: "accepted",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+      } catch (error) {
+        this.audit({
+          action: "agent.turn.cancel.requested",
+          outcome: "rejected",
+          reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+          actorIdentityId,
+          workspaceId,
+          channelId,
+          targetIdentityId: agentIdentityId,
+        });
+        if (error instanceof LocalConfigurationRequestError) throw error;
+        throw new LocalConfigurationRequestError(
+          "Agent turn could not be canceled",
+          409,
+          "unavailable",
+        );
       }
-      await runner.relay.cancelCurrent(agentIdentityId, actorIdentityId);
-      this.audit({
-        action: "agent.turn.cancel.requested",
-        outcome: "accepted",
-        actorIdentityId,
-        workspaceId,
-        channelId,
-        targetIdentityId: agentIdentityId,
-      });
-    } catch (error) {
-      this.audit({
-        action: "agent.turn.cancel.requested",
-        outcome: "rejected",
-        reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
-        actorIdentityId,
-        workspaceId,
-        channelId,
-        targetIdentityId: agentIdentityId,
-      });
-      if (error instanceof LocalConfigurationRequestError) throw error;
-      throw new LocalConfigurationRequestError(
-        "Agent turn could not be canceled",
-        409,
-        "unavailable",
-      );
-    }
+    });
   }
 
   async openChannelAgentDiagnostic(
@@ -627,7 +672,7 @@ export class LocalAgentHost {
     return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       try {
-        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
         workspaceId = context.channel.workspaceId;
         const matches = context.bindings.filter(
@@ -695,7 +740,7 @@ export class LocalAgentHost {
       let workspaceId: string | undefined;
       let committed = false;
       try {
-        if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
         workspaceId = context.channel.workspaceId;
         const matches = context.bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
@@ -847,7 +892,7 @@ export class LocalAgentHost {
     workspaceId: string;
     targets: BulkLifecycleTarget[];
   }> {
-    if (this.closed) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+    if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
     const channel = await this.options.client.getChannel(channelId).catch(() => {
       throw new LocalConfigurationRequestError("Channel is unavailable", 404, "unavailable");
     });
@@ -1285,7 +1330,7 @@ export class LocalAgentHost {
     category: LocalAgentHostDiagnosticEvent["category"],
     result: AttachmentResult = "runtime_uncertain",
   ): void {
-    if (this.closed || record.state === "disabled" || this.recoveries.has(record.id)) return;
+    if (this.closed || this.quiescing || record.state === "disabled" || this.recoveries.has(record.id)) return;
     const delayMs = this.recoveryBackoffMs[Math.min(attempt, this.recoveryBackoffMs.length - 1)]!;
     const timer = setTimeout(() => {
       this.recoveries.delete(record.id);
@@ -1318,10 +1363,10 @@ export class LocalAgentHost {
     attempt: number,
     category: LocalAgentHostDiagnosticEvent["category"],
   ): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.quiescing) return;
     const key = this.bindingKey(expected.channelId, expected.agentIdentityId);
     await this.exclusive(key, async () => {
-      if (this.closed) return;
+      if (this.closed || this.quiescing) return;
       const current = await this.options.store.getBinding(expected.id);
       if (!current || current.generation !== expected.generation || current.state === "disabled") {
         this.cancelRecovery(expected.id);

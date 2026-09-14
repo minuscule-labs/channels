@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   LocalAgentHost,
   type LocalAgentHostDiagnosticEvent,
+  type LocalAgentHostWorkSnapshot,
   type LocalManagedRuntimePort,
 } from "./agent-host.ts";
 import { LocalAgentHostConfiguration } from "./configuration.ts";
@@ -46,6 +47,8 @@ export interface LocalControlDaemon {
   endpoint: string;
   issueBrowserLaunchUrl(destinationPath?: string): string;
   authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
+  workSnapshot(): LocalAgentHostWorkSnapshot;
+  waitForQuiesced(): Promise<LocalAgentHostWorkSnapshot>;
   close(): Promise<void>;
 }
 
@@ -119,6 +122,8 @@ export async function createLocalControlDaemon(
       issueBrowserLaunchUrl: (destinationPath) =>
         browserSessions.issueLaunchUrl(server!.endpoint, destinationPath),
       authenticateBrowser: (cookieHeader) => browserSessions.authenticate(cookieHeader),
+      workSnapshot: () => agentHost!.workSnapshot(),
+      waitForQuiesced: () => agentHost!.waitForQuiesced(),
       async close() {
         await server!.close();
         await agentHost!.close();

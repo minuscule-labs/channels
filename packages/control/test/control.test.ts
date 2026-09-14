@@ -886,6 +886,7 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     listen(controlBackend),
   ]);
   let browserAuthenticated = true;
+  let quiescing = false;
   const web = await createLocalWebServer({
     channelsEndpoint,
     controlEndpoint,
@@ -893,6 +894,7 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     port: 0,
     channelsServiceToken: "web-test-token",
     authenticateBrowser: () => browserAuthenticated ? { identityId: "human-web-test" } : undefined,
+    isQuiescing: () => quiescing,
   });
   try {
     assert.equal(await requestStatus(`${web.endpoint}/`, {
@@ -917,6 +919,13 @@ test("local production web server serves the SPA and proxies product APIs", asyn
       source: "control",
       cookie: "minu_local_session=browser-session",
     });
+    quiescing = true;
+    const blocked = await fetch(`${web.endpoint}/identities`, { method: "POST" });
+    assert.equal(blocked.status, 503);
+    assert.deepEqual(await blocked.json(), { error: "MinuChannels is restarting" });
+    assert.equal((await fetch(`${web.endpoint}/local/workspaces/workspace/config`, { method: "PATCH" })).status, 503);
+    assert.equal((await fetch(`${web.endpoint}/channels/channel/messages`, { method: "POST" })).status, 200);
+    assert.equal((await fetch(`${web.endpoint}/identities`)).status, 200);
   } finally {
     await web.close();
     await Promise.all([
@@ -1286,6 +1295,81 @@ test("private configuration authorizes current humans and returns only redacted 
     await store.close();
     await channelServer.close();
   }
+});
+
+test("agent host quiescing drains accepted lifecycle work before freezing Relay admission", async () => {
+  let releasePending!: () => void;
+  const pending = new Promise<void>((resolve) => { releasePending = resolve; });
+  let quiesceCalls = 0;
+  let waitCalls = 0;
+  const relay = {
+    workSnapshot: () => ({
+      activeTurns: waitCalls === 0 ? 1 : 0,
+      queuedTurns: 2,
+      queuedTurnsExact: false,
+      quiescing: quiesceCalls > 0,
+    }),
+    quiesce: () => {
+      quiesceCalls += 1;
+      return relay.workSnapshot();
+    },
+    waitForQuiesced: async () => {
+      waitCalls += 1;
+      return relay.workSnapshot();
+    },
+  };
+  const host = new LocalAgentHost({
+    client: {} as ChannelClient,
+    store: {} as InMemoryRelayBindingStore,
+    runtimes: {
+      managed: {
+        async start() { return { id: "private-session" }; },
+        async status() { return "idle"; },
+        async send() {},
+        async messages() { return []; },
+      },
+    },
+  });
+  const internals = host as unknown as {
+    pending: Map<string, Promise<unknown>>;
+    runners: Map<string, { relay: typeof relay }>;
+  };
+  internals.pending.set("accepted-operation", pending);
+  internals.runners.set("private-channel", { relay });
+
+  assert.deepEqual(host.workSnapshot(), {
+    state: "running",
+    activeTurns: 1,
+    queuedTurns: 2,
+    queuedTurnsExact: false,
+    pendingLifecycle: 1,
+  });
+  const beginning = host.beginQuiesce();
+  assert.equal(host.available, false);
+  assert.equal(quiesceCalls, 1);
+  releasePending();
+  internals.pending.delete("accepted-operation");
+  assert.deepEqual(await beginning, {
+    state: "quiescing",
+    activeTurns: 1,
+    queuedTurns: 2,
+    queuedTurnsExact: false,
+    pendingLifecycle: 0,
+  });
+  assert.equal(quiesceCalls, 1);
+  assert.deepEqual(await host.waitForQuiesced(), {
+    state: "quiesced",
+    activeTurns: 0,
+    queuedTurns: 2,
+    queuedTurnsExact: false,
+    pendingLifecycle: 0,
+  });
+  assert.equal(waitCalls, 1);
+  await assert.rejects(
+    host.cancelCurrentChannelAgent("private-channel", "private-agent", "private-owner"),
+    (error: unknown) => error instanceof LocalConfigurationRequestError
+      && error.message === "Agent host is unavailable",
+  );
 });
 
 test("agent host sanitizes unexpected cancellation failures and audit output", async () => {
