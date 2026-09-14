@@ -40,6 +40,7 @@ async function startAndStop(expectedSetup, portBase, options = {}) {
   const workspacePath = Object.hasOwn(options, "workspacePath") ? options.workspacePath : workspace;
   return await new Promise((resolveRun, reject) => {
     const child = spawn(executable, [
+      ...(options.explicitRun ? ["run"] : []),
       "--no-open",
       "--data-dir", options.dataDirectory ?? dataDirectory,
       "--channels-port", String(portBase),
@@ -94,11 +95,15 @@ try {
   const executable = join(installRoot, "node_modules/.bin/minu-channels");
   const version = (await capture(executable, ["--version"])).trim();
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Packaged CLI returned an invalid version: ${version}`);
+  const help = await capture(executable, ["--help"]);
+  for (const command of ["start", "stop", "restart", "status", "open", "enable-login", "disable-login", "remove-service", "run"]) {
+    if (!help.includes(command)) throw new Error(`Packaged CLI help is missing ${command}`);
+  }
   const paths = JSON.parse(await capture(executable, ["paths", "--data-dir", dataDirectory, "--json"]));
   if (paths.dataDirectory !== dataDirectory) throw new Error("Packaged paths command returned the wrong data directory");
   await capture(executable, ["doctor", "--data-dir", dataDirectory, "--json"]);
   const portBase = 46_000 + Math.floor(Math.random() * 1_000);
-  await startAndStop("Setup:    created a fresh local Workspace", portBase);
+  await startAndStop("Setup:    created a fresh local Workspace", portBase, { explicitRun: true });
   await startAndStop("Setup:    reopened existing local data", portBase);
   await startAndStop("Setup:    ready for browser Workspace setup", portBase + 10, {
     dataDirectory: join(temporary, "browser-first-data"),
