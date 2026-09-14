@@ -44,7 +44,28 @@ minu-channels update --check
 
 `paths` and `doctor` accept `--data-dir` and `--json`. The doctor checks the Node version, supported platform, and private data-directory permissions.
 
-## Upgrade
+## Upgrade to 0.0.4 and start the macOS service
+
+Version 0.0.4 is the first release with the managed background service. Stop any older foreground MinuChannels process, download `minu-channels-0.0.4.tgz` and `SHA256SUMS` from the GitHub Release, verify the checksum, then install and start it:
+
+```bash
+npm install -g ./minu-channels-0.0.4.tgz
+minu-channels --version        # must print 0.0.4
+minu-channels doctor
+minu-channels start            # install/refresh and start the user LaunchAgent
+minu-channels status
+minu-channels open             # open a fresh authenticated browser session
+```
+
+`start` does **not** enable launch at login. Opt in only when wanted:
+
+```bash
+minu-channels enable-login
+```
+
+The service uses the existing default data at `~/.minu/channels`; passing `--data-dir` selects an independent instance. Do not run foreground `minu-channels run` against the same data directory while the service is active. Use `minu-channels stop` before returning to foreground operation.
+
+## Later upgrades
 
 The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. A selected running macOS service is quiesced only after verification, stopped without terminating Runtime workers, and restarted only after the installed version is verified. A selected service that was already stopped remains stopped. Foreground processes, other data-directory services, legacy or unverified live markers, source checkouts, unsupported package-manager layouts, and concurrent updates are refused. Interrupted update locks are recovered only after their owner process is confirmed dead.
 
