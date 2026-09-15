@@ -503,7 +503,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 15,
+      protocolVersion: 16,
       channelId,
       agents: [
         {
@@ -527,7 +527,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 15,
+        protocolVersion: 16,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -584,7 +584,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 15,
+      protocolVersion: 16,
       features: {
         currentSession: true,
         channelAgentStatus: true,
@@ -611,7 +611,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
   await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toBeVisible();
 });
 
-test("configures Workspace agent startup without reflecting saved values", async ({ page, request }) => {
+test("shows saved instructions and Runtime selections only on authenticated agent detail", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
@@ -662,40 +662,54 @@ test("configures Workspace agent startup without reflecting saved values", async
   expect(agentResponseBody).not.toContain(personaValue);
   await expect(agentForm.getByText(`Harness: ${runtimeValue}`, { exact: true })).toBeVisible();
   await expect(agentForm.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
-  await expect(agentForm.getByLabel("Replace harness", { exact: true })).toHaveValue("");
+  await expect(agentForm.getByLabel("Harness", { exact: true })).toHaveValue(runtimeValue);
   await agentForm.getByRole("tab", { name: "General" }).click();
-  await expect(agentForm.getByLabel("Replace agent instructions", { exact: true })).toHaveValue("");
-  await expect(page.getByText(personaValue, { exact: true })).toHaveCount(0);
-  await agentForm.getByRole("tab", { name: "Runtime" }).click();
+  await expect(page.getByRole("textbox", { name: "Agent instructions", exact: true })).toHaveValue(personaValue);
+  await page.reload();
+  const activeAgentForm = page.locator("article").filter({ hasText: "Builder Agent" })
+    .locator("form").filter({ hasText: "Private launch profile" });
+  await expect(page.getByRole("textbox", { name: "Agent instructions", exact: true })).toHaveValue(personaValue);
+  await activeAgentForm.getByRole("tab", { name: "Runtime" }).click();
+  await expect(activeAgentForm.getByLabel("Harness", { exact: true })).toHaveValue(runtimeValue);
 
-  const providerSelect = agentCard.getByRole("combobox", { name: "Provider", exact: true });
-  const modelSelect = agentCard.getByRole("combobox", { name: "Model", exact: true });
-  const reasoningSelect = agentCard.getByRole("combobox", { name: "Reasoning", exact: true });
+  const providerSelect = activeAgentForm.getByRole("combobox", { name: "Provider", exact: true });
+  const modelSelect = activeAgentForm.getByRole("combobox", { name: "Model", exact: true });
+  const reasoningSelect = activeAgentForm.getByRole("combobox", { name: "Reasoning", exact: true });
   await expect(providerSelect).toBeEnabled({ timeout: 10_000 });
-  await agentForm.getByText("Manage available provider models", { exact: true }).click();
-  await agentForm.getByLabel("Enable Browser Fast").uncheck();
+  await expect(providerSelect).toHaveValue("openai-codex");
+  await expect(modelSelect).toHaveValue(JSON.stringify(["openai-codex", "gpt-5.6-sol"]));
+  await expect(reasoningSelect).toHaveValue("medium");
+  await expect(activeAgentForm.getByText(/default/i)).toHaveCount(0);
+  await activeAgentForm.getByText("Manage available provider models", { exact: true }).click();
+  await activeAgentForm.getByLabel("Enable Browser Fast").uncheck();
   const modelPolicyResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PUT"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
-  await agentForm.getByRole("button", { name: "Save available models" }).click();
+  await activeAgentForm.getByRole("button", { name: "Save available models" }).click();
   expect((await modelPolicyResponsePromise).ok()).toBe(true);
   await providerSelect.selectOption("openai");
   await expect(modelSelect.getByRole("option", { name: "Browser Fast" })).toHaveCount(0);
-  await modelSelect.selectOption({ label: "Browser Deep" });
-  await reasoningSelect.selectOption("high");
+  await expect(modelSelect).toHaveValue(JSON.stringify(["openai", "gpt-browser-deep"]));
+  await expect(reasoningSelect).toHaveValue("medium");
   const launchProfileResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
-  await agentForm.getByRole("button", { name: "Save launch profile" }).click();
+  await activeAgentForm.getByRole("button", { name: "Save launch profile" }).click();
   const launchProfileResponse = await launchProfileResponsePromise;
   expect(launchProfileResponse.ok()).toBe(true);
   const launchProfileBody = await launchProfileResponse.text();
   expect(launchProfileBody).not.toContain("gpt-browser-deep");
-  expect(launchProfileBody).not.toContain("high");
-  await expect(agentForm.getByText("Model: configured", { exact: true })).toBeVisible();
-  await expect(agentForm.getByText("Reasoning: configured", { exact: true })).toBeVisible();
-  await agentForm.getByRole("tab", { name: "Skills" }).click();
-  await expect(agentForm.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
+  expect(launchProfileBody).not.toContain("medium");
+  await expect(activeAgentForm.getByText("Model: Browser Deep", { exact: true })).toBeVisible();
+  await expect(activeAgentForm.getByText("Reasoning: medium", { exact: true })).toBeVisible();
+  await page.reload();
+  await activeAgentForm.getByRole("tab", { name: "Runtime" }).click();
+  await expect(activeAgentForm.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("openai");
+  await expect(activeAgentForm.getByRole("combobox", { name: "Model", exact: true }))
+    .toHaveValue(JSON.stringify(["openai", "gpt-browser-deep"]));
+  await expect(activeAgentForm.getByRole("combobox", { name: "Reasoning", exact: true })).toHaveValue("medium");
+  await activeAgentForm.getByRole("tab", { name: "Skills" }).click();
+  await expect(activeAgentForm.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
 });
 
 test("lists agents, opens a detail page, and adds an agent", async ({ page, request }) => {
@@ -724,8 +738,8 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByRole("status")).toContainText("Agent “Browser Review Agent” created");
   await page.getByRole("button", { name: "Edit agent" }).click();
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
-  await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
-  await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Model: Browser Deep", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reasoning: high", { exact: true })).toBeVisible();
   await expect(page.getByText("Skills configured for new sessions (1): configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   const createdIdentityForm = page.locator("form").filter({ hasText: "The name identifies the agent" });
@@ -757,7 +771,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 15,
+        protocolVersion: 16,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,

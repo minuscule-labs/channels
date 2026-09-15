@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer as createNodeServer, request as httpRequest } from "node:http";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ import {
 import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
+import { developmentDataDirectory, resetDevelopmentData } from "../src/dev-data.ts";
 import { createLocalProductApp } from "../src/local.ts";
 import {
   acquireChannelsDataDirectoryLock,
@@ -444,7 +445,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 15 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 16 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -526,7 +527,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 15, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 16, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -609,7 +610,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
     headers: { cookie, origin: sessions.browserOrigin },
   });
   assert.equal(opened.status, 202);
-  assert.deepEqual(await opened.json(), { protocolVersion: 15, status: "opened" });
+  assert.deepEqual(await opened.json(), { protocolVersion: 16, status: "opened" });
   assert.equal(diagnosticCalls, 1);
 });
 
@@ -841,7 +842,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 15,
+      protocolVersion: 16,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -980,6 +981,39 @@ test("resolves isolated Channels data paths and arbitrates product-directory loc
     await winners[0]!.release();
   } finally {
     await rm(dataDirectory, { recursive: true, force: true });
+  }
+});
+
+test("development data reset is fixed-scope, active-instance-aware, and symlink-safe", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "minu-dev-reset-home-"));
+  const outside = await mkdtemp(join(tmpdir(), "minu-dev-reset-outside-"));
+  const dataDirectory = developmentDataDirectory(homeDirectory);
+  try {
+    assert.equal(await resetDevelopmentData({ homeDirectory }), "absent");
+    await prepareChannelsDataDirectory(dataDirectory);
+    await writeFile(join(dataDirectory, "marker"), "development-only");
+    const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
+    await assert.rejects(
+      resetDevelopmentData({ homeDirectory }),
+      /already using data directory/,
+    );
+    assert.equal(await readFile(join(dataDirectory, "marker"), "utf8"), "development-only");
+    await lock.release();
+    assert.equal(await resetDevelopmentData({ homeDirectory }), "removed");
+    await assert.rejects(stat(dataDirectory), { code: "ENOENT" });
+
+    await mkdir(join(homeDirectory, ".minu"), { recursive: true });
+    await symlink(outside, dataDirectory);
+    await assert.rejects(
+      resetDevelopmentData({ homeDirectory }),
+      /unsafe data directory/,
+    );
+    assert.equal((await stat(outside)).isDirectory(), true);
+  } finally {
+    await Promise.all([
+      rm(homeDirectory, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
   }
 });
 
@@ -1195,7 +1229,7 @@ test("Runtime discovery is scoped by canonical Workspace source root", async () 
   }
 });
 
-test("private configuration authorizes current humans and returns only redacted state", async () => {
+test("private configuration keeps lists redacted and returns agent details only to authorized local owners", async () => {
   const channelServer = await createChannelHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const audit: LocalControlAuditEvent[] = [];
@@ -1269,6 +1303,23 @@ test("private configuration authorizes current humans and returns only redacted 
       boundChannelCount: 0,
       changesApplyToNewSessions: true,
     }]);
+    const detail = await configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id);
+    assert.deepEqual(detail, {
+      protocolVersion: 16,
+      workspaceId: workspace.id,
+      identityId: agent.id,
+      instructions: { source: "inline", text: "PRIVATE PERSONA: build and verify carefully" },
+      runtimeAdapter: "pi-owned",
+      modelProvider: "openai-private",
+      modelId: "gpt-private",
+      reasoningLevel: "high",
+      status: "active",
+      changesApplyToNewSessions: true,
+    });
+    await assert.rejects(
+      configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, member.id),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
+    );
     assert.equal((await store.getWorkspaceConfig(workspace.id))?.rootUri, pathToFileURL(await realpath(process.cwd())).href);
     const storedAgent = await store.getWorkspaceAgentConfig(workspace.id, agent.id);
     assert.equal(storedAgent?.personaPrompt, "PRIVATE PERSONA: build and verify carefully");
@@ -2239,6 +2290,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
               models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true }],
               reasoningLevels: ["off", "medium", "high"] as Array<"off" | "medium" | "high">,
               skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
+              defaultModel: { provider: "openai", id: "gpt-private" },
+              defaultReasoningLevel: "medium" as const,
             };
           },
         },
@@ -2287,18 +2340,34 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       },
     );
     assert.equal(agentUpdate.status, 200);
+    const agentConfigurationUrl = `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/config`;
+    const agentConfigurationResponse = await fetch(agentConfigurationUrl, { headers: requestHeaders });
+    assert.equal(agentConfigurationResponse.status, 200);
+    assert.equal(agentConfigurationResponse.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await agentConfigurationResponse.json(), {
+      protocolVersion: 16,
+      workspaceId: workspace.id,
+      identityId: agent.id,
+      instructions: { source: "inline", text: "DAEMON PRIVATE PERSONA" },
+      runtimeAdapter: "pi-owned-private",
+      status: "active",
+      changesApplyToNewSessions: true,
+    });
+    assert.equal((await fetch(agentConfigurationUrl)).status, 401);
     const workspaceRuntimeOptionsResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/runtime-options?adapter=pi-owned-private`,
       { headers: requestHeaders },
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 15,
+      protocolVersion: 16,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
       modelPolicyConfigured: false,
       skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
+      defaultModel: { provider: "openai", id: "gpt-private" },
+      defaultReasoningLevel: "medium",
     });
     const runtimeOptionsResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
@@ -2306,7 +2375,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 15,
+      protocolVersion: 16,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
@@ -2315,6 +2384,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
       skillSelectionConfigured: false,
       selectedSkillIds: [],
+      defaultModel: { provider: "openai", id: "gpt-private" },
+      defaultReasoningLevel: "medium",
     });
     const policyResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,

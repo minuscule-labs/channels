@@ -8,6 +8,11 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { channels, localControl } from "../lib/api";
+import {
+  initialLaunchModel,
+  initialLaunchModelForProvider,
+  initialLaunchReasoning,
+} from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
 import { useAppToast } from "./ui/toast";
@@ -24,6 +29,15 @@ function ConfigurationState({ configured, label }: { configured: boolean; label:
     >
       <span className={`status-dot ${configured ? "" : "opacity-30"}`} />
       {label}: {configured ? "configured" : "not configured"}
+    </span>
+  );
+}
+
+function ConfigurationValue({ label, value }: { label: string; value?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">
+      <span className={`status-dot ${value ? "" : "opacity-30"}`} />
+      {label}: {value ?? "unavailable"}
     </span>
   );
 }
@@ -136,6 +150,24 @@ function AgentLaunchProfileForm({
   const [status, setStatus] = useState<"active" | "disabled">(
     agent.status === "disabled" ? "disabled" : "active",
   );
+  const agentConfiguration = useQuery({
+    queryKey: queryKeys.workspaceAgentConfiguration(workspaceId, agent.identityId),
+    queryFn: () => localControl.getWorkspaceAgentConfiguration(workspaceId, agent.identityId),
+    enabled: agent.configured,
+    retry: false,
+    staleTime: 60_000,
+  });
+  const savedConfiguration = agentConfiguration.data;
+  const savedPersonaPrompt = savedConfiguration?.instructions.source === "inline"
+    ? savedConfiguration.instructions.text
+    : "";
+  const savedModelKey = savedConfiguration?.modelProvider && savedConfiguration.modelId
+    ? modelKey({ provider: savedConfiguration.modelProvider, id: savedConfiguration.modelId })
+    : "";
+  const configurationReady = !agent.configured || savedConfiguration !== undefined;
+  const runtimeAdapterChanged = configurationReady
+    && Boolean(runtimeAdapter.trim())
+    && runtimeAdapter.trim() !== (savedConfiguration?.runtimeAdapter ?? "");
   const configuredRuntimeOptions = useQuery({
     queryKey: queryKeys.agentRuntimeOptions(workspaceId, agent.identityId),
     queryFn: () => localControl.getAgentRuntimeOptions(workspaceId, agent.identityId),
@@ -146,12 +178,23 @@ function AgentLaunchProfileForm({
   const replacementRuntimeOptions = useQuery({
     queryKey: queryKeys.workspaceRuntimeOptions(workspaceId, runtimeAdapter.trim()),
     queryFn: () => localControl.getWorkspaceRuntimeOptions(workspaceId, runtimeAdapter.trim()),
-    enabled: /^[a-zA-Z0-9._-]+$/.test(runtimeAdapter.trim()),
+    enabled: runtimeAdapterChanged && /^[a-zA-Z0-9._-]+$/.test(runtimeAdapter.trim()),
     retry: false,
     staleTime: 60_000,
   });
-  const runtimeOptions = runtimeAdapter.trim() ? replacementRuntimeOptions : configuredRuntimeOptions;
-  useEffect(() => setStatus(agent.status === "disabled" ? "disabled" : "active"), [agent.status]);
+  const runtimeOptions = runtimeAdapterChanged ? replacementRuntimeOptions : configuredRuntimeOptions;
+  useEffect(() => {
+    if (savedConfiguration) {
+      setRuntimeAdapter(savedConfiguration.runtimeAdapter ?? "");
+      setSelectedProvider(savedConfiguration.modelProvider ?? "");
+      setSelectedModelKey(savedModelKey);
+      setReasoningLevel(savedConfiguration.reasoningLevel ?? "");
+      setPersonaPrompt(savedPersonaPrompt);
+      setStatus(savedConfiguration.status);
+    } else if (!agent.configured) {
+      setStatus(agent.status === "disabled" ? "disabled" : "active");
+    }
+  }, [agent.configured, agent.status, savedConfiguration, savedModelKey, savedPersonaPrompt]);
   useEffect(() => {
     if (configuredRuntimeOptions.data) {
       setEnabledModelKeys(configuredRuntimeOptions.data.models.filter((model) => model.enabled).map(modelKey));
@@ -163,21 +206,49 @@ function AgentLaunchProfileForm({
   const savedEnabledModelKeys = configuredRuntimeOptions.data?.models.filter((model) => model.enabled).map(modelKey) ?? [];
   const modelPolicyChanged = enabledModelKeys !== null
     && JSON.stringify([...enabledModelKeys].sort()) !== JSON.stringify([...savedEnabledModelKeys].sort());
-  const statusChanged = agent.status !== "unconfigured" && status !== agent.status;
+  const statusChanged = configurationReady
+    && status !== (savedConfiguration?.status ?? (agent.status === "disabled" ? "disabled" : "active"));
   const savedSkillIds = configuredRuntimeOptions.data?.skillSelectionConfigured
     ? configuredRuntimeOptions.data.selectedSkillIds
     : configuredRuntimeOptions.data?.skills.map(({ id }) => id) ?? [];
   const skillsChanged = skillIds !== null && configuredRuntimeOptions.data !== undefined
     && JSON.stringify([...skillIds].sort()) !== JSON.stringify([...savedSkillIds].sort());
-  const providers = [...new Set(runtimeOptions.data?.models
-    .filter((model) => model.enabled)
-    .map((model) => model.provider) ?? [])].sort();
+  const personaChanged = configurationReady && personaPrompt !== savedPersonaPrompt;
+  const modelChanged = configurationReady
+    && (selectedProvider !== (savedConfiguration?.modelProvider ?? "")
+      || selectedModelKey !== savedModelKey);
+  const reasoningChanged = configurationReady
+    && reasoningLevel !== (savedConfiguration?.reasoningLevel ?? "");
+  const providers = [...new Set([
+    ...(runtimeOptions.data?.models.filter((model) => model.enabled).map((model) => model.provider) ?? []),
+    ...(savedConfiguration?.modelProvider ? [savedConfiguration.modelProvider] : []),
+  ])].sort();
   const selectedModel = runtimeOptions.data?.models.find(
     (model) => model.provider === selectedProvider
       && JSON.stringify([model.provider, model.id]) === selectedModelKey,
   );
-  const hasUpdate = Boolean(
-    runtimeAdapter.trim() || selectedModel || reasoningLevel || personaPrompt.trim() || statusChanged || skillsChanged,
+  const defaultModel = runtimeOptions.data?.defaultModel;
+  const defaultModelName = runtimeOptions.data?.models.find(
+    (model) => model.provider === defaultModel?.provider && model.id === defaultModel?.id,
+  )?.name ?? defaultModel?.id;
+  useEffect(() => {
+    const options = runtimeOptions.data;
+    if (!options) return;
+    const configuredModel = !runtimeAdapterChanged && savedConfiguration?.modelProvider
+      && savedConfiguration.modelId
+      ? { provider: savedConfiguration.modelProvider, id: savedConfiguration.modelId }
+      : undefined;
+    const initialModel = initialLaunchModel(options, configuredModel);
+    if (!selectedProvider && initialModel) setSelectedProvider(initialModel.provider);
+    if (!selectedModelKey && initialModel) setSelectedModelKey(modelKey(initialModel));
+    if (!reasoningLevel) {
+      setReasoningLevel((!runtimeAdapterChanged ? savedConfiguration?.reasoningLevel : undefined)
+        ?? initialLaunchReasoning(options, initialModel)
+        ?? "");
+    }
+  }, [reasoningLevel, runtimeAdapterChanged, runtimeOptions.data, savedConfiguration, selectedModelKey, selectedProvider]);
+  const hasUpdate = configurationReady && Boolean(
+    runtimeAdapterChanged || modelChanged || reasoningChanged || personaChanged || statusChanged || skillsChanged,
   );
   const modelPolicyMutation = useMutation({
     mutationFn: () => localControl.updateAgentRuntimeModelPolicy(workspaceId, agent.identityId, {
@@ -204,11 +275,9 @@ function AgentLaunchProfileForm({
     onSuccess: (next) => {
       queryClient.setQueryData(queryKeys.workspaceConfiguration(workspaceId), next);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentRuntimeOptions(workspaceId, agent.identityId) });
-      setRuntimeAdapter("");
-      setSelectedProvider("");
-      setSelectedModelKey("");
-      setReasoningLevel("");
-      setPersonaPrompt("");
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workspaceAgentConfiguration(workspaceId, agent.identityId),
+      });
       if (next.agents.find((candidate) => candidate.identityId === agent.identityId)?.runtimeConfigured) {
         onConfigurationSaved?.();
       }
@@ -218,16 +287,17 @@ function AgentLaunchProfileForm({
     event.preventDefault();
     if (!hasUpdate || mutation.isPending) return;
     const input: UpdateLocalWorkspaceAgentConfigurationInput = {};
-    if (runtimeAdapter.trim()) input.runtimeAdapter = runtimeAdapter.trim();
-    if (selectedModel) {
-      input.modelProvider = selectedModel.provider;
-      input.modelId = selectedModel.id;
+    if (runtimeAdapterChanged) input.runtimeAdapter = runtimeAdapter.trim() || null;
+    if (modelChanged) {
+      input.modelProvider = selectedModel?.provider ?? null;
+      input.modelId = selectedModel?.id ?? null;
     }
-    if (reasoningLevel) {
-      input.reasoningLevel = reasoningLevel as UpdateLocalWorkspaceAgentConfigurationInput["reasoningLevel"];
+    if (reasoningChanged) {
+      input.reasoningLevel = (reasoningLevel
+        || null) as UpdateLocalWorkspaceAgentConfigurationInput["reasoningLevel"];
     }
-    if (personaPrompt.trim()) input.personaPrompt = personaPrompt;
-    if (runtimeAdapter.trim() && replacementRuntimeOptions.data) {
+    if (personaChanged) input.personaPrompt = personaPrompt.trim() ? personaPrompt : null;
+    if (runtimeAdapterChanged && runtimeAdapter.trim() && replacementRuntimeOptions.data) {
       input.skillIds = skillIds ?? replacementRuntimeOptions.data.skills.map(({ id }) => id);
     } else if (skillsChanged && skillIds) input.skillIds = skillIds;
     if (statusChanged || agent.status === "unconfigured") input.status = status;
@@ -240,7 +310,7 @@ function AgentLaunchProfileForm({
         <div>
           <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">Private launch profile</h3>
           <p className="mt-1 text-[11px] leading-5 text-[var(--muted)]">
-            Agent instructions and launch selections are private configuration and are never read back after save.
+            Visible only in authenticated local control. Changes apply to new sessions.
           </p>
         </div>
         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">{agent.status}</span>
@@ -249,8 +319,8 @@ function AgentLaunchProfileForm({
         <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">
           Harness: {agent.runtimeAdapter ?? "not configured"}
         </span>
-        <ConfigurationState configured={agent.modelConfigured} label="Model" />
-        <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
+        <ConfigurationValue label="Model" value={selectedModel?.name ?? defaultModelName} />
+        <ConfigurationValue label="Reasoning" value={reasoningLevel || runtimeOptions.data?.defaultReasoningLevel} />
         <ConfigurationState configured={agent.skillsConfigured} label={`Skills configured for new sessions (${agent.selectedSkillCount})`} />
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
@@ -280,6 +350,9 @@ function AgentLaunchProfileForm({
           </button>
         ))}
       </div>
+      {agentConfiguration.error ? (
+        <p className="mt-3 text-xs text-[var(--danger)]">Saved launch configuration could not be loaded.</p>
+      ) : null}
       {activeTab === "general" ? (
         <div className="mt-4" role="tabpanel">
           <label className="block text-xs font-medium">
@@ -290,48 +363,65 @@ function AgentLaunchProfileForm({
             </select>
           </label>
           <label className="mt-3 block text-xs font-medium">
-            {agent.personaConfigured ? "Replace agent instructions" : "Agent instructions"}
-            <textarea value={personaPrompt} onChange={(event) => setPersonaPrompt(event.target.value)} rows={7} placeholder="Private responsibilities, behavior, and working style" className="settings-input mt-1.5 resize-y leading-5" />
+            Agent instructions
+            <textarea value={personaPrompt} onChange={(event) => setPersonaPrompt(event.target.value)} rows={7} placeholder="Private responsibilities, behavior, and working style" className="settings-input mt-1.5 resize-y leading-5" disabled={agent.configured && !configurationReady} />
+            {savedConfiguration?.instructions.source === "managed_reference" && !personaPrompt ? (
+              <span className="mt-1 block text-[10px] text-[var(--muted)]">Instructions are managed by a private reference. Enter text to replace them.</span>
+            ) : null}
           </label>
         </div>
       ) : null}
       {activeTab === "runtime" ? <div role="tabpanel">
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className="block text-xs font-medium">
-          {agent.runtimeConfigured ? "Replace harness" : "Harness"}
+          Harness
           <input
             value={runtimeAdapter}
             onChange={(event) => {
-              setRuntimeAdapter(event.target.value);
-              setSelectedProvider("");
-              setSelectedModelKey("");
-              setReasoningLevel("");
+              const nextAdapter = event.target.value;
+              setRuntimeAdapter(nextAdapter);
+              if (!nextAdapter.trim()
+                || nextAdapter.trim() === (savedConfiguration?.runtimeAdapter ?? "")) {
+                setSelectedProvider(savedConfiguration?.modelProvider ?? "");
+                setSelectedModelKey(savedModelKey);
+                setReasoningLevel(savedConfiguration?.reasoningLevel ?? "");
+              } else {
+                setSelectedProvider("");
+                setSelectedModelKey("");
+                setReasoningLevel("");
+              }
               setSkillIds(null);
             }}
             autoComplete="off"
             spellCheck={false}
             placeholder="pi"
             className="settings-input mt-1.5 font-mono"
+            disabled={agent.configured && !configurationReady}
           />
         </label>
         <label className="block text-xs font-medium">
-          {agent.modelConfigured ? "Replace provider" : "Provider"}
+          Provider
           <select
             value={selectedProvider}
             onChange={(event) => {
-              setSelectedProvider(event.target.value);
-              setSelectedModelKey("");
-              setReasoningLevel("");
+              const provider = event.target.value;
+              const nextModel = runtimeOptions.data
+                ? initialLaunchModelForProvider(runtimeOptions.data, provider)
+                : undefined;
+              setSelectedProvider(provider);
+              setSelectedModelKey(nextModel ? modelKey(nextModel) : "");
+              setReasoningLevel(runtimeOptions.data
+                ? initialLaunchReasoning(runtimeOptions.data, nextModel) ?? ""
+                : "");
             }}
             className="settings-input mt-1.5"
             disabled={!runtimeOptions.data}
           >
-            <option value="">{agent.modelConfigured ? "Keep configured provider" : "Use harness default"}</option>
             {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
           </select>
         </label>
         <label className="block text-xs font-medium">
-          {agent.modelConfigured ? "Replace model" : "Model"}
+          Model
           <select
             value={selectedModelKey}
             onChange={(event) => {
@@ -343,20 +433,19 @@ function AgentLaunchProfileForm({
               if (model && !model.reasoning) setReasoningLevel("off");
             }}
             className="settings-input mt-1.5"
-            disabled={!selectedProvider}
+            disabled={!selectedProvider || !runtimeOptions.data}
           >
-            <option value="">{agent.modelConfigured ? "Keep configured model" : "Use provider default"}</option>
-            {runtimeOptions.data?.models.filter((model) => model.enabled && model.provider === selectedProvider).map((model) => (
-              <option key={`${model.provider}/${model.id}`} value={JSON.stringify([model.provider, model.id])}>
-                {model.name}
+            {runtimeOptions.data?.models.filter((model) => model.provider === selectedProvider
+              && (model.enabled || modelKey(model) === savedModelKey)).map((model) => (
+              <option key={`${model.provider}/${model.id}`} value={modelKey(model)}>
+                {model.name}{model.enabled ? "" : " (currently disabled)"}
               </option>
             ))}
           </select>
         </label>
         <label className="block text-xs font-medium">
-          {agent.reasoningConfigured ? "Replace reasoning" : "Reasoning"}
+          Reasoning
           <select value={reasoningLevel} onChange={(event) => setReasoningLevel(event.target.value)} className="settings-input mt-1.5" disabled={!runtimeOptions.data}>
-            <option value="">{agent.reasoningConfigured ? "Keep configured level" : "Use model default"}</option>
             {runtimeOptions.data?.reasoningLevels.map((level) => <option key={level} value={level}>{level}</option>)}
           </select>
         </label>
@@ -377,11 +466,11 @@ function AgentLaunchProfileForm({
                 <input
                   type="checkbox"
                   className="mt-0.5"
-                  checked={skillIds?.includes(skill.id) ?? (runtimeAdapter.trim() || !configuredRuntimeOptions.data?.skillSelectionConfigured
+                  checked={skillIds?.includes(skill.id) ?? (runtimeAdapterChanged || !configuredRuntimeOptions.data?.skillSelectionConfigured
                     ? true
                     : configuredRuntimeOptions.data.selectedSkillIds.includes(skill.id))}
                   onChange={(event) => setSkillIds((current) => {
-                    const selected = current ?? (runtimeAdapter.trim()
+                    const selected = current ?? (runtimeAdapterChanged
                       ? runtimeOptions.data!.skills.map(({ id }) => id)
                       : savedSkillIds);
                     return event.target.checked

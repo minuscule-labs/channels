@@ -62,6 +62,7 @@ import {
   type LocalRuntimeOptions,
   type LocalWakePolicy,
   type ProvisionLocalWorkspaceResult,
+  type LocalWorkspaceAgentConfiguration,
   type LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
 
@@ -155,6 +156,11 @@ export interface LocalControlConfigurationPort {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<LocalWorkspaceConfigurationSummary>;
+  getWorkspaceAgentConfiguration?(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalWorkspaceAgentConfiguration>;
   getWorkspaceRuntimeOptions(
     workspaceId: string,
     runtimeAdapter: string,
@@ -288,6 +294,21 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Workspace configuration unavailable", 404, "unavailable");
     }
     return this.options.configuration.getWorkspaceConfiguration(workspaceId, actorIdentityId);
+  }
+
+  async getWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalWorkspaceAgentConfiguration> {
+    if (!this.options.configuration?.getWorkspaceAgentConfiguration) {
+      throw new LocalConfigurationRequestError("Agent configuration unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getWorkspaceAgentConfiguration(
+      workspaceId,
+      agentIdentityId,
+      actorIdentityId,
+    );
   }
 
   async getWorkspaceRuntimeOptions(
@@ -942,13 +963,22 @@ export async function createLocalControlHttpServer(
         return;
       }
       const agentConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/agents\/([^/]+)\/config$/);
-      if (agentConfigMatch && browserSession && request.method === "PATCH") {
-        const result = await options.service.updateWorkspaceAgentConfiguration(
-          decodeURIComponent(agentConfigMatch[1]!),
-          decodeURIComponent(agentConfigMatch[2]!),
-          browserSession.identityId,
-          await readJson(request),
-        );
+      if (agentConfigMatch && browserSession
+        && (request.method === "GET" || request.method === "PATCH")) {
+        const workspaceId = decodeURIComponent(agentConfigMatch[1]!);
+        const agentIdentityId = decodeURIComponent(agentConfigMatch[2]!);
+        const result = request.method === "GET"
+          ? await options.service.getWorkspaceAgentConfiguration(
+            workspaceId,
+            agentIdentityId,
+            browserSession.identityId,
+          )
+          : await options.service.updateWorkspaceAgentConfiguration(
+            workspaceId,
+            agentIdentityId,
+            browserSession.identityId,
+            await readJson(request),
+          );
         json(response, 200, result, origin);
         return;
       }

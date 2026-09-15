@@ -211,7 +211,10 @@ async function main(): Promise<void> {
   });
 
   try {
-    await waitForWeb(webUrl, vite, () => viteSpawnError);
+    // Node does not resolve arbitrary .localhost names on every supported host,
+    // even though browsers treat them as loopback. Probe Vite through its bound
+    // socket while retaining the product hostname for the browser launch URL.
+    await waitForWeb(`http://127.0.0.1:${webPort}/`, vite, () => viteSpawnError);
     const launchUrl = app.issueBrowserLaunchUrl();
     console.log(`\nMinuChannels ${persistent ? "local app" : "review app"} is ready`);
     console.log(`  Web:      ${webUrl}`);

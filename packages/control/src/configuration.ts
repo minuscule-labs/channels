@@ -8,6 +8,7 @@ import type {
   LocalRuntimeModelOption,
   LocalRuntimeOptions,
   LocalRuntimeSkillOption,
+  LocalWorkspaceAgentConfiguration,
   LocalWorkspaceAgentConfigurationSummary,
   ProvisionLocalWorkspaceResult,
   LocalWorkspaceConfigurationSummary,
@@ -47,6 +48,8 @@ export interface LocalAgentHostConfigurationOptions {
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
       skills: LocalRuntimeSkillOption[];
+      defaultModel?: LocalAgentRuntimeOptions["defaultModel"];
+      defaultReasoningLevel?: LocalAgentRuntimeOptions["defaultReasoningLevel"];
     }>;
   }>>;
   onAudit?(event: LocalControlAuditEvent): void;
@@ -122,6 +125,8 @@ export class LocalAgentHostConfiguration {
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
       skills: LocalRuntimeSkillOption[];
+      defaultModel?: LocalAgentRuntimeOptions["defaultModel"];
+      defaultReasoningLevel?: LocalAgentRuntimeOptions["defaultReasoningLevel"];
     }>;
   }>();
 
@@ -231,6 +236,39 @@ export class LocalAgentHostConfiguration {
       rootConfigured: Boolean(workspaceConfig?.rootUri),
       notesFolderConfigured: Boolean(workspaceConfig?.notesFolderId),
       agents,
+    };
+  }
+
+  async getWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalWorkspaceAgentConfiguration> {
+    const members = await this.authorize(workspaceId, actorIdentityId);
+    if (!members.some((member) => member.identityId === agentIdentityId && member.status === "active")) {
+      throw new LocalConfigurationRequestError("Agent configuration is unavailable", 404, "unavailable");
+    }
+    const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, agentIdentityId);
+    if (!config) {
+      throw new LocalConfigurationRequestError("Agent configuration is unavailable", 404, "unavailable");
+    }
+    const instructions = config.personaPrompt
+      ? { source: "inline" as const, text: config.personaPrompt }
+      : config.personaRef
+        ? { source: "managed_reference" as const }
+        : { source: "none" as const };
+    return {
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      workspaceId,
+      identityId: agentIdentityId,
+      instructions,
+      ...(config.runtimeAdapter ? { runtimeAdapter: config.runtimeAdapter } : {}),
+      ...(config.modelProvider ? { modelProvider: config.modelProvider } : {}),
+      ...(config.modelId ? { modelId: config.modelId } : {}),
+      ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel } : {}),
+      ...(config.skillIds ? { skillIds: [...config.skillIds] } : {}),
+      status: config.status,
+      changesApplyToNewSessions: true,
     };
   }
 
@@ -499,6 +537,15 @@ export class LocalAgentHostConfiguration {
       const enabled = policy
         ? new Set(policy.map((model) => JSON.stringify([model.provider, model.id])))
         : undefined;
+      const defaultModel = capabilities.defaultModel
+        && capabilities.models.some((model) => model.provider === capabilities.defaultModel?.provider
+          && model.id === capabilities.defaultModel?.id)
+        ? { ...capabilities.defaultModel }
+        : undefined;
+      const defaultReasoningLevel = capabilities.defaultReasoningLevel
+        && capabilities.reasoningLevels.includes(capabilities.defaultReasoningLevel)
+        ? capabilities.defaultReasoningLevel
+        : undefined;
       return {
         protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
         workspaceId,
@@ -509,6 +556,8 @@ export class LocalAgentHostConfiguration {
         reasoningLevels: capabilities.reasoningLevels,
         modelPolicyConfigured: Boolean(policy),
         skills: capabilities.skills.map((skill) => ({ ...skill })),
+        ...(defaultModel ? { defaultModel } : {}),
+        ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
       };
     } catch (error) {
       if (error instanceof LocalConfigurationRequestError) throw error;

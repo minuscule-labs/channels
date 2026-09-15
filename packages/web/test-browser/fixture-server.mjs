@@ -106,8 +106,11 @@ const fixtureRuntime = {
       models: [
         { provider: "openai", id: "gpt-browser-fast", name: "Browser Fast", reasoning: true },
         { provider: "openai", id: "gpt-browser-deep", name: "Browser Deep", reasoning: true },
+        { provider: "openai-codex", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", reasoning: true },
       ],
       reasoningLevels: ["off", "low", "medium", "high"],
+      defaultModel: { provider: "openai", id: "gpt-browser-deep" },
+      defaultReasoningLevel: "high",
       skills: [
         { id: "skill:review", name: "review", description: "Review changes for correctness" },
         { id: "skill:handoff", name: "handoff", description: "Prepare a concise handoff" },

@@ -7,6 +7,8 @@ export const queryKeys = {
   workspaceMembers: (workspaceId: string) => ["workspace", workspaceId, "members"] as const,
   workspaceChannels: (workspaceId: string) => ["workspace", workspaceId, "channels"] as const,
   workspaceConfiguration: (workspaceId: string) => ["workspace", workspaceId, "configuration"] as const,
+  workspaceAgentConfiguration: (workspaceId: string, identityId: string) =>
+    ["workspace", workspaceId, "agent", identityId, "configuration"] as const,
   workspaceRuntimeOptions: (workspaceId: string, runtimeAdapter: string) =>
     ["workspace", workspaceId, "runtime", runtimeAdapter, "options"] as const,
   agentRuntimeOptions: (workspaceId: string, identityId: string) =>
