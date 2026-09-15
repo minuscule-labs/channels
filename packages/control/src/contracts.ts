@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 15 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 16 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -84,6 +84,24 @@ export interface LocalWorkspaceConfigurationSummary {
   rootConfigured: boolean;
   notesFolderConfigured: boolean;
   agents: LocalWorkspaceAgentConfigurationSummary[];
+}
+
+/** Private launch configuration returned only by authenticated local control for one agent. */
+export interface LocalWorkspaceAgentConfiguration {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  workspaceId: string;
+  identityId: string;
+  instructions:
+    | { source: "none" }
+    | { source: "inline"; text: string }
+    | { source: "managed_reference" };
+  runtimeAdapter?: string;
+  modelProvider?: string;
+  modelId?: string;
+  reasoningLevel?: LocalReasoningLevel;
+  skillIds?: string[];
+  status: "active" | "disabled";
+  changesApplyToNewSessions: true;
 }
 
 export interface UpdateLocalWorkspaceConfigurationInput {

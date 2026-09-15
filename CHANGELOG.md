@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Show saved agent instructions and Runtime launch selections on the authenticated local agent detail page while keeping list, public Channel, audit, and diagnostic responses redacted.
+
 ## 0.0.4
 
 - Add opt-in contextual notifications, richer safe agent activity, a wider autosizing composer, and structured participant lifecycle actions.

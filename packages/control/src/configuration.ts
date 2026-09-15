@@ -8,6 +8,7 @@ import type {
   LocalRuntimeModelOption,
   LocalRuntimeOptions,
   LocalRuntimeSkillOption,
+  LocalWorkspaceAgentConfiguration,
   LocalWorkspaceAgentConfigurationSummary,
   ProvisionLocalWorkspaceResult,
   LocalWorkspaceConfigurationSummary,
@@ -231,6 +232,39 @@ export class LocalAgentHostConfiguration {
       rootConfigured: Boolean(workspaceConfig?.rootUri),
       notesFolderConfigured: Boolean(workspaceConfig?.notesFolderId),
       agents,
+    };
+  }
+
+  async getWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+  ): Promise<LocalWorkspaceAgentConfiguration> {
+    const members = await this.authorize(workspaceId, actorIdentityId);
+    if (!members.some((member) => member.identityId === agentIdentityId && member.status === "active")) {
+      throw new LocalConfigurationRequestError("Agent configuration is unavailable", 404, "unavailable");
+    }
+    const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, agentIdentityId);
+    if (!config) {
+      throw new LocalConfigurationRequestError("Agent configuration is unavailable", 404, "unavailable");
+    }
+    const instructions = config.personaPrompt
+      ? { source: "inline" as const, text: config.personaPrompt }
+      : config.personaRef
+        ? { source: "managed_reference" as const }
+        : { source: "none" as const };
+    return {
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      workspaceId,
+      identityId: agentIdentityId,
+      instructions,
+      ...(config.runtimeAdapter ? { runtimeAdapter: config.runtimeAdapter } : {}),
+      ...(config.modelProvider ? { modelProvider: config.modelProvider } : {}),
+      ...(config.modelId ? { modelId: config.modelId } : {}),
+      ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel } : {}),
+      ...(config.skillIds ? { skillIds: [...config.skillIds] } : {}),
+      status: config.status,
+      changesApplyToNewSessions: true,
     };
   }
 

@@ -109,7 +109,7 @@ Configuration changes apply only to newly started sessions and **New session** r
 The current product supports:
 
 - one private Workspace source root;
-- one write-only persona and launch profile per reusable Workspace agent;
+- one private persona and launch profile per reusable Workspace agent, readable only through authenticated local single-agent detail control;
 - a Runtime adapter identifier per Workspace agent;
 - authenticated adapter model discovery;
 - a persisted Workspace allowlist scoped by Runtime adapter;
@@ -131,7 +131,7 @@ It does **not** yet support:
 
 ## Ownership boundary
 
-- **MinuChannels UI:** dedicated Workspace-agent administration combining readable public routing metadata with redacted/write-only private launch configuration, selection, and lifecycle guidance. Channel-specific lifecycle actions remain in Channels.
+- **MinuChannels UI:** dedicated Workspace-agent administration combining readable public routing metadata with authenticated private launch configuration, selection, and lifecycle guidance. Saved inline instructions and launch selections are readable only on the local single-agent detail page; list and public Channel responses remain redacted. Channel-specific lifecycle actions remain in Channels.
 - **Private agent host:** authorization, validation, persistence, launch-spec resolution, audit metadata, and binding lifecycle.
 - **MinuRuntime adapter:** capability declaration and faithful execution of validated launch options.
 - **Channels core:** identities, membership, Channels, messages, targets, and events only; it never stores private launch configuration or executes agents.

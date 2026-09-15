@@ -8,6 +8,7 @@ import type {
   LocalCurrentSession,
   LocalOpenDiagnosticResponse,
   LocalRuntimeOptions,
+  LocalWorkspaceAgentConfiguration,
   LocalWorkspaceConfigurationSummary,
   ProvisionLocalWorkspaceInput,
   ProvisionLocalWorkspaceResult,
@@ -148,6 +149,15 @@ export class LocalControlClient {
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {
     return this.get<LocalWorkspaceConfigurationSummary>(
       `/local/workspaces/${encodeURIComponent(workspaceId)}/config`,
+    );
+  }
+
+  async getWorkspaceAgentConfiguration(
+    workspaceId: string,
+    agentIdentityId: string,
+  ): Promise<LocalWorkspaceAgentConfiguration> {
+    return this.get<LocalWorkspaceAgentConfiguration>(
+      `/local/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentIdentityId)}/config`,
     );
   }
 
