@@ -48,6 +48,8 @@ export interface LocalAgentHostConfigurationOptions {
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
       skills: LocalRuntimeSkillOption[];
+      defaultModel?: LocalAgentRuntimeOptions["defaultModel"];
+      defaultReasoningLevel?: LocalAgentRuntimeOptions["defaultReasoningLevel"];
     }>;
   }>>;
   onAudit?(event: LocalControlAuditEvent): void;
@@ -123,6 +125,8 @@ export class LocalAgentHostConfiguration {
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
       skills: LocalRuntimeSkillOption[];
+      defaultModel?: LocalAgentRuntimeOptions["defaultModel"];
+      defaultReasoningLevel?: LocalAgentRuntimeOptions["defaultReasoningLevel"];
     }>;
   }>();
 
@@ -533,6 +537,15 @@ export class LocalAgentHostConfiguration {
       const enabled = policy
         ? new Set(policy.map((model) => JSON.stringify([model.provider, model.id])))
         : undefined;
+      const defaultModel = capabilities.defaultModel
+        && capabilities.models.some((model) => model.provider === capabilities.defaultModel?.provider
+          && model.id === capabilities.defaultModel?.id)
+        ? { ...capabilities.defaultModel }
+        : undefined;
+      const defaultReasoningLevel = capabilities.defaultReasoningLevel
+        && capabilities.reasoningLevels.includes(capabilities.defaultReasoningLevel)
+        ? capabilities.defaultReasoningLevel
+        : undefined;
       return {
         protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
         workspaceId,
@@ -543,6 +556,8 @@ export class LocalAgentHostConfiguration {
         reasoningLevels: capabilities.reasoningLevels,
         modelPolicyConfigured: Boolean(policy),
         skills: capabilities.skills.map((skill) => ({ ...skill })),
+        ...(defaultModel ? { defaultModel } : {}),
+        ...(defaultReasoningLevel ? { defaultReasoningLevel } : {}),
       };
     } catch (error) {
       if (error instanceof LocalConfigurationRequestError) throw error;

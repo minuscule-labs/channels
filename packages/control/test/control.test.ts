@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer as createNodeServer, request as httpRequest } from "node:http";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,7 @@ import {
 import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
+import { developmentDataDirectory, resetDevelopmentData } from "../src/dev-data.ts";
 import { createLocalProductApp } from "../src/local.ts";
 import {
   acquireChannelsDataDirectoryLock,
@@ -980,6 +981,39 @@ test("resolves isolated Channels data paths and arbitrates product-directory loc
     await winners[0]!.release();
   } finally {
     await rm(dataDirectory, { recursive: true, force: true });
+  }
+});
+
+test("development data reset is fixed-scope, active-instance-aware, and symlink-safe", async () => {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "minu-dev-reset-home-"));
+  const outside = await mkdtemp(join(tmpdir(), "minu-dev-reset-outside-"));
+  const dataDirectory = developmentDataDirectory(homeDirectory);
+  try {
+    assert.equal(await resetDevelopmentData({ homeDirectory }), "absent");
+    await prepareChannelsDataDirectory(dataDirectory);
+    await writeFile(join(dataDirectory, "marker"), "development-only");
+    const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
+    await assert.rejects(
+      resetDevelopmentData({ homeDirectory }),
+      /already using data directory/,
+    );
+    assert.equal(await readFile(join(dataDirectory, "marker"), "utf8"), "development-only");
+    await lock.release();
+    assert.equal(await resetDevelopmentData({ homeDirectory }), "removed");
+    await assert.rejects(stat(dataDirectory), { code: "ENOENT" });
+
+    await mkdir(join(homeDirectory, ".minu"), { recursive: true });
+    await symlink(outside, dataDirectory);
+    await assert.rejects(
+      resetDevelopmentData({ homeDirectory }),
+      /unsafe data directory/,
+    );
+    assert.equal((await stat(outside)).isDirectory(), true);
+  } finally {
+    await Promise.all([
+      rm(homeDirectory, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
   }
 });
 
@@ -2256,6 +2290,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
               models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true }],
               reasoningLevels: ["off", "medium", "high"] as Array<"off" | "medium" | "high">,
               skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
+              defaultModel: { provider: "openai", id: "gpt-private" },
+              defaultReasoningLevel: "medium" as const,
             };
           },
         },
@@ -2330,6 +2366,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       reasoningLevels: ["off", "medium", "high"],
       modelPolicyConfigured: false,
       skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
+      defaultModel: { provider: "openai", id: "gpt-private" },
+      defaultReasoningLevel: "medium",
     });
     const runtimeOptionsResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,
@@ -2346,6 +2384,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       skills: [{ id: "skill:review", name: "review", description: "Review changes" }],
       skillSelectionConfigured: false,
       selectedSkillIds: [],
+      defaultModel: { provider: "openai", id: "gpt-private" },
+      defaultReasoningLevel: "medium",
     });
     const policyResponse = await fetch(
       `${daemon.endpoint}/local/workspaces/${workspace.id}/agents/${agent.id}/runtime-options`,

@@ -28,6 +28,8 @@ export interface LocalRuntimeOptions {
   reasoningLevels: LocalReasoningLevel[];
   modelPolicyConfigured: boolean;
   skills: LocalRuntimeSkillOption[];
+  defaultModel?: LocalRuntimeModelRef;
+  defaultReasoningLevel?: LocalReasoningLevel;
 }
 
 export interface LocalAgentRuntimeOptions extends LocalRuntimeOptions {

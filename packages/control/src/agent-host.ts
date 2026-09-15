@@ -43,6 +43,8 @@ export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partia
     models: Array<Omit<LocalAgentRuntimeOptions["models"][number], "enabled">>;
     reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
     skills: LocalAgentRuntimeOptions["skills"];
+    defaultModel?: LocalAgentRuntimeOptions["defaultModel"];
+    defaultReasoningLevel?: LocalAgentRuntimeOptions["defaultReasoningLevel"];
   }>;
   stop?(sessionId: string): Promise<void>;
 }

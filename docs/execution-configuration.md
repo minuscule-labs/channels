@@ -86,7 +86,7 @@ Profiles belong to restricted Workspace execution configuration. The current and
 3. Workspace agent default profile; and
 4. a future Channel-agent binding override only if real usage requires it.
 
-Model names, reasoning levels, and provider options must come from adapter capabilities or validated adapter schemas. MinuChannels should not hard-code Pi-specific controls into the collaboration domain. Credentials remain write-only and must never enter collaboration data, messages, SSE, audit values, or ordinary browser responses.
+Model names, reasoning levels, provider options, and effective launch defaults must come from adapter capabilities or validated adapter schemas. MinuChannels should not hard-code Pi-specific controls into the collaboration domain. Credentials remain write-only and must never enter collaboration data, messages, SSE, audit values, or ordinary browser responses.
 
 ### Runtime and harness extensibility
 

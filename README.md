@@ -76,16 +76,22 @@ pnpm local
 
 Normal launch opens browser onboarding when no Workspace exists. Passing a path remains a non-interactive shortcut that creates the initial Workspace and Builder agent. Use `.` for the current directory, `--workspace-name` to override the inferred name, `--no-open` to print the one-time browser URL, or `--data-dir` for an independent installation.
 
-For a disposable seeded review environment:
+For a persistent development app rooted in this checkout:
 
 ```bash
 pnpm dev
 ```
 
-For that review flow with genuine Pi execution:
+Development state is isolated at `~/.minu/channels-dev` and survives restarts. Clear it explicitly while the development app is stopped:
 
 ```bash
-pnpm dev:live -- /absolute/path/to/workspace
+pnpm dev:reset
+```
+
+For a disposable seeded review environment, use `pnpm dev:review`. For the disposable review flow with genuine Pi execution:
+
+```bash
+pnpm dev:live -- --cwd /absolute/path/to/workspace
 ```
 
 ## Local data and security

@@ -676,6 +676,10 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   const modelSelect = activeAgentForm.getByRole("combobox", { name: "Model", exact: true });
   const reasoningSelect = activeAgentForm.getByRole("combobox", { name: "Reasoning", exact: true });
   await expect(providerSelect).toBeEnabled({ timeout: 10_000 });
+  await expect(providerSelect).toHaveValue("openai-codex");
+  await expect(modelSelect).toHaveValue(JSON.stringify(["openai-codex", "gpt-5.6-sol"]));
+  await expect(reasoningSelect).toHaveValue("medium");
+  await expect(activeAgentForm.getByText(/default/i)).toHaveCount(0);
   await activeAgentForm.getByText("Manage available provider models", { exact: true }).click();
   await activeAgentForm.getByLabel("Enable Browser Fast").uncheck();
   const modelPolicyResponsePromise = page.waitForResponse((response) =>
@@ -685,8 +689,8 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect((await modelPolicyResponsePromise).ok()).toBe(true);
   await providerSelect.selectOption("openai");
   await expect(modelSelect.getByRole("option", { name: "Browser Fast" })).toHaveCount(0);
-  await modelSelect.selectOption({ label: "Browser Deep" });
-  await reasoningSelect.selectOption("high");
+  await expect(modelSelect).toHaveValue(JSON.stringify(["openai", "gpt-browser-deep"]));
+  await expect(reasoningSelect).toHaveValue("medium");
   const launchProfileResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
@@ -695,15 +699,15 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect(launchProfileResponse.ok()).toBe(true);
   const launchProfileBody = await launchProfileResponse.text();
   expect(launchProfileBody).not.toContain("gpt-browser-deep");
-  expect(launchProfileBody).not.toContain("high");
-  await expect(activeAgentForm.getByText("Model: configured", { exact: true })).toBeVisible();
-  await expect(activeAgentForm.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  expect(launchProfileBody).not.toContain("medium");
+  await expect(activeAgentForm.getByText("Model: Browser Deep", { exact: true })).toBeVisible();
+  await expect(activeAgentForm.getByText("Reasoning: medium", { exact: true })).toBeVisible();
   await page.reload();
   await activeAgentForm.getByRole("tab", { name: "Runtime" }).click();
   await expect(activeAgentForm.getByRole("combobox", { name: "Provider", exact: true })).toHaveValue("openai");
   await expect(activeAgentForm.getByRole("combobox", { name: "Model", exact: true }))
     .toHaveValue(JSON.stringify(["openai", "gpt-browser-deep"]));
-  await expect(activeAgentForm.getByRole("combobox", { name: "Reasoning", exact: true })).toHaveValue("high");
+  await expect(activeAgentForm.getByRole("combobox", { name: "Reasoning", exact: true })).toHaveValue("medium");
   await activeAgentForm.getByRole("tab", { name: "Skills" }).click();
   await expect(activeAgentForm.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
 });
@@ -734,8 +738,8 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await expect(page.getByRole("status")).toContainText("Agent “Browser Review Agent” created");
   await page.getByRole("button", { name: "Edit agent" }).click();
   await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
-  await expect(page.getByText("Model: configured", { exact: true })).toBeVisible();
-  await expect(page.getByText("Reasoning: configured", { exact: true })).toBeVisible();
+  await expect(page.getByText("Model: Browser Deep", { exact: true })).toBeVisible();
+  await expect(page.getByText("Reasoning: high", { exact: true })).toBeVisible();
   await expect(page.getByText("Skills configured for new sessions (1): configured", { exact: true })).toBeVisible();
   await expect(page.getByText("Agent instructions: configured", { exact: true })).toBeVisible();
   const createdIdentityForm = page.locator("form").filter({ hasText: "The name identifies the agent" });

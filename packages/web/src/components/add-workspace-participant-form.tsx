@@ -1,8 +1,13 @@
 import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle, UserPlus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { channels, localControl } from "../lib/api";
+import {
+  initialLaunchModel,
+  initialLaunchModelForProvider,
+  initialLaunchReasoning,
+} from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
 
 function suggestedHandle(value: string): string {
@@ -56,6 +61,16 @@ export function AddWorkspaceParticipantForm({
   const selectedModel = runtimeOptions.data?.models.find((model) =>
     model.provider === selectedProvider
       && JSON.stringify([model.provider, model.id]) === selectedModelKey);
+  useEffect(() => {
+    const options = runtimeOptions.data;
+    if (!options) return;
+    const initialModel = initialLaunchModel(options);
+    if (!selectedProvider && initialModel) setSelectedProvider(initialModel.provider);
+    if (!selectedModelKey && initialModel) setSelectedModelKey(JSON.stringify([initialModel.provider, initialModel.id]));
+    if (!reasoningLevel) {
+      setReasoningLevel(initialLaunchReasoning(options, initialModel) ?? "");
+    }
+  }, [reasoningLevel, runtimeOptions.data, selectedModelKey, selectedProvider]);
   const canSubmit = Boolean(
     displayName.trim()
       && handleValid
@@ -264,14 +279,19 @@ export function AddWorkspaceParticipantForm({
             <select
               value={selectedProvider}
               onChange={(event) => {
-                setSelectedProvider(event.target.value);
-                setSelectedModelKey("");
-                setReasoningLevel("");
+                const provider = event.target.value;
+                const nextModel = runtimeOptions.data
+                  ? initialLaunchModelForProvider(runtimeOptions.data, provider)
+                  : undefined;
+                setSelectedProvider(provider);
+                setSelectedModelKey(nextModel ? JSON.stringify([nextModel.provider, nextModel.id]) : "");
+                setReasoningLevel(runtimeOptions.data
+                  ? initialLaunchReasoning(runtimeOptions.data, nextModel) ?? ""
+                  : "");
               }}
               className="settings-input mt-1.5"
               disabled={!runtimeOptions.data}
             >
-              <option value="">Use harness default</option>
               {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
             </select>
           </label>
@@ -287,9 +307,8 @@ export function AddWorkspaceParticipantForm({
                 if (model && !model.reasoning) setReasoningLevel("off");
               }}
               className="settings-input mt-1.5"
-              disabled={!selectedProvider}
+              disabled={!selectedProvider || !runtimeOptions.data}
             >
-              <option value="">Use provider default</option>
               {runtimeOptions.data?.models.filter((model) => model.enabled && model.provider === selectedProvider).map((model) => (
                 <option key={`${model.provider}/${model.id}`} value={JSON.stringify([model.provider, model.id])}>
                   {model.name}
@@ -300,7 +319,6 @@ export function AddWorkspaceParticipantForm({
           <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
             Reasoning
             <select value={reasoningLevel} onChange={(event) => setReasoningLevel(event.target.value)} className="settings-input mt-1.5" disabled={!runtimeOptions.data}>
-              <option value="">Use model default</option>
               {runtimeOptions.data?.reasoningLevels.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           </label>

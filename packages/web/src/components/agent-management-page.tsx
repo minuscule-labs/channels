@@ -8,6 +8,11 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { channels, localControl } from "../lib/api";
+import {
+  initialLaunchModel,
+  initialLaunchModelForProvider,
+  initialLaunchReasoning,
+} from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
 import { useAppToast } from "./ui/toast";
@@ -24,6 +29,15 @@ function ConfigurationState({ configured, label }: { configured: boolean; label:
     >
       <span className={`status-dot ${configured ? "" : "opacity-30"}`} />
       {label}: {configured ? "configured" : "not configured"}
+    </span>
+  );
+}
+
+function ConfigurationValue({ label, value }: { label: string; value?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">
+      <span className={`status-dot ${value ? "" : "opacity-30"}`} />
+      {label}: {value ?? "unavailable"}
     </span>
   );
 }
@@ -213,6 +227,26 @@ function AgentLaunchProfileForm({
     (model) => model.provider === selectedProvider
       && JSON.stringify([model.provider, model.id]) === selectedModelKey,
   );
+  const defaultModel = runtimeOptions.data?.defaultModel;
+  const defaultModelName = runtimeOptions.data?.models.find(
+    (model) => model.provider === defaultModel?.provider && model.id === defaultModel?.id,
+  )?.name ?? defaultModel?.id;
+  useEffect(() => {
+    const options = runtimeOptions.data;
+    if (!options) return;
+    const configuredModel = !runtimeAdapterChanged && savedConfiguration?.modelProvider
+      && savedConfiguration.modelId
+      ? { provider: savedConfiguration.modelProvider, id: savedConfiguration.modelId }
+      : undefined;
+    const initialModel = initialLaunchModel(options, configuredModel);
+    if (!selectedProvider && initialModel) setSelectedProvider(initialModel.provider);
+    if (!selectedModelKey && initialModel) setSelectedModelKey(modelKey(initialModel));
+    if (!reasoningLevel) {
+      setReasoningLevel((!runtimeAdapterChanged ? savedConfiguration?.reasoningLevel : undefined)
+        ?? initialLaunchReasoning(options, initialModel)
+        ?? "");
+    }
+  }, [reasoningLevel, runtimeAdapterChanged, runtimeOptions.data, savedConfiguration, selectedModelKey, selectedProvider]);
   const hasUpdate = configurationReady && Boolean(
     runtimeAdapterChanged || modelChanged || reasoningChanged || personaChanged || statusChanged || skillsChanged,
   );
@@ -285,8 +319,8 @@ function AgentLaunchProfileForm({
         <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">
           Harness: {agent.runtimeAdapter ?? "not configured"}
         </span>
-        <ConfigurationState configured={agent.modelConfigured} label="Model" />
-        <ConfigurationState configured={agent.reasoningConfigured} label="Reasoning" />
+        <ConfigurationValue label="Model" value={selectedModel?.name ?? defaultModelName} />
+        <ConfigurationValue label="Reasoning" value={reasoningLevel || runtimeOptions.data?.defaultReasoningLevel} />
         <ConfigurationState configured={agent.skillsConfigured} label={`Skills configured for new sessions (${agent.selectedSkillCount})`} />
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
@@ -370,14 +404,19 @@ function AgentLaunchProfileForm({
           <select
             value={selectedProvider}
             onChange={(event) => {
-              setSelectedProvider(event.target.value);
-              setSelectedModelKey("");
-              setReasoningLevel("");
+              const provider = event.target.value;
+              const nextModel = runtimeOptions.data
+                ? initialLaunchModelForProvider(runtimeOptions.data, provider)
+                : undefined;
+              setSelectedProvider(provider);
+              setSelectedModelKey(nextModel ? modelKey(nextModel) : "");
+              setReasoningLevel(runtimeOptions.data
+                ? initialLaunchReasoning(runtimeOptions.data, nextModel) ?? ""
+                : "");
             }}
             className="settings-input mt-1.5"
             disabled={!runtimeOptions.data}
           >
-            <option value="">Use harness default</option>
             {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
           </select>
         </label>
@@ -394,9 +433,8 @@ function AgentLaunchProfileForm({
               if (model && !model.reasoning) setReasoningLevel("off");
             }}
             className="settings-input mt-1.5"
-            disabled={!selectedProvider}
+            disabled={!selectedProvider || !runtimeOptions.data}
           >
-            <option value="">Use provider default</option>
             {runtimeOptions.data?.models.filter((model) => model.provider === selectedProvider
               && (model.enabled || modelKey(model) === savedModelKey)).map((model) => (
               <option key={`${model.provider}/${model.id}`} value={modelKey(model)}>
@@ -408,7 +446,6 @@ function AgentLaunchProfileForm({
         <label className="block text-xs font-medium">
           Reasoning
           <select value={reasoningLevel} onChange={(event) => setReasoningLevel(event.target.value)} className="settings-input mt-1.5" disabled={!runtimeOptions.data}>
-            <option value="">Use model default</option>
             {runtimeOptions.data?.reasoningLevels.map((level) => <option key={level} value={level}>{level}</option>)}
           </select>
         </label>
