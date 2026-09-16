@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.5
+
+- Add private, advisory Channel working folders with one primary session folder, optional additional folders, canonical descendant validation, owner/admin local configuration, and Workspace-root inheritance. Working folders guide new sessions only; they do not enforce filesystem access.
+
 - Show saved agent instructions and Runtime launch selections on the authenticated local agent detail page, preselecting `openai-codex` / `gpt-5.6-sol` / `medium` when selections were previously omitted, while keeping list, public Channel, audit, and diagnostic responses redacted.
 - Make `pnpm dev` use an isolated persistent development database, retain disposable review mode as `pnpm dev:review`, and add an active-instance-aware `pnpm dev:reset`.
 
