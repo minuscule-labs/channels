@@ -1,6 +1,6 @@
 # Execution Configuration
 
-**Status:** Workspace-agent model/reasoning launch profiles and adapter-scoped model allowlists are implemented; named shared profiles, Channel overrides, and Channel working scopes remain future work.
+**Status:** Workspace-agent model/reasoning launch profiles, adapter-scoped model allowlists, and advisory Channel working folders are implemented; named shared profiles, Channel launch-profile overrides, and enforceable Runtime filesystem scopes remain future work.
 
 ## BLUF
 
@@ -123,7 +123,7 @@ MinuRuntime's start contract accepts structured provider/model and reasoning sel
 
 It does **not** yet support:
 
-- Channel working-directory scopes;
+- enforceable Runtime filesystem scopes (Channel working folders are advisory only);
 - separately named profiles shared by several Workspace agents;
 - arbitrary provider-option schemas;
 - credential management in the profile UI; or

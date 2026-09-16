@@ -503,7 +503,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 16,
+      protocolVersion: 17,
       channelId,
       agents: [
         {
@@ -527,7 +527,7 @@ test("runs Channel-scoped bulk lifecycle with one confirmation and visible parti
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 16,
+        protocolVersion: 17,
         channelId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -584,12 +584,13 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 16,
+      protocolVersion: 17,
       features: {
         currentSession: true,
         channelAgentStatus: true,
         workspaceConfigRead: true,
         workspaceConfigWrite: true,
+        channelWorkingFolders: true,
         agentCreate: false,
         agentRuntimeOptions: true,
         agentSkills: true,
@@ -771,7 +772,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 16,
+        protocolVersion: 17,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,

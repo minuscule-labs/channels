@@ -69,9 +69,24 @@ export interface DeliveryDeadLetterRecord {
   updatedAt: string;
 }
 
+/** Private, Workspace-relative Channel working-folder configuration. */
+export interface ChannelWorkingFolder {
+  workspaceId: string;
+  channelId: string;
+  relativePath: string;
+  position: number;
+  primary: boolean;
+}
+
 export interface RelayBindingStore extends RelayCursorStore {
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
+  getChannelWorkingFolders(workspaceId: string, channelId: string): Promise<ChannelWorkingFolder[]>;
+  replaceChannelWorkingFolders(
+    workspaceId: string,
+    channelId: string,
+    folders: readonly ChannelWorkingFolder[],
+  ): Promise<ChannelWorkingFolder[]>;
   putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig>;
   getAgentConfig(configId: string): Promise<WorkspaceAgentConfig | undefined>;
   getWorkspaceAgentConfig(
@@ -139,8 +154,44 @@ function copyBinding(binding: ChannelAgentBindingRecord): ChannelAgentBindingRec
   return { ...binding };
 }
 
+function copyChannelWorkingFolder(folder: ChannelWorkingFolder): ChannelWorkingFolder {
+  return { ...folder };
+}
+
+export function validateChannelWorkingFolders(
+  workspaceId: string,
+  channelId: string,
+  folders: readonly ChannelWorkingFolder[],
+): void {
+  if (folders.length > 16) throw new Error("A Channel can have at most 16 working folders");
+  const relativePaths = new Set<string>();
+  const positions = new Set<number>();
+  let primaryCount = 0;
+  for (const folder of folders) {
+    if (folder.workspaceId !== workspaceId || folder.channelId !== channelId) {
+      throw new Error("Working folder does not belong to the requested Workspace and Channel");
+    }
+    if (!folder.relativePath || folder.relativePath === ".") {
+      throw new Error("Working folder must be a non-root relative path");
+    }
+    if (!Number.isSafeInteger(folder.position) || folder.position < 0) {
+      throw new Error("Working folder position must be a non-negative integer");
+    }
+    if (relativePaths.has(folder.relativePath) || positions.has(folder.position)) {
+      throw new Error("Working folders must have unique paths and positions");
+    }
+    relativePaths.add(folder.relativePath);
+    positions.add(folder.position);
+    if (folder.primary) primaryCount += 1;
+  }
+  if (folders.length > 0 && primaryCount !== 1) {
+    throw new Error("Working folder configuration must have exactly one primary folder");
+  }
+}
+
 export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly workspaceConfigs = new Map<string, LocalWorkspaceConfig>();
+  private readonly channelWorkingFolders = new Map<string, ChannelWorkingFolder[]>();
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
   private readonly bindings = new Map<string, ChannelAgentBindingRecord>();
   private readonly cursors = new Map<string, number>();
@@ -154,6 +205,26 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   async getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined> {
     const config = this.workspaceConfigs.get(workspaceId);
     return config ? copyWorkspaceConfig(config) : undefined;
+  }
+
+  async getChannelWorkingFolders(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<ChannelWorkingFolder[]> {
+    return (this.channelWorkingFolders.get(`${workspaceId}\0${channelId}`) ?? [])
+      .map(copyChannelWorkingFolder);
+  }
+
+  async replaceChannelWorkingFolders(
+    workspaceId: string,
+    channelId: string,
+    folders: readonly ChannelWorkingFolder[],
+  ): Promise<ChannelWorkingFolder[]> {
+    validateChannelWorkingFolders(workspaceId, channelId, folders);
+    const replacement = folders.map(copyChannelWorkingFolder)
+      .sort((left, right) => left.position - right.position);
+    this.channelWorkingFolders.set(`${workspaceId}\0${channelId}`, replacement);
+    return replacement.map(copyChannelWorkingFolder);
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {

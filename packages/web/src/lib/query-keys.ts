@@ -16,4 +16,5 @@ export const queryKeys = {
   channel: (channelId: string) => ["channel", channelId] as const,
   channelMessages: (channelId: string) => ["channel", channelId, "messages"] as const,
   localChannelAgents: (channelId: string) => ["local", "channel", channelId, "agents"] as const,
+  channelWorkingFolders: (channelId: string) => ["local", "channel", channelId, "working-folders"] as const,
 };

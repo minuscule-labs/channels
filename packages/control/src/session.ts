@@ -11,6 +11,7 @@ export type LocalControlAuditAction =
   | "launch.rejected"
   | "session.rejected"
   | "workspace.config.updated"
+  | "channel.working-folders.updated"
   | "runtime.models.updated"
   | "agent.config.updated"
   | "agent.session.started"

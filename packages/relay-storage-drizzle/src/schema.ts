@@ -1,4 +1,5 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const localWorkspaceConfigs = sqliteTable("local_workspace_config", {
   workspaceId: text("workspace_id").primaryKey(),
@@ -8,6 +9,23 @@ export const localWorkspaceConfigs = sqliteTable("local_workspace_config", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const channelWorkingFolders = sqliteTable("channel_working_folders", {
+  workspaceId: text("workspace_id").notNull(),
+  channelId: text("channel_id").notNull(),
+  relativePath: text("relative_path").notNull(),
+  position: integer("position").notNull(),
+  isPrimary: integer("is_primary").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.channelId, table.relativePath] }),
+  uniqueIndex("channel_working_folders_position_unique").on(table.channelId, table.position),
+  uniqueIndex("channel_working_folders_primary_unique")
+    .on(table.channelId)
+    .where(sql`${table.isPrimary} = 1`),
+  index("channel_working_folders_workspace_channel_idx").on(table.workspaceId, table.channelId),
+]);
 
 export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
   id: text("id").primaryKey(),

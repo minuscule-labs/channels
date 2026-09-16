@@ -3,6 +3,8 @@ import type {
   LocalBulkAgentLifecycleResponse,
   LocalChannelAgent,
   LocalChannelAgentsResponse,
+  LocalChannelWorkingFolders,
+  LocalChannelWorkingFolderPreview,
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
@@ -12,6 +14,7 @@ import type {
   LocalWorkspaceConfigurationSummary,
   ProvisionLocalWorkspaceInput,
   ProvisionLocalWorkspaceResult,
+  UpdateLocalChannelWorkingFoldersInput,
   UpdateLocalRuntimeModelPolicyInput,
   UpdateLocalWorkspaceAgentConfigurationInput,
   UpdateLocalWorkspaceConfigurationInput,
@@ -72,6 +75,32 @@ export class LocalControlClient {
 
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
     return this.get<LocalChannelAgentsResponse>(`/local/channels/${encodeURIComponent(channelId)}/agents`);
+  }
+
+  async getChannelWorkingFolders(channelId: string): Promise<LocalChannelWorkingFolders> {
+    return this.get<LocalChannelWorkingFolders>(
+      `/local/channels/${encodeURIComponent(channelId)}/working-folders`,
+    );
+  }
+
+  async previewChannelWorkingFolder(
+    channelId: string,
+    path: string,
+  ): Promise<LocalChannelWorkingFolderPreview> {
+    return this.request<LocalChannelWorkingFolderPreview>(
+      `/local/channels/${encodeURIComponent(channelId)}/working-folders/preview`,
+      { method: "POST", body: JSON.stringify({ path, primary: false }) },
+    );
+  }
+
+  async updateChannelWorkingFolders(
+    channelId: string,
+    input: UpdateLocalChannelWorkingFoldersInput,
+  ): Promise<LocalChannelWorkingFolders> {
+    return this.request<LocalChannelWorkingFolders>(
+      `/local/channels/${encodeURIComponent(channelId)}/working-folders`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
   }
 
   async startAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {

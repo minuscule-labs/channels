@@ -3,7 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ChannelAgentBindingRecord, WorkspaceAgentConfig } from "@minu/channels-relay";
+import type {
+  ChannelAgentBindingRecord,
+  ChannelWorkingFolder,
+  WorkspaceAgentConfig,
+} from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
 
 test("private relay storage rejects remote database URLs", async () => {
@@ -11,6 +15,70 @@ test("private relay storage rejects remote database URLs", async () => {
     DrizzleLibSqlRelayStorage.open({ url: "https://example.turso.io" }),
     /requires a local file: URL/,
   );
+});
+
+test("private Channel working folders are ordered, isolated, atomic, and survive reopen", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-folders-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const first = await DrizzleLibSqlRelayStorage.open({ url });
+  const folders: ChannelWorkingFolder[] = [
+    {
+      workspaceId: "workspace-a",
+      channelId: "channel-a",
+      relativePath: "apps/web",
+      position: 0,
+      primary: true,
+    },
+    {
+      workspaceId: "workspace-a",
+      channelId: "channel-a",
+      relativePath: "packages/shared",
+      position: 1,
+      primary: false,
+    },
+  ];
+  try {
+    assert.deepEqual(
+      await first.replaceChannelWorkingFolders("workspace-a", "channel-a", folders),
+      folders,
+    );
+    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
+    await first.replaceChannelWorkingFolders("workspace-a", "channel-b", [{
+      workspaceId: "workspace-a",
+      channelId: "channel-b",
+      relativePath: "apps/api",
+      position: 0,
+      primary: true,
+    }]);
+    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-b"), [{
+      workspaceId: "workspace-a",
+      channelId: "channel-b",
+      relativePath: "apps/api",
+      position: 0,
+      primary: true,
+    }]);
+    await assert.rejects(first.replaceChannelWorkingFolders("workspace-a", "channel-a", [
+      folders[0]!,
+      { ...folders[1]!, relativePath: "apps/api", position: 0 },
+    ]), /unique paths and positions/);
+    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
+    await assert.rejects(first.replaceChannelWorkingFolders("workspace-a", "channel-a", [
+      { ...folders[0]!, primary: false },
+    ]), /exactly one primary/);
+    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
+  } finally {
+    await first.close();
+  }
+
+  const reopened = await DrizzleLibSqlRelayStorage.open({ url });
+  try {
+    assert.deepEqual(await reopened.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
+    assert.deepEqual(await reopened.replaceChannelWorkingFolders("workspace-a", "channel-a", []), []);
+    assert.deepEqual(await reopened.getChannelWorkingFolders("workspace-a", "channel-a"), []);
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("private relay storage preserves configs and arbitrates binding leases across reopen", async () => {

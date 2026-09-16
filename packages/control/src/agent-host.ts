@@ -5,6 +5,7 @@ import {
   restoreChannelBindings,
   type AgentRuntimePort,
   type ChannelAgentBindingRecord,
+  type ChannelWorkingFolder,
   type LocalWorkspaceConfig,
   type RelayBindingStore,
   type RestoredChannelBindings,
@@ -13,8 +14,8 @@ import {
   type WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import type { LocalControlRuntimePort } from "./server.ts";
@@ -181,8 +182,10 @@ async function workspaceDirectory(rootUri: string): Promise<string> {
     );
   }
   try {
-    const details = await stat(directory);
+    const canonical = await realpath(directory);
+    const details = await stat(canonical);
     if (!details.isDirectory()) throw new Error("not a directory");
+    return canonical;
   } catch {
     throw new LocalConfigurationRequestError(
       "Configured Workspace source is not an available directory",
@@ -190,7 +193,24 @@ async function workspaceDirectory(rootUri: string): Promise<string> {
       "unavailable",
     );
   }
-  return directory;
+}
+
+function relativePathWithinWorkspace(workspaceRoot: string, selectedPath: string): boolean {
+  const path = relative(workspaceRoot, selectedPath);
+  return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
+}
+
+function channelWorkingFolderGuidance(
+  primaryCwd: string,
+  folders: ReadonlyArray<{ folder: ChannelWorkingFolder; cwd: string }>,
+): string {
+  return [
+    "Channel working folders (paths below are relative to the current working directory):",
+    "- Primary folder: .",
+    ...folders.filter(({ folder }) => !folder.primary).map(({ cwd }) =>
+      `- Additional folder: ${relative(primaryCwd, cwd).split(sep).join("/") || "."}`),
+    "Working folders guide where you should work. They are not a filesystem sandbox.",
+  ].join("\n");
 }
 
 export class LocalAgentHost {
@@ -358,13 +378,13 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
-        const cwd = await workspaceDirectory(workspaceConfig.rootUri);
+        const launch = await this.resolveWorkingFolderLaunch(workspaceConfig, channelId);
         let session: ManagedRuntimeSession | undefined;
         let bindingId: string | undefined;
         try {
           session = await runtime.start({
-            cwd,
-            appendSystemPrompt: agentConfig.personaPrompt,
+            cwd: launch.cwd,
+            appendSystemPrompt: this.appendWorkingFolderGuidance(agentConfig.personaPrompt, launch.workingFolderGuidance),
             ...(agentConfig.modelProvider && agentConfig.modelId
               ? { model: { provider: agentConfig.modelProvider, id: agentConfig.modelId } }
               : {}),
@@ -473,7 +493,10 @@ export class LocalAgentHost {
         runtime = context.runtime;
         session = await runtime.start({
           cwd: context.cwd,
-          appendSystemPrompt: context.agentConfig.personaPrompt,
+          appendSystemPrompt: this.appendWorkingFolderGuidance(
+            context.agentConfig.personaPrompt,
+            context.workingFolderGuidance,
+          ),
           ...(context.agentConfig.modelProvider && context.agentConfig.modelId
             ? { model: { provider: context.agentConfig.modelProvider, id: context.agentConfig.modelId } }
             : {}),
@@ -1071,7 +1094,53 @@ export class LocalAgentHost {
       workspaceConfig,
       agentConfig,
       runtime,
-      cwd: await workspaceDirectory(workspaceConfig.rootUri),
+      ...(await this.resolveWorkingFolderLaunch(workspaceConfig, channelId)),
+    };
+  }
+
+  private appendWorkingFolderGuidance(
+    personaPrompt: string | undefined,
+    guidance: string | undefined,
+  ): string | undefined {
+    return [personaPrompt, guidance].filter((value): value is string => Boolean(value)).join("\n\n") || undefined;
+  }
+
+  private async resolveWorkingFolderLaunch(
+    workspaceConfig: LocalWorkspaceConfig,
+    channelId: string,
+  ): Promise<{ cwd: string; workingFolderGuidance?: string }> {
+    const workspaceRoot = await workspaceDirectory(workspaceConfig.rootUri);
+    const folders = await this.options.store.getChannelWorkingFolders(workspaceConfig.workspaceId, channelId);
+    if (folders.length === 0) return { cwd: workspaceRoot };
+    if (folders.length > 16 || folders.filter((folder) => folder.primary).length !== 1) {
+      throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+    }
+    const canonicalPaths = new Set<string>();
+    const resolved: Array<{ folder: ChannelWorkingFolder; cwd: string }> = [];
+    for (const folder of folders) {
+      if (!folder.relativePath || folder.relativePath === "." || isAbsolute(folder.relativePath)
+        || folder.relativePath.split(/[\\/]/).includes("..")) {
+        throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+      }
+      try {
+        const selected = await realpath(resolve(workspaceRoot, folder.relativePath));
+        if (!(await stat(selected)).isDirectory() || !relativePathWithinWorkspace(workspaceRoot, selected)
+          || selected === workspaceRoot || canonicalPaths.has(selected)) {
+          throw new Error("invalid working folder");
+        }
+        canonicalPaths.add(selected);
+        resolved.push({ folder, cwd: selected });
+      } catch {
+        throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+      }
+    }
+    const primary = resolved.find(({ folder }) => folder.primary);
+    if (!primary) {
+      throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+    }
+    return {
+      cwd: primary.cwd,
+      workingFolderGuidance: channelWorkingFolderGuidance(primary.cwd, resolved),
     };
   }
 

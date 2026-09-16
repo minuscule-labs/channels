@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer as createNodeServer, request as httpRequest } from "node:http";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { ChannelClient } from "@minu/channels-core/client";
@@ -445,7 +445,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 16 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 17 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -527,7 +527,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 16, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 17, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -610,7 +610,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
     headers: { cookie, origin: sessions.browserOrigin },
   });
   assert.equal(opened.status, 202);
-  assert.deepEqual(await opened.json(), { protocolVersion: 16, status: "opened" });
+  assert.deepEqual(await opened.json(), { protocolVersion: 17, status: "opened" });
   assert.equal(diagnosticCalls, 1);
 });
 
@@ -842,7 +842,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 16,
+      protocolVersion: 17,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
@@ -1305,7 +1305,7 @@ test("private configuration keeps lists redacted and returns agent details only 
     }]);
     const detail = await configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id);
     assert.deepEqual(detail, {
-      protocolVersion: 16,
+      protocolVersion: 17,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "PRIVATE PERSONA: build and verify carefully" },
@@ -1345,6 +1345,97 @@ test("private configuration keeps lists redacted and returns agent details only 
   } finally {
     await store.close();
     await channelServer.close();
+  }
+});
+
+test("Channel working folders are private, canonical, and owner-controlled", async () => {
+  const channelServer = await createChannelHttpServer({ port: 0 });
+  const root = await mkdtemp(join(tmpdir(), "minu-working-folders-root-"));
+  const outside = await mkdtemp(join(tmpdir(), "minu-working-folders-outside-"));
+  const store = new InMemoryRelayBindingStore();
+  const audit: LocalControlAuditEvent[] = [];
+  try {
+    await Promise.all([
+      mkdir(join(root, "apps", "web"), { recursive: true }),
+      mkdir(join(root, "packages", "shared"), { recursive: true }),
+    ]);
+    await symlink(outside, join(root, "outside-link"));
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const [owner, member] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "human", displayName: "Member" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "working-folders", name: "Working folders" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: member.id, mentionHandle: "member" }),
+    ]);
+    const channel = await client.createChannel({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, member.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({
+      client,
+      store,
+      onAudit: (event) => audit.push(event),
+    });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
+    assert.deepEqual(await configuration.getChannelWorkingFolders(channel.id, owner.id), {
+      protocolVersion: 17,
+      workspaceId: workspace.id,
+      channelId: channel.id,
+      inheritedFromWorkspace: true,
+      folders: [],
+      changesApplyToNewSessions: true,
+      enforcement: "advisory",
+    });
+    assert.deepEqual(await configuration.previewChannelWorkingFolder(channel.id, owner.id, {
+      path: join(root, "apps", "web"), primary: false,
+    }), { relativePath: "apps/web" });
+    await assert.rejects(configuration.previewChannelWorkingFolder(channel.id, member.id, {
+      path: join(root, "apps", "web"), primary: false,
+    }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
+    await assert.rejects(configuration.previewChannelWorkingFolder(channel.id, owner.id, {
+      path: join(root, "outside-link"), primary: false,
+    }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
+    const updated = await configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+      folders: [
+        { path: join(root, "apps", "web"), primary: true },
+        { relativePath: "packages/shared", primary: false },
+      ],
+    });
+    assert.deepEqual(updated.folders, [
+      { relativePath: "apps/web", position: 0, primary: true },
+      { relativePath: "packages/shared", position: 1, primary: false },
+    ]);
+    assert.equal(updated.inheritedFromWorkspace, false);
+    assert.deepEqual(await store.getChannelWorkingFolders(workspace.id, channel.id), [
+      { workspaceId: workspace.id, channelId: channel.id, relativePath: "apps/web", position: 0, primary: true },
+      { workspaceId: workspace.id, channelId: channel.id, relativePath: "packages/shared", position: 1, primary: false },
+    ]);
+    await assert.rejects(configuration.updateChannelWorkingFolders(channel.id, member.id, {
+      folders: [],
+    }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
+    await assert.rejects(configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+      folders: [{ path: join(root, "outside-link"), primary: true }],
+    }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
+    await assert.rejects(configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+      folders: [{ relativePath: "../escape", primary: true }],
+    }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
+    await configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+      folders: [{ relativePath: ".", primary: true }],
+    });
+    assert.deepEqual(await store.getChannelWorkingFolders(workspace.id, channel.id), []);
+    const auditJson = JSON.stringify(audit);
+    assert.doesNotMatch(auditJson, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(auditJson, /outside-link|packages\/shared|apps\/web/);
+  } finally {
+    await Promise.all([
+      store.close(),
+      channelServer.close(),
+      rm(root, { recursive: true, force: true }),
+      rm(outside, { recursive: true, force: true }),
+    ]);
   }
 });
 
@@ -1722,6 +1813,70 @@ test("bulk stop does not reverse a real individual start accepted after its snap
     await store.close();
     await channelServer.close();
     await rm(sourceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("new Channel sessions use a validated primary working folder and advisory guidance", async () => {
+  const sourceDirectory = await mkdtemp(join(tmpdir(), "minu-working-folder-launch-"));
+  const primaryDirectory = join(sourceDirectory, "apps", "web");
+  const additionalDirectory = join(sourceDirectory, "packages", "shared");
+  const channelServer = await createChannelHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new ManagedFakeRuntime();
+  let host: LocalAgentHost | undefined;
+  try {
+    await Promise.all([
+      mkdir(primaryDirectory, { recursive: true }),
+      mkdir(additionalDirectory, { recursive: true }),
+    ]);
+    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "working-folder-launch", name: "Working folder launch" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const channel = await client.createChannel({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
+    const configuration = new LocalAgentHostConfiguration({ client, store });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      personaPrompt: "Use the saved persona.",
+      runtimeAdapter: "managed-test",
+    });
+    await configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+      folders: [
+        { relativePath: "apps/web", primary: true },
+        { relativePath: "packages/shared", primary: false },
+      ],
+    });
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await host.startChannelAgent(channel.id, agent.id, owner.id);
+    assert.deepEqual(runtime.starts[0]?.config, {
+      cwd: await realpath(primaryDirectory),
+      appendSystemPrompt: [
+        "Use the saved persona.",
+        "Channel working folders (paths below are relative to the current working directory):\n- Primary folder: .\n- Additional folder: ../../packages/shared\nWorking folders guide where you should work. They are not a filesystem sandbox.",
+      ].join("\n\n"),
+    });
+    const additionalPath = runtime.starts[0]?.config.appendSystemPrompt?.match(/Additional folder: ([^\n]+)/)?.[1];
+    assert.equal(resolve(runtime.starts[0]!.config.cwd, additionalPath!), await realpath(additionalDirectory));
+    await host.replaceChannelAgent(channel.id, agent.id, owner.id);
+    assert.equal(runtime.starts[1]?.config.cwd, await realpath(primaryDirectory));
+    await rm(primaryDirectory, { recursive: true, force: true });
+    await assert.rejects(
+      host.replaceChannelAgent(channel.id, agent.id, owner.id),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 409,
+    );
+  } finally {
+    await host?.close();
+    await Promise.all([
+      store.close(),
+      channelServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
   }
 });
 
@@ -2345,7 +2500,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     assert.equal(agentConfigurationResponse.status, 200);
     assert.equal(agentConfigurationResponse.headers.get("cache-control"), "no-store");
     assert.deepEqual(await agentConfigurationResponse.json(), {
-      protocolVersion: 16,
+      protocolVersion: 17,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "DAEMON PRIVATE PERSONA" },
@@ -2360,7 +2515,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 16,
+      protocolVersion: 17,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -2375,7 +2530,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 16,
+      protocolVersion: 17,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

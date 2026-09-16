@@ -1,10 +1,12 @@
 import { ChannelClient } from "@minu/channels-core/client";
 import {
   LocalRelayDirectory,
+  type ChannelWorkingFolder,
   type RelayBindingStore,
 } from "@minu/channels-relay";
 import type {
   LocalAgentRuntimeOptions,
+  LocalChannelWorkingFolders,
   LocalRuntimeModelOption,
   LocalRuntimeOptions,
   LocalRuntimeSkillOption,
@@ -15,7 +17,7 @@ import type {
 } from "./contracts.ts";
 import { LOCAL_CONTROL_PROTOCOL_VERSION } from "./contracts.ts";
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalControlAuditEvent } from "./session.ts";
 
@@ -26,6 +28,7 @@ const MAX_RUNTIME_ADAPTER_BYTES = 100;
 const MAX_MODEL_PROVIDER_BYTES = 100;
 const MAX_MODEL_ID_BYTES = 300;
 const MAX_SKILL_ID_BYTES = 200;
+const MAX_CHANNEL_WORKING_FOLDERS = 16;
 
 export class LocalConfigurationRequestError extends Error {
   constructor(
@@ -114,6 +117,56 @@ function optionalNullableString(
 ): string | null | undefined {
   if (value === undefined || value === null) return value;
   return requiredString(value, label, maxBytes);
+}
+
+function localWorkingFolderInput(value: unknown): {
+  path?: string;
+  relativePath?: string;
+  primary: boolean;
+} {
+  const input = object(value, "Working folder");
+  rejectUnknown(input, ["path", "relativePath", "primary"]);
+  if (typeof input.primary !== "boolean") {
+    throw new LocalConfigurationRequestError("Working folder primary must be a boolean", 400, "invalid");
+  }
+  const path = input.path === undefined ? undefined : requiredString(input.path, "Working folder path", MAX_ROOT_URI_BYTES);
+  const relativePath = input.relativePath === undefined
+    ? undefined
+    : requiredString(input.relativePath, "Working folder relativePath", MAX_ROOT_URI_BYTES);
+  if (Boolean(path) === Boolean(relativePath)) {
+    throw new LocalConfigurationRequestError(
+      "Working folder requires exactly one path or relativePath",
+      400,
+      "invalid",
+    );
+  }
+  return { ...(path ? { path } : {}), ...(relativePath ? { relativePath } : {}), primary: input.primary };
+}
+
+async function canonicalDirectory(value: string, label: string): Promise<string> {
+  let path: string;
+  try {
+    path = value.startsWith("file:") ? fileURLToPath(value) : value;
+  } catch {
+    throw new LocalConfigurationRequestError(`${label} is unavailable`, 409, "unavailable");
+  }
+  if (!isAbsolute(path)) {
+    throw new LocalConfigurationRequestError(`${label} is unavailable`, 409, "unavailable");
+  }
+  try {
+    const canonical = await realpath(resolve(path));
+    if (!(await stat(canonical)).isDirectory()) throw new Error("not a directory");
+    return canonical;
+  } catch {
+    throw new LocalConfigurationRequestError(`${label} is unavailable`, 409, "unavailable");
+  }
+}
+
+function relativePathWithinWorkspace(workspaceRoot: string, selectedPath: string): string | undefined {
+  const path = relative(workspaceRoot, selectedPath);
+  if (path === "") return undefined;
+  if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) return undefined;
+  return path.split(sep).join("/");
 }
 
 export class LocalAgentHostConfiguration {
@@ -270,6 +323,130 @@ export class LocalAgentHostConfiguration {
       status: config.status,
       changesApplyToNewSessions: true,
     };
+  }
+
+  async getChannelWorkingFolders(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelWorkingFolders> {
+    const channel = await this.authorizeChannel(channelId, actorIdentityId);
+    const folders = await this.options.store.getChannelWorkingFolders(channel.workspaceId, channelId);
+    return {
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
+      workspaceId: channel.workspaceId,
+      channelId,
+      inheritedFromWorkspace: folders.length === 0,
+      folders: folders.map(({ relativePath, position, primary }) => ({
+        relativePath,
+        position,
+        primary,
+      })),
+      changesApplyToNewSessions: true,
+      enforcement: "advisory",
+    };
+  }
+
+  async previewChannelWorkingFolder(
+    channelId: string,
+    actorIdentityId: string,
+    value: unknown,
+  ): Promise<{ relativePath: string }> {
+    const channel = await this.authorizeChannel(channelId, actorIdentityId);
+    const selection = localWorkingFolderInput(value);
+    if (!selection.path) {
+      throw new LocalConfigurationRequestError("Working folder preview requires a selected path", 400, "invalid");
+    }
+    const workspaceConfig = await this.options.store.getWorkspaceConfig(channel.workspaceId);
+    if (!workspaceConfig?.rootUri) {
+      throw new LocalConfigurationRequestError("Workspace source folder is unavailable", 409, "unavailable");
+    }
+    const [workspaceRoot, selected] = await Promise.all([
+      canonicalDirectory(workspaceConfig.rootUri, "Workspace source folder"),
+      canonicalDirectory(selection.path, "Working folder"),
+    ]);
+    const relativePath = relativePathWithinWorkspace(workspaceRoot, selected);
+    if (!relativePath) {
+      throw new LocalConfigurationRequestError("Working folder must be inside the Workspace source folder", 400, "invalid");
+    }
+    return { relativePath };
+  }
+
+  async updateChannelWorkingFolders(
+    channelId: string,
+    actorIdentityId: string,
+    value: unknown,
+  ): Promise<LocalChannelWorkingFolders> {
+    let workspaceId: string | undefined;
+    try {
+      const channel = await this.authorizeChannel(channelId, actorIdentityId);
+      workspaceId = channel.workspaceId;
+      const input = object(value, "Channel working folders");
+      rejectUnknown(input, ["folders"]);
+      if (!Array.isArray(input.folders) || input.folders.length > MAX_CHANNEL_WORKING_FOLDERS) {
+        throw new LocalConfigurationRequestError(
+          `folders must be an array of at most ${MAX_CHANNEL_WORKING_FOLDERS} folders`,
+          400,
+          "invalid",
+        );
+      }
+      const workspaceConfig = await this.options.store.getWorkspaceConfig(channel.workspaceId);
+      if (!workspaceConfig?.rootUri) {
+        throw new LocalConfigurationRequestError("Workspace source folder is unavailable", 409, "unavailable");
+      }
+      const workspaceRoot = await canonicalDirectory(workspaceConfig.rootUri, "Workspace source folder");
+      const selectedCanonicalPaths = new Set<string>();
+      const folders: ChannelWorkingFolder[] = [];
+      for (const [position, candidate] of input.folders.entries()) {
+        const selection = localWorkingFolderInput(candidate);
+        let selected: string;
+        if (selection.path) {
+          selected = await canonicalDirectory(selection.path, "Working folder");
+        } else {
+          const displayPath = selection.relativePath!;
+          if (isAbsolute(displayPath) || displayPath.includes("\0")
+            || displayPath.split(/[\\/]/).includes("..")) {
+            throw new LocalConfigurationRequestError("Working folder relativePath is invalid", 400, "invalid");
+          }
+          selected = await canonicalDirectory(resolve(workspaceRoot, displayPath), "Working folder");
+        }
+        const relativePath = relativePathWithinWorkspace(workspaceRoot, selected);
+        if (relativePath === undefined) {
+          if (selected === workspaceRoot) continue;
+          throw new LocalConfigurationRequestError("Working folder must be inside the Workspace source folder", 400, "invalid");
+        }
+        if (bytes(relativePath) > MAX_ROOT_URI_BYTES || selectedCanonicalPaths.has(selected)) {
+          throw new LocalConfigurationRequestError("Working folders contain a duplicate or oversized folder", 400, "invalid");
+        }
+        selectedCanonicalPaths.add(selected);
+        folders.push({
+          workspaceId: channel.workspaceId,
+          channelId,
+          relativePath,
+          position,
+          primary: selection.primary,
+        });
+      }
+      if (folders.length > 0 && folders.filter(({ primary }) => primary).length !== 1) {
+        throw new LocalConfigurationRequestError(
+          "Working folders must have exactly one primary folder",
+          400,
+          "invalid",
+        );
+      }
+      // Positions remain stable in source order; root-only selection intentionally becomes inheritance.
+      await this.options.store.replaceChannelWorkingFolders(channel.workspaceId, channelId, folders);
+      this.audit({
+        action: "channel.working-folders.updated",
+        outcome: "accepted",
+        actorIdentityId,
+        workspaceId: channel.workspaceId,
+        channelId,
+      });
+      return this.getChannelWorkingFolders(channelId, actorIdentityId);
+    } catch (error) {
+      this.auditFailure("channel.working-folders.updated", actorIdentityId, workspaceId, undefined, error, channelId);
+      throw error;
+    }
   }
 
   async getWorkspaceRuntimeOptions(
@@ -565,6 +742,17 @@ export class LocalAgentHostConfiguration {
     }
   }
 
+  private async authorizeChannel(channelId: string, actorIdentityId: string) {
+    let channel;
+    try {
+      channel = await this.options.client.getChannel(channelId);
+    } catch {
+      throw new LocalConfigurationRequestError("Channel working folders are unavailable", 404, "unavailable");
+    }
+    await this.authorize(channel.workspaceId, actorIdentityId);
+    return channel;
+  }
+
   private async authorize(workspaceId: string, actorIdentityId: string) {
     let members;
     let actor;
@@ -592,11 +780,12 @@ export class LocalAgentHostConfiguration {
   }
 
   private auditFailure(
-    action: "workspace.config.updated" | "runtime.models.updated" | "agent.config.updated",
+    action: "workspace.config.updated" | "channel.working-folders.updated" | "runtime.models.updated" | "agent.config.updated",
     actorIdentityId: string,
-    workspaceId: string,
+    workspaceId: string | undefined,
     targetIdentityId: string | undefined,
     error: unknown,
+    channelId?: string,
   ): void {
     this.audit({
       action,
@@ -604,6 +793,7 @@ export class LocalAgentHostConfiguration {
       reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
       actorIdentityId,
       workspaceId,
+      channelId,
       targetIdentityId,
     });
   }

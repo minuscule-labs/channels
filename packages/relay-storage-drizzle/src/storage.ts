@@ -2,6 +2,7 @@ import { createClient, type Client } from "@libsql/client";
 import type {
   ChannelAgentBindingRecord,
   ChannelAgentBindingState,
+  ChannelWorkingFolder,
   DeliveryDeadLetterInput,
   DeliveryDeadLetterRecord,
   LocalWorkspaceConfig,
@@ -9,6 +10,7 @@ import type {
   RuntimeModelRef,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
+import { validateChannelWorkingFolders } from "@minu/channels-relay";
 import { and, asc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -78,6 +80,18 @@ function binding(row: typeof schema.channelAgentBindings.$inferSelect): ChannelA
   };
 }
 
+function channelWorkingFolder(
+  row: typeof schema.channelWorkingFolders.$inferSelect,
+): ChannelWorkingFolder {
+  return {
+    workspaceId: row.workspaceId,
+    channelId: row.channelId,
+    relativePath: row.relativePath,
+    position: row.position,
+    primary: row.isPrimary === 1,
+  };
+}
+
 export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   private constructor(
     private readonly client: Client,
@@ -124,6 +138,56 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       where: eq(schema.localWorkspaceConfigs.workspaceId, workspaceId),
     });
     return row ? workspaceConfig(row) : undefined;
+  }
+
+  async getChannelWorkingFolders(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<ChannelWorkingFolder[]> {
+    const rows = await this.database.select().from(schema.channelWorkingFolders)
+      .where(and(
+        eq(schema.channelWorkingFolders.workspaceId, workspaceId),
+        eq(schema.channelWorkingFolders.channelId, channelId),
+      ))
+      .orderBy(asc(schema.channelWorkingFolders.position));
+    return rows.map(channelWorkingFolder);
+  }
+
+  async replaceChannelWorkingFolders(
+    workspaceId: string,
+    channelId: string,
+    folders: readonly ChannelWorkingFolder[],
+  ): Promise<ChannelWorkingFolder[]> {
+    validateChannelWorkingFolders(workspaceId, channelId, folders);
+    const replacement = folders.map((folder) => ({ ...folder }))
+      .sort((left, right) => left.position - right.position);
+    const timestamp = new Date().toISOString();
+    await this.database.transaction(async (transaction) => {
+      const existing = await transaction.select({
+        relativePath: schema.channelWorkingFolders.relativePath,
+        createdAt: schema.channelWorkingFolders.createdAt,
+      }).from(schema.channelWorkingFolders).where(and(
+        eq(schema.channelWorkingFolders.workspaceId, workspaceId),
+        eq(schema.channelWorkingFolders.channelId, channelId),
+      ));
+      const createdAtByPath = new Map(existing.map((row) => [row.relativePath, row.createdAt]));
+      await transaction.delete(schema.channelWorkingFolders).where(and(
+        eq(schema.channelWorkingFolders.workspaceId, workspaceId),
+        eq(schema.channelWorkingFolders.channelId, channelId),
+      ));
+      if (replacement.length > 0) {
+        await transaction.insert(schema.channelWorkingFolders).values(replacement.map((folder) => ({
+          workspaceId,
+          channelId,
+          relativePath: folder.relativePath,
+          position: folder.position,
+          isPrimary: folder.primary ? 1 : 0,
+          createdAt: createdAtByPath.get(folder.relativePath) ?? timestamp,
+          updatedAt: timestamp,
+        })));
+      }
+    });
+    return replacement;
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {

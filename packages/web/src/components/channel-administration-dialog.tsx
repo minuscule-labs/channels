@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { channels, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
+import { ChannelWorkingFolders } from "./channel-working-folders";
 
 interface WorkspaceParticipant {
   identity: Identity;
@@ -385,6 +386,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
               return next;
             })}
           />
+          <ChannelWorkingFolders channelId={channel.id} canAdminister={data.canAdminister} />
           <AddWorkspaceParticipantForm
             workspaceId={channel.workspaceId}
             existingMembers={data.members.data ?? []}

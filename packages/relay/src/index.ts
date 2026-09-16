@@ -4,6 +4,7 @@ export {
   RestoredChannelBindings,
   restoreChannelBindings,
   type ChannelAgentBindingRecord,
+  type ChannelWorkingFolder,
   type DeliveryDeadLetterRecord,
   type ChannelAgentBindingState,
   type LocalWorkspaceConfig,
@@ -12,6 +13,7 @@ export {
   type RestoreChannelBindingsOptions,
   type RuntimeModelRef,
   type WorkspaceAgentConfig,
+  validateChannelWorkingFolders,
 } from "./binding-store.ts";
 export {
   ChannelRuntimeRelay,

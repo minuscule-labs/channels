@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 16 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 17 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -111,6 +111,36 @@ export interface UpdateLocalWorkspaceConfigurationInput {
   notesFolderId?: string | null;
 }
 
+/** Presentation-safe private Channel scope; absolute Workspace paths never leave local control. */
+export interface LocalChannelWorkingFolder {
+  relativePath: string;
+  position: number;
+  primary: boolean;
+}
+
+export interface LocalChannelWorkingFolders {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  workspaceId: string;
+  channelId: string;
+  inheritedFromWorkspace: boolean;
+  folders: LocalChannelWorkingFolder[];
+  changesApplyToNewSessions: true;
+  enforcement: "advisory";
+}
+
+/** Complete replacement. Folder picker selections use `path`; saved rows use `relativePath`. */
+export interface LocalChannelWorkingFolderPreview {
+  relativePath: string;
+}
+
+export interface UpdateLocalChannelWorkingFoldersInput {
+  folders: Array<{
+    path?: string;
+    relativePath?: string;
+    primary: boolean;
+  }>;
+}
+
 export interface UpdateLocalWorkspaceAgentConfigurationInput {
   personaPrompt?: string | null;
   runtimeAdapter?: string | null;
@@ -128,6 +158,7 @@ export interface LocalControlCapabilities {
     channelAgentStatus: boolean;
     workspaceConfigRead: boolean;
     workspaceConfigWrite: boolean;
+    channelWorkingFolders: boolean;
     agentCreate: boolean;
     agentRuntimeOptions: boolean;
     agentSkills: boolean;

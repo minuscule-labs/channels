@@ -55,6 +55,7 @@ import {
   type LocalBulkAgentLifecycleResult,
   type LocalChannelAgent,
   type LocalChannelAgentsResponse,
+  type LocalChannelWorkingFolders,
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalLiveCapabilityState,
@@ -156,6 +157,20 @@ export interface LocalControlConfigurationPort {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<LocalWorkspaceConfigurationSummary>;
+  getChannelWorkingFolders(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelWorkingFolders>;
+  previewChannelWorkingFolder(
+    channelId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<{ relativePath: string }>;
+  updateChannelWorkingFolders(
+    channelId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalChannelWorkingFolders>;
   getWorkspaceAgentConfiguration?(
     workspaceId: string,
     agentIdentityId: string,
@@ -264,6 +279,7 @@ export class LocalControlService {
         channelAgentStatus: true,
         workspaceConfigRead: Boolean(this.options.configuration),
         workspaceConfigWrite: Boolean(this.options.configuration),
+        channelWorkingFolders: Boolean(this.options.configuration),
         agentCreate: false,
         agentRuntimeOptions: Boolean(this.options.configuration),
         agentSkills: Boolean(this.options.configuration),
@@ -284,6 +300,38 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Workspace provisioning unavailable", 404, "unavailable");
     }
     return this.options.configuration.provisionWorkspace(actorIdentityId, input);
+  }
+
+  async getChannelWorkingFolders(
+    channelId: string,
+    actorIdentityId: string,
+  ): Promise<LocalChannelWorkingFolders> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Channel working folders unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getChannelWorkingFolders(channelId, actorIdentityId);
+  }
+
+  async previewChannelWorkingFolder(
+    channelId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<{ relativePath: string }> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Channel working folders unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.previewChannelWorkingFolder(channelId, actorIdentityId, input);
+  }
+
+  async updateChannelWorkingFolders(
+    channelId: string,
+    actorIdentityId: string,
+    input: unknown,
+  ): Promise<LocalChannelWorkingFolders> {
+    if (!this.options.configuration) {
+      throw new LocalConfigurationRequestError("Channel working folders unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.updateChannelWorkingFolders(channelId, actorIdentityId, input);
   }
 
   async getWorkspaceConfiguration(
@@ -842,6 +890,7 @@ export async function createLocalControlHttpServer(
       || /^\/local\/channels\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
+      || /^\/local\/channels\/[^/]+\/working-folders\/preview$/.test(requestPath)
     );
     if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost) {
       response.setHeader("allow", "GET, PATCH, PUT, POST");
@@ -976,6 +1025,29 @@ export async function createLocalControlHttpServer(
           : await options.service.updateWorkspaceAgentConfiguration(
             workspaceId,
             agentIdentityId,
+            browserSession.identityId,
+            await readJson(request),
+          );
+        json(response, 200, result, origin);
+        return;
+      }
+      const workingFoldersPreviewMatch = path.match(/^\/local\/channels\/([^/]+)\/working-folders\/preview$/);
+      if (workingFoldersPreviewMatch && browserSession && request.method === "POST") {
+        json(response, 200, await options.service.previewChannelWorkingFolder(
+          decodeURIComponent(workingFoldersPreviewMatch[1]!),
+          browserSession.identityId,
+          await readJson(request),
+        ), origin);
+        return;
+      }
+      const workingFoldersMatch = path.match(/^\/local\/channels\/([^/]+)\/working-folders$/);
+      if (workingFoldersMatch && browserSession
+        && (request.method === "GET" || request.method === "PUT")) {
+        const channelId = decodeURIComponent(workingFoldersMatch[1]!);
+        const result = request.method === "GET"
+          ? await options.service.getChannelWorkingFolders(channelId, browserSession.identityId)
+          : await options.service.updateChannelWorkingFolders(
+            channelId,
             browserSession.identityId,
             await readJson(request),
           );
