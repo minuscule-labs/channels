@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Move source and review-mode default ports to `47510–47512`, keeping them separate from the installed product’s `47410–47412` ports.
+
 ## 0.0.5
 
 - Add private, advisory Channel working folders with one primary session folder, optional additional folders, canonical descendant validation, owner/admin local configuration, and Workspace-root inheritance. Working folders guide new sessions only; they do not enforce filesystem access.

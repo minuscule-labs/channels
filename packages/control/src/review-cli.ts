@@ -6,8 +6,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 import { createLocalProductApp } from "./local.ts";
-import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
+import { localChannelsUrl } from "./local-host.ts";
 import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
+
+// Keep source/review processes distinct from the installed product (47410–47412).
+const DEFAULT_DEVELOPMENT_CHANNELS_PORT = 47_510;
+const DEFAULT_DEVELOPMENT_CONTROL_PORT = 47_511;
+const DEFAULT_DEVELOPMENT_WEB_PORT = 47_512;
 
 function port(value: string | undefined, fallback: number, name: string): number {
   const parsed = value === undefined ? fallback : Number(value);
@@ -135,13 +140,13 @@ async function main(): Promise<void> {
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 47410)\n  --control-port <port>   local control port (default 47411)\n  --web-port <port>       web client port (default 47412)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 
-  const channelsPort = port(values["channels-port"], DEFAULT_CHANNELS_PORT, "channels-port");
-  const controlPort = port(values["control-port"], DEFAULT_CONTROL_PORT, "control-port");
-  const webPort = port(values["web-port"], DEFAULT_WEB_PORT, "web-port");
+  const channelsPort = port(values["channels-port"], DEFAULT_DEVELOPMENT_CHANNELS_PORT, "channels-port");
+  const controlPort = port(values["control-port"], DEFAULT_DEVELOPMENT_CONTROL_PORT, "control-port");
+  const webPort = port(values["web-port"], DEFAULT_DEVELOPMENT_WEB_PORT, "web-port");
   if (new Set([channelsPort, controlPort, webPort]).size !== 3) {
     throw new Error("Review service ports must be distinct");
   }
