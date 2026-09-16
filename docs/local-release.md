@@ -44,13 +44,13 @@ minu-channels update --check
 
 `paths` and `doctor` accept `--data-dir` and `--json`. The doctor checks the Node version, supported platform, and private data-directory permissions.
 
-## Upgrade to 0.0.5 and start the macOS service
+## Upgrade to 0.0.6 and start the macOS service
 
-Version 0.0.5 adds advisory Channel working folders for new agent sessions. Stop any older foreground MinuChannels process, download `minu-channels-0.0.5.tgz` and `SHA256SUMS` from the GitHub Release, verify the checksum, then install and start it:
+Version 0.0.6 keeps source and review-mode ports separate from the installed product. Stop any older foreground MinuChannels process, download `minu-channels-0.0.6.tgz` and `SHA256SUMS` from the GitHub Release, verify the checksum, then install and start it:
 
 ```bash
-npm install -g ./minu-channels-0.0.5.tgz
-minu-channels --version        # must print 0.0.5
+npm install -g ./minu-channels-0.0.6.tgz
+minu-channels --version        # must print 0.0.6
 minu-channels doctor
 minu-channels start            # install/refresh and start the user LaunchAgent
 minu-channels status

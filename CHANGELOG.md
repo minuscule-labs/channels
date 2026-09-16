@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.6
+
 - Move source and review-mode default ports to `47510–47512`, keeping them separate from the installed product’s `47410–47412` ports.
 
 ## 0.0.5
