@@ -1,16 +1,16 @@
 import {
-  ChannelClient,
-  ChannelService,
+  ConversationClient,
+  ConversationService,
   createResourceId,
-  createChannelHttpServer,
-  type ChannelHttpServer,
+  createConversationHttpServer,
+  type ConversationHttpServer,
 } from "@minu/channels-core";
 import {
   backupLocalLibSqlDatabase,
-  defaultChannelMigrationsFolder,
-  DrizzleLibSqlChannelStorage,
+  defaultConversationMigrationsFolder,
+  DrizzleLibSqlConversationStorage,
   hasPendingLocalLibSqlMigrations,
-  localLibSqlUrl as localChannelLibSqlUrl,
+  localLibSqlUrl as localConversationLibSqlUrl,
 } from "@minu/channels-storage-drizzle";
 import {
   defaultRelayMigrationsFolder,
@@ -22,17 +22,17 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalAgentHostDiagnosticEvent, LocalAgentHostWorkSnapshot, LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
-import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
 import {
-  acquireChannelsDataDirectoryLock,
-  prepareChannelsDataDirectory,
-  resolveChannelsDataDirectory,
+  acquireConversationsDataDirectoryLock,
+  prepareConversationsDataDirectory,
+  resolveConversationsDataDirectory,
 } from "./local-paths.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
 const LEGACY_PROFILE_VERSION = 1;
 const PROFILE_VERSION = 2;
-const DEFAULT_PERSONA = "You are the implementation agent for this Workspace. Follow the human's Channel requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Channel responses.";
+const DEFAULT_PERSONA = "You are the implementation agent for this Workspace. Follow the human's Conversation requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Conversation responses.";
 
 interface BrowserFirstLocalProfile {
   version: typeof PROFILE_VERSION;
@@ -43,7 +43,7 @@ interface LegacyLocalProfile {
   version: typeof LEGACY_PROFILE_VERSION;
   currentHumanIdentityId: string;
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   builderIdentityId: string;
 }
 
@@ -59,10 +59,10 @@ export interface LocalProductAppOptions {
   workspaceRoot?: string;
   workspaceName?: string;
   selectWorkspaceRoot?: boolean;
-  channelsPort?: number;
+  conversationsPort?: number;
   controlPort?: number;
   webUrl?: string;
-  channelsMigrationsFolder?: string;
+  conversationsMigrationsFolder?: string;
   relayMigrationsFolder?: string;
   runtimeAdapter: string;
   runtime: LocalManagedRuntimePort;
@@ -72,13 +72,13 @@ export interface LocalProductAppOptions {
 }
 
 export interface LocalProductApp {
-  channelsEndpoint: string;
+  conversationsEndpoint: string;
   /** Process-private credential for the local web gateway and internal services. */
-  channelsServiceToken: string;
+  conversationsServiceToken: string;
   controlEndpoint: string;
   dataDirectory: string;
   workspaceId?: string;
-  channelId?: string;
+  conversationId?: string;
   humanIdentityId: string;
   initialized: boolean;
   issueBrowserLaunchUrl(): string;
@@ -89,7 +89,7 @@ export interface LocalProductApp {
 }
 
 export function defaultLocalDataDirectory(): string {
-  return resolveChannelsDataDirectory();
+  return resolveConversationsDataDirectory();
 }
 
 function workspaceSlug(name: string): string {
@@ -103,9 +103,9 @@ function workspaceSlug(name: string): string {
 
 async function backupDatabasesBeforeMigration(options: {
   dataDirectory: string;
-  channelsDatabasePath: string;
+  conversationsDatabasePath: string;
   relayDatabasePath: string;
-  channelsMigrationsFolder: string;
+  conversationsMigrationsFolder: string;
   relayMigrationsFolder: string;
 }): Promise<void> {
   const databaseState = async (path: string, migrationsFolder: string): Promise<{ exists: boolean; pending: boolean }> => {
@@ -115,13 +115,13 @@ async function backupDatabasesBeforeMigration(options: {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false, pending: false };
       throw new Error(`Local database is unavailable for migration backup: ${basename(path)}`);
     }
-    return { exists: true, pending: await hasPendingLocalLibSqlMigrations(localChannelLibSqlUrl(path), migrationsFolder) };
+    return { exists: true, pending: await hasPendingLocalLibSqlMigrations(localConversationLibSqlUrl(path), migrationsFolder) };
   };
-  const [channels, relay] = await Promise.all([
-    databaseState(options.channelsDatabasePath, options.channelsMigrationsFolder),
+  const [conversations, relay] = await Promise.all([
+    databaseState(options.conversationsDatabasePath, options.conversationsMigrationsFolder),
     databaseState(options.relayDatabasePath, options.relayMigrationsFolder),
   ]);
-  if (!channels.pending && !relay.pending) return;
+  if (!conversations.pending && !relay.pending) return;
 
   const backupDirectory = join(
     options.dataDirectory,
@@ -129,11 +129,11 @@ async function backupDatabasesBeforeMigration(options: {
     `before-migration-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   );
   await Promise.all([
-    ...(channels.exists ? [backupLocalLibSqlDatabase(
-      localChannelLibSqlUrl(options.channelsDatabasePath), join(backupDirectory, "channels.db"),
+    ...(conversations.exists ? [backupLocalLibSqlDatabase(
+      localConversationLibSqlUrl(options.conversationsDatabasePath), join(backupDirectory, "channels.db"),
     )] : []),
     ...(relay.exists ? [backupLocalLibSqlDatabase(
-      localChannelLibSqlUrl(options.relayDatabasePath), join(backupDirectory, "relay.db"),
+      localConversationLibSqlUrl(options.relayDatabasePath), join(backupDirectory, "relay.db"),
     )] : []),
   ]);
 }
@@ -153,7 +153,7 @@ function parseProfile(value: string): LocalProfile {
   const legacy = candidate.version === LEGACY_PROFILE_VERSION
     && typeof candidate.currentHumanIdentityId === "string"
     && typeof candidate.workspaceId === "string"
-    && typeof candidate.channelId === "string"
+    && typeof candidate.conversationId === "string"
     && typeof candidate.builderIdentityId === "string";
   if (!browserFirst && !legacy) {
     throw new Error("Local MinuChannels profile is invalid or unsupported");
@@ -177,24 +177,24 @@ async function writeProfile(path: string, profile: LocalProfile): Promise<void> 
   await chmod(path, 0o600);
 }
 
-async function validateProfile(client: ChannelClient, profile: LocalProfile): Promise<void> {
+async function validateProfile(client: ConversationClient, profile: LocalProfile): Promise<void> {
   const human = await client.getIdentity(profile.currentHumanIdentityId);
   if (human.type !== "human") {
     throw new Error("Local MinuChannels profile does not match the collaboration database");
   }
   if (profile.version === PROFILE_VERSION) return;
-  const [workspace, channel, builder] = await Promise.all([
+  const [workspace, conversation, builder] = await Promise.all([
     client.getWorkspace(profile.workspaceId),
-    client.getChannel(profile.channelId),
+    client.getConversation(profile.conversationId),
     client.getIdentity(profile.builderIdentityId),
   ]);
-  if (builder.type !== "agent" || channel.workspaceId !== workspace.id) {
+  if (builder.type !== "agent" || conversation.workspaceId !== workspace.id) {
     throw new Error("Local MinuChannels profile does not match the collaboration database");
   }
 }
 
 async function initializeBrowserFirstProfile(
-  client: ChannelClient,
+  client: ConversationClient,
   profilePath: string,
 ): Promise<BrowserFirstLocalProfile> {
   const statePath = `${profilePath}.initializing`;
@@ -231,7 +231,7 @@ async function initializeBrowserFirstProfile(
 }
 
 async function initializeProfile(
-  client: ChannelClient,
+  client: ConversationClient,
   profilePath: string,
   workspaceRoot: string,
   workspaceName: string,
@@ -263,7 +263,7 @@ async function initializeProfile(
       currentHumanIdentityId: createResourceId("identity"),
       builderIdentityId: createResourceId("identity"),
       workspaceId: createResourceId("workspace"),
-      channelId: createResourceId("channel"),
+      conversationId: createResourceId("conversation"),
       workspaceName,
       workspaceSlug: workspaceSlug(workspaceName),
     };
@@ -306,9 +306,9 @@ async function initializeProfile(
       roleLabel: "builder",
     });
   }
-  if (!(await client.listWorkspaceChannels(state.workspaceId)).some(({ id }) => id === state.channelId)) {
-    await client.createChannel({
-      id: state.channelId,
+  if (!(await client.listWorkspaceConversations(state.workspaceId)).some(({ id }) => id === state.conversationId)) {
+    await client.createConversation({
+      id: state.conversationId,
       workspaceId: state.workspaceId,
       name: "General",
       participantIds: [state.currentHumanIdentityId, state.builderIdentityId],
@@ -345,7 +345,7 @@ async function initializeProfile(
     version: LEGACY_PROFILE_VERSION,
     currentHumanIdentityId: state.currentHumanIdentityId,
     workspaceId: state.workspaceId,
-    channelId: state.channelId,
+    conversationId: state.conversationId,
     builderIdentityId: state.builderIdentityId,
   };
   await writeProfile(profilePath, profile);
@@ -356,7 +356,7 @@ async function initializeProfile(
 export async function createLocalProductApp(
   options: LocalProductAppOptions,
 ): Promise<LocalProductApp> {
-  const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDirectory });
+  const dataDirectory = resolveConversationsDataDirectory({ explicit: options.dataDirectory });
   let workspaceRoot: string | undefined;
   if (options.workspaceRoot !== undefined) {
     const requestedWorkspaceRoot = resolve(options.workspaceRoot);
@@ -370,40 +370,40 @@ export async function createLocalProductApp(
   const workspaceName = options.workspaceName?.trim()
     || (workspaceRoot ? basename(workspaceRoot) || "Local Workspace" : undefined);
   if (workspaceName && workspaceName.length > 200) throw new Error("Workspace name must be at most 200 characters");
-  const channelsDatabasePath = join(dataDirectory, "channels.db");
+  const conversationsDatabasePath = join(dataDirectory, "channels.db");
   const relayDatabasePath = join(dataDirectory, "relay.db");
   const profilePath = join(dataDirectory, "local-profile.json");
-  const channelsMigrationsFolder = options.channelsMigrationsFolder ?? defaultChannelMigrationsFolder();
+  const conversationsMigrationsFolder = options.conversationsMigrationsFolder ?? defaultConversationMigrationsFolder();
   const relayMigrationsFolder = options.relayMigrationsFolder ?? defaultRelayMigrationsFolder();
-  await prepareChannelsDataDirectory(dataDirectory);
-  const dataDirectoryLock = await acquireChannelsDataDirectoryLock(dataDirectory);
+  await prepareConversationsDataDirectory(dataDirectory);
+  const dataDirectoryLock = await acquireConversationsDataDirectoryLock(dataDirectory);
 
-  let storage: DrizzleLibSqlChannelStorage;
+  let storage: DrizzleLibSqlConversationStorage;
   try {
     await backupDatabasesBeforeMigration({
       dataDirectory,
-      channelsDatabasePath,
+      conversationsDatabasePath,
       relayDatabasePath,
-      channelsMigrationsFolder,
+      conversationsMigrationsFolder,
       relayMigrationsFolder,
     });
-    storage = await DrizzleLibSqlChannelStorage.open({
-      url: localChannelLibSqlUrl(channelsDatabasePath),
-      migrationsFolder: channelsMigrationsFolder,
+    storage = await DrizzleLibSqlConversationStorage.open({
+      url: localConversationLibSqlUrl(conversationsDatabasePath),
+      migrationsFolder: conversationsMigrationsFolder,
     });
   } catch (error) {
     await dataDirectoryLock.release();
     throw error;
   }
-  let channelsServer: ChannelHttpServer | undefined;
+  let conversationsServer: ConversationHttpServer | undefined;
   let controlDaemon: LocalControlDaemon | undefined;
   try {
-    await secureDatabaseFiles(channelsDatabasePath);
-    channelsServer = await createChannelHttpServer({
-      port: options.channelsPort ?? DEFAULT_CHANNELS_PORT,
-      service: new ChannelService(storage),
+    await secureDatabaseFiles(conversationsDatabasePath);
+    conversationsServer = await createConversationHttpServer({
+      port: options.conversationsPort ?? DEFAULT_CHANNELS_PORT,
+      service: new ConversationService(storage),
     });
-    const client = new ChannelClient(channelsServer.endpoint, { serviceToken: channelsServer.serviceToken });
+    const client = new ConversationClient(conversationsServer.endpoint, { serviceToken: conversationsServer.serviceToken });
     let profile = await readProfile(profilePath);
     const initialized = profile === undefined;
     if (profile) {
@@ -424,7 +424,7 @@ export async function createLocalProductApp(
     }
     await secureDatabaseFiles(relayDatabasePath);
     let selectedWorkspaceId = profile.version === LEGACY_PROFILE_VERSION ? profile.workspaceId : undefined;
-    let selectedChannelId = profile.version === LEGACY_PROFILE_VERSION ? profile.channelId : undefined;
+    let selectedConversationId = profile.version === LEGACY_PROFILE_VERSION ? profile.conversationId : undefined;
     if (!initialized && options.selectWorkspaceRoot && workspaceRoot) {
       const relayStore = await DrizzleLibSqlRelayStorage.open({
         url: localRelayLibSqlUrl(relayDatabasePath),
@@ -448,9 +448,9 @@ export async function createLocalProductApp(
           throw new Error(`More than one Workspace uses source folder: ${workspaceRoot}. Start without a directory and choose one in the app.`);
         }
         selectedWorkspaceId = matches[0]!;
-        const channels = await client.listWorkspaceChannels(selectedWorkspaceId);
-        if (!channels[0]) throw new Error("The selected Workspace has no Channels");
-        selectedChannelId = channels[0].id;
+        const conversations = await client.listWorkspaceConversations(selectedWorkspaceId);
+        if (!conversations[0]) throw new Error("The selected Workspace has no Conversations");
+        selectedConversationId = conversations[0].id;
       } finally {
         await relayStore.close();
       }
@@ -458,11 +458,11 @@ export async function createLocalProductApp(
 
     controlDaemon = await createLocalControlDaemon({
       currentHumanIdentityId: profile.currentHumanIdentityId,
-      channelsEndpoint: channelsServer.endpoint,
-      channelsServiceToken: channelsServer.serviceToken,
+      conversationsEndpoint: conversationsServer.endpoint,
+      conversationsServiceToken: conversationsServer.serviceToken,
       relayDatabasePath,
       relayMigrationsFolder,
-      webUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
+      webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },
       onAudit: options.onAudit,
@@ -471,17 +471,17 @@ export async function createLocalProductApp(
 
     let closed = false;
     return {
-      channelsEndpoint: channelsServer.endpoint,
-      channelsServiceToken: channelsServer.serviceToken,
+      conversationsEndpoint: conversationsServer.endpoint,
+      conversationsServiceToken: conversationsServer.serviceToken,
       controlEndpoint: controlDaemon.endpoint,
       dataDirectory,
       workspaceId: selectedWorkspaceId,
-      channelId: selectedChannelId,
+      conversationId: selectedConversationId,
       humanIdentityId: profile.currentHumanIdentityId,
       initialized,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
-        selectedWorkspaceId && selectedChannelId
-          ? `/app/workspaces/${selectedWorkspaceId}/conversations/${selectedChannelId}`
+        selectedWorkspaceId && selectedConversationId
+          ? `/app/workspaces/${selectedWorkspaceId}/conversations/${selectedConversationId}`
           : "/",
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
@@ -490,7 +490,7 @@ export async function createLocalProductApp(
       async close() {
         if (closed) return;
         closed = true;
-        await Promise.allSettled([controlDaemon!.close(), channelsServer!.close()]);
+        await Promise.allSettled([controlDaemon!.close(), conversationsServer!.close()]);
         try {
           await storage.close();
         } finally {
@@ -499,7 +499,7 @@ export async function createLocalProductApp(
       },
     };
   } catch (error) {
-    await Promise.allSettled([controlDaemon?.close(), channelsServer?.close()]);
+    await Promise.allSettled([controlDaemon?.close(), conversationsServer?.close()]);
     try {
       await storage.close();
     } finally {

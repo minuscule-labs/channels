@@ -2,21 +2,21 @@ import { timingSafeEqual, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
-  ChannelConflictError,
-  ChannelNotFoundError,
-  ChannelService,
-  ChannelValidationError,
-} from "./channel-service.ts";
+  ConversationConflictError,
+  ConversationNotFoundError,
+  ConversationService,
+  ConversationValidationError,
+} from "./conversation-service.ts";
 import type {
   AddWorkspaceMemberInput,
-  ChannelEvent,
-  CreateChannelInput,
+  ConversationEvent,
+  CreateConversationInput,
   CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
   CreateWorkspaceInput,
-  UpdateChannelInput,
-  UpdateChannelParticipantsInput,
+  UpdateConversationInput,
+  UpdateConversationParticipantsInput,
   UpdateIdentityInput,
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
@@ -24,8 +24,8 @@ import type {
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
-export interface ChannelHttpServerOptions {
-  service?: ChannelService;
+export interface ConversationHttpServerOptions {
+  service?: ConversationService;
   host?: string;
   port?: number;
   heartbeatIntervalMs?: number;
@@ -33,29 +33,29 @@ export interface ChannelHttpServerOptions {
   serviceToken?: string;
 }
 
-export interface ChannelHttpServer {
+export interface ConversationHttpServer {
   endpoint: string;
-  service: ChannelService;
+  service: ConversationService;
   serviceToken: string;
   close(): Promise<void>;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
   if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
-    throw new ChannelValidationError("Content-Type must be application/json");
+    throw new ConversationValidationError("Content-Type must be application/json");
   }
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.length;
-    if (size > MAX_REQUEST_BYTES) throw new ChannelValidationError("request exceeds 1 MiB");
+    if (size > MAX_REQUEST_BYTES) throw new ConversationValidationError("request exceeds 1 MiB");
     chunks.push(buffer);
   }
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
-    throw new ChannelValidationError("request body must be valid JSON");
+    throw new ConversationValidationError("request body must be valid JSON");
   }
 }
 
@@ -64,7 +64,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(`${JSON.stringify(body)}\n`);
 }
 
-function sendEvent(response: ServerResponse, event: ChannelEvent): void {
+function sendEvent(response: ServerResponse, event: ConversationEvent): void {
   response.write(`id: ${event.id}\n`);
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -88,24 +88,24 @@ function loopbackHost(request: IncomingMessage): boolean {
 
 function authenticatedActor(request: IncomingMessage): string | undefined {
   const value = request.headers["x-minu-actor-id"];
-  if (Array.isArray(value)) throw new ChannelValidationError("actor identity must be a single header value");
+  if (Array.isArray(value)) throw new ConversationValidationError("actor identity must be a single header value");
   return value;
 }
 
 function requireActor(input: Record<string, unknown>, actor: string | undefined, field: string): void {
   if (actor !== undefined && input[field] !== actor) {
-    throw new ChannelValidationError(`${field} must match the authenticated browser identity`);
+    throw new ConversationValidationError(`${field} must match the authenticated browser identity`);
   }
 }
 
-export async function createChannelHttpServer(
-  options: ChannelHttpServerOptions = {},
-): Promise<ChannelHttpServer> {
+export async function createConversationHttpServer(
+  options: ConversationHttpServerOptions = {},
+): Promise<ConversationHttpServer> {
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 15_000;
   if (!Number.isSafeInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 1) {
     throw new RangeError("heartbeatIntervalMs must be a positive integer");
   }
-  const service = options.service ?? new ChannelService();
+  const service = options.service ?? new ConversationService();
   const serviceToken = options.serviceToken ?? randomBytes(32).toString("base64url");
   const streams = new Set<ServerResponse>();
 
@@ -198,43 +198,43 @@ export async function createChannelHttpServer(
         json(response, 200, { member });
         return;
       }
-      const workspaceChannelsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/conversations$/);
-      if (workspaceChannelsMatch && request.method === "POST") {
-        const input = (await readJson(request)) as CreateChannelInput;
+      const workspaceConversationsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/conversations$/);
+      if (workspaceConversationsMatch && request.method === "POST") {
+        const input = (await readJson(request)) as CreateConversationInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
-          throw new ChannelValidationError("actorIdentityId must match the authenticated browser identity");
+          throw new ConversationValidationError("actorIdentityId must match the authenticated browser identity");
         }
-        const channel = await service.createChannel({
+        const conversation = await service.createConversation({
           ...input,
-          workspaceId: workspaceChannelsMatch[1]!,
+          workspaceId: workspaceConversationsMatch[1]!,
           ...(actor === undefined ? {} : { actorIdentityId: actor }),
         });
-        json(response, 201, { channel });
+        json(response, 201, { conversation });
         return;
       }
-      if (workspaceChannelsMatch && request.method === "GET") {
-        json(response, 200, { channels: await service.listWorkspaceChannels(workspaceChannelsMatch[1]!) });
+      if (workspaceConversationsMatch && request.method === "GET") {
+        json(response, 200, { conversations: await service.listWorkspaceConversations(workspaceConversationsMatch[1]!) });
         return;
       }
 
       if (request.method === "POST" && url.pathname === "/conversations") {
-        const input = (await readJson(request)) as CreateChannelInput;
+        const input = (await readJson(request)) as CreateConversationInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
-          throw new ChannelValidationError("actorIdentityId must match the authenticated browser identity");
+          throw new ConversationValidationError("actorIdentityId must match the authenticated browser identity");
         }
-        const channel = await service.createChannel(actor === undefined ? input : { ...input, actorIdentityId: actor });
-        json(response, 201, { channel });
+        const conversation = await service.createConversation(actor === undefined ? input : { ...input, actorIdentityId: actor });
+        json(response, 201, { conversation });
         return;
       }
 
       if (url.pathname === "/conversations/events" && request.method === "GET") {
-        const channelIds = [...new Set(url.searchParams.getAll("channelId"))];
-        if (channelIds.length === 0 || channelIds.length > 100 || channelIds.some((channelId) => !channelId)) {
-          throw new ChannelValidationError("channelId must identify between 1 and 100 Channels");
+        const conversationIds = [...new Set(url.searchParams.getAll("conversationId"))];
+        if (conversationIds.length === 0 || conversationIds.length > 100 || conversationIds.some((conversationId) => !conversationId)) {
+          throw new ConversationValidationError("conversationId must identify between 1 and 100 Conversations");
         }
-        const pending: ChannelEvent[] = [];
+        const pending: ConversationEvent[] = [];
         let ready = false;
-        const unsubscribe = await service.subscribeMany(channelIds, (event) => {
+        const unsubscribe = await service.subscribeMany(conversationIds, (event) => {
           if (ready) sendEvent(response, event);
           else pending.push(event);
         });
@@ -244,7 +244,7 @@ export async function createChannelHttpServer(
           connection: "keep-alive",
         });
         streams.add(response);
-        response.write(`event: ready\ndata: ${JSON.stringify({ channelIds })}\n\n`);
+        response.write(`event: ready\ndata: ${JSON.stringify({ conversationIds })}\n\n`);
         ready = true;
         for (const event of pending) sendEvent(response, event);
         const heartbeat = setInterval(
@@ -260,31 +260,31 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const channelMatch = url.pathname.match(/^\/conversations\/([^/]+)$/);
-      if (channelMatch && request.method === "GET") {
-        json(response, 200, { channel: await service.getChannelMetadata(channelMatch[1]!) });
+      const conversationMatch = url.pathname.match(/^\/conversations\/([^/]+)$/);
+      if (conversationMatch && request.method === "GET") {
+        json(response, 200, { conversation: await service.getConversationMetadata(conversationMatch[1]!) });
         return;
       }
-      if (channelMatch && request.method === "PATCH") {
-        const input = (await readJson(request)) as UpdateChannelInput;
+      if (conversationMatch && request.method === "PATCH") {
+        const input = (await readJson(request)) as UpdateConversationInput;
         requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
-        const channel = await service.updateChannel(
-          channelMatch[1]!,
+        const conversation = await service.updateConversation(
+          conversationMatch[1]!,
           input,
         );
-        json(response, 200, { channel });
+        json(response, 200, { conversation });
         return;
       }
 
       const participantsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/participants$/);
       if (participantsMatch && request.method === "PATCH") {
-        const input = (await readJson(request)) as UpdateChannelParticipantsInput;
+        const input = (await readJson(request)) as UpdateConversationParticipantsInput;
         requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
-        const channel = await service.updateChannelParticipants(
+        const conversation = await service.updateConversationParticipants(
           participantsMatch[1]!,
           input,
         );
-        json(response, 200, { channel });
+        json(response, 200, { conversation });
         return;
       }
 
@@ -293,7 +293,7 @@ export async function createChannelHttpServer(
         const integerQuery = (name: string): number | undefined => {
           const value = url.searchParams.get(name);
           if (value === null) return undefined;
-          if (!/^\d+$/.test(value)) throw new ChannelValidationError(`${name} must be an integer`);
+          if (!/^\d+$/.test(value)) throw new ConversationValidationError(`${name} must be an integer`);
           return Number(value);
         };
         json(response, 200, { messages: await service.listMessages(messagesMatch[1]!, {
@@ -306,7 +306,7 @@ export async function createChannelHttpServer(
       if (messagesMatch && request.method === "POST") {
         const idempotencyKey = request.headers["idempotency-key"];
         if (Array.isArray(idempotencyKey)) {
-          throw new ChannelValidationError("idempotency key must be a single header value");
+          throw new ConversationValidationError("idempotency key must be a single header value");
         }
         const input = (await readJson(request)) as CreateMessageInput;
         requireActor(input as unknown as Record<string, unknown>, actor, "participantId");
@@ -333,15 +333,15 @@ export async function createChannelHttpServer(
 
       const eventsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/events$/);
       if (eventsMatch && request.method === "GET") {
-        const channelId = eventsMatch[1]!;
-        const unsubscribe = await service.subscribe(channelId, (event) => sendEvent(response, event));
+        const conversationId = eventsMatch[1]!;
+        const unsubscribe = await service.subscribe(conversationId, (event) => sendEvent(response, event));
         response.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-cache",
           connection: "keep-alive",
         });
         streams.add(response);
-        response.write(`event: ready\ndata: ${JSON.stringify({ channelId })}\n\n`);
+        response.write(`event: ready\ndata: ${JSON.stringify({ conversationId })}\n\n`);
         const heartbeat = setInterval(
           () => response.write(": keepalive\n\n"),
           heartbeatIntervalMs,
@@ -362,11 +362,11 @@ export async function createChannelHttpServer(
         return;
       }
       const status =
-        error instanceof ChannelNotFoundError
+        error instanceof ConversationNotFoundError
           ? 404
-          : error instanceof ChannelConflictError
+          : error instanceof ConversationConflictError
             ? 409
-            : error instanceof ChannelValidationError
+            : error instanceof ConversationValidationError
               ? 400
               : 500;
       json(response, status, { error: error instanceof Error ? error.message : String(error) });

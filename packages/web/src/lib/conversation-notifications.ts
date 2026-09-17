@@ -1,30 +1,30 @@
-import type { ChannelMessage } from "@minu/channels-core/types";
+import type { ConversationMessage } from "@minu/channels-core/types";
 
 export type NotificationSound = "off" | "mentions" | "all";
-export interface ChannelUnread { count: number; mentionCount: number; }
+export interface ConversationUnread { count: number; mentionCount: number; }
 
-const key = (identityId: string, channelId: string) => `minu-channels:last-read:${identityId}:${channelId}`;
+const key = (identityId: string, conversationId: string) => `minu-channels:last-read:${identityId}:${conversationId}`;
 const soundKey = (identityId: string) => `minu-channels:sound:${identityId}`;
 
-export function readSequence(storage: Pick<Storage, "getItem">, identityId: string, channelId: string): number {
-  const value = Number(storage.getItem(key(identityId, channelId)) ?? 0);
+export function readSequence(storage: Pick<Storage, "getItem">, identityId: string, conversationId: string): number {
+  const value = Number(storage.getItem(key(identityId, conversationId)) ?? 0);
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
 export function writeReadSequence(
   storage: Pick<Storage, "getItem" | "setItem">,
   identityId: string,
-  channelId: string,
+  conversationId: string,
   sequence: number,
 ) {
-  storage.setItem(key(identityId, channelId), String(Math.max(readSequence(storage, identityId, channelId), sequence, 0)));
+  storage.setItem(key(identityId, conversationId), String(Math.max(readSequence(storage, identityId, conversationId), sequence, 0)));
 }
 
-export function resetReadSequence(storage: Pick<Storage, "setItem">, identityId: string, channelId: string) {
-  storage.setItem(key(identityId, channelId), "0");
+export function resetReadSequence(storage: Pick<Storage, "setItem">, identityId: string, conversationId: string) {
+  storage.setItem(key(identityId, conversationId), "0");
 }
 
-export function unreadFor(messages: ChannelMessage[], identityId: string, lastRead: number): ChannelUnread {
+export function unreadFor(messages: ConversationMessage[], identityId: string, lastRead: number): ConversationUnread {
   const latest = messages.at(-1)?.sequence ?? 0;
   const floor = lastRead > latest ? 0 : lastRead;
   const seenSequences = new Set<number>();

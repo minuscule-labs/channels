@@ -1,21 +1,21 @@
-import type { ChannelMetadata, Workspace } from "@minu/channels-core/types";
+import type { ConversationMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
 import { Bell, Bot, Hash, MessageSquare, X } from "lucide-react";
-import type { NotificationSound } from "../lib/channel-notifications";
-import { CreateChannelDialog } from "./channel-administration-dialog";
+import type { NotificationSound } from "../lib/conversation-notifications";
+import { CreateConversationDialog } from "./conversation-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
 
 export interface WorkspaceNavigationItem {
   workspace: Workspace;
-  channels: ChannelMetadata[];
+  conversations: ConversationMetadata[];
   loading: boolean;
   unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
 }
 
 export function NavigationSidebar({
   items,
-  activeChannelId,
+  activeConversationId,
   activeAgentsWorkspaceId,
   workspaces,
   selectedWorkspaceId,
@@ -28,7 +28,7 @@ export function NavigationSidebar({
   workspaceUnread = new Map(),
 }: {
   items: WorkspaceNavigationItem[];
-  activeChannelId?: string;
+  activeConversationId?: string;
   activeAgentsWorkspaceId?: string;
   workspaces: Workspace[];
   selectedWorkspaceId?: string;
@@ -73,7 +73,7 @@ export function NavigationSidebar({
           <p className="px-2 py-6 text-sm text-[var(--muted)]">No Workspaces yet.</p>
         ) : null}
         <div className="space-y-5">
-          {items.map(({ workspace, channels, loading, unread }) => (
+          {items.map(({ workspace, conversations, loading, unread }) => (
             <section key={workspace.id}>
               <div className="mb-1 flex items-end justify-between gap-2 px-2">
                 <div className="min-w-0">
@@ -84,7 +84,7 @@ export function NavigationSidebar({
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="status-dot" data-status={workspace.status} title={workspace.status} />
-                  <CreateChannelDialog workspace={workspace} onNavigate={onNavigate} />
+                  <CreateConversationDialog workspace={workspace} onNavigate={onNavigate} />
                   <WorkspaceSettingsDialog workspace={workspace} />
                 </div>
               </div>
@@ -104,13 +104,13 @@ export function NavigationSidebar({
               </Link>
               {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
               <ul className="space-y-1">
-                {channels.map((channel) => {
-                  const active = channel.id === activeChannelId;
+                {conversations.map((conversation) => {
+                  const active = conversation.id === activeConversationId;
                   return (
-                    <li key={channel.id}>
+                    <li key={conversation.id}>
                       <Link
-                        to="/app/workspaces/$workspaceId/conversations/$channelId"
-                        params={{ workspaceId: workspace.id, channelId: channel.id }}
+                        to="/app/workspaces/$workspaceId/conversations/$conversationId"
+                        params={{ workspaceId: workspace.id, conversationId: conversation.id }}
                         onClick={onNavigate}
                         className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
                           active
@@ -120,13 +120,13 @@ export function NavigationSidebar({
                         aria-current={active ? "page" : undefined}
                       >
                         <Hash className="h-3.5 w-3.5 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">{channel.name}</span>
-                        {unread?.get(channel.id)?.count ? (
+                        <span className="min-w-0 flex-1 truncate">{conversation.name}</span>
+                        {unread?.get(conversation.id)?.count ? (
                           <span
-                            className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-semibold ${unread.get(channel.id)!.mentionCount ? "bg-[var(--accent)] text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
-                            aria-label={`${unread.get(channel.id)!.count} unread message${unread.get(channel.id)!.count === 1 ? "" : "s"}${unread.get(channel.id)!.mentionCount ? `, ${unread.get(channel.id)!.mentionCount} direct mention${unread.get(channel.id)!.mentionCount === 1 ? "" : "s"}` : ""}`}
+                            className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-semibold ${unread.get(conversation.id)!.mentionCount ? "bg-[var(--accent)] text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
+                            aria-label={`${unread.get(conversation.id)!.count} unread message${unread.get(conversation.id)!.count === 1 ? "" : "s"}${unread.get(conversation.id)!.mentionCount ? `, ${unread.get(conversation.id)!.mentionCount} direct mention${unread.get(conversation.id)!.mentionCount === 1 ? "" : "s"}` : ""}`}
                           >
-                            {unread.get(channel.id)!.count}
+                            {unread.get(conversation.id)!.count}
                           </span>
                         ) : null}
                       </Link>

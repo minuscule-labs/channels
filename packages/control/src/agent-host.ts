@@ -1,14 +1,14 @@
-import { ChannelClient } from "@minu/channels-core/client";
+import { ConversationClient } from "@minu/channels-core/client";
 import {
-  ChannelRuntimeRelay,
+  ConversationRuntimeRelay,
   LocalRelayDirectory,
-  restoreChannelBindings,
+  restoreConversationBindings,
   type AgentRuntimePort,
-  type ChannelAgentBindingRecord,
-  type ChannelWorkingFolder,
+  type ConversationAgentBindingRecord,
+  type ConversationWorkingFolder,
   type LocalWorkspaceConfig,
   type RelayBindingStore,
-  type RestoredChannelBindings,
+  type RestoredConversationBindings,
   type RestoreBindingOutcome,
   type RelayAgentActivity,
   type WorkspaceAgentConfig,
@@ -52,7 +52,7 @@ export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partia
 
 interface BulkLifecycleTarget {
   identityId: string;
-  binding?: ChannelAgentBindingRecord;
+  binding?: ConversationAgentBindingRecord;
   duplicate: boolean;
 }
 
@@ -63,14 +63,14 @@ type AttachmentResult = "attached" | RestoreBindingOutcome | "failed";
 export interface LocalAgentHostDiagnosticEvent {
   category: "binding_restore" | "binding_lease";
   outcome: "attached" | "reattached" | "retrying" | "offline" | "uncertain" | "conflict" | "invalid" | "failed";
-  channelId: string;
+  conversationId: string;
   agentIdentityId: string;
   timestamp: string;
   attempt?: number;
 }
 
 interface BindingRecovery {
-  channelId: string;
+  conversationId: string;
   bindingId: string;
   agentIdentityId: string;
   generation: number;
@@ -86,19 +86,19 @@ export interface LocalAgentHostWorkSnapshot {
   pendingLifecycle: number;
 }
 
-interface ChannelRunner {
-  relay: ChannelRuntimeRelay;
-  /** Relay ownership transitions are serialized per Channel and readiness is explicit. */
+interface ConversationRunner {
+  relay: ConversationRuntimeRelay;
+  /** Relay ownership transitions are serialized per Conversation and readiness is explicit. */
   readiness: "starting" | "ready" | "stopping";
   ready: Promise<void>;
   resolveReady(): void;
   pendingAttaches: Set<string>;
   /** One independently renewed lease holder per attached Runtime binding. */
-  restored: Map<string, RestoredChannelBindings>;
+  restored: Map<string, RestoredConversationBindings>;
 }
 
 export interface LocalAgentHostOptions {
-  client: ChannelClient;
+  client: ConversationClient;
   store: RelayBindingStore;
   runtimes: Readonly<Record<string, LocalManagedRuntimePort>>;
   now?: () => Date;
@@ -200,12 +200,12 @@ function relativePathWithinWorkspace(workspaceRoot: string, selectedPath: string
   return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..${sep}`));
 }
 
-function channelWorkingFolderGuidance(
+function conversationWorkingFolderGuidance(
   primaryCwd: string,
-  folders: ReadonlyArray<{ folder: ChannelWorkingFolder; cwd: string }>,
+  folders: ReadonlyArray<{ folder: ConversationWorkingFolder; cwd: string }>,
 ): string {
   return [
-    "Channel working folders (paths below are relative to the current working directory):",
+    "Conversation working folders (paths below are relative to the current working directory):",
     "- Primary folder: .",
     ...folders.filter(({ folder }) => !folder.primary).map(({ cwd }) =>
       `- Additional folder: ${relative(primaryCwd, cwd).split(sep).join("/") || "."}`),
@@ -217,7 +217,7 @@ export class LocalAgentHost {
   private readonly directory: LocalRelayDirectory;
   private readonly now: () => Date;
   private readonly leaseOwner: string;
-  private readonly runners = new Map<string, ChannelRunner>();
+  private readonly runners = new Map<string, ConversationRunner>();
   private readonly pending = new Map<string, Promise<unknown>>();
   private readonly attachingBindings = new Set<string>();
   private readonly recoveries = new Map<string, BindingRecovery>();
@@ -280,18 +280,18 @@ export class LocalAgentHost {
     return this.workSnapshot();
   }
 
-  async startAllChannelAgents(
-    channelId: string,
+  async startAllConversationAgents(
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]> {
-    return this.runBulkLifecycle("start", channelId, actorIdentityId);
+    return this.runBulkLifecycle("start", conversationId, actorIdentityId);
   }
 
-  async stopAllChannelAgents(
-    channelId: string,
+  async stopAllConversationAgents(
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]> {
-    return this.runBulkLifecycle("stop", channelId, actorIdentityId);
+    return this.runBulkLifecycle("stop", conversationId, actorIdentityId);
   }
 
   async restore(): Promise<void> {
@@ -300,39 +300,39 @@ export class LocalAgentHost {
     const bindingGroups = await Promise.all(
       workspaces.map((workspace) => this.options.store.listWorkspaceBindings(workspace.id)),
     );
-    const channelIds = [...new Set(bindingGroups.flat()
+    const conversationIds = [...new Set(bindingGroups.flat()
       .filter((binding) => binding.state !== "disabled")
-      .map((binding) => binding.channelId))];
+      .map((binding) => binding.conversationId))];
     const records = bindingGroups.flat();
-    await Promise.all(channelIds.map((channelId) => this.refreshChannel(channelId).catch(() => {
+    await Promise.all(conversationIds.map((conversationId) => this.refreshConversation(conversationId).catch(() => {
       for (const record of records.filter(
-        (candidate) => candidate.channelId === channelId && candidate.state !== "disabled",
+        (candidate) => candidate.conversationId === conversationId && candidate.state !== "disabled",
       )) {
         this.handleAttachmentResult(record, "failed", "binding_restore");
       }
     })));
   }
 
-  async startChannelAgent(
-    channelId: string,
+  async startConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
     expectedBinding?: null,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-        const channel = await this.options.client.getChannel(channelId).catch(() => {
-          throw new LocalConfigurationRequestError("Channel is unavailable", 404, "unavailable");
+        const conversation = await this.options.client.getConversation(conversationId).catch(() => {
+          throw new LocalConfigurationRequestError("Conversation is unavailable", 404, "unavailable");
         });
         const [workspace, members, actor, identity, workspaceConfig, agentConfig, bindings] = await Promise.all([
-          this.options.client.getWorkspace(channel.workspaceId),
-          this.options.client.listWorkspaceMembers(channel.workspaceId),
+          this.options.client.getWorkspace(conversation.workspaceId),
+          this.options.client.listWorkspaceMembers(conversation.workspaceId),
           this.options.client.getIdentity(actorIdentityId),
           this.options.client.getIdentity(agentIdentityId),
-          this.options.store.getWorkspaceConfig(channel.workspaceId),
-          this.options.store.getWorkspaceAgentConfig(channel.workspaceId, agentIdentityId),
-          this.options.store.listChannelBindings(channelId),
+          this.options.store.getWorkspaceConfig(conversation.workspaceId),
+          this.options.store.getWorkspaceAgentConfig(conversation.workspaceId, agentIdentityId),
+          this.options.store.listConversationBindings(conversationId),
         ]);
         const actorMembership = members.find(({ identityId }) => identityId === actorIdentityId);
         if (actor.type !== "human" || actor.status !== "active" || actorMembership?.status !== "active"
@@ -340,12 +340,12 @@ export class LocalAgentHost {
           throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
         }
         const agentMembership = members.find(({ identityId }) => identityId === agentIdentityId);
-        const participant = channel.participants.find(({ id }) => id === agentIdentityId);
+        const participant = conversation.participants.find(({ id }) => id === agentIdentityId);
         if (workspace.status !== "active" || identity.status !== "active"
           || (identity.type !== "agent" && identity.type !== "service")
           || agentMembership?.status !== "active" || participant?.status !== "active") {
           throw new LocalConfigurationRequestError(
-            "Agent must be an active Channel participant",
+            "Agent must be an active Conversation participant",
             409,
             "unavailable",
           );
@@ -356,7 +356,7 @@ export class LocalAgentHost {
         }
         if (bindings.some((binding) => binding.agentIdentityId === agentIdentityId)) {
           throw new LocalConfigurationRequestError(
-            "Agent already has a Channel session; explicit replacement is required",
+            "Agent already has a Conversation session; explicit replacement is required",
             409,
             "unavailable",
           );
@@ -378,7 +378,7 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
-        const launch = await this.resolveWorkingFolderLaunch(workspaceConfig, channelId);
+        const launch = await this.resolveWorkingFolderLaunch(workspaceConfig, conversationId);
         let session: ManagedRuntimeSession | undefined;
         let bindingId: string | undefined;
         try {
@@ -391,21 +391,21 @@ export class LocalAgentHost {
             ...(agentConfig.reasoningLevel ? { reasoningLevel: agentConfig.reasoningLevel } : {}),
             ...(agentConfig.skillIds !== undefined ? { skillIds: [...agentConfig.skillIds] } : {}),
           });
-          const messages = await this.options.client.listMessages(channelId);
+          const messages = await this.options.client.listMessages(conversationId);
           await this.options.store.setCursor(
-            channelId,
+            conversationId,
             agentIdentityId,
             messages.at(-1)?.sequence ?? 0,
           );
           const binding = await this.directory.bindAgent({
-            channelId,
+            conversationId,
             agentIdentityId,
             runtimeAdapter: agentConfig.runtimeAdapter,
             runtimeSessionId: session.id,
           });
           bindingId = binding.id;
-          if (await this.attachBinding(channelId, binding.id) !== "attached") {
-            throw new Error("Agent binding could not be attached to the Channel Relay");
+          if (await this.attachBinding(conversationId, binding.id) !== "attached") {
+            throw new Error("Agent binding could not be attached to the Conversation Relay");
           }
           this.startedSessions.set(this.sessionKey(binding.id, session.id), {
             bindingId: binding.id,
@@ -415,7 +415,7 @@ export class LocalAgentHost {
         } catch (error) {
           if (bindingId) {
             await this.options.store.deleteBinding(bindingId).catch(() => undefined);
-            await this.retireBinding(channelId, agentIdentityId).catch((restoreError) => {
+            await this.retireBinding(conversationId, agentIdentityId).catch((restoreError) => {
               this.options.onError?.(
                 restoreError instanceof Error ? restoreError : new Error(String(restoreError)),
               );
@@ -433,19 +433,19 @@ export class LocalAgentHost {
           action: "agent.session.started",
           outcome: "accepted",
           actorIdentityId,
-          workspaceId: channel.workspaceId,
-          channelId,
+          workspaceId: conversation.workspaceId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
-        const channel = await this.options.client.getChannel(channelId).catch(() => undefined);
+        const conversation = await this.options.client.getConversation(conversationId).catch(() => undefined);
         this.audit({
           action: "agent.session.started",
           outcome: "rejected",
           reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
           actorIdentityId,
-          workspaceId: channel?.workspaceId,
-          channelId,
+          workspaceId: conversation?.workspaceId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
         throw error;
@@ -453,13 +453,13 @@ export class LocalAgentHost {
     });
   }
 
-  async replaceChannelAgent(
-    channelId: string,
+  async replaceConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
-    expectedBinding?: Pick<ChannelAgentBindingRecord, "id" | "generation" | "state">,
+    expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state">,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let session: ManagedRuntimeSession | undefined;
       let runtime: (AgentRuntimePort & LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">>) | undefined;
       let committed = false;
@@ -468,15 +468,15 @@ export class LocalAgentHost {
       let workspaceId: string | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-        const context = await this.configuredContext(channelId, agentIdentityId, actorIdentityId);
-        workspaceId = context.channel.workspaceId;
+        const context = await this.configuredContext(conversationId, agentIdentityId, actorIdentityId);
+        workspaceId = context.conversation.workspaceId;
         assertModelPolicy(context.workspaceConfig, context.agentConfig);
         const matches = context.bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
         if (matches.length !== 1) {
           throw new LocalConfigurationRequestError(
             matches.length === 0
-              ? "Agent has no Channel session; start it first"
-              : "Agent Channel session is uncertain",
+              ? "Agent has no Conversation session; start it first"
+              : "Agent Conversation session is uncertain",
             409,
             "unavailable",
           );
@@ -520,16 +520,16 @@ export class LocalAgentHost {
           runtime,
           sessionId: session.id,
         });
-        const messages = await this.options.client.listMessages(channelId);
+        const messages = await this.options.client.listMessages(conversationId);
         await this.options.store.setCursor(
-          channelId,
+          conversationId,
           agentIdentityId,
           messages.at(-1)?.sequence ?? 0,
         );
-        await this.retireBinding(channelId, agentIdentityId).catch((error) => {
+        await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
         });
-        if (await this.attachBinding(channelId, replaced.id) !== "attached") {
+        if (await this.attachBinding(conversationId, replaced.id) !== "attached") {
           throw new LocalConfigurationRequestError(
             "Replacement Runtime could not be attached; its binding requires reconciliation",
             409,
@@ -543,7 +543,7 @@ export class LocalAgentHost {
           outcome: "accepted",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
@@ -552,7 +552,7 @@ export class LocalAgentHost {
         }
         if (committed && previousSessionId) {
           await this.stopRuntimeBestEffort(previousRuntime, previousSessionId);
-          const records = await this.options.store.listChannelBindings(channelId).catch(() => []);
+          const records = await this.options.store.listConversationBindings(conversationId).catch(() => []);
           const binding = records.find(({ agentIdentityId }) => agentIdentityId === agentIdentityId);
           if (binding) this.startedSessions.delete(this.sessionKey(binding.id, previousSessionId));
         }
@@ -562,7 +562,7 @@ export class LocalAgentHost {
           reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
         if (error instanceof LocalConfigurationRequestError || error instanceof BulkSnapshotChangedError) throw error;
@@ -582,37 +582,37 @@ export class LocalAgentHost {
     });
   }
 
-  activity(channelId: string, agentIdentityId: string): RelayAgentActivity | undefined {
-    return this.runners.get(channelId)?.relay.activity(agentIdentityId);
+  activity(conversationId: string, agentIdentityId: string): RelayAgentActivity | undefined {
+    return this.runners.get(conversationId)?.relay.activity(agentIdentityId);
   }
 
-  isAttached(channelId: string, agentIdentityId: string): boolean {
-    return this.runners.get(channelId)?.restored.has(agentIdentityId) ?? false;
+  isAttached(conversationId: string, agentIdentityId: string): boolean {
+    return this.runners.get(conversationId)?.restored.has(agentIdentityId) ?? false;
   }
 
-  async reconnectChannelAgent(
-    channelId: string,
+  async reconnectConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
-        workspaceId = context.channel.workspaceId;
+        const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+        workspaceId = context.conversation.workspaceId;
         const matches = context.bindings.filter(({ agentIdentityId: candidate }) => candidate === agentIdentityId);
         if (matches.length !== 1) {
-          throw new LocalConfigurationRequestError("Agent reconnect requires one existing Channel session", 409, "unavailable");
+          throw new LocalConfigurationRequestError("Agent reconnect requires one existing Conversation session", 409, "unavailable");
         }
         const binding = matches[0]!;
         if (binding.state === "disabled" || binding.state === "replacing") {
           throw new LocalConfigurationRequestError("Agent session cannot be reconnected from its current state", 409, "unavailable");
         }
-        if (this.isAttached(channelId, agentIdentityId)) {
+        if (this.isAttached(conversationId, agentIdentityId)) {
           throw new LocalConfigurationRequestError("Agent session is already connected", 409, "unavailable");
         }
-        if (await this.attachBinding(channelId, binding.id) !== "attached") {
+        if (await this.attachBinding(conversationId, binding.id) !== "attached") {
           const current = await this.options.store.getBinding(binding.id);
           throw new LocalConfigurationRequestError(
             current?.state === "offline"
@@ -627,7 +627,7 @@ export class LocalAgentHost {
           outcome: "accepted",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
@@ -637,7 +637,7 @@ export class LocalAgentHost {
           reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
         throw error;
@@ -645,20 +645,20 @@ export class LocalAgentHost {
     });
   }
 
-  async cancelCurrentChannelAgent(
-    channelId: string,
+  async cancelCurrentConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
-        workspaceId = context.channel.workspaceId;
-        const runner = this.runners.get(channelId);
+        const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+        workspaceId = context.conversation.workspaceId;
+        const runner = this.runners.get(conversationId);
         if (!runner) {
-          throw new LocalConfigurationRequestError("Agent Channel session is unavailable", 409, "unavailable");
+          throw new LocalConfigurationRequestError("Agent Conversation session is unavailable", 409, "unavailable");
         }
         await runner.relay.cancelCurrent(agentIdentityId, actorIdentityId);
         this.audit({
@@ -666,7 +666,7 @@ export class LocalAgentHost {
           outcome: "accepted",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
@@ -676,7 +676,7 @@ export class LocalAgentHost {
           reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
         if (error instanceof LocalConfigurationRequestError) throw error;
@@ -689,17 +689,17 @@ export class LocalAgentHost {
     });
   }
 
-  async openChannelAgentDiagnostic(
-    channelId: string,
+  async openConversationAgentDiagnostic(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
-        workspaceId = context.channel.workspaceId;
+        const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+        workspaceId = context.conversation.workspaceId;
         const matches = context.bindings.filter(
           ({ agentIdentityId: candidate }) => candidate === agentIdentityId,
         );
@@ -732,7 +732,7 @@ export class LocalAgentHost {
           outcome: "accepted",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
@@ -742,7 +742,7 @@ export class LocalAgentHost {
           reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
         if (error instanceof LocalConfigurationRequestError) throw error;
@@ -755,23 +755,23 @@ export class LocalAgentHost {
     });
   }
 
-  async stopChannelAgent(
-    channelId: string,
+  async stopConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
-    expectedBinding?: Pick<ChannelAgentBindingRecord, "id" | "generation" | "state">,
+    expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state">,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(channelId, agentIdentityId), async () => {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       let committed = false;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-        const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
-        workspaceId = context.channel.workspaceId;
+        const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+        workspaceId = context.conversation.workspaceId;
         const matches = context.bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
         if (matches.length !== 1) {
           throw new LocalConfigurationRequestError(
-            matches.length === 0 ? "Agent has no Channel session" : "Agent Channel session is uncertain",
+            matches.length === 0 ? "Agent has no Conversation session" : "Agent Conversation session is uncertain",
             409,
             "unavailable",
           );
@@ -783,7 +783,7 @@ export class LocalAgentHost {
           throw new BulkSnapshotChangedError("Agent binding changed after bulk acceptance");
         }
         if (target.state === "disabled") {
-          throw new LocalConfigurationRequestError("Agent Channel session is already stopped", 409, "unavailable");
+          throw new LocalConfigurationRequestError("Agent Conversation session is already stopped", 409, "unavailable");
         }
         const disabled = await this.options.store.disableBinding(
           target.id,
@@ -803,7 +803,7 @@ export class LocalAgentHost {
           target.runtimeSessionId,
         );
         this.startedSessions.delete(this.sessionKey(target.id, target.runtimeSessionId));
-        await this.retireBinding(channelId, agentIdentityId).catch((error) => {
+        await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
         });
         this.audit({
@@ -811,7 +811,7 @@ export class LocalAgentHost {
           outcome: "accepted",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
@@ -823,7 +823,7 @@ export class LocalAgentHost {
             : error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: agentIdentityId,
         });
         if (committed) return;
@@ -861,21 +861,21 @@ export class LocalAgentHost {
 
   private async runBulkLifecycle(
     action: "start" | "stop",
-    channelId: string,
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]> {
     let workspaceId: string | undefined;
     const aggregateAction = action === "start" ? "agents.bulk-started" : "agents.bulk-stopped";
     const itemAction = action === "start" ? "agent.session.bulk-started" : "agent.session.bulk-stopped";
     try {
-      const targets = await this.bulkTargets(channelId, actorIdentityId);
+      const targets = await this.bulkTargets(conversationId, actorIdentityId);
       workspaceId = targets.workspaceId;
       const results = await this.mapBounded(targets.targets, 3, async (target) => {
         let result: LocalBulkAgentLifecycleResult;
         try {
           result = action === "start"
-            ? await this.bulkStartOne(channelId, targets.workspaceId, target, actorIdentityId)
-            : await this.bulkStopOne(channelId, target, actorIdentityId);
+            ? await this.bulkStartOne(conversationId, targets.workspaceId, target, actorIdentityId)
+            : await this.bulkStopOne(conversationId, target, actorIdentityId);
         } catch {
           // Target-local storage, configuration, and Runtime failures are partial results.
           // Shared discovery/authorization above are the only aggregate rejection boundary.
@@ -887,7 +887,7 @@ export class LocalAgentHost {
           reason: result.reason,
           actorIdentityId,
           workspaceId,
-          channelId,
+          conversationId,
           targetIdentityId: target.identityId,
         });
         return result;
@@ -897,7 +897,7 @@ export class LocalAgentHost {
         outcome: "accepted",
         actorIdentityId,
         workspaceId,
-        channelId,
+        conversationId,
       });
       return results;
     } catch (error) {
@@ -907,25 +907,25 @@ export class LocalAgentHost {
         reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
         actorIdentityId,
         workspaceId,
-        channelId,
+        conversationId,
       });
       throw error;
     }
   }
 
-  private async bulkTargets(channelId: string, actorIdentityId: string): Promise<{
+  private async bulkTargets(conversationId: string, actorIdentityId: string): Promise<{
     workspaceId: string;
     targets: BulkLifecycleTarget[];
   }> {
     if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
-    const channel = await this.options.client.getChannel(channelId).catch(() => {
-      throw new LocalConfigurationRequestError("Channel is unavailable", 404, "unavailable");
+    const conversation = await this.options.client.getConversation(conversationId).catch(() => {
+      throw new LocalConfigurationRequestError("Conversation is unavailable", 404, "unavailable");
     });
     const [workspace, members, actor, bindings] = await Promise.all([
-      this.options.client.getWorkspace(channel.workspaceId),
-      this.options.client.listWorkspaceMembers(channel.workspaceId),
+      this.options.client.getWorkspace(conversation.workspaceId),
+      this.options.client.listWorkspaceMembers(conversation.workspaceId),
       this.options.client.getIdentity(actorIdentityId),
-      this.options.store.listChannelBindings(channelId),
+      this.options.store.listConversationBindings(conversationId),
     ]);
     const actorMembership = members.find(({ identityId }) => identityId === actorIdentityId);
     if (workspace.status !== "active" || actor.type !== "human" || actor.status !== "active"
@@ -934,8 +934,8 @@ export class LocalAgentHost {
       throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
     }
     return {
-      workspaceId: channel.workspaceId,
-      targets: channel.participants
+      workspaceId: conversation.workspaceId,
+      targets: conversation.participants
         .filter((participant) => participant.status === "active"
           && (participant.type === "agent" || participant.type === "service"))
         .map(({ id }) => {
@@ -946,7 +946,7 @@ export class LocalAgentHost {
   }
 
   private async bulkStartOne(
-    channelId: string,
+    conversationId: string,
     workspaceId: string,
     target: BulkLifecycleTarget,
     actorIdentityId: string,
@@ -977,9 +977,9 @@ export class LocalAgentHost {
     }
     try {
       if (binding?.state === "disabled") {
-        await this.replaceChannelAgent(channelId, identityId, actorIdentityId, binding);
+        await this.replaceConversationAgent(conversationId, identityId, actorIdentityId, binding);
       } else {
-        await this.startChannelAgent(channelId, identityId, actorIdentityId, null);
+        await this.startConversationAgent(conversationId, identityId, actorIdentityId, null);
       }
       return { identityId, outcome: "started" };
     } catch (error) {
@@ -990,7 +990,7 @@ export class LocalAgentHost {
   }
 
   private async bulkStopOne(
-    channelId: string,
+    conversationId: string,
     target: BulkLifecycleTarget,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult> {
@@ -1002,7 +1002,7 @@ export class LocalAgentHost {
       return { identityId, outcome: "skipped", reason: "already_idle" };
     }
     try {
-      await this.stopChannelAgent(channelId, identityId, actorIdentityId, binding);
+      await this.stopConversationAgent(conversationId, identityId, actorIdentityId, binding);
       return { identityId, outcome: "stopped" };
     } catch (error) {
       return error instanceof BulkSnapshotChangedError
@@ -1030,19 +1030,19 @@ export class LocalAgentHost {
   }
 
   private async baseContext(
-    channelId: string,
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ) {
-    const channel = await this.options.client.getChannel(channelId).catch(() => {
-      throw new LocalConfigurationRequestError("Channel is unavailable", 404, "unavailable");
+    const conversation = await this.options.client.getConversation(conversationId).catch(() => {
+      throw new LocalConfigurationRequestError("Conversation is unavailable", 404, "unavailable");
     });
     const [workspace, members, actor, identity, bindings] = await Promise.all([
-      this.options.client.getWorkspace(channel.workspaceId),
-      this.options.client.listWorkspaceMembers(channel.workspaceId),
+      this.options.client.getWorkspace(conversation.workspaceId),
+      this.options.client.listWorkspaceMembers(conversation.workspaceId),
       this.options.client.getIdentity(actorIdentityId),
       this.options.client.getIdentity(agentIdentityId),
-      this.options.store.listChannelBindings(channelId),
+      this.options.store.listConversationBindings(conversationId),
     ]);
     const actorMembership = members.find(({ identityId }) => identityId === actorIdentityId);
     if (actor.type !== "human" || actor.status !== "active" || actorMembership?.status !== "active"
@@ -1050,28 +1050,28 @@ export class LocalAgentHost {
       throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
     }
     const agentMembership = members.find(({ identityId }) => identityId === agentIdentityId);
-    const participant = channel.participants.find(({ id }) => id === agentIdentityId);
+    const participant = conversation.participants.find(({ id }) => id === agentIdentityId);
     if (workspace.status !== "active" || identity.status !== "active"
       || (identity.type !== "agent" && identity.type !== "service")
       || agentMembership?.status !== "active" || participant?.status !== "active") {
       throw new LocalConfigurationRequestError(
-        "Agent must be an active Channel participant",
+        "Agent must be an active Conversation participant",
         409,
         "unavailable",
       );
     }
-    return { channel, bindings };
+    return { conversation, bindings };
   }
 
   private async configuredContext(
-    channelId: string,
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ) {
-    const context = await this.baseContext(channelId, agentIdentityId, actorIdentityId);
+    const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
     const [workspaceConfig, agentConfig] = await Promise.all([
-      this.options.store.getWorkspaceConfig(context.channel.workspaceId),
-      this.options.store.getWorkspaceAgentConfig(context.channel.workspaceId, agentIdentityId),
+      this.options.store.getWorkspaceConfig(context.conversation.workspaceId),
+      this.options.store.getWorkspaceAgentConfig(context.conversation.workspaceId, agentIdentityId),
     ]);
     if (!workspaceConfig || !agentConfig || agentConfig.status !== "active"
       || !agentConfig.runtimeAdapter) {
@@ -1094,7 +1094,7 @@ export class LocalAgentHost {
       workspaceConfig,
       agentConfig,
       runtime,
-      ...(await this.resolveWorkingFolderLaunch(workspaceConfig, channelId)),
+      ...(await this.resolveWorkingFolderLaunch(workspaceConfig, conversationId)),
     };
   }
 
@@ -1107,20 +1107,20 @@ export class LocalAgentHost {
 
   private async resolveWorkingFolderLaunch(
     workspaceConfig: LocalWorkspaceConfig,
-    channelId: string,
+    conversationId: string,
   ): Promise<{ cwd: string; workingFolderGuidance?: string }> {
     const workspaceRoot = await workspaceDirectory(workspaceConfig.rootUri);
-    const folders = await this.options.store.getChannelWorkingFolders(workspaceConfig.workspaceId, channelId);
+    const folders = await this.options.store.getConversationWorkingFolders(workspaceConfig.workspaceId, conversationId);
     if (folders.length === 0) return { cwd: workspaceRoot };
     if (folders.length > 16 || folders.filter((folder) => folder.primary).length !== 1) {
-      throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+      throw new LocalConfigurationRequestError("Configured Conversation working folders are unavailable", 409, "unavailable");
     }
     const canonicalPaths = new Set<string>();
-    const resolved: Array<{ folder: ChannelWorkingFolder; cwd: string }> = [];
+    const resolved: Array<{ folder: ConversationWorkingFolder; cwd: string }> = [];
     for (const folder of folders) {
       if (!folder.relativePath || folder.relativePath === "." || isAbsolute(folder.relativePath)
         || folder.relativePath.split(/[\\/]/).includes("..")) {
-        throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+        throw new LocalConfigurationRequestError("Configured Conversation working folders are unavailable", 409, "unavailable");
       }
       try {
         const selected = await realpath(resolve(workspaceRoot, folder.relativePath));
@@ -1131,21 +1131,21 @@ export class LocalAgentHost {
         canonicalPaths.add(selected);
         resolved.push({ folder, cwd: selected });
       } catch {
-        throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+        throw new LocalConfigurationRequestError("Configured Conversation working folders are unavailable", 409, "unavailable");
       }
     }
     const primary = resolved.find(({ folder }) => folder.primary);
     if (!primary) {
-      throw new LocalConfigurationRequestError("Configured Channel working folders are unavailable", 409, "unavailable");
+      throw new LocalConfigurationRequestError("Configured Conversation working folders are unavailable", 409, "unavailable");
     }
     return {
       cwd: primary.cwd,
-      workingFolderGuidance: channelWorkingFolderGuidance(primary.cwd, resolved),
+      workingFolderGuidance: conversationWorkingFolderGuidance(primary.cwd, resolved),
     };
   }
 
   private async assertBindingsIdle(
-    bindings: ChannelAgentBindingRecord[],
+    bindings: ConversationAgentBindingRecord[],
     allowUnreachableBindingId?: string,
   ): Promise<void> {
     for (const binding of bindings) {
@@ -1154,7 +1154,7 @@ export class LocalAgentHost {
       if (!runtime) {
         if (binding.id === allowUnreachableBindingId) continue;
         throw new LocalConfigurationRequestError(
-          "Channel agent status is uncertain; retry before changing sessions",
+          "Conversation agent status is uncertain; retry before changing sessions",
           409,
           "unavailable",
         );
@@ -1162,7 +1162,7 @@ export class LocalAgentHost {
       try {
         if ((await this.runtimeStatus(runtime, binding.runtimeSessionId)) === "working") {
           throw new LocalConfigurationRequestError(
-            "Channel has active agent work; retry when it is idle",
+            "Conversation has active agent work; retry when it is idle",
             409,
             "unavailable",
           );
@@ -1171,7 +1171,7 @@ export class LocalAgentHost {
         if (error instanceof LocalConfigurationRequestError) throw error;
         if (binding.id !== allowUnreachableBindingId) {
           throw new LocalConfigurationRequestError(
-            "Channel agent status is uncertain; retry before changing sessions",
+            "Conversation agent status is uncertain; retry before changing sessions",
             409,
             "unavailable",
           );
@@ -1216,14 +1216,14 @@ export class LocalAgentHost {
     }
   }
 
-  private async refreshChannel(channelId: string): Promise<void> {
-    const records = await this.options.store.listChannelBindings(channelId);
+  private async refreshConversation(conversationId: string): Promise<void> {
+    const records = await this.options.store.listConversationBindings(conversationId);
     await Promise.all(records
       .filter((record) => record.state !== "disabled")
       .map(async (record) => {
         let result: AttachmentResult;
         try {
-          result = await this.attachBinding(channelId, record.id);
+          result = await this.attachBinding(conversationId, record.id);
         } catch {
           result = "failed";
         }
@@ -1231,8 +1231,8 @@ export class LocalAgentHost {
       }));
   }
 
-  private async attachBinding(channelId: string, bindingId: string): Promise<AttachmentResult> {
-    const lockKey = `relay:${channelId}`;
+  private async attachBinding(conversationId: string, bindingId: string): Promise<AttachmentResult> {
+    const lockKey = `relay:${conversationId}`;
     const reserved = await this.exclusive(lockKey, async () => {
       if (this.attachingBindings.has(bindingId)) return false;
       this.attachingBindings.add(bindingId);
@@ -1244,15 +1244,15 @@ export class LocalAgentHost {
       Object.entries(this.options.runtimes).filter((entry): entry is [string, AgentRuntimePort] =>
         executableRuntime(entry[1])),
     );
-    let restored: RestoredChannelBindings | undefined;
-    let runner: ChannelRunner | undefined;
+    let restored: RestoredConversationBindings | undefined;
+    let runner: ConversationRunner | undefined;
     let ownsStartup = false;
     let attached = false;
     try {
-      restored = await restoreChannelBindings({
+      restored = await restoreConversationBindings({
         client: this.options.client,
         store: this.options.store,
-        channelId,
+        conversationId,
         bindingIds: [bindingId],
         markConnected: false,
         leaseOwner: this.leaseOwner,
@@ -1267,15 +1267,15 @@ export class LocalAgentHost {
       if (!recoveryRecord) throw new Error("Agent binding disappeared during attachment");
 
       ({ runner, ownsStartup } = await this.exclusive(lockKey, async () => {
-        let current = this.runners.get(channelId);
+        let current = this.runners.get(conversationId);
         let created = false;
         if (!current) {
           let resolveReady!: () => void;
           const ready = new Promise<void>((resolve) => { resolveReady = resolve; });
           current = {
-            relay: new ChannelRuntimeRelay({
+            relay: new ConversationRuntimeRelay({
               client: this.options.client,
-              channelId,
+              conversationId,
               bindings: [binding],
               cursorStore: this.options.store,
               onError: (_binding, error) => this.options.onError?.(error),
@@ -1286,10 +1286,10 @@ export class LocalAgentHost {
             pendingAttaches: new Set(),
             restored: new Map(),
           };
-          this.runners.set(channelId, current);
+          this.runners.set(conversationId, current);
           created = true;
         }
-        if (current.readiness === "stopping") throw new Error("Channel Relay is stopping");
+        if (current.readiness === "stopping") throw new Error("Conversation Relay is stopping");
         current.pendingAttaches.add(binding.participantId);
         return { runner: current, ownsStartup: created };
       }));
@@ -1299,8 +1299,8 @@ export class LocalAgentHost {
         attached = true;
       } else {
         await runner.ready;
-        if (runner.readiness !== "ready" || this.runners.get(channelId) !== runner) {
-          throw new Error("Channel Relay did not become ready");
+        if (runner.readiness !== "ready" || this.runners.get(conversationId) !== runner) {
+          throw new Error("Conversation Relay did not become ready");
         }
         await runner.relay.attach(binding);
         attached = true;
@@ -1310,8 +1310,8 @@ export class LocalAgentHost {
       }
 
       await this.exclusive(lockKey, async () => {
-        if (this.runners.get(channelId) !== runner || runner!.readiness === "stopping") {
-          throw new Error("Channel Relay ownership changed during attachment");
+        if (this.runners.get(conversationId) !== runner || runner!.readiness === "stopping") {
+          throw new Error("Conversation Relay ownership changed during attachment");
         }
         runner!.restored.set(binding.participantId, restored!);
         runner!.pendingAttaches.delete(binding.participantId);
@@ -1321,7 +1321,7 @@ export class LocalAgentHost {
         }
       });
       restored.startAutoRenew(async () => {
-        await this.retireBinding(channelId, binding.participantId);
+        await this.retireBinding(conversationId, binding.participantId);
         this.scheduleRecovery(recoveryRecord, 0, "binding_lease");
       });
       this.cancelRecovery(bindingId);
@@ -1330,15 +1330,15 @@ export class LocalAgentHost {
       if (attached && runner) await runner.relay.retire(
         restored?.bindings[0]?.participantId ?? "",
       ).catch(() => undefined);
-      let relayToStop: ChannelRuntimeRelay | undefined;
+      let relayToStop: ConversationRuntimeRelay | undefined;
       await this.exclusive(lockKey, async () => {
-        if (!runner || this.runners.get(channelId) !== runner) return;
+        if (!runner || this.runners.get(conversationId) !== runner) return;
         const participantId = restored?.bindings[0]?.participantId;
         if (participantId) runner.pendingAttaches.delete(participantId);
         if (ownsStartup || (runner.restored.size === 0 && runner.pendingAttaches.size === 0)) {
           runner.readiness = "stopping";
           runner.resolveReady();
-          this.runners.delete(channelId);
+          this.runners.delete(conversationId);
           relayToStop = runner.relay;
         }
       });
@@ -1353,7 +1353,7 @@ export class LocalAgentHost {
   }
 
   private handleAttachmentResult(
-    record: ChannelAgentBindingRecord,
+    record: ConversationAgentBindingRecord,
     result: AttachmentResult,
     category: LocalAgentHostDiagnosticEvent["category"],
     attempt = 0,
@@ -1364,7 +1364,7 @@ export class LocalAgentHost {
         this.diagnostic({
           category,
           outcome: category === "binding_lease" ? "reattached" : "attached",
-          channelId: record.channelId,
+          conversationId: record.conversationId,
           agentIdentityId: record.agentIdentityId,
         });
         return;
@@ -1379,7 +1379,7 @@ export class LocalAgentHost {
             : result === "invalid_binding"
               ? "invalid"
               : "uncertain",
-          channelId: record.channelId,
+          conversationId: record.conversationId,
           agentIdentityId: record.agentIdentityId,
         });
         return;
@@ -1396,7 +1396,7 @@ export class LocalAgentHost {
   }
 
   private scheduleRecovery(
-    record: ChannelAgentBindingRecord,
+    record: ConversationAgentBindingRecord,
     attempt: number,
     category: LocalAgentHostDiagnosticEvent["category"],
     result: AttachmentResult = "runtime_uncertain",
@@ -1411,7 +1411,7 @@ export class LocalAgentHost {
     }, delayMs);
     timer.unref();
     this.recoveries.set(record.id, {
-      channelId: record.channelId,
+      conversationId: record.conversationId,
       bindingId: record.id,
       agentIdentityId: record.agentIdentityId,
       generation: record.generation,
@@ -1422,7 +1422,7 @@ export class LocalAgentHost {
       this.diagnostic({
         category,
         outcome: result === "lease_unavailable" ? "conflict" : result === "failed" ? "failed" : "retrying",
-        channelId: record.channelId,
+        conversationId: record.conversationId,
         agentIdentityId: record.agentIdentityId,
         attempt: attempt + 1,
       });
@@ -1430,12 +1430,12 @@ export class LocalAgentHost {
   }
 
   private async recoverBinding(
-    expected: ChannelAgentBindingRecord,
+    expected: ConversationAgentBindingRecord,
     attempt: number,
     category: LocalAgentHostDiagnosticEvent["category"],
   ): Promise<void> {
     if (this.closed || this.quiescing) return;
-    const key = this.bindingKey(expected.channelId, expected.agentIdentityId);
+    const key = this.bindingKey(expected.conversationId, expected.agentIdentityId);
     await this.exclusive(key, async () => {
       if (this.closed || this.quiescing) return;
       const current = await this.options.store.getBinding(expected.id);
@@ -1443,13 +1443,13 @@ export class LocalAgentHost {
         this.cancelRecovery(expected.id);
         return;
       }
-      if (this.isAttached(current.channelId, current.agentIdentityId)) {
+      if (this.isAttached(current.conversationId, current.agentIdentityId)) {
         this.handleAttachmentResult(current, "attached", category);
         return;
       }
       let result: AttachmentResult;
       try {
-        result = await this.attachBinding(current.channelId, current.id);
+        result = await this.attachBinding(current.conversationId, current.id);
       } catch {
         result = "failed";
       }
@@ -1472,10 +1472,10 @@ export class LocalAgentHost {
     }
   }
 
-  private async retireBinding(channelId: string, participantId: string): Promise<void> {
-    const lockKey = `relay:${channelId}`;
+  private async retireBinding(conversationId: string, participantId: string): Promise<void> {
+    const lockKey = `relay:${conversationId}`;
     const ownership = await this.exclusive(lockKey, async () => {
-      const runner = this.runners.get(channelId);
+      const runner = this.runners.get(conversationId);
       if (!runner) return undefined;
       const restored = runner.restored.get(participantId);
       runner.restored.delete(participantId);
@@ -1489,18 +1489,18 @@ export class LocalAgentHost {
 
     const relayToStop = await this.exclusive(lockKey, async () => {
       const { runner } = ownership;
-      if (this.runners.get(channelId) !== runner
+      if (this.runners.get(conversationId) !== runner
         || runner.restored.size > 0 || runner.pendingAttaches.size > 0) return undefined;
       runner.readiness = "stopping";
       runner.resolveReady();
-      this.runners.delete(channelId);
+      this.runners.delete(conversationId);
       return runner.relay;
     });
     await relayToStop?.stop();
   }
 
-  private bindingKey(channelId: string, agentIdentityId: string): string {
-    return `${channelId}:${agentIdentityId}`;
+  private bindingKey(conversationId: string, agentIdentityId: string): string {
+    return `${conversationId}:${agentIdentityId}`;
   }
 
   private sessionKey(bindingId: string, sessionId: string): string {

@@ -1,13 +1,13 @@
-import type { ChannelMessage, ChannelMetadata } from "@minu/channels-core/types";
+import type { ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { channels, localControl } from "../lib/api";
+import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { mergeMessages } from "../lib/messages";
-import { runBackgroundChannelsConnection } from "../lib/background-channel";
-import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/channel-notifications";
+import { runBackgroundConversationsConnection } from "../lib/background-conversation";
+import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
@@ -20,18 +20,18 @@ export function AppShell() {
   const [readRevision, setReadRevision] = useState(0);
   const [sound, setSound] = useState<NotificationSound>("off");
   const soundedMessages = useRef(new Set<string>());
-  const viewingActiveChannelEnd = useRef(false);
+  const viewingActiveConversationEnd = useRef(false);
   const audioContext = useRef<AudioContext | undefined>(undefined);
-  const [knownChannels, setKnownChannels] = useState<ChannelMetadata[]>([]);
-  const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => channels.listWorkspaces() });
+  const [knownConversations, setKnownConversations] = useState<ConversationMetadata[]>([]);
+  const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => conversations.listWorkspaces() });
   const routeWorkspaceId = pathname.match(/\/app\/workspaces\/([^/]+)/)?.[1];
   const selectedWorkspaceId = routeWorkspaceId
     ?? (workspaces.data ?? []).find((workspace) => workspace.id === localStorage.getItem("minu-channels:last-workspace"))?.id
     ?? workspaces.data?.[0]?.id;
   const selectedWorkspace = (workspaces.data ?? []).find((workspace) => workspace.id === selectedWorkspaceId);
-  const selectedChannels = useQuery({
-    queryKey: selectedWorkspace ? queryKeys.workspaceChannels(selectedWorkspace.id) : ["workspace", "none", "channels"],
-    queryFn: () => channels.listWorkspaceChannels(selectedWorkspace!.id),
+  const selectedConversations = useQuery({
+    queryKey: selectedWorkspace ? queryKeys.workspaceConversations(selectedWorkspace.id) : ["workspace", "none", "conversations"],
+    queryFn: () => conversations.listWorkspaceConversations(selectedWorkspace!.id),
     enabled: Boolean(selectedWorkspace),
     staleTime: 5_000,
   });
@@ -41,16 +41,16 @@ export function AppShell() {
     retry: false,
     staleTime: 60_000,
   });
-  const activeChannelId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
-  const observedChannels = useMemo(() => {
-    const byId = new Map(knownChannels.map((channel) => [channel.id, channel]));
-    for (const channel of selectedChannels.data ?? []) byId.set(channel.id, channel);
+  const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
+  const observedConversations = useMemo(() => {
+    const byId = new Map(knownConversations.map((conversation) => [conversation.id, conversation]));
+    for (const conversation of selectedConversations.data ?? []) byId.set(conversation.id, conversation);
     return [...byId.values()];
-  }, [knownChannels, selectedChannels.data]);
-  const channelMessageQueries = useQueries({
-    queries: observedChannels.map((channel) => ({
-      queryKey: queryKeys.channelMessages(channel.id),
-      queryFn: () => channels.listMessages(channel.id, { limit: 100 }),
+  }, [knownConversations, selectedConversations.data]);
+  const conversationMessageQueries = useQueries({
+    queries: observedConversations.map((conversation) => ({
+      queryKey: queryKeys.conversationMessages(conversation.id),
+      queryFn: () => conversations.listMessages(conversation.id, { limit: 100 }),
       enabled: Boolean(currentSession.data?.identityId),
       staleTime: Infinity,
     })),
@@ -60,42 +60,42 @@ export function AppShell() {
     const result = new Map<string, { count: number; mentionCount: number }>();
     const identityId = currentSession.data?.identityId;
     if (!identityId) return result;
-    for (const [index, channel] of observedChannels.entries()) {
-      const messages = channelMessageQueries[index]?.data ?? [];
-      result.set(channel.id, unreadFor(messages, identityId, readSequence(localStorage, identityId, channel.id)));
+    for (const [index, conversation] of observedConversations.entries()) {
+      const messages = conversationMessageQueries[index]?.data ?? [];
+      result.set(conversation.id, unreadFor(messages, identityId, readSequence(localStorage, identityId, conversation.id)));
     }
     return result;
   // readRevision is incremented when a visible timeline advances its durable read cursor.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelMessageQueries.map(({ data }) => data), currentSession.data?.identityId, observedChannels, readRevision]);
-  const unread = useMemo(() => new Map((selectedChannels.data ?? []).map((channel) => [
-    channel.id,
-    allUnread.get(channel.id) ?? { count: 0, mentionCount: 0 },
-  ])), [allUnread, selectedChannels.data]);
+  }, [conversationMessageQueries.map(({ data }) => data), currentSession.data?.identityId, observedConversations, readRevision]);
+  const unread = useMemo(() => new Map((selectedConversations.data ?? []).map((conversation) => [
+    conversation.id,
+    allUnread.get(conversation.id) ?? { count: 0, mentionCount: 0 },
+  ])), [allUnread, selectedConversations.data]);
   const unreadTotal = [...allUnread.values()].reduce((sum, value) => sum + value.count, 0);
   const workspaceUnread = useMemo(() => new Map((workspaces.data ?? []).map((workspace) => [
     workspace.id,
-    observedChannels
-      .filter((channel) => channel.workspaceId === workspace.id)
-      .reduce((sum, channel) => sum + (allUnread.get(channel.id)?.count ?? 0), 0),
-  ])), [allUnread, observedChannels, workspaces.data]);
+    observedConversations
+      .filter((conversation) => conversation.workspaceId === workspace.id)
+      .reduce((sum, conversation) => sum + (allUnread.get(conversation.id)?.count ?? 0), 0),
+  ])), [allUnread, observedConversations, workspaces.data]);
   const navigationItems = useMemo<WorkspaceNavigationItem[]>(() => selectedWorkspace ? [{
     workspace: selectedWorkspace,
-    channels: selectedChannels.data ?? [],
-    loading: selectedChannels.isLoading,
+    conversations: selectedConversations.data ?? [],
+    loading: selectedConversations.isLoading,
     unread,
-  }] : [], [selectedChannels.data, selectedChannels.isLoading, selectedWorkspace, unread]);
+  }] : [], [selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, unread]);
 
   const selectWorkspace = async (workspaceId: string) => {
     const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);
     if (!workspace) return;
     localStorage.setItem("minu-channels:last-workspace", workspaceId);
-    const channelList = await channels.listWorkspaceChannels(workspaceId);
-    const rememberedChannelId = localStorage.getItem(`minu-channels:last-channel:${workspaceId}`);
-    const channel = channelList.find(({ id }) => id === rememberedChannelId) ?? channelList[0];
-    void navigate(channel ? {
-      to: "/app/workspaces/$workspaceId/conversations/$channelId",
-      params: { workspaceId, channelId: channel.id },
+    const conversationList = await conversations.listWorkspaceConversations(workspaceId);
+    const rememberedConversationId = localStorage.getItem(`minu-channels:last-conversation:${workspaceId}`);
+    const conversation = conversationList.find(({ id }) => id === rememberedConversationId) ?? conversationList[0];
+    void navigate(conversation ? {
+      to: "/app/workspaces/$workspaceId/conversations/$conversationId",
+      params: { workspaceId, conversationId: conversation.id },
     } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
   };
 
@@ -135,56 +135,56 @@ export function AppShell() {
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
     if (!identityId) {
-      setKnownChannels([]);
+      setKnownConversations([]);
       return;
     }
     setSound(readSound(localStorage, identityId));
     try {
-      setKnownChannels(JSON.parse(localStorage.getItem(`minu-channels:known-channels:${identityId}`) ?? "[]") as ChannelMetadata[]);
+      setKnownConversations(JSON.parse(localStorage.getItem(`minu-channels:known-conversations:${identityId}`) ?? "[]") as ConversationMetadata[]);
     } catch {
-      setKnownChannels([]);
+      setKnownConversations([]);
     }
   }, [currentSession.data?.identityId]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
-    if (!identityId || !selectedChannels.data) return;
-    setKnownChannels((current) => {
+    if (!identityId || !selectedConversations.data) return;
+    setKnownConversations((current) => {
       const byId = new Map(current
-        .filter((channel) => channel.workspaceId !== selectedWorkspaceId)
-        .map((channel) => [channel.id, channel]));
-      for (const channel of selectedChannels.data) byId.set(channel.id, channel);
+        .filter((conversation) => conversation.workspaceId !== selectedWorkspaceId)
+        .map((conversation) => [conversation.id, conversation]));
+      for (const conversation of selectedConversations.data) byId.set(conversation.id, conversation);
       const next = [...byId.values()];
-      localStorage.setItem(`minu-channels:known-channels:${identityId}`, JSON.stringify(next));
+      localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(next));
       return next;
     });
-  }, [currentSession.data?.identityId, selectedChannels.data, selectedWorkspaceId]);
+  }, [currentSession.data?.identityId, selectedConversations.data, selectedWorkspaceId]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
-    const backgroundChannels = observedChannels.filter(({ id }) => id !== activeChannelId);
-    if (!identityId || backgroundChannels.length === 0) return;
+    const backgroundConversations = observedConversations.filter(({ id }) => id !== activeConversationId);
+    if (!identityId || backgroundConversations.length === 0) return;
     const controller = new AbortController();
-    const connections = backgroundChannels.map((channel) => {
-      const mergeMessage = (message: ChannelMessage) => {
-        queryClient.setQueryData<ChannelMessage[]>(
-          queryKeys.channelMessages(channel.id),
+    const connections = backgroundConversations.map((conversation) => {
+      const mergeMessage = (message: ConversationMessage) => {
+        queryClient.setQueryData<ConversationMessage[]>(
+          queryKeys.conversationMessages(conversation.id),
           (current) => mergeMessages(current, [message]),
         );
       };
       return {
-        channelId: channel.id,
-        currentMessages: () => queryClient.getQueryData<ChannelMessage[]>(queryKeys.channelMessages(channel.id)),
-        listMessages: (options: { afterSequence: number; limit: number }) => channels.listMessages(channel.id, options),
-        onLiveMessage: (message: ChannelMessage) => {
+        conversationId: conversation.id,
+        currentMessages: () => queryClient.getQueryData<ConversationMessage[]>(queryKeys.conversationMessages(conversation.id)),
+        listMessages: (options: { afterSequence: number; limit: number }) => conversations.listMessages(conversation.id, options),
+        onLiveMessage: (message: ConversationMessage) => {
           mergeMessage(message);
-          window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { channel, message } }));
+          window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { conversation, message } }));
         },
         onCatchUpMessage: mergeMessage,
         onRosterUpdated: () => {
-          void channels.getChannel(channel.id).then((updated) => {
-            queryClient.setQueryData(queryKeys.channel(channel.id), updated);
-            setKnownChannels((current) => {
+          void conversations.getConversation(conversation.id).then((updated) => {
+            queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
+            setKnownConversations((current) => {
               const next = current.map((item) => item.id === updated.id ? updated : item);
-              localStorage.setItem(`minu-channels:known-channels:${identityId}`, JSON.stringify(next));
+              localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(next));
               return next;
             });
           }).catch(() => undefined);
@@ -194,10 +194,10 @@ export function AppShell() {
     void (async () => {
       while (!controller.signal.aborted) {
         try {
-          await runBackgroundChannelsConnection({
+          await runBackgroundConversationsConnection({
             signal: controller.signal,
-            channels: connections,
-            events: (options) => channels.eventsMany(backgroundChannels.map(({ id }) => id), options),
+            conversations: connections,
+            events: (options) => conversations.eventsMany(backgroundConversations.map(({ id }) => id), options),
           });
         } catch {
           // The next bounded catch-up reconciles messages missed while disconnected.
@@ -206,12 +206,12 @@ export function AppShell() {
       }
     })();
     return () => controller.abort();
-  }, [activeChannelId, currentSession.data?.identityId, observedChannels, queryClient]);
+  }, [activeConversationId, currentSession.data?.identityId, observedConversations, queryClient]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
     if (!identityId || sound === "off") return;
     const notify = (event: Event) => {
-      const { channel, message } = (event as CustomEvent<{ channel: ChannelMetadata; message: ChannelMessage }>).detail;
+      const { conversation, message } = (event as CustomEvent<{ conversation: ConversationMetadata; message: ConversationMessage }>).detail;
       if (soundedMessages.current.has(message.id)) return;
       soundedMessages.current.add(message.id);
       if (soundedMessages.current.size > 1_000) {
@@ -219,36 +219,36 @@ export function AppShell() {
         if (oldest) soundedMessages.current.delete(oldest);
       }
       const viewingAtEnd = document.visibilityState === "visible"
-        && channel.id === activeChannelId
-        && viewingActiveChannelEnd.current;
+        && conversation.id === activeConversationId
+        && viewingActiveConversationEnd.current;
       if (message.participantId === identityId || viewingAtEnd) return;
-      const author = channel.participants.find(({ id }) => id === message.participantId);
+      const author = conversation.participants.find(({ id }) => id === message.participantId);
       if (sound === "all" || message.to.includes(identityId) || author?.type === "agent") playSound();
     };
     window.addEventListener("minu-live-message", notify);
     return () => window.removeEventListener("minu-live-message", notify);
-  }, [activeChannelId, currentSession.data?.identityId, sound]);
+  }, [activeConversationId, currentSession.data?.identityId, sound]);
   useEffect(() => {
-    viewingActiveChannelEnd.current = Boolean(activeChannelId);
+    viewingActiveConversationEnd.current = Boolean(activeConversationId);
     const changed = () => setReadRevision((value) => value + 1);
     const viewing = (event: Event) => {
-      const detail = (event as CustomEvent<{ channelId: string; nearEnd: boolean }>).detail;
-      if (detail.channelId === activeChannelId) viewingActiveChannelEnd.current = detail.nearEnd;
+      const detail = (event as CustomEvent<{ conversationId: string; nearEnd: boolean }>).detail;
+      if (detail.conversationId === activeConversationId) viewingActiveConversationEnd.current = detail.nearEnd;
     };
     window.addEventListener("minu-read-state", changed);
-    window.addEventListener("minu-channel-view", viewing);
+    window.addEventListener("minu-conversation-view", viewing);
     return () => {
       window.removeEventListener("minu-read-state", changed);
-      window.removeEventListener("minu-channel-view", viewing);
+      window.removeEventListener("minu-conversation-view", viewing);
     };
-  }, [activeChannelId]);
+  }, [activeConversationId]);
   useEffect(() => {
     document.title = unreadTotal ? `(${unreadTotal}) MinuChannels` : "MinuChannels";
   }, [unreadTotal]);
   useEffect(() => {
     if (routeWorkspaceId) localStorage.setItem("minu-channels:last-workspace", routeWorkspaceId);
-    if (routeWorkspaceId && activeChannelId) localStorage.setItem(`minu-channels:last-channel:${routeWorkspaceId}`, activeChannelId);
-  }, [activeChannelId, routeWorkspaceId]);
+    if (routeWorkspaceId && activeConversationId) localStorage.setItem(`minu-channels:last-conversation:${routeWorkspaceId}`, activeConversationId);
+  }, [activeConversationId, routeWorkspaceId]);
   useEffect(() => {
     if (pathname !== "/" || !selectedWorkspaceId) return;
     void selectWorkspace(selectedWorkspaceId);
@@ -289,7 +289,7 @@ export function AppShell() {
       <div className="hidden md:block">
         <NavigationSidebar
           items={navigationItems}
-          activeChannelId={activeChannelId}
+          activeConversationId={activeConversationId}
           activeAgentsWorkspaceId={activeAgentsWorkspaceId}
           workspaces={workspaces.data ?? []}
           selectedWorkspaceId={selectedWorkspaceId}
@@ -319,7 +319,7 @@ export function AppShell() {
         >
           <NavigationSidebar
             items={navigationItems}
-            activeChannelId={activeChannelId}
+            activeConversationId={activeConversationId}
             activeAgentsWorkspaceId={activeAgentsWorkspaceId}
             workspaces={workspaces.data ?? []}
             selectedWorkspaceId={selectedWorkspaceId}

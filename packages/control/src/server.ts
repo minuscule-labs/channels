@@ -1,10 +1,10 @@
-import type { ChannelMetadata } from "@minu/channels-core/types";
+import type { ConversationMetadata } from "@minu/channels-core/types";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
 import { LocalConfigurationRequestError } from "./configuration.ts";
-import { DEFAULT_CONTROL_PORT, isLocalChannelsHostname } from "./local-host.ts";
+import { DEFAULT_CONTROL_PORT, isLocalConversationsHostname } from "./local-host.ts";
 import { LocalControlBrowserSessions, type LocalControlBrowserSession } from "./session.ts";
 
 const execFileAsync = promisify(execFile);
@@ -53,9 +53,9 @@ import {
   type LocalAgentRuntimeOptions,
   type LocalBulkAgentLifecycleResponse,
   type LocalBulkAgentLifecycleResult,
-  type LocalChannelAgent,
-  type LocalChannelAgentsResponse,
-  type LocalChannelWorkingFolders,
+  type LocalConversationAgent,
+  type LocalConversationAgentsResponse,
+  type LocalConversationWorkingFolders,
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalLiveCapabilityState,
@@ -67,8 +67,8 @@ import {
   type LocalWorkspaceConfigurationSummary,
 } from "./contracts.ts";
 
-export interface LocalControlChannelDirectory {
-  getChannel(channelId: string): Promise<ChannelMetadata>;
+export interface LocalControlConversationDirectory {
+  getConversation(conversationId: string): Promise<ConversationMetadata>;
 }
 
 export interface LocalControlBindingRecord {
@@ -81,7 +81,7 @@ export interface LocalControlBindingRecord {
 }
 
 export interface LocalControlBindingDirectory {
-  listChannelBindings(channelId: string): Promise<LocalControlBindingRecord[]>;
+  listConversationBindings(conversationId: string): Promise<LocalControlBindingRecord[]>;
 }
 
 export interface LocalControlRuntimeSessionCapabilities {
@@ -109,46 +109,46 @@ export interface LocalControlRuntimePort {
 
 export interface LocalControlAgentLifecyclePort {
   readonly available: boolean;
-  startChannelAgent(
-    channelId: string,
+  startConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  replaceChannelAgent(
-    channelId: string,
+  replaceConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  stopChannelAgent(
-    channelId: string,
+  stopConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  reconnectChannelAgent?(
-    channelId: string,
+  reconnectConversationAgent?(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  isAttached?(channelId: string, agentIdentityId: string): boolean;
-  startAllChannelAgents?(
-    channelId: string,
+  isAttached?(conversationId: string, agentIdentityId: string): boolean;
+  startAllConversationAgents?(
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]>;
-  stopAllChannelAgents?(
-    channelId: string,
+  stopAllConversationAgents?(
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]>;
-  cancelCurrentChannelAgent(
-    channelId: string,
+  cancelCurrentConversationAgent(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  openChannelAgentDiagnostic?(
-    channelId: string,
+  openConversationAgentDiagnostic?(
+    conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  activity?(channelId: string, agentIdentityId: string): LocalAgentActivity | undefined;
+  activity?(conversationId: string, agentIdentityId: string): LocalAgentActivity | undefined;
 }
 
 export interface LocalControlConfigurationPort {
@@ -157,20 +157,20 @@ export interface LocalControlConfigurationPort {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<LocalWorkspaceConfigurationSummary>;
-  getChannelWorkingFolders(
-    channelId: string,
+  getConversationWorkingFolders(
+    conversationId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelWorkingFolders>;
-  previewChannelWorkingFolder(
-    channelId: string,
+  ): Promise<LocalConversationWorkingFolders>;
+  previewConversationWorkingFolder(
+    conversationId: string,
     actorIdentityId: string,
     input: unknown,
   ): Promise<{ relativePath: string }>;
-  updateChannelWorkingFolders(
-    channelId: string,
+  updateConversationWorkingFolders(
+    conversationId: string,
     actorIdentityId: string,
     input: unknown,
-  ): Promise<LocalChannelWorkingFolders>;
+  ): Promise<LocalConversationWorkingFolders>;
   getWorkspaceAgentConfiguration?(
     workspaceId: string,
     agentIdentityId: string,
@@ -206,7 +206,7 @@ export interface LocalControlConfigurationPort {
 }
 
 export interface LocalControlServiceOptions {
-  channels: LocalControlChannelDirectory;
+  conversations: LocalControlConversationDirectory;
   bindings: LocalControlBindingDirectory;
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
   configuration?: LocalControlConfigurationPort;
@@ -243,7 +243,7 @@ const notVerifiedLiveCapabilities = {
 
 function presentLiveCapabilities(
   capabilities: LocalControlRuntimeSessionCapabilities | undefined,
-): NonNullable<LocalChannelAgent["diagnostics"]>["capabilities"] {
+): NonNullable<LocalConversationAgent["diagnostics"]>["capabilities"] {
   if (!capabilities) return notVerifiedLiveCapabilities;
   const state = (available: boolean): LocalLiveCapabilityState =>
     available ? "available" : "unavailable";
@@ -276,21 +276,21 @@ export class LocalControlService {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       features: {
         currentSession: true,
-        channelAgentStatus: true,
+        conversationAgentStatus: true,
         workspaceConfigRead: Boolean(this.options.configuration),
         workspaceConfigWrite: Boolean(this.options.configuration),
-        channelWorkingFolders: Boolean(this.options.configuration),
+        conversationWorkingFolders: Boolean(this.options.configuration),
         agentCreate: false,
         agentRuntimeOptions: Boolean(this.options.configuration),
         agentSkills: Boolean(this.options.configuration),
         agentStart: Boolean(this.options.lifecycle?.available),
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),
-        agentBulkStart: Boolean(this.options.lifecycle?.available && this.options.lifecycle.startAllChannelAgents),
-        agentBulkStop: Boolean(this.options.lifecycle?.available && this.options.lifecycle.stopAllChannelAgents),
+        agentBulkStart: Boolean(this.options.lifecycle?.available && this.options.lifecycle.startAllConversationAgents),
+        agentBulkStop: Boolean(this.options.lifecycle?.available && this.options.lifecycle.stopAllConversationAgents),
         steer: false,
         interrupt: Boolean(this.options.lifecycle?.available),
-        reconnect: Boolean(this.options.lifecycle?.available && this.options.lifecycle.reconnectChannelAgent),
+        reconnect: Boolean(this.options.lifecycle?.available && this.options.lifecycle.reconnectConversationAgent),
       },
     };
   }
@@ -302,36 +302,36 @@ export class LocalControlService {
     return this.options.configuration.provisionWorkspace(actorIdentityId, input);
   }
 
-  async getChannelWorkingFolders(
-    channelId: string,
+  async getConversationWorkingFolders(
+    conversationId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelWorkingFolders> {
+  ): Promise<LocalConversationWorkingFolders> {
     if (!this.options.configuration) {
-      throw new LocalConfigurationRequestError("Channel working folders unavailable", 404, "unavailable");
+      throw new LocalConfigurationRequestError("Conversation working folders unavailable", 404, "unavailable");
     }
-    return this.options.configuration.getChannelWorkingFolders(channelId, actorIdentityId);
+    return this.options.configuration.getConversationWorkingFolders(conversationId, actorIdentityId);
   }
 
-  async previewChannelWorkingFolder(
-    channelId: string,
+  async previewConversationWorkingFolder(
+    conversationId: string,
     actorIdentityId: string,
     input: unknown,
   ): Promise<{ relativePath: string }> {
     if (!this.options.configuration) {
-      throw new LocalConfigurationRequestError("Channel working folders unavailable", 404, "unavailable");
+      throw new LocalConfigurationRequestError("Conversation working folders unavailable", 404, "unavailable");
     }
-    return this.options.configuration.previewChannelWorkingFolder(channelId, actorIdentityId, input);
+    return this.options.configuration.previewConversationWorkingFolder(conversationId, actorIdentityId, input);
   }
 
-  async updateChannelWorkingFolders(
-    channelId: string,
+  async updateConversationWorkingFolders(
+    conversationId: string,
     actorIdentityId: string,
     input: unknown,
-  ): Promise<LocalChannelWorkingFolders> {
+  ): Promise<LocalConversationWorkingFolders> {
     if (!this.options.configuration) {
-      throw new LocalConfigurationRequestError("Channel working folders unavailable", 404, "unavailable");
+      throw new LocalConfigurationRequestError("Conversation working folders unavailable", 404, "unavailable");
     }
-    return this.options.configuration.updateChannelWorkingFolders(channelId, actorIdentityId, input);
+    return this.options.configuration.updateConversationWorkingFolders(conversationId, actorIdentityId, input);
   }
 
   async getWorkspaceConfiguration(
@@ -434,136 +434,136 @@ export class LocalControlService {
     );
   }
 
-  async startChannelAgent(
-    channelId: string,
+  async startConversationAgent(
+    conversationId: string,
     identityId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelAgent> {
+  ): Promise<LocalConversationAgent> {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.startChannelAgent(channelId, identityId, actorIdentityId);
-    return this.channelAgent(channelId, identityId);
+    await this.options.lifecycle.startConversationAgent(conversationId, identityId, actorIdentityId);
+    return this.conversationAgent(conversationId, identityId);
   }
 
-  async replaceChannelAgent(
-    channelId: string,
+  async replaceConversationAgent(
+    conversationId: string,
     identityId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelAgent> {
+  ): Promise<LocalConversationAgent> {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.replaceChannelAgent(channelId, identityId, actorIdentityId);
-    return this.channelAgent(channelId, identityId);
+    await this.options.lifecycle.replaceConversationAgent(conversationId, identityId, actorIdentityId);
+    return this.conversationAgent(conversationId, identityId);
   }
 
-  async stopChannelAgent(
-    channelId: string,
+  async stopConversationAgent(
+    conversationId: string,
     identityId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelAgent> {
+  ): Promise<LocalConversationAgent> {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.stopChannelAgent(channelId, identityId, actorIdentityId);
-    return this.channelAgent(channelId, identityId);
+    await this.options.lifecycle.stopConversationAgent(conversationId, identityId, actorIdentityId);
+    return this.conversationAgent(conversationId, identityId);
   }
 
-  async reconnectChannelAgent(
-    channelId: string,
+  async reconnectConversationAgent(
+    conversationId: string,
     identityId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelAgent> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.reconnectChannelAgent) {
+  ): Promise<LocalConversationAgent> {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.reconnectConversationAgent) {
       throw new LocalConfigurationRequestError("Agent reconnect unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.reconnectChannelAgent(channelId, identityId, actorIdentityId);
-    return this.channelAgent(channelId, identityId);
+    await this.options.lifecycle.reconnectConversationAgent(conversationId, identityId, actorIdentityId);
+    return this.conversationAgent(conversationId, identityId);
   }
 
-  async startAllChannelAgents(
-    channelId: string,
+  async startAllConversationAgents(
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResponse> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.startAllChannelAgents) {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.startAllConversationAgents) {
       throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
     }
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
-      channelId,
-      results: await this.options.lifecycle.startAllChannelAgents(channelId, actorIdentityId),
+      conversationId,
+      results: await this.options.lifecycle.startAllConversationAgents(conversationId, actorIdentityId),
     };
   }
 
-  async stopAllChannelAgents(
-    channelId: string,
+  async stopAllConversationAgents(
+    conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResponse> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.stopAllChannelAgents) {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.stopAllConversationAgents) {
       throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
     }
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
-      channelId,
-      results: await this.options.lifecycle.stopAllChannelAgents(channelId, actorIdentityId),
+      conversationId,
+      results: await this.options.lifecycle.stopAllConversationAgents(conversationId, actorIdentityId),
     };
   }
 
-  async cancelCurrentChannelAgent(
-    channelId: string,
+  async cancelCurrentConversationAgent(
+    conversationId: string,
     identityId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelAgent> {
+  ): Promise<LocalConversationAgent> {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.cancelCurrentChannelAgent(channelId, identityId, actorIdentityId);
-    return this.channelAgent(channelId, identityId);
+    await this.options.lifecycle.cancelCurrentConversationAgent(conversationId, identityId, actorIdentityId);
+    return this.conversationAgent(conversationId, identityId);
   }
 
-  async openChannelAgentDiagnostic(
-    channelId: string,
+  async openConversationAgentDiagnostic(
+    conversationId: string,
     identityId: string,
     actorIdentityId: string,
   ): Promise<LocalOpenDiagnosticResponse> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.openChannelAgentDiagnostic) {
+    if (!this.options.lifecycle?.available || !this.options.lifecycle.openConversationAgentDiagnostic) {
       throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.openChannelAgentDiagnostic(channelId, identityId, actorIdentityId);
+    await this.options.lifecycle.openConversationAgentDiagnostic(conversationId, identityId, actorIdentityId);
     return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, status: "opened" };
   }
 
-  private async channelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
-    const response = await this.listChannelAgents(channelId);
+  private async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const response = await this.listConversationAgents(conversationId);
     const agent = response.agents.find((candidate) => candidate.identityId === identityId);
-    if (!agent) throw new LocalConfigurationRequestError("Channel agent unavailable", 404, "unavailable");
+    if (!agent) throw new LocalConfigurationRequestError("Conversation agent unavailable", 404, "unavailable");
     return agent;
   }
 
-  async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
-    const [channel, records] = await Promise.all([
-      this.options.channels.getChannel(channelId),
-      this.options.bindings.listChannelBindings(channelId),
+  async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
+    const [conversation, records] = await Promise.all([
+      this.options.conversations.getConversation(conversationId),
+      this.options.bindings.listConversationBindings(conversationId),
     ]);
-    const agents = await Promise.all(channel.participants
+    const agents = await Promise.all(conversation.participants
       .filter(({ type }) => type === "agent" || type === "service")
-      .map((participant) => this.presentAgent(channel, participant.id, participant.status, records)));
+      .map((participant) => this.presentAgent(conversation, participant.id, participant.status, records)));
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
-      channelId: channel.id,
+      conversationId: conversation.id,
       agents,
     };
   }
 
   private async presentAgent(
-    channel: ChannelMetadata,
+    conversation: ConversationMetadata,
     identityId: string,
     membershipStatus: "active" | "disabled" | undefined,
     records: LocalControlBindingRecord[],
-  ): Promise<LocalChannelAgent> {
+  ): Promise<LocalConversationAgent> {
     const matches = records.filter(({ agentIdentityId }) => agentIdentityId === identityId);
-    const base = { workspaceId: channel.workspaceId, channelId: channel.id, identityId };
+    const base = { workspaceId: conversation.workspaceId, conversationId: conversation.id, identityId };
     if (membershipStatus === "disabled") {
       return { ...base, state: "disabled", capabilities: disabledCapabilities };
     }
@@ -616,8 +616,8 @@ export class LocalControlService {
         },
       };
     }
-    const activity = this.options.lifecycle?.activity?.(channel.id, identityId);
-    const attached = this.options.lifecycle?.isAttached?.(channel.id, identityId);
+    const activity = this.options.lifecycle?.activity?.(conversation.id, identityId);
+    const attached = this.options.lifecycle?.isAttached?.(conversation.id, identityId);
     if (activity) {
       const liveCapabilities = await this.readRuntimeCapabilities(runtime, binding.runtimeSessionId);
       const diagnosticCapabilities = presentLiveCapabilities(liveCapabilities);
@@ -680,7 +680,7 @@ export class LocalControlService {
             ...disabledCapabilities,
             reconnect: Boolean(
               this.options.lifecycle?.available
-              && this.options.lifecycle.reconnectChannelAgent
+              && this.options.lifecycle.reconnectConversationAgent
               && liveCapabilities?.reconnectExisting === true
             ),
             replace: false,
@@ -866,7 +866,7 @@ function requestHostname(request: IncomingMessage): string | undefined {
 }
 
 function isAllowedHost(hostname: string | undefined): boolean {
-  return isLocalChannelsHostname(hostname);
+  return isLocalConversationsHostname(hostname);
 }
 
 export async function createLocalControlHttpServer(
@@ -1033,7 +1033,7 @@ export async function createLocalControlHttpServer(
       }
       const workingFoldersPreviewMatch = path.match(/^\/local\/conversations\/([^/]+)\/working-folders\/preview$/);
       if (workingFoldersPreviewMatch && browserSession && request.method === "POST") {
-        json(response, 200, await options.service.previewChannelWorkingFolder(
+        json(response, 200, await options.service.previewConversationWorkingFolder(
           decodeURIComponent(workingFoldersPreviewMatch[1]!),
           browserSession.identityId,
           await readJson(request),
@@ -1043,11 +1043,11 @@ export async function createLocalControlHttpServer(
       const workingFoldersMatch = path.match(/^\/local\/conversations\/([^/]+)\/working-folders$/);
       if (workingFoldersMatch && browserSession
         && (request.method === "GET" || request.method === "PUT")) {
-        const channelId = decodeURIComponent(workingFoldersMatch[1]!);
+        const conversationId = decodeURIComponent(workingFoldersMatch[1]!);
         const result = request.method === "GET"
-          ? await options.service.getChannelWorkingFolders(channelId, browserSession.identityId)
-          : await options.service.updateChannelWorkingFolders(
-            channelId,
+          ? await options.service.getConversationWorkingFolders(conversationId, browserSession.identityId)
+          : await options.service.updateConversationWorkingFolders(
+            conversationId,
             browserSession.identityId,
             await readJson(request),
           );
@@ -1056,7 +1056,7 @@ export async function createLocalControlHttpServer(
       }
       const bulkStartMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/start-all$/);
       if (bulkStartMatch && browserSession && request.method === "POST") {
-        const result = await options.service.startAllChannelAgents(
+        const result = await options.service.startAllConversationAgents(
           decodeURIComponent(bulkStartMatch[1]!),
           browserSession.identityId,
         );
@@ -1065,7 +1065,7 @@ export async function createLocalControlHttpServer(
       }
       const bulkStopMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/stop-all$/);
       if (bulkStopMatch && browserSession && request.method === "POST") {
-        const result = await options.service.stopAllChannelAgents(
+        const result = await options.service.stopAllConversationAgents(
           decodeURIComponent(bulkStopMatch[1]!),
           browserSession.identityId,
         );
@@ -1074,7 +1074,7 @@ export async function createLocalControlHttpServer(
       }
       const agentStartMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/start$/);
       if (agentStartMatch && browserSession && request.method === "POST") {
-        const agent = await options.service.startChannelAgent(
+        const agent = await options.service.startConversationAgent(
           decodeURIComponent(agentStartMatch[1]!),
           decodeURIComponent(agentStartMatch[2]!),
           browserSession.identityId,
@@ -1084,7 +1084,7 @@ export async function createLocalControlHttpServer(
       }
       const agentReconnectMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/reconnect$/);
       if (agentReconnectMatch && browserSession && request.method === "POST") {
-        const agent = await options.service.reconnectChannelAgent(
+        const agent = await options.service.reconnectConversationAgent(
           decodeURIComponent(agentReconnectMatch[1]!),
           decodeURIComponent(agentReconnectMatch[2]!),
           browserSession.identityId,
@@ -1094,7 +1094,7 @@ export async function createLocalControlHttpServer(
       }
       const agentReplaceMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/replace$/);
       if (agentReplaceMatch && browserSession && request.method === "POST") {
-        const agent = await options.service.replaceChannelAgent(
+        const agent = await options.service.replaceConversationAgent(
           decodeURIComponent(agentReplaceMatch[1]!),
           decodeURIComponent(agentReplaceMatch[2]!),
           browserSession.identityId,
@@ -1104,7 +1104,7 @@ export async function createLocalControlHttpServer(
       }
       const agentStopMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/stop$/);
       if (agentStopMatch && browserSession && request.method === "POST") {
-        const agent = await options.service.stopChannelAgent(
+        const agent = await options.service.stopConversationAgent(
           decodeURIComponent(agentStopMatch[1]!),
           decodeURIComponent(agentStopMatch[2]!),
           browserSession.identityId,
@@ -1114,7 +1114,7 @@ export async function createLocalControlHttpServer(
       }
       const agentCancelMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/cancel-current$/);
       if (agentCancelMatch && browserSession && request.method === "POST") {
-        const agent = await options.service.cancelCurrentChannelAgent(
+        const agent = await options.service.cancelCurrentConversationAgent(
           decodeURIComponent(agentCancelMatch[1]!),
           decodeURIComponent(agentCancelMatch[2]!),
           browserSession.identityId,
@@ -1124,7 +1124,7 @@ export async function createLocalControlHttpServer(
       }
       const agentDiagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/open-diagnostic$/);
       if (agentDiagnosticMatch && browserSession && request.method === "POST") {
-        const result = await options.service.openChannelAgentDiagnostic(
+        const result = await options.service.openConversationAgentDiagnostic(
           decodeURIComponent(agentDiagnosticMatch[1]!),
           decodeURIComponent(agentDiagnosticMatch[2]!),
           browserSession.identityId,
@@ -1134,7 +1134,7 @@ export async function createLocalControlHttpServer(
       }
       const match = path.match(/^\/local\/conversations\/([^/]+)\/agents$/);
       if (match && request.method === "GET") {
-        const result = await options.service.listChannelAgents(decodeURIComponent(match[1]!));
+        const result = await options.service.listConversationAgents(decodeURIComponent(match[1]!));
         json(response, 200, result, origin);
         return;
       }

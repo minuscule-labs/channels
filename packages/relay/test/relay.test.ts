@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  ChannelClient,
-  ChannelClientError,
-  ChannelService,
-  createChannelHttpServer,
-  InMemoryChannelStorage,
+  ConversationClient,
+  ConversationClientError,
+  ConversationService,
+  createConversationHttpServer,
+  InMemoryConversationStorage,
   isResourceId,
   type CreateResponseInput,
   type ResponseResult,
@@ -13,10 +13,10 @@ import {
 import {
   InMemoryRelayBindingStore,
   LocalRelayDirectory,
-  restoreChannelBindings,
+  restoreConversationBindings,
 } from "../src/binding-store.ts";
 import {
-  ChannelRuntimeRelay,
+  ConversationRuntimeRelay,
   type AgentRuntimePort,
   type RuntimePortMessage,
   type RuntimePortTurn,
@@ -305,8 +305,8 @@ class ControlledActivityRuntime implements AgentRuntimePort {
 }
 
 test("relay routes Workspace-local handles to stable agent identity ids", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const human = await client.createIdentity({ type: "human", displayName: "David" });
   const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
@@ -321,26 +321,26 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
     mentionHandle: "builder",
     roleLabel: "implementation",
   });
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     workspaceId: workspace.id,
     participantIds: [human.id, agent.id],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: agent.id, sessionId: "session-builder", runtime }],
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: human.id,
       body: "Background context. @builder implement this",
     });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     const prompt = runtime.prompts.get("session-builder")?.[0] ?? "";
     assert.match(prompt, new RegExp(`You are @builder \\(identity ${agent.id}\\)`));
     assert.match(prompt, /@david → @builder: Background context\. @builder implement this/);
-    assert.equal((await client.listMessages(channel.id))[1]?.participantId, agent.id);
+    assert.equal((await client.listMessages(conversation.id))[1]?.participantId, agent.id);
   } finally {
     await relay.stop();
     await server.close();
@@ -348,10 +348,10 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
 });
 
 test("relay caches revisioned rosters and stops waking disabled or removed members", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const cursors = new InMemoryChannelStorage();
+  const cursors = new InMemoryConversationStorage();
   const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
   const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
   const workspace = await client.createWorkspace({ slug: "roster-cache", name: "Roster Cache" });
@@ -364,19 +364,19 @@ test("relay caches revisioned rosters and stops waking disabled or removed membe
     identityId: agent.id,
     mentionHandle: "builder",
   });
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     workspaceId: workspace.id,
     participantIds: [owner.id, agent.id],
   });
-  const originalGetChannel = client.getChannel.bind(client);
+  const originalGetConversation = client.getConversation.bind(client);
   let metadataReads = 0;
-  client.getChannel = async (channelId: string) => {
+  client.getConversation = async (conversationId: string) => {
     metadataReads += 1;
-    return originalGetChannel(channelId);
+    return originalGetConversation(conversationId);
   };
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: agent.id, sessionId: "cached-session", runtime }],
     cursorStore: cursors,
   });
@@ -389,11 +389,11 @@ test("relay caches revisioned rosters and stops waking disabled or removed membe
       roleLabel: "builder",
     });
     await waitUntil(async () => metadataReads === 2);
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: owner.id,
       body: "@implementer use the revised roster",
     });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     assert.match(runtime.prompts.get("cached-session")?.[0] ?? "", /@implementer/);
     assert.equal(metadataReads, 2);
 
@@ -402,26 +402,26 @@ test("relay caches revisioned rosters and stops waking disabled or removed membe
       status: "disabled",
     });
     await waitUntil(async () => metadataReads === 3);
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: owner.id,
-      body: "@channel disabled agents stay asleep",
+      body: "@conversation disabled agents stay asleep",
     });
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(runtime.prompts.get("cached-session")?.length, 1);
 
-    await client.updateChannelParticipants(channel.id, {
+    await client.updateConversationParticipants(conversation.id, {
       actorIdentityId: owner.id,
       participantIds: [owner.id],
       expectedRosterRevision: 3,
     });
     await waitUntil(async () => metadataReads === 4);
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: owner.id,
-      body: "@channel removed agents also stay asleep",
+      body: "@conversation removed agents also stay asleep",
     });
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(runtime.prompts.get("cached-session")?.length, 1);
-    assert.equal(await cursors.getCursor(channel.id, agent.id), 3);
+    assert.equal(await cursors.getCursor(conversation.id, agent.id), 3);
   } finally {
     await relay.stop();
     await server.close();
@@ -429,10 +429,10 @@ test("relay caches revisioned rosters and stops waking disabled or removed membe
 });
 
 test("removing an agent fences an active turn result and advances recovery", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
-  const cursors = new InMemoryChannelStorage();
+  const cursors = new InMemoryConversationStorage();
   const [owner, agent] = await Promise.all([
     client.createIdentity({ type: "human", displayName: "Owner" }),
     client.createIdentity({ type: "agent", displayName: "Builder" }),
@@ -449,33 +449,33 @@ test("removing an agent fences an active turn result and advances recovery", asy
       mentionHandle: "builder",
     }),
   ]);
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     workspaceId: workspace.id,
     participantIds: [owner.id, agent.id],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: agent.id, sessionId: "removed-active", runtime }],
     cursorStore: cursors,
     turnPollIntervalMs: 5,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: owner.id,
       body: "@builder start work",
     });
     await waitUntil(async () => runtime.startCount === 1);
-    await client.updateChannelParticipants(channel.id, {
+    await client.updateConversationParticipants(conversation.id, {
       actorIdentityId: owner.id,
       participantIds: [owner.id],
       expectedRosterRevision: 1,
     });
-    await waitUntil(async () => (await cursors.getCursor(channel.id, agent.id)) === 1);
+    await waitUntil(async () => (await cursors.getCursor(conversation.id, agent.id)) === 1);
     runtime.complete("This stale result must not be posted");
     await relay.waitForIdle();
-    assert.equal((await client.listMessages(channel.id)).length, 1);
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
     assert.equal(relay.cursor(agent.id), 1);
   } finally {
     await relay.stop();
@@ -483,9 +483,9 @@ test("removing an agent fences an active turn result and advances recovery", asy
   }
 });
 
-test("private bindings isolate Channel sessions and restore them under generation-safe leases", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+test("private bindings isolate Conversation sessions and restore them under generation-safe leases", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const store = new InMemoryRelayBindingStore();
   const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
@@ -505,10 +505,10 @@ test("private bindings isolate Channel sessions and restore them under generatio
     identityId: reviewer.id,
     mentionHandle: "reviewer",
   });
-  const channelParticipants = [human.id, agent.id, reviewer.id];
-  const [channelA, channelB] = await Promise.all([
-    client.createChannel({ workspaceId: workspace.id, participantIds: channelParticipants }),
-    client.createChannel({ workspaceId: workspace.id, participantIds: channelParticipants }),
+  const conversationParticipants = [human.id, agent.id, reviewer.id];
+  const [conversationA, conversationB] = await Promise.all([
+    client.createConversation({ workspaceId: workspace.id, participantIds: conversationParticipants }),
+    client.createConversation({ workspaceId: workspace.id, participantIds: conversationParticipants }),
   ]);
   const directory = new LocalRelayDirectory(client, store);
   await directory.configureWorkspace({
@@ -527,67 +527,67 @@ test("private bindings isolate Channel sessions and restore them under generatio
   ]);
   assert.equal(isResourceId(agentConfig.id, "config"), true);
   const bindingA = await directory.bindAgent({
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     agentIdentityId: agent.id,
     runtimeAdapter: "fake",
-    runtimeSessionId: "session-channel-a",
+    runtimeSessionId: "session-conversation-a",
   });
   assert.equal(isResourceId(bindingA.id, "binding"), true);
   await Promise.all([
     directory.bindAgent({
-      channelId: channelB.id,
+      conversationId: conversationB.id,
       agentIdentityId: agent.id,
       runtimeAdapter: "fake",
-      runtimeSessionId: "session-channel-b",
+      runtimeSessionId: "session-conversation-b",
     }),
     directory.bindAgent({
-      channelId: channelA.id,
+      conversationId: conversationA.id,
       agentIdentityId: reviewer.id,
       runtimeAdapter: "fake",
-      runtimeSessionId: "reviewer-channel-a",
+      runtimeSessionId: "reviewer-conversation-a",
     }),
     directory.bindAgent({
-      channelId: channelB.id,
+      conversationId: conversationB.id,
       agentIdentityId: reviewer.id,
       runtimeAdapter: "fake",
-      runtimeSessionId: "reviewer-channel-b",
+      runtimeSessionId: "reviewer-conversation-b",
     }),
   ]);
-  const publicMetadata = JSON.stringify(await client.getChannel(channelA.id));
-  assert.doesNotMatch(publicMetadata, /session-channel-a|file:\/\/\/workspace/);
+  const publicMetadata = JSON.stringify(await client.getConversation(conversationA.id));
+  assert.doesNotMatch(publicMetadata, /session-conversation-a|file:\/\/\/workspace/);
 
-  const first = await restoreChannelBindings({
+  const first = await restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     leaseOwner: "relay-one",
     runtimes: { fake: runtime },
     leaseDurationMs: 300,
   });
-  const competitor = await restoreChannelBindings({
+  const competitor = await restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     leaseOwner: "relay-two",
     runtimes: { fake: runtime },
   });
-  const otherChannel = await restoreChannelBindings({
+  const otherConversation = await restoreConversationBindings({
     client,
     store,
-    channelId: channelB.id,
+    conversationId: conversationB.id,
     leaseOwner: "relay-two",
     runtimes: { fake: runtime },
   });
   try {
     assert.deepEqual(
       first.bindings.map(({ sessionId }) => sessionId).sort(),
-      ["reviewer-channel-a", "session-channel-a"],
+      ["reviewer-conversation-a", "session-conversation-a"],
     );
     assert.equal(competitor.bindings.length, 0);
     assert.equal(competitor.outcomes.get(bindingA.id), "lease_unavailable");
     assert.deepEqual(
-      otherChannel.bindings.map(({ sessionId }) => sessionId).sort(),
-      ["reviewer-channel-b", "session-channel-b"],
+      otherConversation.bindings.map(({ sessionId }) => sessionId).sort(),
+      ["reviewer-conversation-b", "session-conversation-b"],
     );
     assert.equal(await first.renew(), true);
     let leaseLost = false;
@@ -598,14 +598,14 @@ test("private bindings isolate Channel sessions and restore them under generatio
       bindingId: bindingA.id,
       expectedGeneration: 1,
       runtimeAdapter: "fake",
-      runtimeSessionId: "replacement-channel-a",
+      runtimeSessionId: "replacement-conversation-a",
     });
     assert.equal(replaced.generation, 2);
-    const staleBinding = first.bindings.find(({ sessionId }) => sessionId === "session-channel-a");
+    const staleBinding = first.bindings.find(({ sessionId }) => sessionId === "session-conversation-a");
     assert.equal(await staleBinding?.verifyLease?.(), false);
     await waitUntil(async () => leaseLost);
   } finally {
-    await Promise.all([first.close(), competitor.close(), otherChannel.close()]);
+    await Promise.all([first.close(), competitor.close(), otherConversation.close()]);
   }
   assert.equal(
     await store.replaceBindingSession(
@@ -617,25 +617,25 @@ test("private bindings isolate Channel sessions and restore them under generatio
     ),
     undefined,
   );
-  const restarted = await restoreChannelBindings({
+  const restarted = await restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     leaseOwner: "relay-after-restart",
     runtimes: { fake: runtime },
   });
   assert.deepEqual(
     restarted.bindings.map(({ sessionId }) => sessionId).sort(),
-    ["replacement-channel-a", "reviewer-channel-a"],
+    ["replacement-conversation-a", "reviewer-conversation-a"],
   );
   await restarted.close();
 
   const originalGetAgentConfig = store.getAgentConfig.bind(store);
   store.getAgentConfig = async () => { throw new Error("forced configuration lookup failure"); };
-  await assert.rejects(restoreChannelBindings({
+  await assert.rejects(restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     bindingIds: [bindingA.id],
     leaseOwner: "single-failure",
     runtimes: { fake: runtime },
@@ -652,45 +652,45 @@ test("private bindings isolate Channel sessions and restore them under generatio
     if (configurationLookups === 2) throw new Error("forced later candidate failure");
     return originalGetAgentConfig(configId);
   };
-  await assert.rejects(restoreChannelBindings({
+  await assert.rejects(restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     leaseOwner: "multi-failure",
     runtimes: { fake: runtime },
     leaseDurationMs: 15,
   }), /forced later candidate failure/);
   store.getAgentConfig = originalGetAgentConfig;
-  assert.equal((await store.listChannelBindings(channelA.id)).every(({ leaseOwner }) => leaseOwner === undefined), true);
+  assert.equal((await store.listConversationBindings(conversationA.id)).every(({ leaseOwner }) => leaseOwner === undefined), true);
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal((await store.listChannelBindings(channelA.id)).every(({ leaseOwner }) => leaseOwner === undefined), true);
+  assert.equal((await store.listConversationBindings(conversationA.id)).every(({ leaseOwner }) => leaseOwner === undefined), true);
 
-  runtime.setStatus("replacement-channel-a", "offline");
-  const offline = await restoreChannelBindings({
+  runtime.setStatus("replacement-conversation-a", "offline");
+  const offline = await restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     leaseOwner: "relay-offline",
     runtimes: { fake: runtime },
   });
   assert.deepEqual(
     offline.bindings.map(({ sessionId }) => sessionId),
-    ["reviewer-channel-a"],
+    ["reviewer-conversation-a"],
   );
   assert.equal(offline.outcomes.get(bindingA.id), "runtime_offline");
   assert.equal((await store.getBinding(bindingA.id))?.state, "offline");
   await offline.close();
 
-  runtime.setStatus("replacement-channel-a", "idle");
+  runtime.setStatus("replacement-conversation-a", "idle");
   const status = runtime.status.bind(runtime);
   runtime.status = async (sessionId) => {
-    if (sessionId === "replacement-channel-a") throw new Error("SECRET Runtime transport failure");
+    if (sessionId === "replacement-conversation-a") throw new Error("SECRET Runtime transport failure");
     return status(sessionId);
   };
-  const uncertain = await restoreChannelBindings({
+  const uncertain = await restoreConversationBindings({
     client,
     store,
-    channelId: channelA.id,
+    conversationId: conversationA.id,
     bindingIds: [bindingA.id],
     leaseOwner: "relay-uncertain",
     runtimes: { fake: runtime },
@@ -703,38 +703,38 @@ test("private bindings isolate Channel sessions and restore them under generatio
 });
 
 test("relay catches up on addressed messages using a persisted cursor", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const cursors = new InMemoryChannelStorage();
-  const channel = await client.createChannel({
+  const cursors = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
   const createRelay = () =>
-    new ChannelRuntimeRelay({
+    new ConversationRuntimeRelay({
       client,
-      channelId: channel.id,
+      conversationId: conversation.id,
       bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
       cursorStore: cursors,
     });
 
   let relay = createRelay();
   try {
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a first" });
     await relay.start();
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     await relay.stop();
-    assert.equal(await cursors.getCursor(channel.id, "agent-a"), 1);
+    assert.equal(await cursors.getCursor(conversation.id, "agent-a"), 1);
 
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a second" });
     relay = createRelay();
     await relay.start();
     await waitUntil(async () =>
-      (await client.listMessages(channel.id)).length === 4 &&
-      (await cursors.getCursor(channel.id, "agent-a")) === 3,
+      (await client.listMessages(conversation.id)).length === 4 &&
+      (await cursors.getCursor(conversation.id, "agent-a")) === 3,
     );
     assert.equal(runtime.prompts.get("session-a")?.length, 2);
   } finally {
@@ -744,39 +744,39 @@ test("relay catches up on addressed messages using a persisted cursor", async ()
 });
 
 test("relay catch-up paginates beyond one bounded message page", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
   try {
     for (let index = 0; index < 501; index += 1) {
-      await server.service.createMessage(channel.id, { participantId: "agent-a", body: `self-${index}` });
+      await server.service.createMessage(conversation.id, { participantId: "agent-a", body: `self-${index}` });
     }
-    const trigger = await server.service.createMessage(channel.id, { participantId: "user", body: "@agent-a paginated" });
-    const relay = new ChannelRuntimeRelay({
-      client, channelId: channel.id,
+    const trigger = await server.service.createMessage(conversation.id, { participantId: "user", body: "@agent-a paginated" });
+    const relay = new ConversationRuntimeRelay({
+      client, conversationId: conversation.id,
       bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
       cursorStore: server.service.storage,
     });
     try {
       await relay.start();
-      await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === trigger.sequence);
+      await waitUntil(async () => (await server.service.storage.getCursor(conversation.id, "agent-a")) === trigger.sequence);
       assert.equal(runtime.prompts.get("session-a")?.length, 1);
     } finally { await relay.stop(); }
   } finally { await server.close(); }
 });
 
 test("bounded catch-up retains one fixed-size page while live events raise only a sequence high-water mark", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
   for (let index = 0; index < 2; index += 1) {
-    await server.service.createMessage(channel.id, {
+    await server.service.createMessage(conversation.id, {
       participantId: "user",
       body: `@agent-a retained-${index}`,
     });
@@ -784,18 +784,18 @@ test("bounded catch-up retains one fixed-size page while live events raise only 
   const originalListMessages = client.listMessages.bind(client);
   let catchUpRequests = 0;
   let largestReturnedPage = 0;
-  client.listMessages = (async (channelId, options) => {
-    const messages = await originalListMessages(channelId, options);
+  client.listMessages = (async (conversationId, options) => {
+    const messages = await originalListMessages(conversationId, options);
     if (options?.afterSequence !== undefined) {
       catchUpRequests += 1;
       largestReturnedPage = Math.max(largestReturnedPage, messages.length);
       assert.equal(options.limit, 2);
     }
     return messages;
-  }) as ChannelClient["listMessages"];
-  const relay = new ChannelRuntimeRelay({
+  }) as ConversationClient["listMessages"];
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     catchUpPageSize: 2,
     turnPollIntervalMs: 5,
@@ -809,7 +809,7 @@ test("bounded catch-up retains one fixed-size page while live events raise only 
     assert.equal(relay.activity("agent-a")?.queuedTurnsExact, false);
 
     for (let index = 0; index < 50; index += 1) {
-      await server.service.createMessage(channel.id, {
+      await server.service.createMessage(conversation.id, {
         participantId: "user",
         body: `@agent-a live-${index}`,
       });
@@ -826,22 +826,22 @@ test("bounded catch-up retains one fixed-size page while live events raise only 
 });
 
 test("retiring a slow catch-up aborts its generation without blocking a peer or replacement", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const oldRuntime = new FakeRuntime();
   const peerRuntime = new FakeRuntime();
   const replacementRuntime = new FakeRuntime();
-  const cursors = new InMemoryChannelStorage();
-  const channel = await client.createChannel({ participants: [
+  const cursors = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" },
     { id: "agent-a", type: "agent" },
     { id: "agent-b", type: "agent" },
   ] });
   for (let index = 0; index < 10; index += 1) {
-    await server.service.createMessage(channel.id, { participantId: "agent-a", body: `self-${index}` });
+    await server.service.createMessage(conversation.id, { participantId: "agent-a", body: `self-${index}` });
   }
-  await cursors.setCursor(channel.id, "agent-b", 10);
-  const peerTrigger = await server.service.createMessage(channel.id, {
+  await cursors.setCursor(conversation.id, "agent-b", 10);
+  const peerTrigger = await server.service.createMessage(conversation.id, {
     participantId: "user",
     to: ["agent-b"],
     body: "peer work",
@@ -849,7 +849,7 @@ test("retiring a slow catch-up aborts its generation without blocking a peer or 
   const originalListMessages = client.listMessages.bind(client);
   let blockedOnce = false;
   let oldSignal: AbortSignal | undefined;
-  client.listMessages = (async (channelId, options) => {
+  client.listMessages = (async (conversationId, options) => {
     if (!blockedOnce && options?.afterSequence === 0) {
       blockedOnce = true;
       oldSignal = options.signal;
@@ -857,11 +857,11 @@ test("retiring a slow catch-up aborts its generation without blocking a peer or 
         options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
       });
     }
-    return originalListMessages(channelId, options);
-  }) as ChannelClient["listMessages"];
-  const relay = new ChannelRuntimeRelay({
+    return originalListMessages(conversationId, options);
+  }) as ConversationClient["listMessages"];
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [
       { participantId: "agent-a", sessionId: "old-a", runtime: oldRuntime },
       { participantId: "agent-b", sessionId: "peer-b", runtime: peerRuntime },
@@ -877,7 +877,7 @@ test("retiring a slow catch-up aborts its generation without blocking a peer or 
     await relay.retire("agent-a");
     assert.equal(oldSignal?.aborted, true);
     await relay.attach({ participantId: "agent-a", sessionId: "new-a", runtime: replacementRuntime });
-    const replacementTrigger = await client.postMessage(channel.id, {
+    const replacementTrigger = await client.postMessage(conversation.id, {
       participantId: "user",
       to: ["agent-a"],
       body: "replacement work",
@@ -892,15 +892,15 @@ test("retiring a slow catch-up aborts its generation without blocking a peer or 
 });
 
 test("catch-up retries use capped abortable backoff and sanitize failures", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
   const timers = new ManualActivityTimers();
   const errors: Error[] = [];
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const trigger = await server.service.createMessage(channel.id, {
+  const trigger = await server.service.createMessage(conversation.id, {
     participantId: "user",
     body: "@agent-a recover",
   });
@@ -908,7 +908,7 @@ test("catch-up retries use capped abortable backoff and sanitize failures", asyn
   let failuresRemaining = 6;
   let blockedSignal: AbortSignal | undefined;
   let block = false;
-  client.listMessages = (async (channelId, options) => {
+  client.listMessages = (async (conversationId, options) => {
     if (options?.afterSequence !== undefined && failuresRemaining > 0) {
       failuresRemaining -= 1;
       throw new Error("private endpoint and credential");
@@ -919,11 +919,11 @@ test("catch-up retries use capped abortable backoff and sanitize failures", asyn
         options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
       });
     }
-    return originalListMessages(channelId, options);
-  }) as ChannelClient["listMessages"];
-  const relay = new ChannelRuntimeRelay({
+    return originalListMessages(conversationId, options);
+  }) as ConversationClient["listMessages"];
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     scheduleCatchUpRetryTimer: timers.schedule,
     onError: (_binding, error) => errors.push(error),
@@ -936,17 +936,17 @@ test("catch-up retries use capped abortable backoff and sanitize failures", asyn
       timers.invoke(index);
     }
     await waitUntil(async () => relay.cursor("agent-a") === trigger.sequence);
-    assert.deepEqual(errors.map(({ message }) => message), ["Channel catch-up unavailable"]);
+    assert.deepEqual(errors.map(({ message }) => message), ["Conversation catch-up unavailable"]);
 
     failuresRemaining = 1;
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a reset" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a reset" });
     await waitUntil(async () => timers.entries.length === 7);
     assert.equal(timers.entries[6]?.milliseconds, 250);
     timers.invoke(6);
     await waitUntil(async () => (runtime.prompts.get("session-a")?.length ?? 0) === 2);
 
     block = true;
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a blocked" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a blocked" });
     await waitUntil(async () => blockedSignal !== undefined);
     const stopping = relay.stop();
     await waitUntil(async () => blockedSignal!.aborted);
@@ -958,15 +958,15 @@ test("catch-up retries use capped abortable backoff and sanitize failures", asyn
 });
 
 test("dynamic attach orders high-water live events behind catch-up", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" },
     { id: "agent-a", type: "agent" },
     { id: "agent-b", type: "agent" },
   ] });
-  const historical = await client.postMessage(channel.id, {
+  const historical = await client.postMessage(conversation.id, {
     participantId: "user",
     to: ["agent-b"],
     body: "historical trigger",
@@ -980,17 +980,17 @@ test("dynamic attach orders high-water live events behind catch-up", async () =>
   let liveObserved!: () => void;
   const observed = new Promise<void>((resolve) => { liveObserved = resolve; });
   let intercept = false;
-  client.listMessages = (async (channelId, options) => {
-    const messages = await originalListMessages(channelId, options);
+  client.listMessages = (async (conversationId, options) => {
+    const messages = await originalListMessages(conversationId, options);
     if (intercept && options?.afterSequence === 0) {
       intercept = false;
       catchUpCaptured();
       await catchUpReleased;
     }
     return messages;
-  }) as ChannelClient["listMessages"];
-  client.events = ((channelId, options) => {
-    const events = originalEvents(channelId, options);
+  }) as ConversationClient["listMessages"];
+  client.events = ((conversationId, options) => {
+    const events = originalEvents(conversationId, options);
     return (async function* () {
       for await (const event of events) {
         yield event;
@@ -999,10 +999,10 @@ test("dynamic attach orders high-water live events behind catch-up", async () =>
         }
       }
     })();
-  }) as ChannelClient["events"];
-  const relay = new ChannelRuntimeRelay({
+  }) as ConversationClient["events"];
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   });
   try {
@@ -1010,7 +1010,7 @@ test("dynamic attach orders high-water live events behind catch-up", async () =>
     intercept = true;
     const attaching = relay.attach({ participantId: "agent-b", sessionId: "session-b", runtime });
     await captured;
-    const live = await client.postMessage(channel.id, {
+    const live = await client.postMessage(conversation.id, {
       participantId: "user",
       to: ["agent-b"],
       body: "live trigger",
@@ -1030,33 +1030,33 @@ test("dynamic attach orders high-water live events behind catch-up", async () =>
   }
 });
 
-test("two-participant Channels implicitly wake the sole agent for human messages", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+test("two-participant Conversations implicitly wake the sole agent for human messages", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   });
 
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "Create the query without requiring a mention",
     });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
     assert.match(
       runtime.prompts.get("session-a")![0]!,
-      /implicitly addressed you in this two-participant Channel/,
+      /implicitly addressed you in this two-participant Conversation/,
     );
   } finally {
     await relay.stop();
@@ -1064,34 +1064,34 @@ test("two-participant Channels implicitly wake the sole agent for human messages
   }
 });
 
-test("an addressed turn includes bounded Channel history from before the binding cursor", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+test("an addressed turn includes bounded Conversation history from before the binding cursor", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const cursors = new InMemoryChannelStorage();
-  const channel = await client.createChannel({
+  const cursors = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
       { id: "observer", type: "human" },
     ],
   });
-  await client.postMessage(channel.id, {
+  await client.postMessage(conversation.id, {
     participantId: "user",
     body: "Historical record needed by the next request",
   });
-  await cursors.setCursor(channel.id, "agent-a", 1);
-  const relay = new ChannelRuntimeRelay({
+  await cursors.setCursor(conversation.id, "agent-a", 1);
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: cursors,
   });
 
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a see above" });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 3);
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a see above" });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
     assert.match(runtime.prompts.get("session-a")![0]!, /Historical record needed by the next request/);
     assert.match(runtime.prompts.get("session-a")![0]!, /@agent-a see above/);
   } finally {
@@ -1101,20 +1101,20 @@ test("an addressed turn includes bounded Channel history from before the binding
 });
 
 test("relay suppresses an active result after its private binding lease is lost", async () => {
-  const storage = new InMemoryChannelStorage();
-  const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const storage = new InMemoryConversationStorage();
+  const server = await createConversationHttpServer({ service: new ConversationService(storage) });
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
   let leaseHeld = true;
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{
       participantId: "agent-a",
       sessionId: "leased-session",
@@ -1126,7 +1126,7 @@ test("relay suppresses an active result after its private binding lease is lost"
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a do not publish after fencing",
     });
@@ -1134,8 +1134,8 @@ test("relay suppresses an active result after its private binding lease is lost"
     leaseHeld = false;
     runtime.complete("STALE_RESPONSE");
     await relay.waitForIdle();
-    assert.equal((await client.listMessages(channel.id)).length, 1);
-    assert.equal(await storage.getCursor(channel.id, "agent-a"), 0);
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
+    assert.equal(await storage.getCursor(conversation.id, "agent-a"), 0);
   } finally {
     await relay.stop();
     await server.close();
@@ -1143,19 +1143,19 @@ test("relay suppresses an active result after its private binding lease is lost"
 });
 
 test("overlapping relay recovery reuses active turns and preserves queued messages", async () => {
-  const storage = new InMemoryChannelStorage();
-  const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const storage = new InMemoryConversationStorage();
+  const server = await createConversationHttpServer({ service: new ConversationService(storage) });
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
-  const createRelay = () => new ChannelRuntimeRelay({
+  const createRelay = () => new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: storage,
   });
@@ -1163,12 +1163,12 @@ test("overlapping relay recovery reuses active turns and preserves queued messag
   const recoveredRelay = createRelay();
   try {
     await firstRelay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a perform side effects once",
     });
     await waitUntil(async () => runtime.startCount === 1);
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a queued follow-up",
     });
@@ -1180,12 +1180,12 @@ test("overlapping relay recovery reuses active turns and preserves queued messag
     await waitUntil(async () => runtime.startCount === 2);
     runtime.complete("Completed follow-up exactly once");
     await waitUntil(async () =>
-      (await client.listMessages(channel.id)).length === 4
-      && (await storage.getCursor(channel.id, "agent-a")) === 2,
+      (await client.listMessages(conversation.id)).length === 4
+      && (await storage.getCursor(conversation.id, "agent-a")) === 2,
     );
     assert.equal(runtime.startCount, 2);
     assert.deepEqual(
-      (await client.listMessages(channel.id)).map((message) => message.body),
+      (await client.listMessages(conversation.id)).map((message) => message.body),
       [
         "@agent-a perform side effects once",
         "@agent-a queued follow-up",
@@ -1200,10 +1200,10 @@ test("overlapping relay recovery reuses active turns and preserves queued messag
 });
 
 test("relay validates and enforces configurable turn polling timeouts", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
@@ -1211,31 +1211,31 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
   });
   const baseOptions = {
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   };
   assert.throws(
-    () => new ChannelRuntimeRelay({ ...baseOptions, turnPollIntervalMs: 0 }),
+    () => new ConversationRuntimeRelay({ ...baseOptions, turnPollIntervalMs: 0 }),
     /turnPollIntervalMs must be a positive integer/,
   );
   assert.throws(
-    () => new ChannelRuntimeRelay({ ...baseOptions, turnTimeoutMs: 1.5 }),
+    () => new ConversationRuntimeRelay({ ...baseOptions, turnTimeoutMs: 1.5 }),
     /turnTimeoutMs must be a positive integer/,
   );
   assert.throws(
-    () => new ChannelRuntimeRelay({ ...baseOptions, activitySilenceTimeoutMs: 0 }),
+    () => new ConversationRuntimeRelay({ ...baseOptions, activitySilenceTimeoutMs: 0 }),
     /activitySilenceTimeoutMs must be a positive integer/,
   );
   assert.throws(
-    () => new ChannelRuntimeRelay({ ...baseOptions, catchUpPageSize: 0 }),
+    () => new ConversationRuntimeRelay({ ...baseOptions, catchUpPageSize: 0 }),
     /catchUpPageSize must be an integer between 1 and 500/,
   );
   assert.throws(
-    () => new ChannelRuntimeRelay({ ...baseOptions, catchUpPageSize: 501 }),
+    () => new ConversationRuntimeRelay({ ...baseOptions, catchUpPageSize: 501 }),
     /catchUpPageSize must be an integer between 1 and 500/,
   );
   const errors: Error[] = [];
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     ...baseOptions,
     turnPollIntervalMs: 5,
     turnTimeoutMs: 30,
@@ -1245,14 +1245,14 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a deliberately never complete",
     });
     await waitUntil(async () => errors.length === 1);
     assert.match(errors[0]!.message, /Timed out waiting for agent turn/);
     assert.equal(runtime.startCount, 1);
-    assert.equal((await client.listMessages(channel.id)).length, 1);
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
   } finally {
     await relay.stop();
     await server.close();
@@ -1260,8 +1260,8 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
 });
 
 test("an absolute retry budget bounds a stalled Runtime attempt while peer work continues", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const recoveryStore = new InMemoryRelayBindingStore();
   let stalledTurnReads = 0;
   const stalledRuntime: AgentRuntimePort = {
@@ -1273,14 +1273,14 @@ test("an absolute retry budget bounds a stalled Runtime attempt while peer work 
     async startTurn() { throw new Error("stalled lookup must not start a turn"); },
   };
   const peerRuntime = new FakeRuntime();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" },
     { id: "agent-a", type: "agent" },
     { id: "agent-b", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [
       { participantId: "agent-a", sessionId: "session-a", runtime: stalledRuntime },
       { participantId: "agent-b", sessionId: "session-b", runtime: peerRuntime },
@@ -1292,15 +1292,15 @@ test("an absolute retry budget bounds a stalled Runtime attempt while peer work 
   });
   try {
     await relay.start();
-    const trigger = await client.postMessage(channel.id, {
+    const trigger = await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a @agent-b bounded",
     });
-    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-b")) === trigger.sequence);
-    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-b")) === trigger.sequence);
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
     assert.equal(stalledTurnReads, 1);
     assert.equal(peerRuntime.prompts.get("session-b")?.length, 1);
-    const messages = await client.listMessages(channel.id);
+    const messages = await client.listMessages(conversation.id);
     assert.equal(messages.some(({ body }) => body.includes("Runtime turn failed")), true);
   } finally {
     await relay.stop();
@@ -1309,24 +1309,24 @@ test("an absolute retry budget bounds a stalled Runtime attempt while peer work 
 });
 
 test("relay restart does not duplicate a committed response after its acknowledgement is lost", async () => {
-  const storage = new InMemoryChannelStorage();
-  const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const storage = new InMemoryConversationStorage();
+  const server = await createConversationHttpServer({ service: new ConversationService(storage) });
+  const reliableClient = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await reliableClient.createChannel({
+  const conversation = await reliableClient.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
-  class LostAcknowledgementClient extends ChannelClient {
+  class LostAcknowledgementClient extends ConversationClient {
     private loseNextAcknowledgement = true;
 
     override async postResponse(
-      channelId: string,
+      conversationId: string,
       input: CreateResponseInput,
     ): Promise<ResponseResult> {
-      const committed = await super.postResponse(channelId, input);
+      const committed = await super.postResponse(conversationId, input);
       if (this.loseNextAcknowledgement) {
         this.loseNextAcknowledgement = false;
         throw new Error("connection dropped after commit");
@@ -1334,35 +1334,35 @@ test("relay restart does not duplicate a committed response after its acknowledg
       return committed;
     }
   }
-  const firstRelay = new ChannelRuntimeRelay({
+  const firstRelay = new ConversationRuntimeRelay({
     client: new LostAcknowledgementClient(server.endpoint, { serviceToken: server.serviceToken }),
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: storage,
   });
   try {
     await firstRelay.start();
-    await reliableClient.postMessage(channel.id, {
+    await reliableClient.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a implement once",
     });
     await waitUntil(async () =>
-      (await storage.getCursor(channel.id, "agent-a")) === 1
-      && (await reliableClient.listMessages(channel.id)).length === 2,
+      (await storage.getCursor(conversation.id, "agent-a")) === 1
+      && (await reliableClient.listMessages(conversation.id)).length === 2,
     );
     await firstRelay.stop();
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
 
-    const restartedRelay = new ChannelRuntimeRelay({
+    const restartedRelay = new ConversationRuntimeRelay({
       client: reliableClient,
-      channelId: channel.id,
+      conversationId: conversation.id,
       bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
       cursorStore: storage,
     });
     await restartedRelay.start();
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
-    assert.equal((await reliableClient.listMessages(channel.id)).length, 2);
+    assert.equal((await reliableClient.listMessages(conversation.id)).length, 2);
     await restartedRelay.stop();
   } finally {
     await firstRelay.stop();
@@ -1371,8 +1371,8 @@ test("relay restart does not duplicate a committed response after its acknowledg
 });
 
 test("a failed trigger blocks later cursor advancement until ordered retry succeeds", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let attempts = 0;
   const timestamp = new Date().toISOString();
   const runtime: AgentRuntimePort = {
@@ -1393,28 +1393,28 @@ test("a failed trigger blocks later cursor advancement until ordered retry succe
       };
     },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
-    client, channelId: channel.id,
+  const relay = new ConversationRuntimeRelay({
+    client, conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: server.service.storage,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a first" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a second" });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(await server.service.storage.getCursor(channel.id, "agent-a"), 0);
-    await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === 2);
+    assert.equal(await server.service.storage.getCursor(conversation.id, "agent-a"), 0);
+    await waitUntil(async () => (await server.service.storage.getCursor(conversation.id, "agent-a")) === 2);
     assert.equal(attempts, 3);
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("Relay activity exposes retrying phase and the next attempt", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let sends = 0;
   const timestamp = new Date().toISOString();
   const runtime: AgentRuntimePort = {
@@ -1435,26 +1435,26 @@ test("Relay activity exposes retrying phase and the next attempt", async () => {
       };
     },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a retry visibly" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a retry visibly" });
     await waitUntil(async () => relay.activity("agent-a")?.phase === "retrying");
     assert.equal(relay.activity("agent-a")?.retryAttempt, 2);
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("terminal Runtime failure is recorded visibly before the cursor advances", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime: AgentRuntimePort = {
     async send() {}, async messages() { return []; }, async status() { return "idle"; },
     async turn() { return undefined; },
@@ -1463,19 +1463,19 @@ test("terminal Runtime failure is recorded visibly before the cursor advances", 
       return { id: turnId, input, status: "failed", error: "provider failed", createdAt: timestamp, updatedAt: timestamp };
     },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
-    client, channelId: channel.id,
+  const relay = new ConversationRuntimeRelay({
+    client, conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: server.service.storage,
   });
   try {
     await relay.start();
-    const trigger = await client.postMessage(channel.id, { participantId: "user", body: "@agent-a fail" });
-    await waitUntil(async () => (await server.service.storage.getCursor(channel.id, "agent-a")) === trigger.sequence);
-    const messages = await client.listMessages(channel.id);
+    const trigger = await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a fail" });
+    await waitUntil(async () => (await server.service.storage.getCursor(conversation.id, "agent-a")) === trigger.sequence);
+    const messages = await client.listMessages(conversation.id);
     assert.match(messages[1]!.body, /Runtime turn failed/);
     assert.match(messages[1]!.body, /use New session/);
     assert.doesNotMatch(messages[1]!.body, /start fresh/i);
@@ -1485,39 +1485,39 @@ test("terminal Runtime failure is recorded visibly before the cursor advances", 
 test("response delivery retries only transient classes and caps Retry-After by the deadline policy", async () => {
   const cases: Array<{ failure: Error; expectedDelay: number }> = [
     { failure: new Error("private network failure"), expectedDelay: 1_000 },
-    { failure: new ChannelClientError("private timeout body", 408), expectedDelay: 1_000 },
-    { failure: new ChannelClientError("private early body", 425), expectedDelay: 1_000 },
-    { failure: new ChannelClientError("private rate body", 429, 60_000), expectedDelay: 30_000 },
-    { failure: new ChannelClientError("private server body", 503), expectedDelay: 1_000 },
+    { failure: new ConversationClientError("private timeout body", 408), expectedDelay: 1_000 },
+    { failure: new ConversationClientError("private early body", 425), expectedDelay: 1_000 },
+    { failure: new ConversationClientError("private rate body", 429, 60_000), expectedDelay: 30_000 },
+    { failure: new ConversationClientError("private server body", 503), expectedDelay: 1_000 },
   ];
   for (const [index, { failure, expectedDelay }] of cases.entries()) {
-    const server = await createChannelHttpServer();
-    const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const server = await createConversationHttpServer();
+    const reliableClient = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
     const timers = new ManualActivityTimers();
     const recoveryStore = new InMemoryRelayBindingStore();
-    class TransientClient extends ChannelClient {
+    class TransientClient extends ConversationClient {
       calls = 0;
-      override async postResponse(channelId: string, input: CreateResponseInput): Promise<ResponseResult> {
+      override async postResponse(conversationId: string, input: CreateResponseInput): Promise<ResponseResult> {
         this.calls += 1;
         if (this.calls === 1) throw failure;
-        return reliableClient.postResponse(channelId, input);
+        return reliableClient.postResponse(conversationId, input);
       }
     }
     const client = new TransientClient(server.endpoint, { serviceToken: server.serviceToken });
     const runtime = new RecoverableRuntime();
-    const channel = await reliableClient.createChannel({ participants: [
+    const conversation = await reliableClient.createConversation({ participants: [
       { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
     ] });
-    const relay = new ChannelRuntimeRelay({
+    const relay = new ConversationRuntimeRelay({
       client,
-      channelId: channel.id,
+      conversationId: conversation.id,
       bindings: [{ participantId: "agent-a", sessionId: `session-${index}`, runtime }],
       cursorStore: recoveryStore,
       scheduleTurnRetryTimer: timers.schedule,
     });
     try {
       await relay.start();
-      const trigger = await reliableClient.postMessage(channel.id, {
+      const trigger = await reliableClient.postMessage(conversation.id, {
         participantId: "user",
         body: "@agent-a retry delivery",
       });
@@ -1529,9 +1529,9 @@ test("response delivery retries only transient classes and caps Retry-After by t
       await waitUntil(async () => timers.entries.length === 2);
       assert.equal(timers.entries[1]?.milliseconds, expectedDelay);
       timers.invoke(1);
-      await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+      await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
       assert.equal(client.calls, 2);
-      assert.deepEqual(await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a"), []);
+      assert.deepEqual(await recoveryStore.listDeliveryDeadLetters(conversation.id, "agent-a"), []);
     } finally {
       await relay.stop();
       await server.close();
@@ -1540,16 +1540,16 @@ test("response delivery retries only transient classes and caps Retry-After by t
 });
 
 test("permanent response delivery rejection records one private dead letter and advances", async () => {
-  const server = await createChannelHttpServer();
-  const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
-  class RejectingClient extends ChannelClient {
+  const server = await createConversationHttpServer();
+  const reliableClient = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  class RejectingClient extends ConversationClient {
     calls = 0;
     override async postResponse(
-      _channelId: string,
+      _conversationId: string,
       _input: CreateResponseInput,
     ): Promise<ResponseResult> {
       this.calls += 1;
-      throw new ChannelClientError("response validation failed", 422);
+      throw new ConversationClientError("response validation failed", 422);
     }
   }
   const client = new RejectingClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -1568,29 +1568,29 @@ test("permanent response delivery rejection records one private dead letter and 
       };
     },
   };
-  const channel = await reliableClient.createChannel({ participants: [
+  const conversation = await reliableClient.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
   const recoveryStore = new InMemoryRelayBindingStore();
-  const relay = new ChannelRuntimeRelay({
-    client, channelId: channel.id,
+  const relay = new ConversationRuntimeRelay({
+    client, conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: recoveryStore,
   });
   try {
     await relay.start();
-    const trigger = await reliableClient.postMessage(channel.id, { participantId: "user", body: "@agent-a fail" });
-    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    const trigger = await reliableClient.postMessage(conversation.id, { participantId: "user", body: "@agent-a fail" });
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
     await relay.waitForIdle();
     assert.equal(client.calls, 2);
-    const deadLetters = await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a");
+    const deadLetters = await recoveryStore.listDeliveryDeadLetters(conversation.id, "agent-a");
     assert.equal(deadLetters.length, 1);
     assert.deepEqual({
       ...deadLetters[0],
       createdAt: "<time>",
       updatedAt: "<time>",
     }, {
-      channelId: channel.id,
+      conversationId: conversation.id,
       participantId: "agent-a",
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
@@ -1603,45 +1603,45 @@ test("permanent response delivery rejection records one private dead letter and 
 });
 
 test("a committed public response uses private dead-letter recovery when cursor mirroring fails", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   class CursorFailureStore extends InMemoryRelayBindingStore {
     override async setCursor(): Promise<void> { throw new Error("private cursor storage failed"); }
   }
   const recoveryStore = new CursorFailureStore();
   const runtime = new RecoverableRuntime();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: recoveryStore,
   });
   try {
     await relay.start();
-    const trigger = await client.postMessage(channel.id, {
+    const trigger = await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a preserve visible outcome",
     });
     await waitUntil(async () => runtime.startCount === 1);
     runtime.complete("public response survived");
-    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
-    const messages = await client.listMessages(channel.id);
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
+    const messages = await client.listMessages(conversation.id);
     assert.equal(messages.filter(({ body }) => body === "public response survived").length, 1);
     assert.equal(messages.some(({ body }) => body.includes("Runtime turn failed")), false);
     assert.deepEqual(
-      (await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a")).map(({ reason }) => reason),
+      (await recoveryStore.listDeliveryDeadLetters(conversation.id, "agent-a")).map(({ reason }) => reason),
       ["cursor_commit_failed"],
     );
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("a stalled response delivery dead-letters within bounded finalization without rerunning Runtime", async () => {
-  const server = await createChannelHttpServer();
-  const reliableClient = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
-  class StalledClient extends ChannelClient {
+  const server = await createConversationHttpServer();
+  const reliableClient = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  class StalledClient extends ConversationClient {
     calls = 0;
     override async postResponse(): Promise<ResponseResult> {
       this.calls += 1;
@@ -1651,12 +1651,12 @@ test("a stalled response delivery dead-letters within bounded finalization witho
   const client = new StalledClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
   const recoveryStore = new InMemoryRelayBindingStore();
-  const channel = await reliableClient.createChannel({ participants: [
+  const conversation = await reliableClient.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: recoveryStore,
     turnPollIntervalMs: 5,
@@ -1666,17 +1666,17 @@ test("a stalled response delivery dead-letters within bounded finalization witho
   });
   try {
     await relay.start();
-    const trigger = await reliableClient.postMessage(channel.id, {
+    const trigger = await reliableClient.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a bounded delivery",
     });
     await waitUntil(async () => runtime.startCount === 1);
     runtime.complete("private undelivered response");
-    await waitUntil(async () => (await recoveryStore.getCursor(channel.id, "agent-a")) === trigger.sequence);
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
     assert.equal(runtime.startCount, 1);
     assert.equal(client.calls, 2);
     assert.equal(
-      (await recoveryStore.listDeliveryDeadLetters(channel.id, "agent-a"))[0]?.reason,
+      (await recoveryStore.listDeliveryDeadLetters(conversation.id, "agent-a"))[0]?.reason,
       "delivery_timed_out",
     );
   } finally {
@@ -1686,35 +1686,35 @@ test("a stalled response delivery dead-letters within bounded finalization witho
 });
 
 test("legacy Runtime does not resend after an ambiguous send failure", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let sends = 0;
   const runtime: AgentRuntimePort = {
     async status() { return "idle"; },
     async send() { sends += 1; throw new Error("connection dropped after send"); },
     async messages() { return []; },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore: server.service.storage,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a do not resend" });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a do not resend" });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     assert.equal(sends, 1);
-    assert.match((await client.listMessages(channel.id))[1]!.body, /Runtime turn failed/);
+    assert.match((await client.listMessages(conversation.id))[1]!.body, /Runtime turn failed/);
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("legacy Runtime response recovery survives transcript compaction", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let compacted = false;
   const runtime: AgentRuntimePort = {
     async status() { return "idle"; },
@@ -1725,44 +1725,44 @@ test("legacy Runtime response recovery survives transcript compaction", async ()
         : Array.from({ length: 3 }, (_, index) => ({ role: "user" as const, content: `old-${index}` }));
     },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
-    client, channelId: channel.id,
+  const relay = new ConversationRuntimeRelay({
+    client, conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a compact" });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
-    assert.equal((await client.listMessages(channel.id))[1]?.body, "response after compaction");
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a compact" });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
+    assert.equal((await client.listMessages(conversation.id))[1]?.body, "response after compaction");
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("Relay quiescing finishes the active turn without admitting queued work", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoverableRuntime();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
   const binding = { participantId: "agent-a", sessionId: "session-a", runtime };
-  const firstRelay = new ChannelRuntimeRelay({
+  const firstRelay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [binding],
     cursorStore: server.service.storage,
     turnPollIntervalMs: 5,
   });
   try {
     await firstRelay.start();
-    const active = await client.postMessage(channel.id, {
+    const active = await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a active before restart",
     });
     await waitUntil(async () => runtime.startCount === 1);
-    const queued = await client.postMessage(channel.id, {
+    const queued = await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a queued across restart",
     });
@@ -1778,12 +1778,12 @@ test("Relay quiescing finishes the active turn without admitting queued work", a
       quiescing: true,
     });
     assert.equal(runtime.startCount, 1);
-    assert.equal(await server.service.storage.getCursor(channel.id, "agent-a"), active.sequence);
+    assert.equal(await server.service.storage.getCursor(conversation.id, "agent-a"), active.sequence);
 
     await firstRelay.stop();
-    const restartedRelay = new ChannelRuntimeRelay({
+    const restartedRelay = new ConversationRuntimeRelay({
       client,
-      channelId: channel.id,
+      conversationId: conversation.id,
       bindings: [binding],
       cursorStore: server.service.storage,
       turnPollIntervalMs: 5,
@@ -1792,7 +1792,7 @@ test("Relay quiescing finishes the active turn without admitting queued work", a
       await restartedRelay.start();
       await waitUntil(async () => runtime.startCount === 2);
       runtime.complete("queued response");
-      await waitUntil(async () => server.service.storage.getCursor(channel.id, "agent-a")
+      await waitUntil(async () => server.service.storage.getCursor(conversation.id, "agent-a")
         .then((sequence) => sequence === queued.sequence));
     } finally {
       await restartedRelay.stop();
@@ -1804,23 +1804,23 @@ test("Relay quiescing finishes the active turn without admitting queued work", a
 });
 
 test("Relay shutdown is bounded when a Runtime request stalls", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime: AgentRuntimePort = {
     async send() {}, async messages() { return []; },
     async status() { return await new Promise<"idle">(() => {}); },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
-    client, channelId: channel.id,
+  const relay = new ConversationRuntimeRelay({
+    client, conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     runtimeRequestTimeoutMs: 20,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a stall" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a stall" });
     await new Promise((resolve) => setTimeout(resolve, 30));
     const started = Date.now();
     await relay.stop();
@@ -1829,21 +1829,21 @@ test("Relay shutdown is bounded when a Runtime request stalls", async () => {
 });
 
 test("relay supports an explicit agent-to-agent mention handoff", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime((sessionId) =>
     sessionId === "session-a" ? "@agent-b Please review Agent A's work" : "Review complete",
   );
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
       { id: "agent-b", type: "agent" },
     ],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [
       { participantId: "agent-a", sessionId: "session-a", runtime },
       { participantId: "agent-b", sessionId: "session-b", runtime },
@@ -1852,12 +1852,12 @@ test("relay supports an explicit agent-to-agent mention handoff", async () => {
 
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a Implement the change, then hand off review",
     });
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 3);
-    const messages = await client.listMessages(channel.id);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
+    const messages = await client.listMessages(conversation.id);
     assert.deepEqual(messages.map((message) => message.participantId), ["user", "agent-a", "agent-b"]);
     assert.deepEqual(messages[1]!.to, ["agent-b"]);
     assert.deepEqual(messages[2]!.to, []);
@@ -1870,18 +1870,18 @@ test("relay supports an explicit agent-to-agent mention handoff", async () => {
 });
 
 test("explicit steering reaches a working agent without creating another wake-up", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   });
   try {
@@ -1889,7 +1889,7 @@ test("explicit steering reaches a working agent without creating another wake-up
     runtime.setStatus("session-a", "working");
     await relay.steer("agent-a", "user", "Include persistence in the MVP");
     assert.deepEqual(runtime.steering.get("session-a"), ["Include persistence in the MVP"]);
-    const messages = await client.listMessages(channel.id);
+    const messages = await client.listMessages(conversation.id);
     assert.equal(messages.length, 1);
     assert.equal(messages[0]!.body, "[steer → agent-a] Include persistence in the MVP");
     assert.deepEqual(messages[0]!.to, []);
@@ -1902,27 +1902,27 @@ test("explicit steering reaches a working agent without creating another wake-up
 });
 
 test("explicit interruption aborts work and queues a normal replacement turn", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
   });
   try {
     await relay.start();
     runtime.setStatus("session-a", "working");
     await relay.interrupt("agent-a", "user", "Use Drizzle instead");
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     assert.equal(runtime.interruptions.get("session-a"), 1);
-    const messages = await client.listMessages(channel.id);
+    const messages = await client.listMessages(conversation.id);
     assert.equal(messages[0]!.body, "@agent-a [replacement after interrupt] Use Drizzle instead");
     assert.deepEqual(messages[0]!.to, ["agent-a"]);
     assert.equal(messages[1]!.participantId, "agent-a");
@@ -1933,32 +1933,32 @@ test("explicit interruption aborts work and queues a normal replacement turn", a
 });
 
 test("interrupting an active relay turn suppresses its response and runs the replacement", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new InterruptibleRuntime();
-  const cursorStore = new InMemoryChannelStorage();
-  const channel = await client.createChannel({
+  const cursorStore = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human" },
       { id: "agent-a", type: "agent" },
     ],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a Start the original task",
     });
     await waitUntil(async () => (await runtime.status()) === "working");
     await relay.interrupt("agent-a", "user", "Do the replacement task");
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 3);
-    const messages = await client.listMessages(channel.id);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
+    const messages = await client.listMessages(conversation.id);
     assert.equal(runtime.interruptCount, 1);
     assert.equal(runtime.sendCount, 2);
     assert.equal(messages[1]!.body, "@agent-a [replacement after interrupt] Do the replacement task");
@@ -1972,8 +1972,8 @@ test("interrupting an active relay turn suppresses its response and runs the rep
 });
 
 test("relay exposes safe Runtime phases, active queue state, and target-only cancellation", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new InterruptibleRuntime() as InterruptibleRuntime & Required<Pick<AgentRuntimePort, "activityEvents">>;
   const timers = new ManualActivityTimers();
   const activityEvents: Array<{ phase: "working" | "using_tools" | "responding"; observedAt: string }> = [];
@@ -1997,20 +1997,20 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
     wakeActivity?.();
     wakeActivity = undefined;
   };
-  const cursorStore = new InMemoryChannelStorage();
-  const channel = await client.createChannel({ participants: [
+  const cursorStore = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore,
     scheduleActivitySilenceTimer: timers.schedule,
   });
   try {
     await relay.start();
-    const first = await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
+    const first = await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a first" });
     await waitUntil(async () => (await runtime.status()) === "working");
     const initial = relay.activity("agent-a");
     assert.deepEqual(initial && {
@@ -2031,7 +2031,7 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
     await waitUntil(async () => relay.activity("agent-a")?.phase === "using_tools");
     publishActivity("responding");
     await waitUntil(async () => relay.activity("agent-a")?.phase === "responding");
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a second" });
     await waitUntil(async () => relay.activity("agent-a")?.queuedTurnsExact === false);
     assert.equal(relay.activity("agent-a")?.queuedTurns, 0);
     assert.equal(relay.activity("agent-a")?.startedAt, startedAt);
@@ -2042,12 +2042,12 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
     assert.equal(relay.activity("agent-a")?.phase, "canceling");
     assert.equal(timers.activeCount(), 0);
     await waitUntil(async () => runtime.interruptCount === 1);
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 4);
-    const messages = await client.listMessages(channel.id);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 4);
+    const messages = await client.listMessages(conversation.id);
     assert.equal(runtime.interruptCount, 1);
     assert.equal(messages.some((message) => message.body === "Current request was canceled by @user."), true);
     assert.equal(messages.some((message) => message.body.includes("original")), false);
-    assert.equal(await cursorStore.getCursor(channel.id, "agent-a"), 2);
+    assert.equal(await cursorStore.getCursor(conversation.id, "agent-a"), 2);
     assert.equal(relay.activity("agent-a"), undefined);
 
     await relay.stop();
@@ -2060,24 +2060,24 @@ test("relay exposes safe Runtime phases, active queue state, and target-only can
 });
 
 test("safe activity enrichment expires by receipt time and stale timers cannot overwrite newer state", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new ControlledActivityRuntime();
   const timers = new ManualActivityTimers();
-  const cursorStore = new InMemoryChannelStorage();
-  const channel = await client.createChannel({ participants: [
+  const cursorStore = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     cursorStore,
     scheduleActivitySilenceTimer: timers.schedule,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a work" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a work" });
     await waitUntil(async () => (await runtime.status()) === "working");
 
     runtime.publish("using_tools", "2099-01-01T00:00:00.000Z");
@@ -2116,31 +2116,31 @@ test("safe activity enrichment expires by receipt time and stale timers cannot o
 });
 
 test("activity silence timers clear on retry, retirement, and shutdown without affecting peers", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtimeA = new ControlledActivityRuntime();
   const runtimeB = new ControlledActivityRuntime();
   const timers = new ManualActivityTimers();
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" },
     { id: "agent-a", type: "agent" },
     { id: "agent-b", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [
       { participantId: "agent-a", sessionId: "session-a", runtime: runtimeA },
       { participantId: "agent-b", sessionId: "session-b", runtime: runtimeB },
     ],
-    cursorStore: new InMemoryChannelStorage(),
+    cursorStore: new InMemoryConversationStorage(),
     activitySilenceTimeoutMs: 25,
     scheduleActivitySilenceTimer: timers.schedule,
   });
   let stopped = false;
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a @agent-b work" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a @agent-b work" });
     await waitUntil(async () => (await runtimeA.status()) === "working" && (await runtimeB.status()) === "working");
     runtimeA.publish("using_tools");
     runtimeB.publish("responding");
@@ -2165,7 +2165,7 @@ test("activity silence timers clear on retry, retirement, and shutdown without a
     await waitUntil(async () => relay.activity("agent-b") === undefined);
     assert.equal(timers.entries[1]?.canceled, true);
 
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-b again" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-b again" });
     await waitUntil(async () => (await runtimeB.status()) === "working");
     runtimeB.publish("using_tools");
     await waitUntil(async () => relay.activity("agent-b")?.phase === "using_tools");
@@ -2179,22 +2179,22 @@ test("activity silence timers clear on retry, retirement, and shutdown without a
     await server.close();
   }
 
-  const retryServer = await createChannelHttpServer();
-  const retryClient = new ChannelClient(retryServer.endpoint, { serviceToken: retryServer.serviceToken });
+  const retryServer = await createConversationHttpServer();
+  const retryClient = new ConversationClient(retryServer.endpoint, { serviceToken: retryServer.serviceToken });
   const retryRuntime = new ControlledActivityRuntime();
   const retryTimers = new ManualActivityTimers();
-  const retryChannel = await retryClient.createChannel({ participants: [
+  const retryConversation = await retryClient.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const retryRelay = new ChannelRuntimeRelay({
+  const retryRelay = new ConversationRuntimeRelay({
     client: retryClient,
-    channelId: retryChannel.id,
+    conversationId: retryConversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime: retryRuntime }],
     scheduleActivitySilenceTimer: retryTimers.schedule,
   });
   try {
     await retryRelay.start();
-    await retryClient.postMessage(retryChannel.id, { participantId: "user", body: "@agent-a retry" });
+    await retryClient.postMessage(retryConversation.id, { participantId: "user", body: "@agent-a retry" });
     await waitUntil(async () => (await retryRuntime.status()) === "working");
     retryRuntime.publish("using_tools");
     await waitUntil(async () => retryRelay.activity("agent-a")?.phase === "using_tools");
@@ -2208,18 +2208,18 @@ test("activity silence timers clear on retry, retirement, and shutdown without a
 });
 
 test("activity streams recover from failure and normal end with bounded resettable backoff", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new RecoveringActivityRuntime();
   const retryTimers = new ManualActivityTimers();
   const silenceTimers = new ManualActivityTimers();
   const errors: Error[] = [];
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     scheduleActivitySilenceTimer: silenceTimers.schedule,
     scheduleActivityStreamRetryTimer: retryTimers.schedule,
@@ -2228,7 +2228,7 @@ test("activity streams recover from failure and normal end with bounded resettab
   try {
     await relay.start();
     await waitUntil(async () => runtime.streams.length === 1);
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a work" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a work" });
     await waitUntil(async () => (await runtime.status()) === "working");
 
     runtime.publish({ phase: "using_tools", observedAt: new Date().toISOString() });
@@ -2280,21 +2280,21 @@ test("activity streams recover from failure and normal end with bounded resettab
 });
 
 test("activity stream recovery is binding-local and aborts on retirement and shutdown", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtimeA = new RecoveringActivityRuntime();
   const runtimeB = new RecoveringActivityRuntime();
   const retryTimers = new ManualActivityTimers();
-  const cursorStore = new InMemoryChannelStorage();
-  const channel = await client.createChannel({ participants: [
+  const cursorStore = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" },
     { id: "agent-a", type: "agent" },
     { id: "agent-b", type: "agent" },
   ] });
   const bindingA = { participantId: "agent-a", sessionId: "session-a", runtime: runtimeA };
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [bindingA, { participantId: "agent-b", sessionId: "session-b", runtime: runtimeB }],
     cursorStore,
     scheduleActivityStreamRetryTimer: retryTimers.schedule,
@@ -2303,7 +2303,7 @@ test("activity stream recovery is binding-local and aborts on retirement and shu
   try {
     await relay.start();
     await waitUntil(async () => runtimeA.streams.length === 1 && runtimeB.streams.length === 1);
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a @agent-b work" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a @agent-b work" });
     await waitUntil(async () => (await runtimeA.status()) === "working" && (await runtimeB.status()) === "working");
     runtimeB.publish({ phase: "responding", observedAt: new Date().toISOString() });
     await waitUntil(async () => relay.activity("agent-b")?.phase === "responding");
@@ -2320,7 +2320,7 @@ test("activity stream recovery is binding-local and aborts on retirement and shu
 
     await relay.attach(bindingA);
     await waitUntil(async () => runtimeA.streams.length === 2);
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a new generation" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a new generation" });
     await waitUntil(async () => (await runtimeA.status()) === "working");
     runtimeA.publish({ phase: "using_tools", observedAt: new Date().toISOString() }, 0);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2349,8 +2349,8 @@ test("activity stream recovery is binding-local and aborts on retirement and shu
 });
 
 test("cancellation before recoverable turn dispatch never starts Runtime work", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let resolveLookup!: (turn: RuntimePortTurn | undefined) => void;
   let lookups = 0;
   let starts = 0;
@@ -2366,26 +2366,26 @@ test("cancellation before recoverable turn dispatch never starts Runtime work", 
     async startTurn() { starts += 1; throw new Error("must not start"); },
     async interrupt() { interrupts += 1; },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({ client, channelId: channel.id, bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }] });
+  const relay = new ConversationRuntimeRelay({ client, conversationId: conversation.id, bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }] });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a do not dispatch" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a do not dispatch" });
     await waitUntil(async () => lookups === 1);
     await relay.cancelCurrent("agent-a", "user");
     resolveLookup(undefined);
-    await waitUntil(async () => (await client.listMessages(channel.id)).length === 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     assert.equal(starts, 0);
     assert.equal(interrupts, 0);
-    assert.equal((await client.listMessages(channel.id))[1]?.body, "Current request was canceled by @user.");
+    assert.equal((await client.listMessages(conversation.id))[1]?.body, "Current request was canceled by @user.");
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("a delayed session interrupt cannot reach the next queued turn", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let starts = 0;
   let interrupted = false;
   let firstTurnId: string | undefined;
@@ -2413,28 +2413,28 @@ test("a delayed session interrupt cannot reach the next queued turn", async () =
       return new Promise<void>((resolve) => { releaseInterrupt = () => { interrupted = true; resolve(); }; });
     },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({ client, channelId: channel.id, bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }], turnPollIntervalMs: 5 });
+  const relay = new ConversationRuntimeRelay({ client, conversationId: conversation.id, bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }], turnPollIntervalMs: 5 });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a first" });
     await waitUntil(async () => starts === 1);
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a second" });
     await waitUntil(async () => relay.activity("agent-a")?.queuedTurnsExact === false);
     await relay.cancelCurrent("agent-a", "user");
     await waitUntil(async () => typeof releaseInterrupt === "function");
     assert.equal(starts, 1);
     releaseInterrupt();
     await waitUntil(async () => starts === 2);
-    assert.equal((await client.listMessages(channel.id)).some((message) => message.body === "Current request was canceled by @user."), true);
+    assert.equal((await client.listMessages(conversation.id)).some((message) => message.body === "Current request was canceled by @user."), true);
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("a lease check failure does not poison later queued turns", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let starts = 0;
   const turns = new Map<string, RuntimePortTurn>();
   let leaseChecks = 0;
@@ -2454,12 +2454,12 @@ test("a lease check failure does not poison later queued turns", async () => {
     },
     async turn(_sessionId, turnId) { return turns.get(turnId); },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime, verifyLease: async () => {
       leaseChecks += 1;
       if (leaseChecks === 2) throw new Error("db temporarily unavailable");
@@ -2469,19 +2469,19 @@ test("a lease check failure does not poison later queued turns", async () => {
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a first" });
-    await waitUntil(async () => errors.some((error) => error.message === "Terminal Channel outcome unavailable"));
-    await waitUntil(async () => (await client.listMessages(channel.id)).some((message) => message.body.includes("Runtime turn failed")));
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a second" });
-    await waitUntil(async () => (await client.listMessages(channel.id)).some((message) => message.body === "second completed"));
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a first" });
+    await waitUntil(async () => errors.some((error) => error.message === "Terminal Conversation outcome unavailable"));
+    await waitUntil(async () => (await client.listMessages(conversation.id)).some((message) => message.body.includes("Runtime turn failed")));
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a second" });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).some((message) => message.body === "second completed"));
     assert.equal(starts, 2);
     await relay.stop();
   } finally { await server.close(); }
 });
 
 test("an ambiguous Runtime interrupt remains canceling and is not retried", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   let started = false;
   let interrupts = 0;
   const timestamp = new Date().toISOString();
@@ -2503,33 +2503,33 @@ test("an ambiguous Runtime interrupt remains canceling and is not retried", asyn
       throw new Error("connection dropped after interrupt invocation");
     },
   };
-  const channel = await client.createChannel({ participants: [
+  const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     turnPollIntervalMs: 5,
   });
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "@agent-a remain observable" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a remain observable" });
     await waitUntil(async () => started);
     await relay.cancelCurrent("agent-a", "user");
     await relay.cancelCurrent("agent-a", "user");
     await waitUntil(async () => relay.activity("agent-a")?.phase === "canceling");
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(interrupts, 1);
-    assert.equal((await client.listMessages(channel.id)).length, 1);
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
   } finally { await relay.stop(); await server.close(); }
 });
 
 test("relay wakes only addressed agents and posts responses without reply loops", async () => {
-  const server = await createChannelHttpServer();
-  const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     participants: [
       { id: "user", type: "human", displayName: "David", role: "coordinator" },
       {
@@ -2548,9 +2548,9 @@ test("relay wakes only addressed agents and posts responses without reply loops"
       },
     ],
   });
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: [
       { participantId: "agent-a", sessionId: "session-a", runtime },
       { participantId: "agent-b", sessionId: "session-b", runtime },
@@ -2559,16 +2559,16 @@ test("relay wakes only addressed agents and posts responses without reply loops"
 
   try {
     await relay.start();
-    await client.postMessage(channel.id, { participantId: "user", body: "Background context" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "Background context" });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(runtime.prompts.size, 0);
 
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a Please inspect this",
     });
     await waitUntil(async () =>
-      (await client.listMessages(channel.id)).length === 3 && relay.cursor("agent-a") === 2,
+      (await client.listMessages(conversation.id)).length === 3 && relay.cursor("agent-a") === 2,
     );
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
     assert.equal(runtime.prompts.get("session-b"), undefined);
@@ -2589,16 +2589,16 @@ test("relay wakes only addressed agents and posts responses without reply loops"
     assert.match(runtime.prompts.get("session-a")![0]!, /TRIGGER/);
     assert.equal(relay.cursor("agent-a"), 2);
 
-    await client.postMessage(channel.id, { participantId: "user", body: "@channel status" });
+    await client.postMessage(conversation.id, { participantId: "user", body: "@conversation status" });
     await waitUntil(async () => {
-      const messages = await client.listMessages(channel.id);
+      const messages = await client.listMessages(conversation.id);
       return messages.filter((message) => message.participantId.startsWith("agent-")).length === 3;
     });
     assert.equal(runtime.prompts.get("session-a")?.length, 2);
     assert.equal(runtime.prompts.get("session-b")?.length, 1);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal((await client.listMessages(channel.id)).length, 6);
+    assert.equal((await client.listMessages(conversation.id)).length, 6);
   } finally {
     await relay.stop();
     await server.close();

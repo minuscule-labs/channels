@@ -1,8 +1,8 @@
-import type { ChannelEvent, ChannelMessage, ChannelMetadata } from "@minu/channels-core/types";
+import type { ConversationEvent, ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { channels } from "./api";
-import { channelCacheAction } from "./channel-events";
+import { conversations } from "./api";
+import { conversationCacheAction } from "./conversation-events";
 import { mergeMessages } from "./messages";
 import { queryKeys } from "./query-keys";
 
@@ -10,7 +10,7 @@ export type ConnectionState = "connecting" | "live" | "disconnected";
 
 const MAX_RECONNECT_DELAY_MS = 10_000;
 
-export function useLiveChannel(channelId: string) {
+export function useLiveConversation(conversationId: string) {
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [attempt, setAttempt] = useState(0);
@@ -27,27 +27,27 @@ export function useLiveChannel(channelId: string) {
       rejectReady = reject;
     });
 
-    const apply = (event: ChannelEvent) => {
-      const current = queryClient.getQueryData<ChannelMetadata>(queryKeys.channel(channelId));
-      const action = channelCacheAction(event, current?.rosterRevision);
+    const apply = (event: ConversationEvent) => {
+      const current = queryClient.getQueryData<ConversationMetadata>(queryKeys.conversation(conversationId));
+      const action = conversationCacheAction(event, current?.rosterRevision);
       if (action.type === "merge-message") {
-        queryClient.setQueryData<ChannelMessage[]>(
-          queryKeys.channelMessages(channelId),
+        queryClient.setQueryData<ConversationMessage[]>(
+          queryKeys.conversationMessages(conversationId),
           (messages) => mergeMessages(messages, [action.message]),
         );
         if (current) {
           window.dispatchEvent(new CustomEvent("minu-live-message", {
-            detail: { channel: current, message: action.message },
+            detail: { conversation: current, message: action.message },
           }));
         }
       } else if (action.type === "refresh-metadata") {
         if (action.rosterRevision !== undefined) {
           highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
         }
-        void queryClient.invalidateQueries({ queryKey: queryKeys.channel(channelId), exact: true });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversationId), exact: true });
         if (current) {
           void queryClient.invalidateQueries({
-            queryKey: queryKeys.workspaceChannels(current.workspaceId),
+            queryKey: queryKeys.workspaceConversations(current.workspaceId),
             exact: true,
           });
         }
@@ -55,7 +55,7 @@ export function useLiveChannel(channelId: string) {
     };
 
     const stream = (async () => {
-      for await (const event of channels.events(channelId, {
+      for await (const event of conversations.events(conversationId, {
         signal: controller.signal,
         onReady: resolveReady,
       })) {
@@ -72,17 +72,17 @@ export function useLiveChannel(channelId: string) {
       try {
         await ready;
         const [metadata, messages] = await Promise.all([
-          channels.getChannel(channelId),
-          channels.listMessages(channelId),
+          conversations.getConversation(conversationId),
+          conversations.listMessages(conversationId),
         ]);
         if (controller.signal.aborted) return;
-        queryClient.setQueryData(queryKeys.channel(channelId), metadata);
-        queryClient.setQueryData<ChannelMessage[]>(
-          queryKeys.channelMessages(channelId),
+        queryClient.setQueryData(queryKeys.conversation(conversationId), metadata);
+        queryClient.setQueryData<ConversationMessage[]>(
+          queryKeys.conversationMessages(conversationId),
           (current) => mergeMessages(current, messages),
         );
         if (highestRosterRevisionSeen > metadata.rosterRevision) {
-          await queryClient.invalidateQueries({ queryKey: queryKeys.channel(channelId), exact: true });
+          await queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversationId), exact: true });
         }
         reconnectStreak.current = 0;
         setConnection("live");
@@ -102,7 +102,7 @@ export function useLiveChannel(channelId: string) {
       rejectReady(new Error("Conversation changed"));
       void stream.catch(() => undefined);
     };
-  }, [attempt, channelId, queryClient]);
+  }, [attempt, conversationId, queryClient]);
 
   return {
     connection,

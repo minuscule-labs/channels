@@ -3,11 +3,11 @@ import { Command, InvalidArgumentError, Option } from "commander";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  ChannelService,
-  createChannelHttpServer,
-  InMemoryChannelStorage,
+  ConversationService,
+  createConversationHttpServer,
+  InMemoryConversationStorage,
 } from "@minu/channels-core";
-import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "./storage.ts";
+import { DrizzleLibSqlConversationStorage, localLibSqlUrl } from "./storage.ts";
 
 interface CliOptions {
   port: number;
@@ -46,17 +46,17 @@ async function main(): Promise<void> {
   program.parse(process.argv);
   const options = program.opts<CliOptions>();
 
-  const defaultPath = join(homedir(), ".minu", "channels", "channels.db");
+  const defaultPath = join(homedir(), ".minu", "conversations", "channels.db");
   const databaseUrl = options.dbUrl
     ?? (options.db ? localLibSqlUrl(options.db) : process.env.TURSO_DATABASE_URL)
     ?? localLibSqlUrl(defaultPath);
   const authToken = options.authToken ?? process.env.TURSO_AUTH_TOKEN;
   const storage = options.memory
-    ? new InMemoryChannelStorage()
-    : await DrizzleLibSqlChannelStorage.open({ url: databaseUrl, authToken });
-  const server = await createChannelHttpServer({
+    ? new InMemoryConversationStorage()
+    : await DrizzleLibSqlConversationStorage.open({ url: databaseUrl, authToken });
+  const server = await createConversationHttpServer({
     port: options.port,
-    service: new ChannelService(storage),
+    service: new ConversationService(storage),
     serviceToken: options.serviceToken,
   });
   console.log(`MinuChannels listening on ${server.endpoint}`);

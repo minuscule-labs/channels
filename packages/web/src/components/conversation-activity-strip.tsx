@@ -1,4 +1,4 @@
-import type { LocalChannelAgent } from "@minu/channels-control/contracts";
+import type { LocalConversationAgent } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -11,7 +11,7 @@ function elapsed(startedAt: string, now: number): string {
 }
 
 export function queuedTurnsSummary(
-  activity: Pick<NonNullable<LocalChannelAgent["activity"]>, "queuedTurns" | "queuedTurnsExact">,
+  activity: Pick<NonNullable<LocalConversationAgent["activity"]>, "queuedTurns" | "queuedTurnsExact">,
 ): string {
   if (!activity.queuedTurnsExact) {
     return activity.queuedTurns > 0
@@ -22,7 +22,7 @@ export function queuedTurnsSummary(
 }
 
 export function activitySummaryItems(
-  agents: readonly LocalChannelAgent[],
+  agents: readonly LocalConversationAgent[],
   participants: readonly Participant[],
   now: number,
 ): string[] {
@@ -44,11 +44,11 @@ export function activitySummaryItems(
   });
 }
 
-export function ChannelActivityStrip({
+export function ConversationActivityStrip({
   agents,
   participants,
 }: {
-  agents: readonly LocalChannelAgent[];
+  agents: readonly LocalConversationAgent[];
   participants: readonly Participant[];
 }) {
   const active = agents.some(({ activity }) => activity);

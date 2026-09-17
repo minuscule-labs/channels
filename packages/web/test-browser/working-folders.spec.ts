@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
-const channelsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
+const conversationsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const fixtureBase = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
 
 async function launchAuthenticated(page: Page, request: APIRequestContext, destination: string) {
@@ -10,28 +10,28 @@ async function launchAuthenticated(page: Page, request: APIRequestContext, desti
 }
 
 test("working folders recover from an initial load failure and save previewed, de-duplicated selections", async ({ page, request }) => {
-  const workspaces = (await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> }).workspaces;
+  const workspaces = (await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> }).workspaces;
   const workspaceId = workspaces[0]!.id;
-  const channelId = ((await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as { channels: Array<{ id: string }> }).channels[0]!).id;
+  const conversationId = ((await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as { conversations: Array<{ id: string }> }).conversations[0]!).id;
   let folderLoads = 0;
   const puts: unknown[] = [];
   let pickerCalls = 0;
-  await page.route(`**/local/conversations/${channelId}/working-folders`, async (route) => {
+  await page.route(`**/local/conversations/${conversationId}/working-folders`, async (route) => {
     if (route.request().method() === "GET") {
       folderLoads += 1;
       if (folderLoads === 1) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
-      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 17, workspaceId, channelId, inheritedFromWorkspace: true, folders: [], changesApplyToNewSessions: true, enforcement: "advisory" }) });
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 17, workspaceId, conversationId, inheritedFromWorkspace: true, folders: [], changesApplyToNewSessions: true, enforcement: "advisory" }) });
     }
     puts.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 17, workspaceId, channelId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 17, workspaceId, conversationId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
   });
-  await page.route(`**/local/conversations/${channelId}/working-folders/preview`, (route) => {
+  await page.route(`**/local/conversations/${conversationId}/working-folders/preview`, (route) => {
     const { path } = route.request().postDataJSON() as { path: string };
     const relativePath = path.endsWith("/2") ? "packages/shared" : "apps/web";
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ relativePath }) });
   });
   await page.route("**/local/folders/select", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ path: `/private/root/${++pickerCalls}` }) }));
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await page.getByRole("button", { name: "Manage Conversation participants" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Could not load working folders.")).toBeVisible();

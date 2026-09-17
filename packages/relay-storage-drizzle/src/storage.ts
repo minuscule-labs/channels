@@ -1,8 +1,8 @@
 import { createClient, type Client } from "@libsql/client";
 import type {
-  ChannelAgentBindingRecord,
-  ChannelAgentBindingState,
-  ChannelWorkingFolder,
+  ConversationAgentBindingRecord,
+  ConversationAgentBindingState,
+  ConversationWorkingFolder,
   DeliveryDeadLetterInput,
   DeliveryDeadLetterRecord,
   LocalWorkspaceConfig,
@@ -10,7 +10,7 @@ import type {
   RuntimeModelRef,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { validateChannelWorkingFolders } from "@minu/channels-relay";
+import { validateConversationWorkingFolders } from "@minu/channels-relay";
 import { and, asc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -70,11 +70,11 @@ function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): Wor
   };
 }
 
-function binding(row: typeof schema.conversationAgentBindings.$inferSelect): ChannelAgentBindingRecord {
+function binding(row: typeof schema.conversationAgentBindings.$inferSelect): ConversationAgentBindingRecord {
   const { conversationId, ...binding } = row;
   return {
     ...binding,
-    channelId: conversationId,
+    conversationId: conversationId,
     executionEnvironmentId: row.executionEnvironmentId ?? undefined,
     leaseOwner: row.leaseOwner ?? undefined,
     leaseExpiresAt: row.leaseExpiresAt ?? undefined,
@@ -82,12 +82,12 @@ function binding(row: typeof schema.conversationAgentBindings.$inferSelect): Cha
   };
 }
 
-function channelWorkingFolder(
+function conversationWorkingFolder(
   row: typeof schema.conversationWorkingFolders.$inferSelect,
-): ChannelWorkingFolder {
+): ConversationWorkingFolder {
   return {
     workspaceId: row.workspaceId,
-    channelId: row.conversationId,
+    conversationId: row.conversationId,
     relativePath: row.relativePath,
     position: row.position,
     primary: row.isPrimary === 1,
@@ -142,25 +142,25 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return row ? workspaceConfig(row) : undefined;
   }
 
-  async getChannelWorkingFolders(
+  async getConversationWorkingFolders(
     workspaceId: string,
-    channelId: string,
-  ): Promise<ChannelWorkingFolder[]> {
+    conversationId: string,
+  ): Promise<ConversationWorkingFolder[]> {
     const rows = await this.database.select().from(schema.conversationWorkingFolders)
       .where(and(
         eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, channelId),
+        eq(schema.conversationWorkingFolders.conversationId, conversationId),
       ))
       .orderBy(asc(schema.conversationWorkingFolders.position));
-    return rows.map(channelWorkingFolder);
+    return rows.map(conversationWorkingFolder);
   }
 
-  async replaceChannelWorkingFolders(
+  async replaceConversationWorkingFolders(
     workspaceId: string,
-    channelId: string,
-    folders: readonly ChannelWorkingFolder[],
-  ): Promise<ChannelWorkingFolder[]> {
-    validateChannelWorkingFolders(workspaceId, channelId, folders);
+    conversationId: string,
+    folders: readonly ConversationWorkingFolder[],
+  ): Promise<ConversationWorkingFolder[]> {
+    validateConversationWorkingFolders(workspaceId, conversationId, folders);
     const replacement = folders.map((folder) => ({ ...folder }))
       .sort((left, right) => left.position - right.position);
     const timestamp = new Date().toISOString();
@@ -170,17 +170,17 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         createdAt: schema.conversationWorkingFolders.createdAt,
       }).from(schema.conversationWorkingFolders).where(and(
         eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, channelId),
+        eq(schema.conversationWorkingFolders.conversationId, conversationId),
       ));
       const createdAtByPath = new Map(existing.map((row) => [row.relativePath, row.createdAt]));
       await transaction.delete(schema.conversationWorkingFolders).where(and(
         eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, channelId),
+        eq(schema.conversationWorkingFolders.conversationId, conversationId),
       ));
       if (replacement.length > 0) {
         await transaction.insert(schema.conversationWorkingFolders).values(replacement.map((folder) => ({
           workspaceId,
-          conversationId: channelId,
+          conversationId: conversationId,
           relativePath: folder.relativePath,
           position: folder.position,
           isPrimary: folder.primary ? 1 : 0,
@@ -241,12 +241,12 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return rows.map(agentConfig);
   }
 
-  async putBinding(record: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord> {
-    await this.database.insert(schema.conversationAgentBindings).values({ ...record, conversationId: record.channelId });
+  async putBinding(record: ConversationAgentBindingRecord): Promise<ConversationAgentBindingRecord> {
+    await this.database.insert(schema.conversationAgentBindings).values({ ...record, conversationId: record.conversationId });
     return { ...record };
   }
 
-  async getBinding(bindingId: string): Promise<ChannelAgentBindingRecord | undefined> {
+  async getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined> {
     const row = await this.database.query.conversationAgentBindings.findFirst({
       where: eq(schema.conversationAgentBindings.id, bindingId),
     });
@@ -258,14 +258,14 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       .where(eq(schema.conversationAgentBindings.id, bindingId));
   }
 
-  async listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]> {
+  async listConversationBindings(conversationId: string): Promise<ConversationAgentBindingRecord[]> {
     const rows = await this.database.select().from(schema.conversationAgentBindings)
-      .where(eq(schema.conversationAgentBindings.conversationId, channelId))
+      .where(eq(schema.conversationAgentBindings.conversationId, conversationId))
       .orderBy(asc(schema.conversationAgentBindings.createdAt));
     return rows.map(binding);
   }
 
-  async listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]> {
+  async listWorkspaceBindings(workspaceId: string): Promise<ConversationAgentBindingRecord[]> {
     const rows = await this.database.select().from(schema.conversationAgentBindings)
       .where(eq(schema.conversationAgentBindings.workspaceId, workspaceId))
       .orderBy(asc(schema.conversationAgentBindings.createdAt));
@@ -277,7 +277,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     leaseOwner: string,
     now: string,
     leaseExpiresAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({
       leaseOwner,
       leaseExpiresAt,
@@ -333,10 +333,10 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     bindingId: string,
     generation: number,
     leaseOwner: string,
-    state: ChannelAgentBindingState,
+    state: ConversationAgentBindingState,
     lastVerifiedAt: string | undefined,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({
       state,
       lastVerifiedAt,
@@ -356,7 +356,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     runtimeAdapter: string,
     runtimeSessionId: string,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({
       runtimeAdapter,
       runtimeSessionId,
@@ -378,7 +378,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     bindingId: string,
     expectedGeneration: number,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({
       generation: expectedGeneration + 1,
       state: "disabled",
@@ -393,19 +393,19 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return rows[0] ? binding(rows[0]) : undefined;
   }
 
-  async getCursor(channelId: string, participantId: string): Promise<number> {
+  async getCursor(conversationId: string, participantId: string): Promise<number> {
     const row = await this.database.query.agentHostCursors.findFirst({
       where: and(
-        eq(schema.agentHostCursors.conversationId, channelId),
+        eq(schema.agentHostCursors.conversationId, conversationId),
         eq(schema.agentHostCursors.participantId, participantId),
       ),
     });
     return row?.lastProcessedSequence ?? 0;
   }
 
-  async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
+  async setCursor(conversationId: string, participantId: string, sequence: number): Promise<void> {
     await this.database.insert(schema.agentHostCursors).values({
-      conversationId: channelId,
+      conversationId: conversationId,
       participantId,
       lastProcessedSequence: sequence,
       updatedAt: new Date().toISOString(),
@@ -421,7 +421,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   async commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void> {
     await this.database.transaction(async (transaction) => {
       await transaction.insert(schema.deliveryDeadLetters).values({
-        conversationId: input.channelId,
+        conversationId: input.conversationId,
         participantId: input.participantId,
         triggerMessageId: input.triggerMessageId,
         triggerSequence: input.triggerSequence,
@@ -436,7 +436,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         ],
       });
       await transaction.insert(schema.agentHostCursors).values({
-        conversationId: input.channelId,
+        conversationId: input.conversationId,
         participantId: input.participantId,
         lastProcessedSequence: input.triggerSequence,
         updatedAt: input.recordedAt,
@@ -451,16 +451,16 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   }
 
   async listDeliveryDeadLetters(
-    channelId: string,
+    conversationId: string,
     participantId: string,
   ): Promise<DeliveryDeadLetterRecord[]> {
     const rows = await this.database.select().from(schema.deliveryDeadLetters)
       .where(and(
-        eq(schema.deliveryDeadLetters.conversationId, channelId),
+        eq(schema.deliveryDeadLetters.conversationId, conversationId),
         eq(schema.deliveryDeadLetters.participantId, participantId),
       ))
       .orderBy(asc(schema.deliveryDeadLetters.triggerSequence));
-    return rows.map(({ conversationId, ...row }) => ({ ...row, channelId: conversationId }));
+    return rows.map(({ conversationId, ...row }) => ({ ...row, conversationId: conversationId }));
   }
 
   async close(): Promise<void> {

@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
+const conversationsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
 const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
@@ -21,9 +21,9 @@ export default defineConfig({
   webServer: [
     {
       command: "node test-browser/fixture-server.mjs",
-      port: channelsPort,
+      port: conversationsPort,
       env: {
-        MINU_TEST_CHANNELS_PORT: String(channelsPort),
+        MINU_TEST_CHANNELS_PORT: String(conversationsPort),
         MINU_TEST_CONTROL_PORT: String(controlPort),
         MINU_TEST_FIXTURE_PORT: String(fixturePort),
         MINU_TEST_WEB_PORT: String(webPort),
@@ -36,7 +36,7 @@ export default defineConfig({
       command: `pnpm exec vite --host 127.0.0.1 --port ${webPort} --strictPort`,
       port: webPort,
       env: {
-        VITE_CHANNELS_PROXY_TARGET: `http://127.0.0.1:${channelsPort}`,
+        VITE_CHANNELS_PROXY_TARGET: `http://127.0.0.1:${conversationsPort}`,
         VITE_CHANNELS_CONTROL_PROXY_TARGET: `http://127.0.0.1:${controlPort}`,
         MINU_CHANNELS_SERVICE_TOKEN: serviceToken,
       },

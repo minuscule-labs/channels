@@ -1,12 +1,12 @@
-import { ChannelClient } from "@minu/channels-core/client";
+import { ConversationClient } from "@minu/channels-core/client";
 import {
   LocalRelayDirectory,
-  type ChannelWorkingFolder,
+  type ConversationWorkingFolder,
   type RelayBindingStore,
 } from "@minu/channels-relay";
 import type {
   LocalAgentRuntimeOptions,
-  LocalChannelWorkingFolders,
+  LocalConversationWorkingFolders,
   LocalRuntimeModelOption,
   LocalRuntimeOptions,
   LocalRuntimeSkillOption,
@@ -42,7 +42,7 @@ export class LocalConfigurationRequestError extends Error {
 }
 
 export interface LocalAgentHostConfigurationOptions {
-  client: ChannelClient;
+  client: ConversationClient;
   store: RelayBindingStore;
   now?: () => Date;
   runtimeOptionsCacheTtlMs?: number;
@@ -228,10 +228,10 @@ export class LocalAgentHostConfiguration {
       throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
     }
     await this.directory.configureWorkspace({ workspaceId: workspace.id, rootUri });
-    let channel = (await this.options.client.listWorkspaceChannels(workspace.id))
+    let conversation = (await this.options.client.listWorkspaceConversations(workspace.id))
       .find((candidate) => candidate.name === "General");
-    if (!channel) {
-      channel = await this.options.client.createChannel({
+    if (!conversation) {
+      conversation = await this.options.client.createConversation({
         workspaceId: workspace.id,
         name: "General",
         participantIds: [actorIdentityId],
@@ -241,7 +241,7 @@ export class LocalAgentHostConfiguration {
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       workspaceId: workspace.id,
-      channelId: channel.id,
+      conversationId: conversation.id,
     };
   }
 
@@ -265,9 +265,9 @@ export class LocalAgentHostConfiguration {
       })
       .map((member) => {
         const config = configsByIdentity.get(member.identityId);
-        const boundChannels = new Set(bindings
+        const boundConversations = new Set(bindings
           .filter((binding) => binding.agentIdentityId === member.identityId && binding.state !== "disabled")
-          .map((binding) => binding.channelId));
+          .map((binding) => binding.conversationId));
         return {
           identityId: member.identityId,
           configured: Boolean(config),
@@ -279,7 +279,7 @@ export class LocalAgentHostConfiguration {
           skillsConfigured: config?.skillIds !== undefined,
           selectedSkillCount: config?.skillIds?.length ?? 0,
           status: config?.status ?? "unconfigured",
-          boundChannelCount: boundChannels.size,
+          boundConversationCount: boundConversations.size,
           changesApplyToNewSessions: true,
         };
       });
@@ -325,16 +325,16 @@ export class LocalAgentHostConfiguration {
     };
   }
 
-  async getChannelWorkingFolders(
-    channelId: string,
+  async getConversationWorkingFolders(
+    conversationId: string,
     actorIdentityId: string,
-  ): Promise<LocalChannelWorkingFolders> {
-    const channel = await this.authorizeChannel(channelId, actorIdentityId);
-    const folders = await this.options.store.getChannelWorkingFolders(channel.workspaceId, channelId);
+  ): Promise<LocalConversationWorkingFolders> {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    const folders = await this.options.store.getConversationWorkingFolders(conversation.workspaceId, conversationId);
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
-      workspaceId: channel.workspaceId,
-      channelId,
+      workspaceId: conversation.workspaceId,
+      conversationId,
       inheritedFromWorkspace: folders.length === 0,
       folders: folders.map(({ relativePath, position, primary }) => ({
         relativePath,
@@ -346,17 +346,17 @@ export class LocalAgentHostConfiguration {
     };
   }
 
-  async previewChannelWorkingFolder(
-    channelId: string,
+  async previewConversationWorkingFolder(
+    conversationId: string,
     actorIdentityId: string,
     value: unknown,
   ): Promise<{ relativePath: string }> {
-    const channel = await this.authorizeChannel(channelId, actorIdentityId);
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
     const selection = localWorkingFolderInput(value);
     if (!selection.path) {
       throw new LocalConfigurationRequestError("Working folder preview requires a selected path", 400, "invalid");
     }
-    const workspaceConfig = await this.options.store.getWorkspaceConfig(channel.workspaceId);
+    const workspaceConfig = await this.options.store.getWorkspaceConfig(conversation.workspaceId);
     if (!workspaceConfig?.rootUri) {
       throw new LocalConfigurationRequestError("Workspace source folder is unavailable", 409, "unavailable");
     }
@@ -371,16 +371,16 @@ export class LocalAgentHostConfiguration {
     return { relativePath };
   }
 
-  async updateChannelWorkingFolders(
-    channelId: string,
+  async updateConversationWorkingFolders(
+    conversationId: string,
     actorIdentityId: string,
     value: unknown,
-  ): Promise<LocalChannelWorkingFolders> {
+  ): Promise<LocalConversationWorkingFolders> {
     let workspaceId: string | undefined;
     try {
-      const channel = await this.authorizeChannel(channelId, actorIdentityId);
-      workspaceId = channel.workspaceId;
-      const input = object(value, "Channel working folders");
+      const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+      workspaceId = conversation.workspaceId;
+      const input = object(value, "Conversation working folders");
       rejectUnknown(input, ["folders"]);
       if (!Array.isArray(input.folders) || input.folders.length > MAX_CHANNEL_WORKING_FOLDERS) {
         throw new LocalConfigurationRequestError(
@@ -389,13 +389,13 @@ export class LocalAgentHostConfiguration {
           "invalid",
         );
       }
-      const workspaceConfig = await this.options.store.getWorkspaceConfig(channel.workspaceId);
+      const workspaceConfig = await this.options.store.getWorkspaceConfig(conversation.workspaceId);
       if (!workspaceConfig?.rootUri) {
         throw new LocalConfigurationRequestError("Workspace source folder is unavailable", 409, "unavailable");
       }
       const workspaceRoot = await canonicalDirectory(workspaceConfig.rootUri, "Workspace source folder");
       const selectedCanonicalPaths = new Set<string>();
-      const folders: ChannelWorkingFolder[] = [];
+      const folders: ConversationWorkingFolder[] = [];
       for (const [position, candidate] of input.folders.entries()) {
         const selection = localWorkingFolderInput(candidate);
         let selected: string;
@@ -419,8 +419,8 @@ export class LocalAgentHostConfiguration {
         }
         selectedCanonicalPaths.add(selected);
         folders.push({
-          workspaceId: channel.workspaceId,
-          channelId,
+          workspaceId: conversation.workspaceId,
+          conversationId,
           relativePath,
           position,
           primary: selection.primary,
@@ -434,17 +434,17 @@ export class LocalAgentHostConfiguration {
         );
       }
       // Positions remain stable in source order; root-only selection intentionally becomes inheritance.
-      await this.options.store.replaceChannelWorkingFolders(channel.workspaceId, channelId, folders);
+      await this.options.store.replaceConversationWorkingFolders(conversation.workspaceId, conversationId, folders);
       this.audit({
-        action: "channel.working-folders.updated",
+        action: "conversation.working-folders.updated",
         outcome: "accepted",
         actorIdentityId,
-        workspaceId: channel.workspaceId,
-        channelId,
+        workspaceId: conversation.workspaceId,
+        conversationId,
       });
-      return this.getChannelWorkingFolders(channelId, actorIdentityId);
+      return this.getConversationWorkingFolders(conversationId, actorIdentityId);
     } catch (error) {
-      this.auditFailure("channel.working-folders.updated", actorIdentityId, workspaceId, undefined, error, channelId);
+      this.auditFailure("conversation.working-folders.updated", actorIdentityId, workspaceId, undefined, error, conversationId);
       throw error;
     }
   }
@@ -742,15 +742,15 @@ export class LocalAgentHostConfiguration {
     }
   }
 
-  private async authorizeChannel(channelId: string, actorIdentityId: string) {
-    let channel;
+  private async authorizeConversation(conversationId: string, actorIdentityId: string) {
+    let conversation;
     try {
-      channel = await this.options.client.getChannel(channelId);
+      conversation = await this.options.client.getConversation(conversationId);
     } catch {
-      throw new LocalConfigurationRequestError("Channel working folders are unavailable", 404, "unavailable");
+      throw new LocalConfigurationRequestError("Conversation working folders are unavailable", 404, "unavailable");
     }
-    await this.authorize(channel.workspaceId, actorIdentityId);
-    return channel;
+    await this.authorize(conversation.workspaceId, actorIdentityId);
+    return conversation;
   }
 
   private async authorize(workspaceId: string, actorIdentityId: string) {
@@ -780,12 +780,12 @@ export class LocalAgentHostConfiguration {
   }
 
   private auditFailure(
-    action: "workspace.config.updated" | "channel.working-folders.updated" | "runtime.models.updated" | "agent.config.updated",
+    action: "workspace.config.updated" | "conversation.working-folders.updated" | "runtime.models.updated" | "agent.config.updated",
     actorIdentityId: string,
     workspaceId: string | undefined,
     targetIdentityId: string | undefined,
     error: unknown,
-    channelId?: string,
+    conversationId?: string,
   ): void {
     this.audit({
       action,
@@ -793,7 +793,7 @@ export class LocalAgentHostConfiguration {
       reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
       actorIdentityId,
       workspaceId,
-      channelId,
+      conversationId,
       targetIdentityId,
     });
   }

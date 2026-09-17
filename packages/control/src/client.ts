@@ -1,10 +1,10 @@
 import type {
   LocalAgentRuntimeOptions,
   LocalBulkAgentLifecycleResponse,
-  LocalChannelAgent,
-  LocalChannelAgentsResponse,
-  LocalChannelWorkingFolders,
-  LocalChannelWorkingFolderPreview,
+  LocalConversationAgent,
+  LocalConversationAgentsResponse,
+  LocalConversationWorkingFolders,
+  LocalConversationWorkingFolderPreview,
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
@@ -14,7 +14,7 @@ import type {
   LocalWorkspaceConfigurationSummary,
   ProvisionLocalWorkspaceInput,
   ProvisionLocalWorkspaceResult,
-  UpdateLocalChannelWorkingFoldersInput,
+  UpdateLocalConversationWorkingFoldersInput,
   UpdateLocalRuntimeModelPolicyInput,
   UpdateLocalWorkspaceAgentConfigurationInput,
   UpdateLocalWorkspaceConfigurationInput,
@@ -73,103 +73,103 @@ export class LocalControlClient {
     });
   }
 
-  async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
-    return this.get<LocalChannelAgentsResponse>(`/local/conversations/${encodeURIComponent(channelId)}/agents`);
+  async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
+    return this.get<LocalConversationAgentsResponse>(`/local/conversations/${encodeURIComponent(conversationId)}/agents`);
   }
 
-  async getChannelWorkingFolders(channelId: string): Promise<LocalChannelWorkingFolders> {
-    return this.get<LocalChannelWorkingFolders>(
-      `/local/conversations/${encodeURIComponent(channelId)}/working-folders`,
+  async getConversationWorkingFolders(conversationId: string): Promise<LocalConversationWorkingFolders> {
+    return this.get<LocalConversationWorkingFolders>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/working-folders`,
     );
   }
 
-  async previewChannelWorkingFolder(
-    channelId: string,
+  async previewConversationWorkingFolder(
+    conversationId: string,
     path: string,
-  ): Promise<LocalChannelWorkingFolderPreview> {
-    return this.request<LocalChannelWorkingFolderPreview>(
-      `/local/conversations/${encodeURIComponent(channelId)}/working-folders/preview`,
+  ): Promise<LocalConversationWorkingFolderPreview> {
+    return this.request<LocalConversationWorkingFolderPreview>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/working-folders/preview`,
       { method: "POST", body: JSON.stringify({ path, primary: false }) },
     );
   }
 
-  async updateChannelWorkingFolders(
-    channelId: string,
-    input: UpdateLocalChannelWorkingFoldersInput,
-  ): Promise<LocalChannelWorkingFolders> {
-    return this.request<LocalChannelWorkingFolders>(
-      `/local/conversations/${encodeURIComponent(channelId)}/working-folders`,
+  async updateConversationWorkingFolders(
+    conversationId: string,
+    input: UpdateLocalConversationWorkingFoldersInput,
+  ): Promise<LocalConversationWorkingFolders> {
+    return this.request<LocalConversationWorkingFolders>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/working-folders`,
       { method: "PUT", body: JSON.stringify(input) },
     );
   }
 
-  async startAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {
+  async startAllConversationAgents(conversationId: string): Promise<LocalBulkAgentLifecycleResponse> {
     return this.request<LocalBulkAgentLifecycleResponse>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/start-all`,
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/start-all`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
   }
 
-  async stopAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {
+  async stopAllConversationAgents(conversationId: string): Promise<LocalBulkAgentLifecycleResponse> {
     return this.request<LocalBulkAgentLifecycleResponse>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/stop-all`,
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/stop-all`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
   }
 
-  async startChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
-    const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/start`,
-      { method: "POST" },
-      this.lifecycleTimeoutMs,
-    );
-    return response.agent;
-  }
-
-  async reconnectChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
-    const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/reconnect`,
+  async startConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const response = await this.request<{ agent: LocalConversationAgent }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/start`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
     return response.agent;
   }
 
-  async replaceChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
-    const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/replace`,
+  async reconnectConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const response = await this.request<{ agent: LocalConversationAgent }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/reconnect`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
     return response.agent;
   }
 
-  async stopChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
-    const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/stop`,
+  async replaceConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const response = await this.request<{ agent: LocalConversationAgent }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/replace`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
     return response.agent;
   }
 
-  async cancelCurrentChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
-    const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/cancel-current`,
+  async stopConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const response = await this.request<{ agent: LocalConversationAgent }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/stop`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
     return response.agent;
   }
 
-  async openChannelAgentDiagnostic(
-    channelId: string,
+  async cancelCurrentConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const response = await this.request<{ agent: LocalConversationAgent }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/cancel-current`,
+      { method: "POST" },
+      this.lifecycleTimeoutMs,
+    );
+    return response.agent;
+  }
+
+  async openConversationAgentDiagnostic(
+    conversationId: string,
     identityId: string,
   ): Promise<LocalOpenDiagnosticResponse> {
     return this.request<LocalOpenDiagnosticResponse>(
-      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/open-diagnostic`,
+      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/open-diagnostic`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );

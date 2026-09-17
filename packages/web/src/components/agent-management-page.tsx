@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { channels, localControl } from "../lib/api";
+import { conversations, localControl } from "../lib/api";
 import {
   initialLaunchModel,
   initialLaunchModelForProvider,
@@ -66,10 +66,10 @@ function AgentIdentityForm({
   const mutation = useMutation({
     mutationFn: async () => {
       const updatedIdentity = nameChanged
-        ? await channels.updateIdentity(identity.id, { workspaceId, actorIdentityId, displayName: normalizedName })
+        ? await conversations.updateIdentity(identity.id, { workspaceId, actorIdentityId, displayName: normalizedName })
         : identity;
       const updatedMember = handleChanged
-        ? await channels.updateWorkspaceMember(workspaceId, member.identityId, {
+        ? await conversations.updateWorkspaceMember(workspaceId, member.identityId, {
             actorIdentityId,
             mentionHandle: normalizedHandle,
           })
@@ -81,7 +81,7 @@ function AgentIdentityForm({
         current.map((candidate) => candidate.id === updatedIdentity.id ? updatedIdentity : candidate));
       queryClient.setQueryData<WorkspaceMember[]>(queryKeys.workspaceMembers(workspaceId), (current = []) =>
         current.map((candidate) => candidate.identityId === updatedMember.identityId ? updatedMember : candidate));
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceChannels(workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspaceId) });
     },
   });
 
@@ -538,7 +538,7 @@ function AgentLaunchProfileForm({
 }
 
 function useAgentManagementData(workspaceId: string) {
-  const workspace = useQuery({ queryKey: queryKeys.workspace(workspaceId), queryFn: () => channels.getWorkspace(workspaceId) });
+  const workspace = useQuery({ queryKey: queryKeys.workspace(workspaceId), queryFn: () => conversations.getWorkspace(workspaceId) });
   const session = useQuery({ queryKey: queryKeys.localCurrentSession(), queryFn: () => localControl.currentSession(), retry: false });
   const configuration = useQuery({
     queryKey: queryKeys.workspaceConfiguration(workspaceId),
@@ -546,9 +546,9 @@ function useAgentManagementData(workspaceId: string) {
     enabled: session.isSuccess,
     retry: false,
   });
-  const members = useQuery({ queryKey: queryKeys.workspaceMembers(workspaceId), queryFn: () => channels.listWorkspaceMembers(workspaceId) });
-  const identities = useQuery({ queryKey: queryKeys.identities(), queryFn: () => channels.listIdentities() });
-  const workspaceChannels = useQuery({ queryKey: queryKeys.workspaceChannels(workspaceId), queryFn: () => channels.listWorkspaceChannels(workspaceId) });
+  const members = useQuery({ queryKey: queryKeys.workspaceMembers(workspaceId), queryFn: () => conversations.listWorkspaceMembers(workspaceId) });
+  const identities = useQuery({ queryKey: queryKeys.identities(), queryFn: () => conversations.listIdentities() });
+  const workspaceConversations = useQuery({ queryKey: queryKeys.workspaceConversations(workspaceId), queryFn: () => conversations.listWorkspaceConversations(workspaceId) });
   const identitiesById = useMemo(() => new Map((identities.data ?? []).map((identity) => [identity.id, identity])), [identities.data]);
   const agentConfigs = useMemo(() => new Map((configuration.data?.agents ?? []).map((agent) => [agent.identityId, agent])), [configuration.data]);
   const agents = (members.data ?? []).flatMap((member) => {
@@ -564,11 +564,11 @@ function useAgentManagementData(workspaceId: string) {
     configuration,
     members,
     identities,
-    workspaceChannels,
+    workspaceConversations,
     agents,
-    error: workspace.error ?? session.error ?? configuration.error ?? members.error ?? identities.error ?? workspaceChannels.error,
+    error: workspace.error ?? session.error ?? configuration.error ?? members.error ?? identities.error ?? workspaceConversations.error,
     pending: workspace.isPending || session.isPending || members.isPending || identities.isPending
-      || workspaceChannels.isPending || (session.isSuccess && configuration.isPending),
+      || workspaceConversations.isPending || (session.isSuccess && configuration.isPending),
   };
 }
 
@@ -619,8 +619,8 @@ export function AgentManagementPage() {
           {data.agents.length ? (
             <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
               {data.agents.map(({ identity, member, config }, index) => {
-                const assignedChannels = (data.workspaceChannels.data ?? []).filter((channel) =>
-                  channel.participants.some((participant) => participant.id === identity.id));
+                const assignedConversations = (data.workspaceConversations.data ?? []).filter((conversation) =>
+                  conversation.participants.some((participant) => participant.id === identity.id));
                 return (
                   <Link
                     key={identity.id}
@@ -635,7 +635,7 @@ export function AgentManagementPage() {
                         <span className="font-mono text-[10px] text-[var(--muted)]">@{member.mentionHandle}</span>
                       </div>
                       <p className="mt-1 truncate text-[11px] text-[var(--muted)]">
-                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · Harness: {config.runtimeAdapter ?? "not configured"} · {assignedChannels.length} {assignedChannels.length === 1 ? "Conversation" : "Conversations"} · {config.boundChannelCount} active {config.boundChannelCount === 1 ? "binding" : "bindings"}
+                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · Harness: {config.runtimeAdapter ?? "not configured"} · {assignedConversations.length} {assignedConversations.length === 1 ? "Conversation" : "Conversations"} · {config.boundConversationCount} active {config.boundConversationCount === 1 ? "binding" : "bindings"}
                       </p>
                     </div>
                     <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">{config.status}</span>
@@ -725,8 +725,8 @@ export function AgentDetailPage() {
   if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
   const agent = data.agents.find(({ identity }) => identity.id === agentId);
   if (!agent) return <AgentPageError error={new Error("Agent does not belong to this Workspace.")} />;
-  const assignedChannels = (data.workspaceChannels.data ?? []).filter((channel) =>
-    channel.participants.some((participant) => participant.id === agent.identity.id));
+  const assignedConversations = (data.workspaceConversations.data ?? []).filter((conversation) =>
+    conversation.participants.some((participant) => participant.id === agent.identity.id));
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -749,11 +749,11 @@ export function AgentDetailPage() {
                   <p className="truncate font-mono text-[11px] text-[var(--muted)]">@{agent.member.mentionHandle} · {agent.identity.type} · {agent.member.status}</p>
                 </div>
               </div>
-              <span className="text-[11px] text-[var(--muted)]">{agent.config.boundChannelCount} active Runtime {agent.config.boundChannelCount === 1 ? "binding" : "bindings"}</span>
+              <span className="text-[11px] text-[var(--muted)]">{agent.config.boundConversationCount} active Runtime {agent.config.boundConversationCount === 1 ? "binding" : "bindings"}</span>
             </div>
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {assignedChannels.length
-                ? assignedChannels.map((channel) => <span key={channel.id} className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">#{channel.name}</span>)
+              {assignedConversations.length
+                ? assignedConversations.map((conversation) => <span key={conversation.id} className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">#{conversation.name}</span>)
                 : <span className="text-[11px] text-[var(--muted)]">Not assigned to a Conversation</span>}
             </div>
             {configurationWarning ? (

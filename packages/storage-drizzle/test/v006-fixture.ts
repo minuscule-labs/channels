@@ -3,7 +3,7 @@ import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { defaultChannelMigrationsFolder, localLibSqlUrl } from "../src/storage.ts";
+import { defaultConversationMigrationsFolder, localLibSqlUrl } from "../src/storage.ts";
 
 const V006_LAST_MIGRATION_INDEX = 6;
 
@@ -18,7 +18,7 @@ export async function createV006ChannelsDatabase(): Promise<{
   const migrationsFolder = join(directory, "v0.0.6-migrations");
   const databasePath = join(directory, "channels.db");
   try {
-    await cp(defaultChannelMigrationsFolder(), migrationsFolder, { recursive: true });
+    await cp(defaultConversationMigrationsFolder(), migrationsFolder, { recursive: true });
     const journalPath = join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(await readFile(journalPath, "utf8")) as { entries: Array<{ idx: number }> };
     journal.entries = journal.entries.filter(({ idx }) => idx <= V006_LAST_MIGRATION_INDEX);

@@ -99,9 +99,9 @@ export interface Participant {
   status?: WorkspaceMemberStatus;
 }
 
-export interface ChannelMessage {
+export interface ConversationMessage {
   id: string;
-  channelId: string;
+  conversationId: string;
   sequence: number;
   participantId: string;
   to: string[];
@@ -110,7 +110,7 @@ export interface ChannelMessage {
   createdAt: string;
 }
 
-export interface ChannelMetadata {
+export interface ConversationMetadata {
   id: string;
   workspaceId: string;
   name: string;
@@ -119,36 +119,36 @@ export interface ChannelMetadata {
   createdAt: string;
 }
 
-export interface Channel extends ChannelMetadata {
-  messages: ChannelMessage[];
+export interface Conversation extends ConversationMetadata {
+  messages: ConversationMessage[];
 }
 
 export interface MessageCreatedEvent {
   id: string;
   type: "message.created";
-  channelId: string;
-  message: ChannelMessage;
+  conversationId: string;
+  message: ConversationMessage;
   createdAt: string;
 }
 
 export interface RosterUpdatedEvent {
   id: string;
   type: "roster.updated";
-  channelId: string;
+  conversationId: string;
   rosterRevision: number;
   createdAt: string;
 }
 
-export interface ChannelUpdatedEvent {
+export interface ConversationUpdatedEvent {
   id: string;
-  type: "channel.updated";
-  channelId: string;
+  type: "conversation.updated";
+  conversationId: string;
   createdAt: string;
 }
 
-export type ChannelEvent = MessageCreatedEvent | RosterUpdatedEvent | ChannelUpdatedEvent;
+export type ConversationEvent = MessageCreatedEvent | RosterUpdatedEvent | ConversationUpdatedEvent;
 
-export interface CreateChannelInput {
+export interface CreateConversationInput {
   /** Caller-stable id used by recoverable local provisioning. */
   id?: string;
   workspaceId?: string;
@@ -160,13 +160,13 @@ export interface CreateChannelInput {
   participants?: Participant[];
 }
 
-export interface UpdateChannelInput {
+export interface UpdateConversationInput {
   /** Advisory product policy until requests are authenticated. */
   actorIdentityId: string;
   name: string;
 }
 
-export interface UpdateChannelParticipantsInput {
+export interface UpdateConversationParticipantsInput {
   /** Advisory product policy until requests are authenticated. */
   actorIdentityId: string;
   participantIds: string[];
@@ -188,11 +188,11 @@ export interface CreateResponseInput {
 }
 
 export interface ResponseResult {
-  message: ChannelMessage;
+  message: ConversationMessage;
   created: boolean;
 }
 
-export interface ChannelCursorStore {
-  getCursor(channelId: string, participantId: string): Promise<number>;
-  setCursor(channelId: string, participantId: string, sequence: number): Promise<void>;
+export interface ConversationCursorStore {
+  getCursor(conversationId: string, participantId: string): Promise<number>;
+  setCursor(conversationId: string, participantId: string, sequence: number): Promise<void>;
 }

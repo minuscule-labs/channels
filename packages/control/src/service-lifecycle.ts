@@ -4,10 +4,10 @@ import { access, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "no
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { acquireChannelsDataDirectoryLock, prepareChannelsDataDirectory } from "./local-paths.ts";
+import { acquireConversationsDataDirectoryLock, prepareConversationsDataDirectory } from "./local-paths.ts";
 
 const executeFile = promisify(execFile);
-const SERVICE_LABEL_PREFIX = "com.minusculelabs.minuchannels";
+const SERVICE_LABEL_PREFIX = "com.minusculelabs.minuconversations";
 
 type CommandResult = { stdout: string; stderr: string };
 export type ServiceCommandRunner = (command: string, args: string[]) => Promise<CommandResult>;
@@ -208,10 +208,10 @@ export class LocalServiceLifecycle {
   }
 
   private async assertDataDirectoryAvailable(): Promise<void> {
-    await prepareChannelsDataDirectory(this.dataDirectory);
+    await prepareConversationsDataDirectory(this.dataDirectory);
     let lock;
     try {
-      lock = await acquireChannelsDataDirectoryLock(this.dataDirectory);
+      lock = await acquireConversationsDataDirectoryLock(this.dataDirectory);
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("MinuChannels is already using data directory:")) {
         throw new Error("MinuChannels is already running for this data directory");

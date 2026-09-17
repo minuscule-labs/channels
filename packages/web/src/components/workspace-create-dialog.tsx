@@ -48,17 +48,17 @@ export function WorkspaceCreateDialog({
         rootUri: sourcePath.trim(),
       });
     },
-    onSuccess: ({ workspaceId, channelId }) => {
+    onSuccess: ({ workspaceId, conversationId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces() });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceChannels(workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspaceId) });
       setOpen(false);
       setName("");
       setSourcePath("");
       provisioningSlug.current = undefined;
       onNavigate?.();
       void navigate({
-        to: "/app/workspaces/$workspaceId/conversations/$channelId",
-        params: { workspaceId, channelId },
+        to: "/app/workspaces/$workspaceId/conversations/$conversationId",
+        params: { workspaceId, conversationId },
       });
     },
   });

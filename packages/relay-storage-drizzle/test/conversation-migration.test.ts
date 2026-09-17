@@ -26,9 +26,9 @@ test("production Conversation migration upgrades populated v0.0.6 Relay state", 
 
     const storage = await DrizzleLibSqlRelayStorage.open({ url: fixture.url });
     try {
-      assert.equal((await storage.getBinding("binding_upgrade"))?.channelId, channelId);
-      assert.deepEqual(await storage.getChannelWorkingFolders("workspace_upgrade", channelId), [{
-        workspaceId: "workspace_upgrade", channelId, relativePath: "apps/web", position: 0, primary: true,
+      assert.equal((await storage.getBinding("binding_upgrade"))?.conversationId, channelId);
+      assert.deepEqual(await storage.getConversationWorkingFolders("workspace_upgrade", channelId), [{
+        workspaceId: "workspace_upgrade", conversationId: channelId, relativePath: "apps/web", position: 0, primary: true,
       }]);
       assert.equal(await storage.getCursor(channelId, "agent_upgrade"), 7);
       assert.equal((await storage.listDeliveryDeadLetters(channelId, "agent_upgrade"))[0]?.reason, "delivery_rejected");

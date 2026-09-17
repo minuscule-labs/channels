@@ -1,6 +1,6 @@
-import type { ChannelMessage } from "@minu/channels-core/types";
+import type { ConversationMessage } from "@minu/channels-core/types";
 import { describe, expect, test } from "vitest";
-import { readSequence, readSound, unreadFor, writeReadSequence, writeSound } from "../src/lib/channel-notifications";
+import { readSequence, readSound, unreadFor, writeReadSequence, writeSound } from "../src/lib/conversation-notifications";
 
 function storage() {
   const values = new Map<string, string>();
@@ -9,9 +9,9 @@ function storage() {
     setItem: (key: string, value: string) => void values.set(key, value),
   };
 }
-const message = (sequence: number, participantId: string, to: string[] = []): ChannelMessage => ({
+const message = (sequence: number, participantId: string, to: string[] = []): ConversationMessage => ({
   id: `message-${sequence}`,
-  channelId: "channel-1",
+  conversationId: "conversation-1",
   sequence,
   participantId,
   to,
@@ -19,7 +19,7 @@ const message = (sequence: number, participantId: string, to: string[] = []): Ch
   createdAt: "2026-01-01T00:00:00.000Z",
 });
 
-describe("local Channel notifications", () => {
+describe("local Conversation notifications", () => {
   test("counts only genuinely unread peer messages and distinguishes mentions", () => {
     expect(unreadFor([
       message(1, "human"),
@@ -33,13 +33,13 @@ describe("local Channel notifications", () => {
     expect(unreadFor([message(1, "agent")], "human", 99)).toEqual({ count: 1, mentionCount: 0 });
   });
 
-  test("persists read state per identity and Channel", () => {
+  test("persists read state per identity and Conversation", () => {
     const local = storage();
-    writeReadSequence(local, "human-a", "channel-a", 7);
-    writeReadSequence(local, "human-a", "channel-a", 3);
-    expect(readSequence(local, "human-a", "channel-a")).toBe(7);
-    expect(readSequence(local, "human-b", "channel-a")).toBe(0);
-    expect(readSequence(local, "human-a", "channel-b")).toBe(0);
+    writeReadSequence(local, "human-a", "conversation-a", 7);
+    writeReadSequence(local, "human-a", "conversation-a", 3);
+    expect(readSequence(local, "human-a", "conversation-a")).toBe(7);
+    expect(readSequence(local, "human-b", "conversation-a")).toBe(0);
+    expect(readSequence(local, "human-a", "conversation-b")).toBe(0);
   });
 
   test("defaults sound off and persists an explicit preference per identity", () => {

@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
   const target = env.VITE_CHANNELS_PROXY_TARGET ?? "http://127.0.0.1:47410";
   const controlTarget = env.VITE_CHANNELS_CONTROL_PROXY_TARGET ?? "http://127.0.0.1:47411";
   const serviceToken = env.MINU_CHANNELS_SERVICE_TOKEN;
-  const channelProxy = {
+  const conversationProxy = {
     target,
     changeOrigin: true,
     headers: serviceToken ? { authorization: `Bearer ${serviceToken}` } : undefined,
@@ -20,9 +20,9 @@ export default defineConfig(({ mode }) => {
     server: {
       allowedHosts: ["minu-channels.localhost"],
       proxy: {
-        "/conversations": channelProxy,
-        "/workspaces": channelProxy,
-        "/identities": channelProxy,
+        "/conversations": conversationProxy,
+        "/workspaces": conversationProxy,
+        "/identities": conversationProxy,
         "/local": { target: controlTarget, changeOrigin: true },
       },
     },

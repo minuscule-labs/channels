@@ -4,11 +4,11 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ChannelService } from "@minu/channels-core";
+import { ConversationService } from "@minu/channels-core";
 import {
   backupLocalLibSqlDatabase,
-  defaultChannelMigrationsFolder,
-  DrizzleLibSqlChannelStorage,
+  defaultConversationMigrationsFolder,
+  DrizzleLibSqlConversationStorage,
   hasPendingLocalLibSqlMigrations,
   localLibSqlUrl,
 } from "../src/storage.ts";
@@ -18,14 +18,14 @@ test("local migration backups snapshot existing data only when a migration is pe
   const databasePath = join(directory, "channels.db");
   const url = localLibSqlUrl(databasePath);
   const migrationsFolder = join(directory, "future-migrations");
-  const backupPath = join(directory, "backups", "channels-before-migration.db");
+  const backupPath = join(directory, "backups", "conversations-before-migration.db");
   try {
-    const storage = await DrizzleLibSqlChannelStorage.open({ url });
-    const service = new ChannelService(storage);
+    const storage = await DrizzleLibSqlConversationStorage.open({ url });
+    const service = new ConversationService(storage);
     const identity = await service.createIdentity({ type: "human", displayName: "Before backup" });
     await storage.close();
 
-    assert.equal(await hasPendingLocalLibSqlMigrations(url, defaultChannelMigrationsFolder()), false);
+    assert.equal(await hasPendingLocalLibSqlMigrations(url, defaultConversationMigrationsFolder()), false);
     await mkdir(join(migrationsFolder, "meta"), { recursive: true });
     await writeFile(join(migrationsFolder, "meta", "_journal.json"), JSON.stringify({
       entries: [{ idx: 0, version: "6", when: 4_102_444_800_000, tag: "0000_future", breakpoints: true }],
@@ -75,13 +75,13 @@ test("initial migration adopts the previous raw SQLite schema", async () => {
     `);
     legacy.close();
 
-    const storage = await DrizzleLibSqlChannelStorage.open({ url });
-    const channel = await storage.getChannel("legacy-channel");
-    assert.equal(channel?.id, "legacy-channel");
-    assert.equal(channel?.workspaceId, "legacy-default-workspace");
-    assert.equal(channel?.name, "Channel legacy-c");
-    assert.equal(channel?.participants[0]?.id, "legacy-agent");
-    assert.equal(channel?.participants[0]?.handle, "legacy-agent");
+    const storage = await DrizzleLibSqlConversationStorage.open({ url });
+    const conversation = await storage.getConversation("legacy-channel");
+    assert.equal(conversation?.id, "legacy-channel");
+    assert.equal(conversation?.workspaceId, "legacy-default-workspace");
+    assert.equal(conversation?.name, "Channel legacy-c");
+    assert.equal(conversation?.participants[0]?.id, "legacy-agent");
+    assert.equal(conversation?.participants[0]?.handle, "legacy-agent");
     assert.equal((await storage.listWorkspaces())[0]?.id, "legacy-default-workspace");
     assert.equal((await storage.listIdentities())[0]?.id, "legacy-agent");
     assert.equal(
@@ -94,15 +94,15 @@ test("initial migration adopts the previous raw SQLite schema", async () => {
   }
 });
 
-test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and Channels", async () => {
+test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and Conversations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-workspaces-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
   try {
-    const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const first = new ChannelService(firstStorage);
+    const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const first = new ConversationService(firstStorage);
     const human = await first.createIdentity({ type: "human", displayName: "David" });
     const agent = await first.createIdentity({ type: "agent", displayName: "Builder" });
-    const workspace = await first.createWorkspace({ slug: "channels", name: "Channels" });
+    const workspace = await first.createWorkspace({ slug: "conversations", name: "Conversations" });
     await first.addWorkspaceMember(workspace.id, {
       identityId: human.id,
       mentionHandle: "david",
@@ -113,12 +113,12 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
       mentionHandle: "builder",
       roleLabel: "implementation",
     });
-    const channel = await first.createChannel({
+    const conversation = await first.createConversation({
       workspaceId: workspace.id,
       name: "durable-work",
       participantIds: [human.id, agent.id],
     });
-    await first.createMessage(channel.id, {
+    await first.createMessage(conversation.id, {
       participantId: human.id,
       body: "@builder implement this",
     });
@@ -129,7 +129,7 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
     });
     await first.updateWorkspace(workspace.id, {
       actorIdentityId: human.id,
-      name: "Renamed Channels",
+      name: "Renamed Conversations",
     });
     await first.updateIdentity(agent.id, {
       workspaceId: workspace.id,
@@ -138,13 +138,13 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
     });
     await first.close();
 
-    const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const second = new ChannelService(secondStorage);
+    const secondStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const second = new ConversationService(secondStorage);
     assert.equal((await second.listIdentities()).length, 2);
     assert.equal((await second.getIdentity(agent.id)).displayName, "Lead Builder");
-    assert.equal((await second.getWorkspace(workspace.id)).name, "Renamed Channels");
+    assert.equal((await second.getWorkspace(workspace.id)).name, "Renamed Conversations");
     assert.equal((await second.listWorkspaceMembers(workspace.id))[1]?.mentionHandle, "implementer");
-    const restored = await second.getChannel(channel.id);
+    const restored = await second.getConversation(conversation.id);
     assert.equal(restored.workspaceId, workspace.id);
     assert.equal(restored.name, "durable-work");
     assert.equal(restored.participants[1]?.id, agent.id);
@@ -162,8 +162,8 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
 test("Drizzle/libSQL prevents concurrent removal of the last active Workspace owner", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-owners-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
-  const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
-  const first = new ChannelService(firstStorage);
+  const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+  const first = new ConversationService(firstStorage);
   try {
     const [ownerA, ownerB] = await Promise.all([
       first.createIdentity({ type: "human", displayName: "Owner A" }),
@@ -180,8 +180,8 @@ test("Drizzle/libSQL prevents concurrent removal of the last active Workspace ow
       mentionHandle: "owner-b",
       accessRole: "owner",
     });
-    const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const second = new ChannelService(secondStorage);
+    const secondStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const second = new ConversationService(secondStorage);
     try {
       const updates = await Promise.allSettled([
         first.updateWorkspaceMember(workspace.id, ownerA.id, {
@@ -209,11 +209,11 @@ test("Drizzle/libSQL prevents concurrent removal of the last active Workspace ow
   }
 });
 
-test("Drizzle/libSQL atomically replaces revisioned Channel rosters", async () => {
+test("Drizzle/libSQL atomically replaces revisioned Conversation rosters", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-roster-race-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
-  const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
-  const first = new ChannelService(firstStorage);
+  const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+  const first = new ConversationService(firstStorage);
   try {
     const [owner, builder, reviewer] = await Promise.all([
       first.createIdentity({ type: "human", displayName: "Owner" }),
@@ -236,37 +236,37 @@ test("Drizzle/libSQL atomically replaces revisioned Channel rosters", async () =
         mentionHandle: "reviewer",
       }),
     ]);
-    const channel = await first.createChannel({
+    const conversation = await first.createConversation({
       workspaceId: workspace.id,
       participantIds: [owner.id, builder.id, reviewer.id],
     });
-    await first.createMessage(channel.id, { participantId: builder.id, body: "Builder history" });
-    const secondStorage = await DrizzleLibSqlChannelStorage.open({
+    await first.createMessage(conversation.id, { participantId: builder.id, body: "Builder history" });
+    const secondStorage = await DrizzleLibSqlConversationStorage.open({
       url: url.replace("file:", "file://"),
     });
-    const second = new ChannelService(secondStorage);
+    const second = new ConversationService(secondStorage);
     try {
       const updates = await Promise.allSettled([
-        first.updateChannelParticipants(channel.id, {
+        first.updateConversationParticipants(conversation.id, {
           actorIdentityId: owner.id,
           participantIds: [owner.id, builder.id],
           expectedRosterRevision: 1,
         }),
-        second.updateChannelParticipants(channel.id, {
+        second.updateConversationParticipants(conversation.id, {
           actorIdentityId: owner.id,
           participantIds: [owner.id, reviewer.id],
           expectedRosterRevision: 1,
         }),
       ]);
       assert.deepEqual(updates.map(({ status }) => status).sort(), ["fulfilled", "rejected"]);
-      const restored = await first.getChannel(channel.id);
+      const restored = await first.getConversation(conversation.id);
       assert.equal(restored.rosterRevision, 2);
       assert.equal(restored.participants.length, 2);
       assert.equal(restored.messages[0]?.participantId, builder.id);
       const removedId = restored.participants.some(({ id }) => id === builder.id)
         ? reviewer.id
         : builder.id;
-      assert.equal(await firstStorage.getCursor(channel.id, removedId), 1);
+      assert.equal(await firstStorage.getCursor(conversation.id, removedId), 1);
     } finally {
       await second.close();
     }
@@ -280,9 +280,9 @@ test("Drizzle/libSQL keeps message idempotency atomic and durable across reopen"
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-message-idempotency-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
   try {
-    const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const first = new ChannelService(firstStorage);
-    const channel = await first.createChannel({
+    const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const first = new ConversationService(firstStorage);
+    const conversation = await first.createConversation({
       participants: [
         { id: "user", type: "human" },
         { id: "agent-a", type: "agent" },
@@ -290,31 +290,31 @@ test("Drizzle/libSQL keeps message idempotency atomic and durable across reopen"
     });
     // Use an equivalent URL with a distinct storage key so this exercises the
     // database transaction race rather than the in-process pending map.
-    const competingStorage = await DrizzleLibSqlChannelStorage.open({
+    const competingStorage = await DrizzleLibSqlConversationStorage.open({
       url: url.replace("file:", "file://"),
     });
-    const competing = new ChannelService(competingStorage);
+    const competing = new ConversationService(competingStorage);
     const input = { participantId: "user", body: "@agent-a once" };
     const [left, right] = await Promise.all([
-      first.createMessage(channel.id, input, "durable-key"),
-      competing.createMessage(channel.id, input, "durable-key"),
+      first.createMessage(conversation.id, input, "durable-key"),
+      competing.createMessage(conversation.id, input, "durable-key"),
     ]);
     assert.equal(left.id, right.id);
-    assert.equal((await first.listMessages(channel.id)).length, 1);
+    assert.equal((await first.listMessages(conversation.id)).length, 1);
     await competing.close();
     await first.close();
 
-    const reopenedStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const reopened = new ChannelService(reopenedStorage);
-    const replay = await reopened.createMessage(channel.id, input, "durable-key");
+    const reopenedStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const reopened = new ConversationService(reopenedStorage);
+    const replay = await reopened.createMessage(conversation.id, input, "durable-key");
     assert.equal(replay.id, left.id);
     const [conflictingPending, matchingPending] = await Promise.allSettled([
       reopened.createMessage(
-        channel.id,
+        conversation.id,
         { participantId: "user", body: "@agent-a changed" },
         "durable-key",
       ),
-      reopened.createMessage(channel.id, input, "durable-key"),
+      reopened.createMessage(conversation.id, input, "durable-key"),
     ]);
     assert.equal(conflictingPending.status, "rejected");
     assert.match(String((conflictingPending as PromiseRejectedResult).reason), /different payload/);
@@ -325,15 +325,15 @@ test("Drizzle/libSQL keeps message idempotency atomic and durable across reopen"
     );
     await assert.rejects(
       reopened.createMessage(
-        channel.id,
+        conversation.id,
         { participantId: "user", body: "@agent-a changed" },
         "durable-key",
       ),
       /different payload/,
     );
-    assert.equal((await reopened.listMessages(channel.id)).length, 1);
+    assert.equal((await reopened.listMessages(conversation.id)).length, 1);
     assert.equal(
-      (await reopened.createMessage(channel.id, { participantId: "user", body: "next" })).sequence,
+      (await reopened.createMessage(conversation.id, { participantId: "user", body: "next" })).sequence,
       2,
     );
     await reopened.close();
@@ -346,15 +346,15 @@ test("Drizzle/libSQL keeps response commits idempotent across reopen", async () 
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-delivery-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
   try {
-    const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const first = new ChannelService(firstStorage);
-    const channel = await first.createChannel({
+    const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const first = new ConversationService(firstStorage);
+    const conversation = await first.createConversation({
       participants: [
         { id: "user", type: "human" },
         { id: "agent-a", type: "agent" },
       ],
     });
-    const trigger = await first.createMessage(channel.id, {
+    const trigger = await first.createMessage(conversation.id, {
       participantId: "user",
       body: "@agent-a implement this",
     });
@@ -364,11 +364,11 @@ test("Drizzle/libSQL keeps response commits idempotent across reopen", async () 
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     };
-    const competingStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const competing = new ChannelService(competingStorage);
+    const competingStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const competing = new ConversationService(competingStorage);
     const commits = await Promise.all([
-      first.createResponse(channel.id, input),
-      competing.createResponse(channel.id, input),
+      first.createResponse(conversation.id, input),
+      competing.createResponse(conversation.id, input),
     ]);
     assert.deepEqual(commits.map((result) => result.created).sort(), [false, true]);
     assert.equal(commits[0]!.message.id, commits[1]!.message.id);
@@ -376,15 +376,15 @@ test("Drizzle/libSQL keeps response commits idempotent across reopen", async () 
     await competing.close();
     await first.close();
 
-    const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const second = new ChannelService(secondStorage);
-    const duplicate = await second.createResponse(channel.id, input);
+    const secondStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const second = new ConversationService(secondStorage);
+    const duplicate = await second.createResponse(conversation.id, input);
     assert.equal(duplicate.created, false);
     assert.equal(duplicate.message.id, committed.message.id);
-    assert.equal((await second.listMessages(channel.id)).length, 2);
-    assert.equal(await secondStorage.getCursor(channel.id, "agent-a"), trigger.sequence);
+    assert.equal((await second.listMessages(conversation.id)).length, 2);
+    assert.equal(await secondStorage.getCursor(conversation.id, "agent-a"), trigger.sequence);
     assert.equal(
-      (await second.createMessage(channel.id, { participantId: "user", body: "next" })).sequence,
+      (await second.createMessage(conversation.id, { participantId: "user", body: "next" })).sequence,
       3,
     );
     await second.close();
@@ -393,14 +393,14 @@ test("Drizzle/libSQL keeps response commits idempotent across reopen", async () 
   }
 });
 
-test("Drizzle/libSQL preserves channels, sequences, messages, and cursors", async () => {
+test("Drizzle/libSQL preserves conversations, sequences, messages, and cursors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-libsql-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
-  let channelId!: string;
+  let conversationId!: string;
   try {
-    const firstStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const first = new ChannelService(firstStorage);
-    const channel = await first.createChannel({
+    const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const first = new ConversationService(firstStorage);
+    const conversation = await first.createConversation({
       participants: [
         { id: "user", type: "human" },
         {
@@ -412,22 +412,22 @@ test("Drizzle/libSQL preserves channels, sequences, messages, and cursors", asyn
         },
       ],
     });
-    channelId = channel.id;
+    conversationId = conversation.id;
     assert.equal(
-      (await first.createMessage(channel.id, { participantId: "user", body: "@agent-a first" }))
+      (await first.createMessage(conversation.id, { participantId: "user", body: "@agent-a first" }))
         .sequence,
       1,
     );
     assert.equal(
-      (await first.createMessage(channel.id, { participantId: "agent-a", body: "done" })).sequence,
+      (await first.createMessage(conversation.id, { participantId: "agent-a", body: "done" })).sequence,
       2,
     );
-    await firstStorage.setCursor(channel.id, "agent-a", 1);
+    await firstStorage.setCursor(conversation.id, "agent-a", 1);
     await first.close();
 
-    const secondStorage = await DrizzleLibSqlChannelStorage.open({ url });
-    const second = new ChannelService(secondStorage);
-    assert.deepEqual((await second.getChannel(channelId)).participants[1], {
+    const secondStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const second = new ConversationService(secondStorage);
+    assert.deepEqual((await second.getConversation(conversationId)).participants[1], {
       id: "agent-a",
       handle: "agent-a",
       type: "agent",
@@ -437,20 +437,20 @@ test("Drizzle/libSQL preserves channels, sequences, messages, and cursors", asyn
       status: "active",
     });
     assert.deepEqual(
-      (await second.listMessages(channelId)).map((message) => [message.sequence, message.body]),
+      (await second.listMessages(conversationId)).map((message) => [message.sequence, message.body]),
       [[1, "@agent-a first"], [2, "done"]],
     );
-    assert.equal(await secondStorage.getCursor(channelId, "agent-a"), 1);
+    assert.equal(await secondStorage.getCursor(conversationId, "agent-a"), 1);
     assert.equal(
-      (await second.createMessage(channelId, { participantId: "user", body: "third" })).sequence,
+      (await second.createMessage(conversationId, { participantId: "user", body: "third" })).sequence,
       3,
     );
     assert.deepEqual(
-      (await second.listMessages(channelId, { afterSequence: 1, limit: 1 })).map(({ sequence }) => sequence),
+      (await second.listMessages(conversationId, { afterSequence: 1, limit: 1 })).map(({ sequence }) => sequence),
       [2],
     );
     assert.deepEqual(
-      (await second.listMessages(channelId, { beforeSequence: 3, limit: 1 })).map(({ sequence }) => sequence),
+      (await second.listMessages(conversationId, { beforeSequence: 3, limit: 1 })).map(({ sequence }) => sequence),
       [2],
     );
     await second.close();

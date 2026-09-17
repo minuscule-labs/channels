@@ -4,21 +4,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { channels, localControl } from "../lib/api";
-import { useLiveChannel } from "../lib/live-channel";
+import { conversations, localControl } from "../lib/api";
+import { useLiveConversation } from "../lib/live-conversation";
 import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
-import { readSequence, resetReadSequence, writeReadSequence } from "../lib/channel-notifications";
+import { readSequence, resetReadSequence, writeReadSequence } from "../lib/conversation-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
-import { ChannelActivityStrip } from "./channel-activity-strip";
-import { EditChannelParticipantsDialog } from "./channel-administration-dialog";
-import { ChannelComposer } from "./channel-composer";
-import { ChannelTimeline } from "./channel-timeline";
+import { ConversationActivityStrip } from "./conversation-activity-strip";
+import { EditConversationParticipantsDialog } from "./conversation-administration-dialog";
+import { ConversationComposer } from "./conversation-composer";
+import { ConversationTimeline } from "./conversation-timeline";
 import { MemberRoster } from "./member-roster";
 import { Drawer } from "./ui/drawer";
 
-export function ChannelPage() {
-  const { workspaceId, channelId } = useParams({ from: "/app/workspaces/$workspaceId/conversations/$channelId" });
+export function ConversationPage() {
+  const { workspaceId, conversationId } = useParams({ from: "/app/workspaces/$workspaceId/conversations/$conversationId" });
   const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
@@ -29,23 +29,23 @@ export function ChannelPage() {
   const previousMessageCountRef = useRef(0);
   const workspace = useQuery({
     queryKey: queryKeys.workspace(workspaceId),
-    queryFn: () => channels.getWorkspace(workspaceId),
+    queryFn: () => conversations.getWorkspace(workspaceId),
   });
   const metadata = useQuery({
-    queryKey: queryKeys.channel(channelId),
-    queryFn: () => channels.getChannel(channelId),
+    queryKey: queryKeys.conversation(conversationId),
+    queryFn: () => conversations.getConversation(conversationId),
   });
   const workspaceMembers = useQuery({
     queryKey: queryKeys.workspaceMembers(workspaceId),
-    queryFn: () => channels.listWorkspaceMembers(workspaceId),
+    queryFn: () => conversations.listWorkspaceMembers(workspaceId),
   });
   const identities = useQuery({
     queryKey: queryKeys.identities(),
-    queryFn: () => channels.listIdentities(),
+    queryFn: () => conversations.listIdentities(),
   });
   const messages = useQuery({
-    queryKey: queryKeys.channelMessages(channelId),
-    queryFn: () => channels.listMessages(channelId),
+    queryKey: queryKeys.conversationMessages(conversationId),
+    queryFn: () => conversations.listMessages(conversationId),
   });
   const currentSession = useQuery({
     queryKey: queryKeys.localCurrentSession(),
@@ -60,27 +60,27 @@ export function ChannelPage() {
     staleTime: 60_000,
   });
   const localAgents = useQuery({
-    queryKey: queryKeys.localChannelAgents(channelId),
-    queryFn: async () => (await localControl.listChannelAgents(channelId)).agents,
+    queryKey: queryKeys.localConversationAgents(conversationId),
+    queryFn: async () => (await localControl.listConversationAgents(conversationId)).agents,
     retry: false,
     refetchInterval: (query) => query.state.status === "error"
       ? 30_000
       : query.state.data?.some((agent) => agent.activity) ? 1_000 : 5_000,
   });
-  const { connection, retry } = useLiveChannel(channelId);
+  const { connection, retry } = useLiveConversation(conversationId);
   const agentAction = useMutation({
     mutationFn: ({ action, identityId }: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string }) => {
-      if (action === "reconnect") return localControl.reconnectChannelAgent(channelId, identityId);
-      if (action === "replace") return localControl.replaceChannelAgent(channelId, identityId);
-      if (action === "stop") return localControl.stopChannelAgent(channelId, identityId);
-      if (action === "cancel") return localControl.cancelCurrentChannelAgent(channelId, identityId);
-      return localControl.startChannelAgent(channelId, identityId);
+      if (action === "reconnect") return localControl.reconnectConversationAgent(conversationId, identityId);
+      if (action === "replace") return localControl.replaceConversationAgent(conversationId, identityId);
+      if (action === "stop") return localControl.stopConversationAgent(conversationId, identityId);
+      if (action === "cancel") return localControl.cancelCurrentConversationAgent(conversationId, identityId);
+      return localControl.startConversationAgent(conversationId, identityId);
     },
     onMutate: ({ action, identityId }) => {
       setBulkResults(undefined);
       if (action !== "cancel") return undefined;
       const previous = localAgents.data;
-      queryClient.setQueryData(queryKeys.localChannelAgents(channelId), (current: typeof localAgents.data) =>
+      queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), (current: typeof localAgents.data) =>
         current?.map((agent) => agent.identityId === identityId && agent.activity
           ? { ...agent, activity: { ...agent.activity, phase: "canceling" as const }, capabilities: { ...agent.capabilities, interrupt: false } }
           : agent),
@@ -89,26 +89,26 @@ export function ChannelPage() {
     },
     onError: (_error, _variables, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(queryKeys.localChannelAgents(channelId), context.previous);
+        queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), context.previous);
       }
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelMessages(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
     },
   });
   const diagnosticAction = useMutation({
-    mutationFn: async (target: { channelId: string; identityId: string }) => {
-      await localControl.openChannelAgentDiagnostic(target.channelId, target.identityId);
+    mutationFn: async (target: { conversationId: string; identityId: string }) => {
+      await localControl.openConversationAgentDiagnostic(target.conversationId, target.identityId);
       return target;
     },
   });
   const bulkAgentAction = useMutation({
     mutationFn: (action: "start" | "stop") => action === "start"
-      ? localControl.startAllChannelAgents(channelId)
-      : localControl.stopAllChannelAgents(channelId),
+      ? localControl.startAllConversationAgents(conversationId)
+      : localControl.stopAllConversationAgents(conversationId),
     onMutate: (action) => {
       setBulkResults(undefined);
       setPendingBulkTargets(new Set((localAgents.data ?? [])
@@ -119,8 +119,8 @@ export function ChannelPage() {
     },
     onSuccess: (response) => {
       setBulkResults(response.results);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channelId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.channelMessages(channelId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
     },
     onSettled: () => setPendingBulkTargets(undefined),
@@ -164,22 +164,22 @@ export function ChannelPage() {
     nearEndRef.current = true;
     previousMessageCountRef.current = 0;
     setUnseenMessages(0);
-    window.dispatchEvent(new CustomEvent("minu-channel-view", {
-      detail: { channelId, nearEnd: true },
+    window.dispatchEvent(new CustomEvent("minu-conversation-view", {
+      detail: { conversationId, nearEnd: true },
     }));
-  }, [channelId]);
+  }, [conversationId]);
 
   const markRead = useCallback(() => {
-    window.dispatchEvent(new CustomEvent("minu-channel-view", {
-      detail: { channelId, nearEnd: nearEndRef.current },
+    window.dispatchEvent(new CustomEvent("minu-conversation-view", {
+      detail: { conversationId, nearEnd: nearEndRef.current },
     }));
     const identityId = currentSession.data?.identityId;
     const sequence = messages.data?.at(-1)?.sequence;
     if (!identityId || sequence === undefined || document.visibilityState !== "visible" || !nearEndRef.current) return;
-    if (readSequence(localStorage, identityId, channelId) > sequence) resetReadSequence(localStorage, identityId, channelId);
-    writeReadSequence(localStorage, identityId, channelId, sequence);
+    if (readSequence(localStorage, identityId, conversationId) > sequence) resetReadSequence(localStorage, identityId, conversationId);
+    writeReadSequence(localStorage, identityId, conversationId, sequence);
     window.dispatchEvent(new Event("minu-read-state"));
-  }, [channelId, currentSession.data?.identityId, messages.data]);
+  }, [conversationId, currentSession.data?.identityId, messages.data]);
 
   useEffect(() => {
     const count = messages.data?.length ?? 0;
@@ -229,7 +229,7 @@ export function ChannelPage() {
               </span>
             </div>
             <p className="truncate text-[11px] text-[var(--muted)]">
-              Workspace: {workspace.data?.name ?? shortId(workspaceId)} · Conversation ID {shortId(channelId)} · roster {metadata.data.rosterRevision}
+              Workspace: {workspace.data?.name ?? shortId(workspaceId)} · Conversation ID {shortId(conversationId)} · roster {metadata.data.rosterRevision}
             </p>
           </div>
           {connection === "disconnected" ? (
@@ -237,7 +237,7 @@ export function ChannelPage() {
               <RefreshCw className="h-3.5 w-3.5" /> Retry
             </button>
           ) : null}
-          <EditChannelParticipantsDialog channel={metadata.data} />
+          <EditConversationParticipantsDialog conversation={metadata.data} />
           <Drawer
             open={rosterOpen}
             onOpenChange={setRosterOpen}
@@ -264,13 +264,13 @@ export function ChannelPage() {
               onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
               onOpenAgentDiagnostic={canOpenDiagnostics
-                ? (identityId) => diagnosticAction.mutateAsync({ channelId, identityId })
+                ? (identityId) => diagnosticAction.mutateAsync({ conversationId, identityId })
                 : undefined}
-              openedDiagnosticIdentityId={diagnosticAction.data?.channelId === channelId
+              openedDiagnosticIdentityId={diagnosticAction.data?.conversationId === conversationId
                 ? diagnosticAction.data.identityId
                 : undefined}
               pendingDiagnosticIdentityId={diagnosticAction.isPending
-                && diagnosticAction.variables.channelId === channelId
+                && diagnosticAction.variables.conversationId === conversationId
                 ? diagnosticAction.variables.identityId
                 : undefined}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
@@ -294,8 +294,8 @@ export function ChannelPage() {
             className="minu-scroll absolute inset-0 overflow-y-auto bg-[var(--bg)]"
             onScroll={(event) => {
               nearEndRef.current = isNearTimelineEnd(event.currentTarget);
-              window.dispatchEvent(new CustomEvent("minu-channel-view", {
-                detail: { channelId, nearEnd: nearEndRef.current },
+              window.dispatchEvent(new CustomEvent("minu-conversation-view", {
+                detail: { conversationId, nearEnd: nearEndRef.current },
               }));
               if (nearEndRef.current) {
                 setUnseenMessages(0);
@@ -303,7 +303,7 @@ export function ChannelPage() {
               }
             }}
           >
-            <ChannelTimeline messages={messages.data ?? []} participants={attributionParticipants} />
+            <ConversationTimeline messages={messages.data ?? []} participants={attributionParticipants} />
           </div>
           {unseenMessages ? (
             <button
@@ -320,14 +320,14 @@ export function ChannelPage() {
             </button>
           ) : null}
         </div>
-        <ChannelComposer
-          key={`${channelId}:${currentSession.data?.identityId ?? currentSession.status}`}
+        <ConversationComposer
+          key={`${conversationId}:${currentSession.data?.identityId ?? currentSession.status}`}
           participants={participants}
           workspaceId={workspaceId}
-          channelId={channelId}
+          conversationId={conversationId}
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
-          activity={<ChannelActivityStrip agents={localAgents.data ?? []} participants={participants} />}
+          activity={<ConversationActivityStrip agents={localAgents.data ?? []} participants={participants} />}
         />
       </section>
       <div className="hidden lg:block">
@@ -344,13 +344,13 @@ export function ChannelPage() {
           onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
           onOpenAgentDiagnostic={canOpenDiagnostics
-            ? (identityId) => diagnosticAction.mutateAsync({ channelId, identityId })
+            ? (identityId) => diagnosticAction.mutateAsync({ conversationId, identityId })
             : undefined}
-          openedDiagnosticIdentityId={diagnosticAction.data?.channelId === channelId
+          openedDiagnosticIdentityId={diagnosticAction.data?.conversationId === conversationId
             ? diagnosticAction.data.identityId
             : undefined}
           pendingDiagnosticIdentityId={diagnosticAction.isPending
-            && diagnosticAction.variables.channelId === channelId
+            && diagnosticAction.variables.conversationId === conversationId
             ? diagnosticAction.variables.identityId
             : undefined}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}

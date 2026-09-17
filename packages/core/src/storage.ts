@@ -1,8 +1,8 @@
 import type {
-  Channel,
-  ChannelCursorStore,
-  ChannelMessage,
-  ChannelMetadata,
+  Conversation,
+  ConversationCursorStore,
+  ConversationMessage,
+  ConversationMetadata,
   Identity,
   Participant,
   ResponseResult,
@@ -10,8 +10,8 @@ import type {
   WorkspaceMember,
 } from "./types.ts";
 
-export type NewChannelMessage = Omit<ChannelMessage, "sequence">;
-export type NewResponseMessage = NewChannelMessage & { replyTo: string };
+export type NewConversationMessage = Omit<ConversationMessage, "sequence">;
+export type NewResponseMessage = NewConversationMessage & { replyTo: string };
 
 export interface MessageListOptions {
   afterSequence?: number;
@@ -20,26 +20,26 @@ export interface MessageListOptions {
 }
 
 export interface MessageCommitResult {
-  message: ChannelMessage;
+  message: ConversationMessage;
   outcome: "created" | "replayed" | "conflict";
 }
 
 export interface IdentityUpdateResult {
   identity: Identity;
-  rosters: Array<{ channelId: string; rosterRevision: number }>;
+  rosters: Array<{ conversationId: string; rosterRevision: number }>;
 }
 
 export interface WorkspaceMemberUpdateResult {
   member: WorkspaceMember;
-  rosters: Array<{ channelId: string; rosterRevision: number }>;
+  rosters: Array<{ conversationId: string; rosterRevision: number }>;
 }
 
-export interface ChannelRosterUpdateResult {
-  channel: ChannelMetadata;
+export interface ConversationRosterUpdateResult {
+  conversation: ConversationMetadata;
   removedParticipantIds: string[];
 }
 
-export interface ChannelStorage extends ChannelCursorStore {
+export interface ConversationStorage extends ConversationCursorStore {
   createIdentity(identity: Identity): Promise<Identity>;
   updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined>;
   getIdentity(identityId: string): Promise<Identity | undefined>;
@@ -56,21 +56,21 @@ export interface ChannelStorage extends ChannelCursorStore {
   ): Promise<WorkspaceMemberUpdateResult | undefined>;
   getWorkspaceMember(workspaceId: string, identityId: string): Promise<WorkspaceMember | undefined>;
   listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
-  createChannel(channel: Channel): Promise<Channel>;
-  listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]>;
-  getChannel(channelId: string): Promise<Channel | undefined>;
-  getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined>;
-  listMessages(channelId: string, options?: MessageListOptions): Promise<ChannelMessage[] | undefined>;
-  updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined>;
-  replaceChannelParticipants(
-    channelId: string,
+  createConversation(conversation: Conversation): Promise<Conversation>;
+  listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]>;
+  getConversation(conversationId: string): Promise<Conversation | undefined>;
+  getConversationMetadata(conversationId: string): Promise<ConversationMetadata | undefined>;
+  listMessages(conversationId: string, options?: MessageListOptions): Promise<ConversationMessage[] | undefined>;
+  updateConversationName(conversationId: string, name: string): Promise<ConversationMetadata | undefined>;
+  replaceConversationParticipants(
+    conversationId: string,
     participants: Participant[],
     expectedRosterRevision: number,
     updatedAt: string,
-  ): Promise<ChannelRosterUpdateResult | undefined>;
-  appendMessage(message: NewChannelMessage): Promise<ChannelMessage>;
+  ): Promise<ConversationRosterUpdateResult | undefined>;
+  appendMessage(message: NewConversationMessage): Promise<ConversationMessage>;
   commitMessage(
-    message: NewChannelMessage,
+    message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
   ): Promise<MessageCommitResult>;
@@ -81,24 +81,24 @@ export interface ChannelStorage extends ChannelCursorStore {
   close?(): Promise<void> | void;
 }
 
-function copyChannel(channel: Channel): Channel {
+function copyConversation(conversation: Conversation): Conversation {
   return {
-    ...channel,
-    participants: channel.participants.map((participant) => ({ ...participant })),
-    messages: channel.messages.map((message) => ({ ...message, to: [...message.to] })),
+    ...conversation,
+    participants: conversation.participants.map((participant) => ({ ...participant })),
+    messages: conversation.messages.map((message) => ({ ...message, to: [...message.to] })),
   };
 }
 
-export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStore {
+export class InMemoryConversationStorage implements ConversationStorage, ConversationCursorStore {
   private readonly identities = new Map<string, Identity>();
   private readonly workspaces = new Map<string, Workspace>();
   private readonly workspaceMembers = new Map<string, WorkspaceMember>();
-  private readonly channels = new Map<string, Channel>();
+  private readonly conversations = new Map<string, Conversation>();
   private readonly cursors = new Map<string, number>();
-  private readonly responses = new Map<string, ChannelMessage>();
+  private readonly responses = new Map<string, ConversationMessage>();
   private readonly messageRequests = new Map<
     string,
-    { requestFingerprint: string; message: ChannelMessage }
+    { requestFingerprint: string; message: ConversationMessage }
   >();
   private readonly pendingMessages = new Map<string, Promise<MessageCommitResult>>();
   private readonly pendingResponses = new Map<string, Promise<ResponseResult>>();
@@ -113,12 +113,12 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     if (!this.identities.has(identity.id)) return undefined;
     this.identities.set(identity.id, { ...identity });
     const rosters: IdentityUpdateResult["rosters"] = [];
-    for (const channel of this.channels.values()) {
-      const participant = channel.participants.find(({ id }) => id === identity.id);
+    for (const conversation of this.conversations.values()) {
+      const participant = conversation.participants.find(({ id }) => id === identity.id);
       if (!participant) continue;
       participant.displayName = identity.displayName;
-      channel.rosterRevision += 1;
-      rosters.push({ channelId: channel.id, rosterRevision: channel.rosterRevision });
+      conversation.rosterRevision += 1;
+      rosters.push({ conversationId: conversation.id, rosterRevision: conversation.rosterRevision });
     }
     return { identity: { ...identity }, rosters };
   }
@@ -183,19 +183,19 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     if (duplicate) throw new Error("Workspace mention handle already exists");
     this.workspaceMembers.set(key, { ...member });
     const rosters: WorkspaceMemberUpdateResult["rosters"] = [];
-    for (const channel of this.channels.values()) {
-      if (channel.workspaceId !== member.workspaceId) continue;
-      const index = channel.participants.findIndex(({ id }) => id === member.identityId);
+    for (const conversation of this.conversations.values()) {
+      if (conversation.workspaceId !== member.workspaceId) continue;
+      const index = conversation.participants.findIndex(({ id }) => id === member.identityId);
       if (index < 0) continue;
-      channel.participants[index] = { ...participant };
-      channel.rosterRevision += 1;
+      conversation.participants[index] = { ...participant };
+      conversation.rosterRevision += 1;
       if (member.status === "disabled") {
         this.cursors.set(
-          `${channel.id}:${member.identityId}`,
-          channel.messages.at(-1)?.sequence ?? 0,
+          `${conversation.id}:${member.identityId}`,
+          conversation.messages.at(-1)?.sequence ?? 0,
         );
       }
-      rosters.push({ channelId: channel.id, rosterRevision: channel.rosterRevision });
+      rosters.push({ conversationId: conversation.id, rosterRevision: conversation.rosterRevision });
     }
     return { member: { ...member }, rosters };
   }
@@ -214,37 +214,37 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
       .map((member) => ({ ...member }));
   }
 
-  async createChannel(channel: Channel): Promise<Channel> {
-    if (this.channels.has(channel.id)) throw new Error(`Channel id already exists: ${channel.id}`);
-    this.channels.set(channel.id, copyChannel(channel));
-    return copyChannel(channel);
+  async createConversation(conversation: Conversation): Promise<Conversation> {
+    if (this.conversations.has(conversation.id)) throw new Error(`Conversation id already exists: ${conversation.id}`);
+    this.conversations.set(conversation.id, copyConversation(conversation));
+    return copyConversation(conversation);
   }
 
-  async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
-    return [...this.channels.values()]
-      .filter((channel) => channel.workspaceId === workspaceId)
-      .map((channel) => ({
-        id: channel.id,
-        workspaceId: channel.workspaceId,
-        name: channel.name,
-        createdAt: channel.createdAt,
-        rosterRevision: channel.rosterRevision,
-        participants: channel.participants.map((participant) => ({ ...participant })),
+  async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {
+    return [...this.conversations.values()]
+      .filter((conversation) => conversation.workspaceId === workspaceId)
+      .map((conversation) => ({
+        id: conversation.id,
+        workspaceId: conversation.workspaceId,
+        name: conversation.name,
+        createdAt: conversation.createdAt,
+        rosterRevision: conversation.rosterRevision,
+        participants: conversation.participants.map((participant) => ({ ...participant })),
       }));
   }
 
-  async getChannel(channelId: string): Promise<Channel | undefined> {
-    const channel = this.channels.get(channelId);
-    return channel ? copyChannel(channel) : undefined;
+  async getConversation(conversationId: string): Promise<Conversation | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    return conversation ? copyConversation(conversation) : undefined;
   }
 
   async listMessages(
-    channelId: string,
+    conversationId: string,
     options: MessageListOptions = {},
-  ): Promise<ChannelMessage[] | undefined> {
-    const channel = this.channels.get(channelId);
-    if (!channel) return undefined;
-    let messages = channel.messages.filter((message) =>
+  ): Promise<ConversationMessage[] | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return undefined;
+    let messages = conversation.messages.filter((message) =>
       (options.afterSequence === undefined || message.sequence > options.afterSequence)
       && (options.beforeSequence === undefined || message.sequence < options.beforeSequence));
     if (options.limit !== undefined) {
@@ -255,64 +255,64 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     return messages.map((message) => ({ ...message, to: [...message.to] }));
   }
 
-  async getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined> {
-    const channel = this.channels.get(channelId);
-    if (!channel) return undefined;
+  async getConversationMetadata(conversationId: string): Promise<ConversationMetadata | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return undefined;
     return {
-      id: channel.id,
-      workspaceId: channel.workspaceId,
-      name: channel.name,
-      createdAt: channel.createdAt,
-      rosterRevision: channel.rosterRevision,
-      participants: channel.participants.map((participant) => ({ ...participant })),
+      id: conversation.id,
+      workspaceId: conversation.workspaceId,
+      name: conversation.name,
+      createdAt: conversation.createdAt,
+      rosterRevision: conversation.rosterRevision,
+      participants: conversation.participants.map((participant) => ({ ...participant })),
     };
   }
 
-  async updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined> {
-    const channel = this.channels.get(channelId);
-    if (!channel) return undefined;
-    channel.name = name;
-    return await this.getChannelMetadata(channelId);
+  async updateConversationName(conversationId: string, name: string): Promise<ConversationMetadata | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return undefined;
+    conversation.name = name;
+    return await this.getConversationMetadata(conversationId);
   }
 
-  async replaceChannelParticipants(
-    channelId: string,
+  async replaceConversationParticipants(
+    conversationId: string,
     participants: Participant[],
     expectedRosterRevision: number,
     _updatedAt: string,
-  ): Promise<ChannelRosterUpdateResult | undefined> {
-    const channel = this.channels.get(channelId);
-    if (!channel || channel.rosterRevision !== expectedRosterRevision) return undefined;
+  ): Promise<ConversationRosterUpdateResult | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation || conversation.rosterRevision !== expectedRosterRevision) return undefined;
     const nextIds = new Set(participants.map(({ id }) => id));
-    const removedParticipantIds = channel.participants
+    const removedParticipantIds = conversation.participants
       .filter(({ id }) => !nextIds.has(id))
       .map(({ id }) => id);
-    channel.participants = participants.map((participant) => ({ ...participant }));
-    channel.rosterRevision += 1;
-    const headSequence = channel.messages.at(-1)?.sequence ?? 0;
+    conversation.participants = participants.map((participant) => ({ ...participant }));
+    conversation.rosterRevision += 1;
+    const headSequence = conversation.messages.at(-1)?.sequence ?? 0;
     for (const participantId of removedParticipantIds) {
-      this.cursors.set(`${channel.id}:${participantId}`, headSequence);
+      this.cursors.set(`${conversation.id}:${participantId}`, headSequence);
     }
     return {
-      channel: (await this.getChannelMetadata(channelId))!,
+      conversation: (await this.getConversationMetadata(conversationId))!,
       removedParticipantIds,
     };
   }
 
-  async appendMessage(message: NewChannelMessage): Promise<ChannelMessage> {
-    const channel = this.channels.get(message.channelId);
-    if (!channel) throw new Error(`Channel not found: ${message.channelId}`);
-    const stored = { ...message, sequence: channel.messages.length + 1, to: [...message.to] };
-    channel.messages.push(stored);
+  async appendMessage(message: NewConversationMessage): Promise<ConversationMessage> {
+    const conversation = this.conversations.get(message.conversationId);
+    if (!conversation) throw new Error(`Conversation not found: ${message.conversationId}`);
+    const stored = { ...message, sequence: conversation.messages.length + 1, to: [...message.to] };
+    conversation.messages.push(stored);
     return { ...stored, to: [...stored.to] };
   }
 
   async commitMessage(
-    message: NewChannelMessage,
+    message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
   ): Promise<MessageCommitResult> {
-    const requestKey = JSON.stringify([message.channelId, message.participantId, idempotencyKey]);
+    const requestKey = JSON.stringify([message.conversationId, message.participantId, idempotencyKey]);
     const pending = this.pendingMessages.get(requestKey);
     if (pending) {
       await pending;
@@ -341,7 +341,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
 
   private async commitMessageOnce(
     requestKey: string,
-    message: NewChannelMessage,
+    message: NewConversationMessage,
     requestFingerprint: string,
   ): Promise<MessageCommitResult> {
     if (this.messageRequests.has(requestKey)) {
@@ -356,7 +356,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     message: NewResponseMessage,
     triggerSequence: number,
   ): Promise<ResponseResult> {
-    const deliveryKey = `${message.channelId}:${message.participantId}:${message.replyTo}`;
+    const deliveryKey = `${message.conversationId}:${message.participantId}:${message.replyTo}`;
     const pending = this.pendingResponses.get(deliveryKey);
     if (pending) {
       const result = await pending;
@@ -380,16 +380,16 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelCursorStor
     if (existing) return { message: { ...existing, to: [...existing.to] }, created: false };
     const stored = await this.appendMessage(message);
     this.responses.set(deliveryKey, stored);
-    const cursorKey = `${message.channelId}:${message.participantId}`;
+    const cursorKey = `${message.conversationId}:${message.participantId}`;
     this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, triggerSequence));
     return { message: stored, created: true };
   }
 
-  async getCursor(channelId: string, participantId: string): Promise<number> {
-    return this.cursors.get(`${channelId}:${participantId}`) ?? 0;
+  async getCursor(conversationId: string, participantId: string): Promise<number> {
+    return this.cursors.get(`${conversationId}:${participantId}`) ?? 0;
   }
 
-  async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
-    this.cursors.set(`${channelId}:${participantId}`, sequence);
+  async setCursor(conversationId: string, participantId: string, sequence: number): Promise<void> {
+    this.cursors.set(`${conversationId}:${participantId}`, sequence);
   }
 }

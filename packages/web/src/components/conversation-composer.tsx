@@ -1,8 +1,8 @@
-import type { ChannelMessage, Participant } from "@minu/channels-core/types";
+import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Send } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { channels } from "../lib/api";
+import { conversations } from "../lib/api";
 import {
   createMessageSubmission,
   draftStorageKey,
@@ -22,22 +22,22 @@ interface MentionSuggestion {
   label: string;
 }
 
-function readDraft(workspaceId: string, channelId: string, authorIdentityId: string): string {
+function readDraft(workspaceId: string, conversationId: string, authorIdentityId: string): string {
   if (!authorIdentityId) return "";
-  return localStorage.getItem(draftStorageKey(workspaceId, channelId, authorIdentityId)) ?? "";
+  return localStorage.getItem(draftStorageKey(workspaceId, conversationId, authorIdentityId)) ?? "";
 }
 
-export function ChannelComposer({
+export function ConversationComposer({
   participants,
   workspaceId,
-  channelId,
+  conversationId,
   currentHumanIdentityId,
   identityStatus,
   activity,
 }: {
   participants: Participant[];
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   currentHumanIdentityId?: string;
   identityStatus: "loading" | "ready" | "unavailable";
   activity?: ReactNode;
@@ -49,7 +49,7 @@ export function ChannelComposer({
     && participant.status !== "disabled");
   const activeAuthorId = currentHuman?.id ?? "";
   const authorReady = Boolean(currentHuman);
-  const [body, setBody] = useState(() => readDraft(workspaceId, channelId, activeAuthorId));
+  const [body, setBody] = useState(() => readDraft(workspaceId, conversationId, activeAuthorId));
   const [cursor, setCursor] = useState(body.length);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dismissedMention, setDismissedMention] = useState<string>();
@@ -89,10 +89,10 @@ export function ChannelComposer({
 
   useEffect(() => {
     if (!activeAuthorId) return;
-    const key = draftStorageKey(workspaceId, channelId, activeAuthorId);
+    const key = draftStorageKey(workspaceId, conversationId, activeAuthorId);
     if (body) localStorage.setItem(key, body);
     else localStorage.removeItem(key);
-  }, [activeAuthorId, body, channelId, workspaceId]);
+  }, [activeAuthorId, body, conversationId, workspaceId]);
 
   useLayoutEffect(() => {
     const pendingCursor = pendingCursorRef.current;
@@ -113,7 +113,7 @@ export function ChannelComposer({
   const suggestions = useMemo<MentionSuggestion[]>(() => {
     if (!mentionQuery || dismissedMention === mentionIdentity) return [];
     return [
-      { id: "@channel", handle: "channel", label: "Everyone allowed by wake policy" },
+      { id: "@conversation", handle: "conversation", label: "Everyone allowed by wake policy" },
       ...participants
         .filter((participant) => participant.status !== "disabled")
         .map((participant) => ({
@@ -128,15 +128,15 @@ export function ChannelComposer({
   const activeSuggestionIndex = Math.min(selectedSuggestion, Math.max(0, suggestions.length - 1));
 
   const mutation = useMutation({
-    mutationFn: (submission: MessageSubmission) => channels.postMessage(channelId, submission.input, {
+    mutationFn: (submission: MessageSubmission) => conversations.postMessage(conversationId, submission.input, {
       idempotencyKey: submission.idempotencyKey,
     }),
     onSuccess: (message, submission) => {
-      queryClient.setQueryData<ChannelMessage[]>(
-        queryKeys.channelMessages(channelId),
+      queryClient.setQueryData<ConversationMessage[]>(
+        queryKeys.conversationMessages(conversationId),
         (current) => mergeMessages(current, [message]),
       );
-      localStorage.removeItem(draftStorageKey(workspaceId, channelId, submission.input.participantId));
+      localStorage.removeItem(draftStorageKey(workspaceId, conversationId, submission.input.participantId));
       setFailedSubmission(undefined);
       if (draftRef.current.authorId === submission.input.participantId && draftRef.current.body === submission.input.body) {
         setBody("");
@@ -188,7 +188,7 @@ export function ChannelComposer({
       <div className="relative mx-auto max-w-5xl">
         {suggestions.length ? (
           <div
-            id="channel-mention-suggestions"
+            id="conversation-mention-suggestions"
             role="listbox"
             aria-label="Mention suggestions"
             className="absolute right-0 bottom-[calc(100%+0.5rem)] left-0 z-20 rounded-md border border-[var(--border)] bg-[var(--panel-elevated)] p-1 shadow-xl"
@@ -259,7 +259,7 @@ export function ChannelComposer({
             rows={3}
             aria-label="Conversation message"
             aria-autocomplete="list"
-            aria-controls={suggestions.length ? "channel-mention-suggestions" : undefined}
+            aria-controls={suggestions.length ? "conversation-mention-suggestions" : undefined}
             aria-expanded={suggestions.length > 0}
             aria-activedescendant={suggestions.length ? `mention-suggestion-${activeSuggestionIndex}` : undefined}
             role="combobox"

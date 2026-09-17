@@ -2,8 +2,8 @@ import { lstat, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  acquireChannelsDataDirectoryLock,
-  prepareChannelsDataDirectory,
+  acquireConversationsDataDirectoryLock,
+  prepareConversationsDataDirectory,
 } from "./local-paths.ts";
 
 export function developmentDataDirectory(homeDirectory = homedir()): string {
@@ -33,12 +33,12 @@ export async function resetDevelopmentData(options: {
     throw new Error("Development data reset refused a redirected data directory");
   }
 
-  await prepareChannelsDataDirectory(dataDirectory);
+  await prepareConversationsDataDirectory(dataDirectory);
   const runMetadata = await lstat(join(dataDirectory, "run"));
   if (runMetadata.isSymbolicLink() || !runMetadata.isDirectory()) {
     throw new Error("Development data reset refused an unsafe lock directory");
   }
-  const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
+  const lock = await acquireConversationsDataDirectoryLock(dataDirectory);
   try {
     await rm(dataDirectory, { recursive: true });
   } finally {

@@ -36,8 +36,8 @@ export function replaceMention(body: string, query: MentionQuery, handle: string
   };
 }
 
-export function draftStorageKey(workspaceId: string, channelId: string, authorIdentityId: string): string {
-  return `minu.channels.draft.${workspaceId}.${channelId}.${authorIdentityId}`;
+export function draftStorageKey(workspaceId: string, conversationId: string, authorIdentityId: string): string {
+  return `minu.conversations.draft.${workspaceId}.${conversationId}.${authorIdentityId}`;
 }
 
 export function createMessageSubmission(

@@ -5,21 +5,21 @@ import {
   LocalControlBrowserSessions,
   LocalControlService,
 } from "../../control/dist/src/server.js";
-import { createChannelHttpServer } from "../../core/dist/src/http-server.js";
-import { ChannelService } from "../../core/dist/src/channel-service.js";
-import { ChannelClient } from "../../core/dist/src/client.js";
+import { createConversationHttpServer } from "../../core/dist/src/http-server.js";
+import { ConversationService } from "../../core/dist/src/conversation-service.js";
+import { ConversationClient } from "../../core/dist/src/client.js";
 import { InMemoryRelayBindingStore } from "../../relay/dist/src/binding-store.js";
 
-const channelsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
+const conversationsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
 const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
-const service = new ChannelService();
+const service = new ConversationService();
 const listWorkspaces = service.listWorkspaces.bind(service);
 let hideWorkspaces = false;
 service.listWorkspaces = async () => hideWorkspaces ? [] : listWorkspaces();
 const serviceToken = process.env.MINU_TEST_CHANNELS_SERVICE_TOKEN ?? "browser-fixture-service-token";
-let channelServer = await createChannelHttpServer({ service, port: channelsPort, serviceToken });
+let conversationServer = await createConversationHttpServer({ service, port: conversationsPort, serviceToken });
 const human = await service.createIdentity({ type: "human", displayName: "David Kennedy" });
 const agent = await service.createIdentity({ type: "agent", displayName: "Builder Agent" });
 const workspace = await service.createWorkspace({ slug: "browser-test", name: "Browser Test" });
@@ -34,22 +34,22 @@ await service.addWorkspaceMember(workspace.id, {
   roleLabel: "builder",
   profileOverride: "Implements features and verifies changes.",
 });
-const channel = await service.createChannel({
+const conversation = await service.createConversation({
   workspaceId: workspace.id,
   name: "browser-collaboration",
   participantIds: [human.id, agent.id],
 });
-const initialTrigger = await service.createMessage(channel.id, {
+const initialTrigger = await service.createMessage(conversation.id, {
   participantId: human.id,
   body: "@builder Verify the browser collaboration flow.",
 });
-const alternateChannel = await service.createChannel({
+const alternateConversation = await service.createConversation({
   workspaceId: workspace.id,
   name: "alternate-collaboration",
   participantIds: [human.id, agent.id],
 });
 for (let index = 1; index <= 6; index += 1) {
-  await service.createChannel({
+  await service.createConversation({
     workspaceId: workspace.id,
     name: `connection-pool-${index}`,
     participantIds: [human.id, agent.id],
@@ -65,20 +65,20 @@ await service.addWorkspaceMember(secondaryWorkspace.id, {
   identityId: agent.id,
   mentionHandle: "builder",
 });
-const secondaryChannel = await service.createChannel({
+const secondaryConversation = await service.createConversation({
   workspaceId: secondaryWorkspace.id,
   name: "secondary-collaboration",
   participantIds: [human.id, agent.id],
 });
 
 const privateStore = new InMemoryRelayBindingStore();
-const channelClient = new ChannelClient(channelServer.endpoint, { serviceToken });
+const conversationClient = new ConversationClient(conversationServer.endpoint, { serviceToken });
 const browserSessions = new LocalControlBrowserSessions({
   browserUrl: `http://minu-channels.localhost:${webPort}/`,
   currentHumanIdentityId: human.id,
 });
-const agentBindings = new Map([[`${channel.id}:${agent.id}`, "connected"]]);
-const attachedAgents = new Set([`${channel.id}:${agent.id}`]);
+const agentBindings = new Map([[`${conversation.id}:${agent.id}`, "connected"]]);
+const attachedAgents = new Set([`${conversation.id}:${agent.id}`]);
 let agentActivity;
 let runtimeReachable = true;
 let runtimeCapabilityMode = "available";
@@ -129,10 +129,10 @@ const localControl = await createLocalControlHttpServer({
   allowedOrigins: [browserSessions.browserOrigin],
   browserSessions,
   service: new LocalControlService({
-    channels: service,
+    conversations: service,
     bindings: {
-      async listChannelBindings(channelId) {
-        const state = agentBindings.get(`${channelId}:${agent.id}`);
+      async listConversationBindings(conversationId) {
+        const state = agentBindings.get(`${conversationId}:${agent.id}`);
         if (!state) return [];
         return [{
           agentIdentityId: agent.id,
@@ -146,50 +146,50 @@ const localControl = await createLocalControlHttpServer({
     runtimes: fixtureRuntimes,
     lifecycle: {
       available: true,
-      async startChannelAgent(channelId, identityId) {
+      async startConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${channelId}:${identityId}`, "connected");
-        attachedAgents.add(`${channelId}:${identityId}`);
+        agentBindings.set(`${conversationId}:${identityId}`, "connected");
+        attachedAgents.add(`${conversationId}:${identityId}`);
       },
-      async reconnectChannelAgent(channelId, identityId) {
+      async reconnectConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        attachedAgents.add(`${channelId}:${identityId}`);
+        attachedAgents.add(`${conversationId}:${identityId}`);
       },
-      isAttached(channelId, identityId) {
-        return attachedAgents.has(`${channelId}:${identityId}`);
+      isAttached(conversationId, identityId) {
+        return attachedAgents.has(`${conversationId}:${identityId}`);
       },
-      async replaceChannelAgent(channelId, identityId) {
+      async replaceConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${channelId}:${identityId}`, "connected");
-        attachedAgents.add(`${channelId}:${identityId}`);
+        agentBindings.set(`${conversationId}:${identityId}`, "connected");
+        attachedAgents.add(`${conversationId}:${identityId}`);
       },
-      async stopChannelAgent(channelId, identityId) {
+      async stopConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${channelId}:${identityId}`, "disabled");
-        attachedAgents.delete(`${channelId}:${identityId}`);
+        agentBindings.set(`${conversationId}:${identityId}`, "disabled");
+        attachedAgents.delete(`${conversationId}:${identityId}`);
       },
-      async startAllChannelAgents() {
+      async startAllConversationAgents() {
         return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
       },
-      async stopAllChannelAgents() {
-        agentBindings.set(`${channel.id}:${agent.id}`, "disabled");
-        attachedAgents.delete(`${channel.id}:${agent.id}`);
+      async stopAllConversationAgents() {
+        agentBindings.set(`${conversation.id}:${agent.id}`, "disabled");
+        attachedAgents.delete(`${conversation.id}:${agent.id}`);
         return [{ identityId: agent.id, outcome: "stopped" }];
       },
-      async cancelCurrentChannelAgent(channelId, identityId) {
-        if (channelId !== channel.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
+      async cancelCurrentConversationAgent(conversationId, identityId) {
+        if (conversationId !== conversation.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
         agentActivity = { ...agentActivity, phase: "canceling" };
       },
-      async openChannelAgentDiagnostic(channelId, identityId) {
-        if (channelId !== channel.id || identityId !== agent.id) throw new Error("Unknown fixture agent");
+      async openConversationAgentDiagnostic(conversationId, identityId) {
+        if (conversationId !== conversation.id || identityId !== agent.id) throw new Error("Unknown fixture agent");
         await fixtureRuntime.openDiagnostic();
       },
-      activity(channelId, identityId) {
-        return channelId === channel.id && identityId === agent.id ? agentActivity : undefined;
+      activity(conversationId, identityId) {
+        return conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
       },
     },
     configuration: new LocalAgentHostConfiguration({
-      client: channelClient,
+      client: conversationClient,
       store: privateStore,
       runtimes: fixtureRuntimes,
     }),
@@ -228,9 +228,9 @@ const controlServer = createServer(async (request, response) => {
     const mention = url.searchParams.get("mention") === "true";
     const author = url.searchParams.get("author") === "human" ? human : agent;
     const count = Math.max(1, Math.min(50, Number(url.searchParams.get("count") ?? 1)));
-    const targetChannel = url.searchParams.get("workspace") === "inactive"
-      ? secondaryChannel
-      : url.searchParams.get("channel") === "alternate" ? alternateChannel : channel;
+    const targetConversation = url.searchParams.get("workspace") === "inactive"
+      ? secondaryConversation
+      : url.searchParams.get("conversation") === "alternate" ? alternateConversation : conversation;
     const created = [];
     for (let index = 0; index < count; index += 1) {
       const input = {
@@ -239,15 +239,15 @@ const controlServer = createServer(async (request, response) => {
         ...(mention ? { to: [human.id] } : {}),
       };
       const idempotencyKey = url.searchParams.get("duplicate") === "true" ? `browser-duplicate-${Date.now()}-${index}` : undefined;
-      created.push(await service.createMessage(targetChannel.id, input, idempotencyKey));
-      if (idempotencyKey) await service.createMessage(targetChannel.id, input, idempotencyKey);
+      created.push(await service.createMessage(targetConversation.id, input, idempotencyKey));
+      if (idempotencyKey) await service.createMessage(targetConversation.id, input, idempotencyKey);
     }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ messages: created }));
     return;
   }
   if (request.method === "POST" && url.pathname === "/detach-agent") {
-    attachedAgents.delete(`${channel.id}:${agent.id}`);
+    attachedAgents.delete(`${conversation.id}:${agent.id}`);
     response.writeHead(204).end();
     return;
   }
@@ -275,23 +275,23 @@ const controlServer = createServer(async (request, response) => {
     response.writeHead(404).end();
     return;
   }
-  await channelServer.close();
-  const disconnectedChannel = url.searchParams.get("workspace") === "inactive" ? secondaryChannel : channel;
-  await service.createMessage(disconnectedChannel.id, {
+  await conversationServer.close();
+  const disconnectedConversation = url.searchParams.get("workspace") === "inactive" ? secondaryConversation : conversation;
+  await service.createMessage(disconnectedConversation.id, {
     participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
     body: "Message created while the browser was offline.",
   });
   response.writeHead(202).end();
   setTimeout(async () => {
-    channelServer = await createChannelHttpServer({ service, port: channelsPort, serviceToken });
+    conversationServer = await createConversationHttpServer({ service, port: conversationsPort, serviceToken });
   }, 2_000);
 });
 controlServer.listen(fixturePort, "127.0.0.1");
 
-console.log(JSON.stringify({ workspaceId: workspace.id, channelId: channel.id }));
+console.log(JSON.stringify({ workspaceId: workspace.id, conversationId: conversation.id }));
 
 const close = async () => {
-  await channelServer.close().catch(() => undefined);
+  await conversationServer.close().catch(() => undefined);
   await localControl.close().catch(() => undefined);
   await privateStore.close().catch(() => undefined);
   controlServer.close();

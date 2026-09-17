@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { acquireChannelsDataDirectoryLock, prepareChannelsDataDirectory } from "../src/local-paths.ts";
+import { acquireConversationsDataDirectoryLock, prepareConversationsDataDirectory } from "../src/local-paths.ts";
 import { LocalServiceLifecycle, type ServiceCommandRunner } from "../src/service-lifecycle.ts";
 import { BoundedServiceLog } from "../src/service-log.ts";
 import { requestServiceBrowserLaunchUrl, startServiceOpenBroker } from "../src/service-open.ts";
@@ -150,8 +150,8 @@ test("does not report a launchd process as started before product readiness", as
 test("refuses to start beside a foreground owner instead of creating a crash loop", async () => {
   const { root, data, service, calls } = await fixture();
   try {
-    await prepareChannelsDataDirectory(data);
-    const lock = await acquireChannelsDataDirectoryLock(data);
+    await prepareConversationsDataDirectory(data);
+    const lock = await acquireConversationsDataDirectoryLock(data);
     try {
       await assert.rejects(service.start(), /already running/);
       assert.equal(calls.some(([command]) => command === "bootstrap" || command === "kickstart"), false);

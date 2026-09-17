@@ -19,7 +19,7 @@ export interface CoordinatedUpdateResult extends InstalledUpdate {
   serviceRestarted: boolean;
 }
 
-export async function coordinateChannelsUpdate(
+export async function coordinateConversationsUpdate(
   update: UpdateCheck,
   options: {
     dataDirectory: string;

@@ -1,5 +1,5 @@
 import type {
-  ChannelMetadata,
+  ConversationMetadata,
   Identity,
   Workspace,
   WorkspaceMember,
@@ -9,10 +9,10 @@ import { useNavigate } from "@tanstack/react-router";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, LoaderCircle, Plus, UserRoundCog, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { channels, localControl } from "../lib/api";
+import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
-import { ChannelWorkingFolders } from "./channel-working-folders";
+import { ConversationWorkingFolders } from "./conversation-working-folders";
 
 interface WorkspaceParticipant {
   identity: Identity;
@@ -28,12 +28,12 @@ function useWorkspaceParticipants(workspaceId: string, open: boolean) {
   });
   const members = useQuery({
     queryKey: queryKeys.workspaceMembers(workspaceId),
-    queryFn: () => channels.listWorkspaceMembers(workspaceId),
+    queryFn: () => conversations.listWorkspaceMembers(workspaceId),
     enabled: open,
   });
   const identities = useQuery({
     queryKey: queryKeys.identities(),
-    queryFn: () => channels.listIdentities(),
+    queryFn: () => conversations.listIdentities(),
     enabled: open,
   });
   const participants = useMemo<WorkspaceParticipant[]>(() => {
@@ -177,7 +177,7 @@ function QueryState({
   return children;
 }
 
-export function CreateChannelDialog({
+export function CreateConversationDialog({
   workspace,
   onNavigate,
 }: {
@@ -204,25 +204,25 @@ export function CreateChannelDialog({
     }
   }, [data.participants, data.session.data?.identityId, initializedFor, open]);
   const mutation = useMutation({
-    mutationFn: () => channels.createChannel({
+    mutationFn: () => conversations.createConversation({
       workspaceId: workspace.id,
       name: name.trim(),
       participantIds: [...new Set([...selected, data.session.data!.identityId])],
       actorIdentityId: data.session.data!.identityId,
     }),
-    onSuccess: (channel) => {
-      queryClient.setQueryData<ChannelMetadata[]>(
-        queryKeys.workspaceChannels(workspace.id),
-        (current = []) => [...current.filter(({ id }) => id !== channel.id), channel],
+    onSuccess: (conversation) => {
+      queryClient.setQueryData<ConversationMetadata[]>(
+        queryKeys.workspaceConversations(workspace.id),
+        (current = []) => [...current.filter(({ id }) => id !== conversation.id), conversation],
       );
-      queryClient.setQueryData(queryKeys.channel(channel.id), channel);
+      queryClient.setQueryData(queryKeys.conversation(conversation.id), conversation);
       setName("");
       setSelected(new Set());
       setOpen(false);
       onNavigate?.();
       void navigate({
-        to: "/app/workspaces/$workspaceId/conversations/$channelId",
-        params: { workspaceId: workspace.id, channelId: channel.id },
+        to: "/app/workspaces/$workspaceId/conversations/$conversationId",
+        params: { workspaceId: workspace.id, conversationId: conversation.id },
       });
     },
   });
@@ -281,48 +281,48 @@ export function CreateChannelDialog({
   );
 }
 
-export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMetadata }) {
+export function EditConversationParticipantsDialog({ conversation }: { conversation: ConversationMetadata }) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(channel.name);
-  const [selected, setSelected] = useState<Set<string>>(new Set(channel.participants.map(({ id }) => id)));
-  const data = useWorkspaceParticipants(channel.workspaceId, open);
+  const [name, setName] = useState(conversation.name);
+  const [selected, setSelected] = useState<Set<string>>(new Set(conversation.participants.map(({ id }) => id)));
+  const data = useWorkspaceParticipants(conversation.workspaceId, open);
   const queryClient = useQueryClient();
   const renameMutation = useMutation({
-    mutationFn: () => channels.updateChannel(channel.id, {
+    mutationFn: () => conversations.updateConversation(conversation.id, {
       actorIdentityId: data.session.data!.identityId,
       name: name.trim(),
     }),
     onSuccess: (updated) => {
-      queryClient.setQueryData(queryKeys.channel(channel.id), updated);
-      queryClient.setQueryData<ChannelMetadata[]>(
-        queryKeys.workspaceChannels(channel.workspaceId),
+      queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
+      queryClient.setQueryData<ConversationMetadata[]>(
+        queryKeys.workspaceConversations(conversation.workspaceId),
         (current = []) => current.map((candidate) => candidate.id === updated.id ? updated : candidate),
       );
       setName(updated.name);
     },
   });
   const mutation = useMutation({
-    mutationFn: () => channels.updateChannelParticipants(channel.id, {
+    mutationFn: () => conversations.updateConversationParticipants(conversation.id, {
       actorIdentityId: data.session.data!.identityId,
       participantIds: [...new Set([...selected, data.session.data!.identityId])],
-      expectedRosterRevision: channel.rosterRevision,
+      expectedRosterRevision: conversation.rosterRevision,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueryData(queryKeys.channel(channel.id), updated);
-      queryClient.setQueryData<ChannelMetadata[]>(
-        queryKeys.workspaceChannels(channel.workspaceId),
+      queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
+      queryClient.setQueryData<ConversationMetadata[]>(
+        queryKeys.workspaceConversations(conversation.workspaceId),
         (current = []) => current.map((candidate) => candidate.id === updated.id ? updated : candidate),
       );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localChannelAgents(channel.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversation.id) });
       setOpen(false);
     },
   });
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen);
     if (nextOpen) {
-      setName(channel.name);
+      setName(conversation.name);
       setSelected(new Set([
-        ...channel.participants.filter(({ status }) => status === "active").map(({ id }) => id),
+        ...conversation.participants.filter(({ status }) => status === "active").map(({ id }) => id),
         ...(data.session.data ? [data.session.data.identityId] : []),
       ]));
       renameMutation.reset();
@@ -334,8 +334,8 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
     <AdministrationDialog
       open={open}
       onOpenChange={handleOpenChange}
-      title={`Manage #${channel.name}`}
-      description={`Choose participants for roster revision ${channel.rosterRevision + 1}. Historical messages retain their author identity.`}
+      title={`Manage #${conversation.name}`}
+      description={`Choose participants for roster revision ${conversation.rosterRevision + 1}. Historical messages retain their author identity.`}
       trigger={(
         <button type="button" className="icon-button inline-flex" aria-label="Manage Conversation participants" title="Manage participants">
           <UserRoundCog className="h-4 w-4" />
@@ -348,7 +348,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
             className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
             onSubmit={(event) => {
               event.preventDefault();
-              if (name.trim() && name.trim() !== channel.name && data.session.data && !renameMutation.isPending) {
+              if (name.trim() && name.trim() !== conversation.name && data.session.data && !renameMutation.isPending) {
                 renameMutation.mutate();
               }
             }}
@@ -364,11 +364,11 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
             </label>
             <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
               {renameMutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{renameMutation.error.message}</span> : null}
-              {renameMutation.isSuccess && name === channel.name ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Name saved</span> : null}
+              {renameMutation.isSuccess && name === conversation.name ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Name saved</span> : null}
               <button
                 className="button-secondary"
                 type="submit"
-                disabled={!name.trim() || name.trim() === channel.name || renameMutation.isPending}
+                disabled={!name.trim() || name.trim() === conversation.name || renameMutation.isPending}
               >
                 {renameMutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
                 Save name
@@ -386,9 +386,9 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
               return next;
             })}
           />
-          <ChannelWorkingFolders channelId={channel.id} canAdminister={data.canAdminister} />
+          <ConversationWorkingFolders conversationId={conversation.id} canAdminister={data.canAdminister} />
           <AddWorkspaceParticipantForm
-            workspaceId={channel.workspaceId}
+            workspaceId={conversation.workspaceId}
             existingMembers={data.members.data ?? []}
             onCreated={(identity) => setSelected((current) => new Set([...current, identity.id]))}
           />
@@ -402,7 +402,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
                     type="button"
                     onClick={() => {
                       setOpen(false);
-                      void queryClient.invalidateQueries({ queryKey: queryKeys.channel(channel.id) });
+                      void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversation.id) });
                     }}
                   >Reload roster</button>
                 ) : null}

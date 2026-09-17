@@ -1,9 +1,9 @@
 import type {
-  Channel,
-  ChannelEvent,
-  ChannelMessage,
-  ChannelMetadata,
-  CreateChannelInput,
+  Conversation,
+  ConversationEvent,
+  ConversationMessage,
+  ConversationMetadata,
+  CreateConversationInput,
   CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
@@ -13,15 +13,15 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
-  UpdateChannelInput,
-  UpdateChannelParticipantsInput,
+  UpdateConversationInput,
+  UpdateConversationParticipantsInput,
   UpdateIdentityInput,
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 import type { MessageListOptions } from "./storage.ts";
 
-export interface ChannelEventOptions {
+export interface ConversationEventOptions {
   signal?: AbortSignal;
   onReady?(): void;
 }
@@ -34,20 +34,20 @@ export interface ClientMessageListOptions extends MessageListOptions {
   signal?: AbortSignal;
 }
 
-export interface ChannelClientOptions {
+export interface ConversationClientOptions {
   serviceToken?: string;
   actorIdentityId?: string;
 }
 
 /** HTTP failures retain their status without exposing response internals to callers. */
-export class ChannelClientError extends Error {
+export class ConversationClientError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly retryAfterMs?: number,
   ) {
     super(message);
-    this.name = "ChannelClientError";
+    this.name = "ConversationClientError";
   }
 }
 
@@ -58,8 +58,8 @@ function retryAfterMilliseconds(value: string | null, now = Date.now()): number 
   return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : undefined;
 }
 
-export class ChannelClient {
-  constructor(readonly endpoint: string, private readonly options: ChannelClientOptions = {}) {}
+export class ConversationClient {
+  constructor(readonly endpoint: string, private readonly options: ConversationClientOptions = {}) {}
 
   async createIdentity(input: CreateIdentityInput): Promise<Identity> {
     const response = await this.request("/identities", {
@@ -147,68 +147,68 @@ export class ChannelClient {
     return ((await response.json()) as { members: WorkspaceMember[] }).members;
   }
 
-  async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
+  async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {
     const response = await this.request(`/workspaces/${workspaceId}/conversations`);
-    return ((await response.json()) as { channels: ChannelMetadata[] }).channels;
+    return ((await response.json()) as { conversations: ConversationMetadata[] }).conversations;
   }
 
-  async createChannel(input: CreateChannelInput): Promise<Channel> {
+  async createConversation(input: CreateConversationInput): Promise<Conversation> {
     const response = await this.request("/conversations", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
-    return ((await response.json()) as { channel: Channel }).channel;
+    return ((await response.json()) as { conversation: Conversation }).conversation;
   }
 
-  async updateChannel(channelId: string, input: UpdateChannelInput): Promise<ChannelMetadata> {
-    const response = await this.request(`/conversations/${channelId}`, {
+  async updateConversation(conversationId: string, input: UpdateConversationInput): Promise<ConversationMetadata> {
+    const response = await this.request(`/conversations/${conversationId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
-    return ((await response.json()) as { channel: ChannelMetadata }).channel;
+    return ((await response.json()) as { conversation: ConversationMetadata }).conversation;
   }
 
-  async updateChannelParticipants(
-    channelId: string,
-    input: UpdateChannelParticipantsInput,
-  ): Promise<ChannelMetadata> {
-    const response = await this.request(`/conversations/${channelId}/participants`, {
+  async updateConversationParticipants(
+    conversationId: string,
+    input: UpdateConversationParticipantsInput,
+  ): Promise<ConversationMetadata> {
+    const response = await this.request(`/conversations/${conversationId}/participants`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     });
-    return ((await response.json()) as { channel: ChannelMetadata }).channel;
+    return ((await response.json()) as { conversation: ConversationMetadata }).conversation;
   }
 
-  async getChannel(channelId: string): Promise<ChannelMetadata> {
-    const response = await this.request(`/conversations/${channelId}`);
-    return ((await response.json()) as { channel: ChannelMetadata }).channel;
+  async getConversation(conversationId: string): Promise<ConversationMetadata> {
+    const response = await this.request(`/conversations/${conversationId}`);
+    return ((await response.json()) as { conversation: ConversationMetadata }).conversation;
   }
 
   async postMessage(
-    channelId: string,
+    conversationId: string,
     input: CreateMessageInput,
     options: PostMessageOptions = {},
-  ): Promise<ChannelMessage> {
+  ): Promise<ConversationMessage> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (options.idempotencyKey !== undefined) {
       headers["idempotency-key"] = options.idempotencyKey;
     }
-    const response = await this.request(`/conversations/${channelId}/messages`, {
+    const response = await this.request(`/conversations/${conversationId}/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify(input),
     });
-    return ((await response.json()) as { message: ChannelMessage }).message;
+    return ((await response.json()) as { message: ConversationMessage }).message;
   }
 
   async postResponse(
-    channelId: string,
+    conversationId: string,
     input: CreateResponseInput,
   ): Promise<ResponseResult> {
-    const response = await this.request(`/conversations/${channelId}/responses`, {
+    const response = await this.request(`/conversations/${conversationId}/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -216,32 +216,32 @@ export class ChannelClient {
     return (await response.json()) as ResponseResult;
   }
 
-  async listMessages(channelId: string, options: ClientMessageListOptions = {}): Promise<ChannelMessage[]> {
+  async listMessages(conversationId: string, options: ClientMessageListOptions = {}): Promise<ConversationMessage[]> {
     const query = new URLSearchParams();
     if (options.afterSequence !== undefined) query.set("afterSequence", String(options.afterSequence));
     if (options.beforeSequence !== undefined) query.set("beforeSequence", String(options.beforeSequence));
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     const suffix = query.size > 0 ? `?${query}` : "";
-    const response = await this.request(`/conversations/${channelId}/messages${suffix}`, {
+    const response = await this.request(`/conversations/${conversationId}/messages${suffix}`, {
       signal: options.signal,
     });
-    return ((await response.json()) as { messages: ChannelMessage[] }).messages;
+    return ((await response.json()) as { messages: ConversationMessage[] }).messages;
   }
 
-  events(channelId: string, options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
-    return this.eventStream(`/conversations/${channelId}/events`, options);
+  events(conversationId: string, options: ConversationEventOptions = {}): AsyncIterable<ConversationEvent> {
+    return this.eventStream(`/conversations/${conversationId}/events`, options);
   }
 
-  eventsMany(channelIds: readonly string[], options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
-    if (channelIds.length === 0) throw new RangeError("eventsMany requires at least one Channel");
+  eventsMany(conversationIds: readonly string[], options: ConversationEventOptions = {}): AsyncIterable<ConversationEvent> {
+    if (conversationIds.length === 0) throw new RangeError("eventsMany requires at least one Conversation");
     const query = new URLSearchParams();
-    for (const channelId of [...new Set(channelIds)]) query.append("channelId", channelId);
+    for (const conversationId of [...new Set(conversationIds)]) query.append("conversationId", conversationId);
     return this.eventStream(`/conversations/events?${query}`, options);
   }
 
-  private async *eventStream(path: string, options: ChannelEventOptions): AsyncIterable<ChannelEvent> {
+  private async *eventStream(path: string, options: ConversationEventOptions): AsyncIterable<ConversationEvent> {
     const response = await this.request(path, { signal: options.signal });
-    if (!response.body) throw new Error("Channel event response has no body");
+    if (!response.body) throw new Error("Conversation event response has no body");
     const decoder = new TextDecoder();
     let buffer = "";
     for await (const chunk of response.body) {
@@ -264,7 +264,7 @@ export class ChannelClient {
           .find((line) => line.startsWith("data: "))
           ?.slice(6);
         if ((eventName === "message.created" || eventName === "roster.updated") && data) {
-          yield JSON.parse(data) as ChannelEvent;
+          yield JSON.parse(data) as ConversationEvent;
         }
       }
     }
@@ -281,8 +281,8 @@ export class ChannelClient {
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => ({}))) as { error?: string };
-      throw new ChannelClientError(
-        body.error ?? `Channel request failed (${response.status})`,
+      throw new ConversationClientError(
+        body.error ?? `Conversation request failed (${response.status})`,
         response.status,
         retryAfterMilliseconds(response.headers.get("retry-after")),
       );

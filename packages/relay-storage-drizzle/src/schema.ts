@@ -24,7 +24,7 @@ export const conversationWorkingFolders = sqliteTable("conversation_working_fold
   uniqueIndex("conversation_working_folders_primary_unique")
     .on(table.conversationId)
     .where(sql`${table.isPrimary} = 1`),
-  index("conversation_working_folders_workspace_channel_idx").on(table.workspaceId, table.conversationId),
+  index("conversation_working_folders_workspace_conversation_idx").on(table.workspaceId, table.conversationId),
 ]);
 
 export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
@@ -99,5 +99,5 @@ export const conversationAgentBindings = sqliteTable("conversation_agent_binding
     .on(table.workspaceId, table.conversationId, table.agentIdentityId),
   uniqueIndex("conversation_agent_bindings_runtime_session_unique")
     .on(table.runtimeAdapter, table.runtimeSessionId),
-  index("conversation_agent_bindings_channel_idx").on(table.conversationId),
+  index("conversation_agent_bindings_conversation_idx").on(table.conversationId),
 ]);

@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 interface TerminalInput extends NodeJS.ReadableStream { isTTY?: boolean }
 interface TerminalOutput extends NodeJS.WritableStream { isTTY?: boolean }
 
-export async function confirmChannelsUpdate(options: {
+export async function confirmConversationsUpdate(options: {
   assumeYes: boolean;
   json: boolean;
   input?: TerminalInput;

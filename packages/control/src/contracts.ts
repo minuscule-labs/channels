@@ -56,7 +56,7 @@ export interface ProvisionLocalWorkspaceInput {
 export interface ProvisionLocalWorkspaceResult {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
 }
 
 export interface LocalControlHealth {
@@ -69,14 +69,14 @@ export interface LocalWorkspaceAgentConfigurationSummary {
   configured: boolean;
   personaConfigured: boolean;
   runtimeConfigured: boolean;
-  /** Authenticated local-control display label; never exposed by public Channel APIs. */
+  /** Authenticated local-control display label; never exposed by public Conversation APIs. */
   runtimeAdapter?: string;
   modelConfigured: boolean;
   reasoningConfigured: boolean;
   skillsConfigured: boolean;
   selectedSkillCount: number;
   status: "active" | "disabled" | "unconfigured";
-  boundChannelCount: number;
+  boundConversationCount: number;
   changesApplyToNewSessions: true;
 }
 
@@ -111,29 +111,29 @@ export interface UpdateLocalWorkspaceConfigurationInput {
   notesFolderId?: string | null;
 }
 
-/** Presentation-safe private Channel scope; absolute Workspace paths never leave local control. */
-export interface LocalChannelWorkingFolder {
+/** Presentation-safe private Conversation scope; absolute Workspace paths never leave local control. */
+export interface LocalConversationWorkingFolder {
   relativePath: string;
   position: number;
   primary: boolean;
 }
 
-export interface LocalChannelWorkingFolders {
+export interface LocalConversationWorkingFolders {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   inheritedFromWorkspace: boolean;
-  folders: LocalChannelWorkingFolder[];
+  folders: LocalConversationWorkingFolder[];
   changesApplyToNewSessions: true;
   enforcement: "advisory";
 }
 
 /** Complete replacement. Folder picker selections use `path`; saved rows use `relativePath`. */
-export interface LocalChannelWorkingFolderPreview {
+export interface LocalConversationWorkingFolderPreview {
   relativePath: string;
 }
 
-export interface UpdateLocalChannelWorkingFoldersInput {
+export interface UpdateLocalConversationWorkingFoldersInput {
   folders: Array<{
     path?: string;
     relativePath?: string;
@@ -155,10 +155,10 @@ export interface LocalControlCapabilities {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   features: {
     currentSession: boolean;
-    channelAgentStatus: boolean;
+    conversationAgentStatus: boolean;
     workspaceConfigRead: boolean;
     workspaceConfigWrite: boolean;
-    channelWorkingFolders: boolean;
+    conversationWorkingFolders: boolean;
     agentCreate: boolean;
     agentRuntimeOptions: boolean;
     agentSkills: boolean;
@@ -173,7 +173,7 @@ export interface LocalControlCapabilities {
   };
 }
 
-export type LocalChannelAgentState =
+export type LocalConversationAgentState =
   | "unbound"
   | "idle"
   | "running"
@@ -214,11 +214,11 @@ export interface LocalAgentDiagnostics {
   };
 }
 
-export interface LocalChannelAgent {
+export interface LocalConversationAgent {
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   identityId: string;
-  state: LocalChannelAgentState;
+  state: LocalConversationAgentState;
   wakePolicy?: LocalWakePolicy;
   activity?: LocalAgentActivity;
   capabilities: {
@@ -233,10 +233,10 @@ export interface LocalChannelAgent {
   diagnostics?: LocalAgentDiagnostics;
 }
 
-export interface LocalChannelAgentsResponse {
+export interface LocalConversationAgentsResponse {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
-  channelId: string;
-  agents: LocalChannelAgent[];
+  conversationId: string;
+  agents: LocalConversationAgent[];
 }
 
 export interface LocalOpenDiagnosticResponse {
@@ -260,6 +260,6 @@ export interface LocalBulkAgentLifecycleResult {
 
 export interface LocalBulkAgentLifecycleResponse {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
-  channelId: string;
+  conversationId: string;
   results: LocalBulkAgentLifecycleResult[];
 }

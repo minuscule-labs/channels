@@ -6,14 +6,14 @@ import { queryKeys } from "../lib/query-keys";
 
 type DraftFolder = { relativePath?: string; path?: string; primary: boolean };
 
-export function ChannelWorkingFolders({ channelId, canAdminister }: {
-  channelId: string;
+export function ConversationWorkingFolders({ conversationId, canAdminister }: {
+  conversationId: string;
   canAdminister: boolean;
 }) {
   const queryClient = useQueryClient();
   const folders = useQuery({
-    queryKey: queryKeys.channelWorkingFolders(channelId),
-    queryFn: () => localControl.getChannelWorkingFolders(channelId),
+    queryKey: queryKeys.conversationWorkingFolders(conversationId),
+    queryFn: () => localControl.getConversationWorkingFolders(conversationId),
     enabled: canAdminister,
     retry: false,
   });
@@ -22,20 +22,20 @@ export function ChannelWorkingFolders({ channelId, canAdminister }: {
     if (folders.data) setDraft(folders.data.folders.map(({ relativePath, primary }) => ({ relativePath, primary })));
   }, [folders.data]);
   const save = useMutation({
-    mutationFn: () => localControl.updateChannelWorkingFolders(channelId, {
+    mutationFn: () => localControl.updateConversationWorkingFolders(conversationId, {
       folders: draft.map((folder) => folder.path
         ? { path: folder.path, primary: folder.primary }
         : { relativePath: folder.relativePath!, primary: folder.primary }),
     }),
     onSuccess: (value) => {
-      queryClient.setQueryData(queryKeys.channelWorkingFolders(channelId), value);
+      queryClient.setQueryData(queryKeys.conversationWorkingFolders(conversationId), value);
       setDraft(value.folders.map(({ relativePath, primary }) => ({ relativePath, primary })));
     },
   });
   const select = useMutation({
     mutationFn: async () => {
       const path = await localControl.selectLocalFolder();
-      return path ? { path, ...(await localControl.previewChannelWorkingFolder(channelId, path)) } : undefined;
+      return path ? { path, ...(await localControl.previewConversationWorkingFolder(conversationId, path)) } : undefined;
     },
     onSuccess: (selection) => {
       if (!selection || draft.some((folder) => folder.relativePath === selection.relativePath)) return;

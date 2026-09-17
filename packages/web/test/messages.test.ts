@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChannelMessage, Participant } from "@minu/channels-core/types";
+import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { mergeMessages, structuredTargets } from "../src/lib/messages";
 
 const participants: Participant[] = [
@@ -8,10 +8,10 @@ const participants: Participant[] = [
   { id: "disabled-id", handle: "old-agent", type: "agent", status: "disabled" },
 ];
 
-function message(id: string, sequence: number): ChannelMessage {
+function message(id: string, sequence: number): ConversationMessage {
   return {
     id,
-    channelId: "channel",
+    conversationId: "conversation",
     sequence,
     participantId: "human-id",
     to: [],
@@ -21,10 +21,10 @@ function message(id: string, sequence: number): ChannelMessage {
 }
 
 describe("structuredTargets", () => {
-  it("resolves active local handles and channel without duplicates", () => {
-    expect(structuredTargets("@builder hello @builder and @channel", participants)).toEqual([
+  it("resolves active local handles and conversation without duplicates", () => {
+    expect(structuredTargets("@builder hello @builder and @conversation", participants)).toEqual([
       "agent-id",
-      "@channel",
+      "@conversation",
     ]);
   });
 

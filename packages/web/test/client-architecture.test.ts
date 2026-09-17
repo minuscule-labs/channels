@@ -1,6 +1,6 @@
-import type { ChannelEvent, ChannelMessage, Participant } from "@minu/channels-core/types";
+import type { ConversationEvent, ConversationMessage, Participant } from "@minu/channels-core/types";
 import { describe, expect, it } from "vitest";
-import { channelCacheAction } from "../src/lib/channel-events";
+import { conversationCacheAction } from "../src/lib/conversation-events";
 import {
   createMessageSubmission,
   draftStorageKey,
@@ -18,10 +18,10 @@ const participants: Participant[] = [
   { id: "disabled-id", handle: "retired", type: "agent", status: "disabled" },
 ];
 
-function message(id: string, sequence: number, overrides: Partial<ChannelMessage> = {}): ChannelMessage {
+function message(id: string, sequence: number, overrides: Partial<ConversationMessage> = {}): ConversationMessage {
   return {
     id,
-    channelId: "channel",
+    conversationId: "conversation",
     sequence,
     participantId: "human-id",
     to: [],
@@ -32,41 +32,41 @@ function message(id: string, sequence: number, overrides: Partial<ChannelMessage
 }
 
 describe("query keys", () => {
-  it("keeps Channel metadata and messages in one key hierarchy", () => {
+  it("keeps Conversation metadata and messages in one key hierarchy", () => {
     expect(queryKeys.localCurrentSession()).toEqual(["local", "session"]);
-    expect(queryKeys.channel("one")).toEqual(["channel", "one"]);
-    expect(queryKeys.channelMessages("one")).toEqual(["channel", "one", "messages"]);
-    expect(queryKeys.workspaceChannels("workspace")).toEqual(["workspace", "workspace", "channels"]);
+    expect(queryKeys.conversation("one")).toEqual(["conversation", "one"]);
+    expect(queryKeys.conversationMessages("one")).toEqual(["conversation", "one", "messages"]);
+    expect(queryKeys.workspaceConversations("workspace")).toEqual(["workspace", "workspace", "conversations"]);
     expect(queryKeys.workspaceConfiguration("workspace")).toEqual(["workspace", "workspace", "configuration"]);
-    expect(queryKeys.localChannelAgents("one")).toEqual(["local", "channel", "one", "agents"]);
+    expect(queryKeys.localConversationAgents("one")).toEqual(["local", "conversation", "one", "agents"]);
   });
 });
 
-describe("Channel event reduction", () => {
+describe("Conversation event reduction", () => {
   it("merges messages and refreshes only for newer roster revisions", () => {
-    const created: ChannelEvent = {
+    const created: ConversationEvent = {
       id: "event-1",
       type: "message.created",
-      channelId: "channel",
+      conversationId: "conversation",
       message: message("one", 1),
       createdAt: "2026-08-28T12:01:00.000Z",
     };
-    expect(channelCacheAction(created, 3)).toMatchObject({ type: "merge-message", message: { id: "one" } });
+    expect(conversationCacheAction(created, 3)).toMatchObject({ type: "merge-message", message: { id: "one" } });
 
-    const roster = (rosterRevision: number): ChannelEvent => ({
+    const roster = (rosterRevision: number): ConversationEvent => ({
       id: `event-${rosterRevision}`,
       type: "roster.updated",
-      channelId: "channel",
+      conversationId: "conversation",
       rosterRevision,
       createdAt: "2026-08-28T12:01:00.000Z",
     });
-    expect(channelCacheAction(roster(3), 3)).toEqual({ type: "ignore" });
-    expect(channelCacheAction(roster(4), 3)).toEqual({ type: "refresh-metadata", rosterRevision: 4 });
-    expect(channelCacheAction(roster(1), undefined)).toEqual({ type: "refresh-metadata", rosterRevision: 1 });
-    expect(channelCacheAction({
+    expect(conversationCacheAction(roster(3), 3)).toEqual({ type: "ignore" });
+    expect(conversationCacheAction(roster(4), 3)).toEqual({ type: "refresh-metadata", rosterRevision: 4 });
+    expect(conversationCacheAction(roster(1), undefined)).toEqual({ type: "refresh-metadata", rosterRevision: 1 });
+    expect(conversationCacheAction({
       id: "event-name",
-      type: "channel.updated",
-      channelId: "channel",
+      type: "conversation.updated",
+      conversationId: "conversation",
       createdAt: "2026-08-28T12:01:00.000Z",
     }, 4)).toEqual({ type: "refresh-metadata" });
   });
@@ -85,10 +85,10 @@ describe("composer primitives", () => {
     expect(mentionQueryAt("email@example.com", 17)).toBeUndefined();
   });
 
-  it("measures UTF-8 bytes and isolates drafts by Workspace, Channel, and author", () => {
+  it("measures UTF-8 bytes and isolates drafts by Workspace, Conversation, and author", () => {
     expect(messageByteLength("a😀")).toBe(5);
-    expect(draftStorageKey("workspace", "channel", "human")).toBe(
-      "minu.channels.draft.workspace.channel.human",
+    expect(draftStorageKey("workspace", "conversation", "human")).toBe(
+      "minu.conversations.draft.workspace.conversation.human",
     );
   });
 

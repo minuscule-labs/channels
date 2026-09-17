@@ -1,6 +1,6 @@
-import { createResourceId, type ChannelClient } from "@minu/channels-core";
+import { createResourceId, type ConversationClient } from "@minu/channels-core";
 import type {
-  AgentChannelBinding,
+  AgentConversationBinding,
   AgentRuntimePort,
   DeliveryDeadLetterInput,
   DeliveryDeadLetterReason,
@@ -38,19 +38,19 @@ export interface WorkspaceAgentConfig {
   updatedAt: string;
 }
 
-export type ChannelAgentBindingState = "connected" | "offline" | "replacing" | "disabled";
+export type ConversationAgentBindingState = "connected" | "offline" | "replacing" | "disabled";
 
-export interface ChannelAgentBindingRecord {
+export interface ConversationAgentBindingRecord {
   id: string;
   workspaceAgentConfigId: string;
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   agentIdentityId: string;
   executionEnvironmentId?: string;
   runtimeAdapter: string;
   runtimeSessionId: string;
   generation: number;
-  state: ChannelAgentBindingState;
+  state: ConversationAgentBindingState;
   wakePolicy: WakePolicy;
   leaseOwner?: string;
   leaseExpiresAt?: string;
@@ -60,7 +60,7 @@ export interface ChannelAgentBindingRecord {
 }
 
 export interface DeliveryDeadLetterRecord {
-  channelId: string;
+  conversationId: string;
   participantId: string;
   triggerMessageId: string;
   triggerSequence: number;
@@ -69,10 +69,10 @@ export interface DeliveryDeadLetterRecord {
   updatedAt: string;
 }
 
-/** Private, Workspace-relative Channel working-folder configuration. */
-export interface ChannelWorkingFolder {
+/** Private, Workspace-relative Conversation working-folder configuration. */
+export interface ConversationWorkingFolder {
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   relativePath: string;
   position: number;
   primary: boolean;
@@ -81,12 +81,12 @@ export interface ChannelWorkingFolder {
 export interface RelayBindingStore extends RelayCursorStore {
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
-  getChannelWorkingFolders(workspaceId: string, channelId: string): Promise<ChannelWorkingFolder[]>;
-  replaceChannelWorkingFolders(
+  getConversationWorkingFolders(workspaceId: string, conversationId: string): Promise<ConversationWorkingFolder[]>;
+  replaceConversationWorkingFolders(
     workspaceId: string,
-    channelId: string,
-    folders: readonly ChannelWorkingFolder[],
-  ): Promise<ChannelWorkingFolder[]>;
+    conversationId: string,
+    folders: readonly ConversationWorkingFolder[],
+  ): Promise<ConversationWorkingFolder[]>;
   putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig>;
   getAgentConfig(configId: string): Promise<WorkspaceAgentConfig | undefined>;
   getWorkspaceAgentConfig(
@@ -94,17 +94,17 @@ export interface RelayBindingStore extends RelayCursorStore {
     agentIdentityId: string,
   ): Promise<WorkspaceAgentConfig | undefined>;
   listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]>;
-  putBinding(binding: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord>;
-  getBinding(bindingId: string): Promise<ChannelAgentBindingRecord | undefined>;
+  putBinding(binding: ConversationAgentBindingRecord): Promise<ConversationAgentBindingRecord>;
+  getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined>;
   deleteBinding(bindingId: string): Promise<void>;
-  listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]>;
-  listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]>;
+  listConversationBindings(conversationId: string): Promise<ConversationAgentBindingRecord[]>;
+  listWorkspaceBindings(workspaceId: string): Promise<ConversationAgentBindingRecord[]>;
   acquireBindingLease(
     bindingId: string,
     leaseOwner: string,
     now: string,
     leaseExpiresAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined>;
+  ): Promise<ConversationAgentBindingRecord | undefined>;
   renewBindingLease(
     bindingId: string,
     generation: number,
@@ -117,24 +117,24 @@ export interface RelayBindingStore extends RelayCursorStore {
     bindingId: string,
     generation: number,
     leaseOwner: string,
-    state: ChannelAgentBindingState,
+    state: ConversationAgentBindingState,
     lastVerifiedAt: string | undefined,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined>;
+  ): Promise<ConversationAgentBindingRecord | undefined>;
   replaceBindingSession(
     bindingId: string,
     expectedGeneration: number,
     runtimeAdapter: string,
     runtimeSessionId: string,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined>;
+  ): Promise<ConversationAgentBindingRecord | undefined>;
   disableBinding(
     bindingId: string,
     expectedGeneration: number,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined>;
+  ): Promise<ConversationAgentBindingRecord | undefined>;
   commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void>;
-  listDeliveryDeadLetters(channelId: string, participantId: string): Promise<DeliveryDeadLetterRecord[]>;
+  listDeliveryDeadLetters(conversationId: string, participantId: string): Promise<DeliveryDeadLetterRecord[]>;
   close?(): Promise<void> | void;
 }
 
@@ -150,26 +150,26 @@ function copyWorkspaceConfig(config: LocalWorkspaceConfig): LocalWorkspaceConfig
   };
 }
 
-function copyBinding(binding: ChannelAgentBindingRecord): ChannelAgentBindingRecord {
+function copyBinding(binding: ConversationAgentBindingRecord): ConversationAgentBindingRecord {
   return { ...binding };
 }
 
-function copyChannelWorkingFolder(folder: ChannelWorkingFolder): ChannelWorkingFolder {
+function copyConversationWorkingFolder(folder: ConversationWorkingFolder): ConversationWorkingFolder {
   return { ...folder };
 }
 
-export function validateChannelWorkingFolders(
+export function validateConversationWorkingFolders(
   workspaceId: string,
-  channelId: string,
-  folders: readonly ChannelWorkingFolder[],
+  conversationId: string,
+  folders: readonly ConversationWorkingFolder[],
 ): void {
-  if (folders.length > 16) throw new Error("A Channel can have at most 16 working folders");
+  if (folders.length > 16) throw new Error("A Conversation can have at most 16 working folders");
   const relativePaths = new Set<string>();
   const positions = new Set<number>();
   let primaryCount = 0;
   for (const folder of folders) {
-    if (folder.workspaceId !== workspaceId || folder.channelId !== channelId) {
-      throw new Error("Working folder does not belong to the requested Workspace and Channel");
+    if (folder.workspaceId !== workspaceId || folder.conversationId !== conversationId) {
+      throw new Error("Working folder does not belong to the requested Workspace and Conversation");
     }
     if (!folder.relativePath || folder.relativePath === ".") {
       throw new Error("Working folder must be a non-root relative path");
@@ -191,9 +191,9 @@ export function validateChannelWorkingFolders(
 
 export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly workspaceConfigs = new Map<string, LocalWorkspaceConfig>();
-  private readonly channelWorkingFolders = new Map<string, ChannelWorkingFolder[]>();
+  private readonly conversationWorkingFolders = new Map<string, ConversationWorkingFolder[]>();
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
-  private readonly bindings = new Map<string, ChannelAgentBindingRecord>();
+  private readonly bindings = new Map<string, ConversationAgentBindingRecord>();
   private readonly cursors = new Map<string, number>();
   private readonly deliveryDeadLetters = new Map<string, DeliveryDeadLetterRecord>();
 
@@ -207,24 +207,24 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     return config ? copyWorkspaceConfig(config) : undefined;
   }
 
-  async getChannelWorkingFolders(
+  async getConversationWorkingFolders(
     workspaceId: string,
-    channelId: string,
-  ): Promise<ChannelWorkingFolder[]> {
-    return (this.channelWorkingFolders.get(`${workspaceId}\0${channelId}`) ?? [])
-      .map(copyChannelWorkingFolder);
+    conversationId: string,
+  ): Promise<ConversationWorkingFolder[]> {
+    return (this.conversationWorkingFolders.get(`${workspaceId}\0${conversationId}`) ?? [])
+      .map(copyConversationWorkingFolder);
   }
 
-  async replaceChannelWorkingFolders(
+  async replaceConversationWorkingFolders(
     workspaceId: string,
-    channelId: string,
-    folders: readonly ChannelWorkingFolder[],
-  ): Promise<ChannelWorkingFolder[]> {
-    validateChannelWorkingFolders(workspaceId, channelId, folders);
-    const replacement = folders.map(copyChannelWorkingFolder)
+    conversationId: string,
+    folders: readonly ConversationWorkingFolder[],
+  ): Promise<ConversationWorkingFolder[]> {
+    validateConversationWorkingFolders(workspaceId, conversationId, folders);
+    const replacement = folders.map(copyConversationWorkingFolder)
       .sort((left, right) => left.position - right.position);
-    this.channelWorkingFolders.set(`${workspaceId}\0${channelId}`, replacement);
-    return replacement.map(copyChannelWorkingFolder);
+    this.conversationWorkingFolders.set(`${workspaceId}\0${conversationId}`, replacement);
+    return replacement.map(copyConversationWorkingFolder);
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {
@@ -261,15 +261,15 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       .map((config) => ({ ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined }));
   }
 
-  async putBinding(binding: ChannelAgentBindingRecord): Promise<ChannelAgentBindingRecord> {
-    if (this.bindings.has(binding.id)) throw new Error("Channel agent binding id already exists");
+  async putBinding(binding: ConversationAgentBindingRecord): Promise<ConversationAgentBindingRecord> {
+    if (this.bindings.has(binding.id)) throw new Error("Conversation agent binding id already exists");
     const duplicate = [...this.bindings.values()].find(
       (candidate) => candidate.id !== binding.id
         && candidate.workspaceId === binding.workspaceId
-        && candidate.channelId === binding.channelId
+        && candidate.conversationId === binding.conversationId
         && candidate.agentIdentityId === binding.agentIdentityId,
     );
-    if (duplicate) throw new Error("Channel agent binding already exists");
+    if (duplicate) throw new Error("Conversation agent binding already exists");
     const sessionOwner = [...this.bindings.values()].find(
       (candidate) => candidate.id !== binding.id
         && candidate.runtimeAdapter === binding.runtimeAdapter
@@ -281,7 +281,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     return copyBinding(binding);
   }
 
-  async getBinding(bindingId: string): Promise<ChannelAgentBindingRecord | undefined> {
+  async getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     return binding ? copyBinding(binding) : undefined;
   }
@@ -290,13 +290,13 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     this.bindings.delete(bindingId);
   }
 
-  async listChannelBindings(channelId: string): Promise<ChannelAgentBindingRecord[]> {
+  async listConversationBindings(conversationId: string): Promise<ConversationAgentBindingRecord[]> {
     return [...this.bindings.values()]
-      .filter((binding) => binding.channelId === channelId)
+      .filter((binding) => binding.conversationId === conversationId)
       .map(copyBinding);
   }
 
-  async listWorkspaceBindings(workspaceId: string): Promise<ChannelAgentBindingRecord[]> {
+  async listWorkspaceBindings(workspaceId: string): Promise<ConversationAgentBindingRecord[]> {
     return [...this.bindings.values()]
       .filter((binding) => binding.workspaceId === workspaceId)
       .map(copyBinding);
@@ -307,7 +307,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     leaseOwner: string,
     now: string,
     leaseExpiresAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.state === "disabled") return undefined;
     if (binding.leaseOwner && binding.leaseOwner !== leaseOwner
@@ -348,10 +348,10 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     bindingId: string,
     generation: number,
     leaseOwner: string,
-    state: ChannelAgentBindingState,
+    state: ConversationAgentBindingState,
     lastVerifiedAt: string | undefined,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== generation || binding.leaseOwner !== leaseOwner
       || !binding.leaseExpiresAt || binding.leaseExpiresAt <= updatedAt) {
@@ -369,7 +369,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     runtimeAdapter: string,
     runtimeSessionId: string,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
     const sessionOwner = [...this.bindings.values()].find(
@@ -391,20 +391,20 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     return copyBinding(binding);
   }
 
-  async getCursor(channelId: string, participantId: string): Promise<number> {
-    return this.cursors.get(`${channelId}:${participantId}`) ?? 0;
+  async getCursor(conversationId: string, participantId: string): Promise<number> {
+    return this.cursors.get(`${conversationId}:${participantId}`) ?? 0;
   }
 
-  async setCursor(channelId: string, participantId: string, sequence: number): Promise<void> {
-    const key = `${channelId}:${participantId}`;
+  async setCursor(conversationId: string, participantId: string, sequence: number): Promise<void> {
+    const key = `${conversationId}:${participantId}`;
     this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, sequence));
   }
 
   async commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void> {
-    const key = JSON.stringify([input.channelId, input.participantId, input.triggerMessageId]);
+    const key = JSON.stringify([input.conversationId, input.participantId, input.triggerMessageId]);
     const existing = this.deliveryDeadLetters.get(key);
     this.deliveryDeadLetters.set(key, existing ?? {
-      channelId: input.channelId,
+      conversationId: input.conversationId,
       participantId: input.participantId,
       triggerMessageId: input.triggerMessageId,
       triggerSequence: input.triggerSequence,
@@ -412,7 +412,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       createdAt: input.recordedAt,
       updatedAt: input.recordedAt,
     });
-    const cursorKey = `${input.channelId}:${input.participantId}`;
+    const cursorKey = `${input.conversationId}:${input.participantId}`;
     this.cursors.set(
       cursorKey,
       Math.max(this.cursors.get(cursorKey) ?? 0, input.triggerSequence),
@@ -420,11 +420,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   }
 
   async listDeliveryDeadLetters(
-    channelId: string,
+    conversationId: string,
     participantId: string,
   ): Promise<DeliveryDeadLetterRecord[]> {
     return [...this.deliveryDeadLetters.values()]
-      .filter((record) => record.channelId === channelId && record.participantId === participantId)
+      .filter((record) => record.conversationId === conversationId && record.participantId === participantId)
       .sort((left, right) => left.triggerSequence - right.triggerSequence)
       .map((record) => ({ ...record }));
   }
@@ -433,7 +433,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     bindingId: string,
     expectedGeneration: number,
     updatedAt: string,
-  ): Promise<ChannelAgentBindingRecord | undefined> {
+  ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
     binding.generation += 1;
@@ -450,7 +450,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
 
 export class LocalRelayDirectory {
   constructor(
-    private readonly client: ChannelClient,
+    private readonly client: ConversationClient,
     private readonly store: RelayBindingStore,
     private readonly now: () => Date = () => new Date(),
   ) {}
@@ -566,36 +566,36 @@ export class LocalRelayDirectory {
   }
 
   async bindAgent(input: {
-    channelId: string;
+    conversationId: string;
     agentIdentityId: string;
     runtimeAdapter: string;
     runtimeSessionId: string;
     wakePolicy?: WakePolicy;
-  }): Promise<ChannelAgentBindingRecord> {
+  }): Promise<ConversationAgentBindingRecord> {
     if (!input.runtimeAdapter.trim() || !input.runtimeSessionId.trim()) {
       throw new Error("Runtime adapter and session id are required");
     }
-    const channel = await this.client.getChannel(input.channelId);
-    const participant = channel.participants.find(({ id }) => id === input.agentIdentityId);
+    const conversation = await this.client.getConversation(input.conversationId);
+    const participant = conversation.participants.find(({ id }) => id === input.agentIdentityId);
     if (!participant || (participant.type !== "agent" && participant.type !== "service")) {
-      throw new Error("Agent must participate in the Channel");
+      throw new Error("Agent must participate in the Conversation");
     }
     const config = await this.store.getWorkspaceAgentConfig(
-      channel.workspaceId,
+      conversation.workspaceId,
       input.agentIdentityId,
     );
     if (!config || config.status !== "active") {
       throw new Error("Active private Workspace agent configuration is required");
     }
-    const existing = (await this.store.listChannelBindings(input.channelId))
+    const existing = (await this.store.listConversationBindings(input.conversationId))
       .find(({ agentIdentityId }) => agentIdentityId === input.agentIdentityId);
-    if (existing) throw new Error("Channel agent binding already exists; replace it explicitly");
+    if (existing) throw new Error("Conversation agent binding already exists; replace it explicitly");
     const timestamp = this.now().toISOString();
     return this.store.putBinding({
       id: createResourceId("binding"),
       workspaceAgentConfigId: config.id,
-      workspaceId: channel.workspaceId,
-      channelId: input.channelId,
+      workspaceId: conversation.workspaceId,
+      conversationId: input.conversationId,
       agentIdentityId: input.agentIdentityId,
       runtimeAdapter: input.runtimeAdapter,
       runtimeSessionId: input.runtimeSessionId,
@@ -612,7 +612,7 @@ export class LocalRelayDirectory {
     expectedGeneration: number;
     runtimeAdapter: string;
     runtimeSessionId: string;
-  }): Promise<ChannelAgentBindingRecord> {
+  }): Promise<ConversationAgentBindingRecord> {
     const replaced = await this.store.replaceBindingSession(
       input.bindingId,
       input.expectedGeneration,
@@ -633,10 +633,10 @@ export type RestoreBindingOutcome =
   | "runtime_offline"
   | "runtime_uncertain";
 
-export interface RestoreChannelBindingsOptions {
-  client: ChannelClient;
+export interface RestoreConversationBindingsOptions {
+  client: ConversationClient;
   store: RelayBindingStore;
-  channelId: string;
+  conversationId: string;
   /** Restore only these records when attaching one runner to an already-live Relay. */
   bindingIds?: readonly string[];
   /** Defer connected state until the caller has completed Relay attachment. */
@@ -648,17 +648,17 @@ export interface RestoreChannelBindingsOptions {
   now?: () => Date;
 }
 
-export class RestoredChannelBindings {
-  readonly bindings: AgentChannelBinding[];
+export class RestoredConversationBindings {
+  readonly bindings: AgentConversationBinding[];
   private closed = false;
   private renewalTimer: NodeJS.Timeout | undefined;
   private renewalActive = false;
   private onLeaseLost: (() => void | Promise<void>) | undefined;
 
   constructor(
-    bindings: AgentChannelBinding[],
+    bindings: AgentConversationBinding[],
     readonly outcomes: ReadonlyMap<string, RestoreBindingOutcome>,
-    private readonly records: ChannelAgentBindingRecord[],
+    private readonly records: ConversationAgentBindingRecord[],
     private readonly store: RelayBindingStore,
     private readonly leaseOwner: string,
     private readonly leaseDurationMs: number,
@@ -714,7 +714,7 @@ export class RestoredChannelBindings {
   }
 
   startAutoRenew(onLeaseLost: () => void | Promise<void>): void {
-    if (this.closed) throw new Error("Channel bindings are closed");
+    if (this.closed) throw new Error("Conversation bindings are closed");
     this.onLeaseLost = onLeaseLost;
     this.beginRenewal();
   }
@@ -754,9 +754,9 @@ export class RestoredChannelBindings {
   }
 }
 
-export async function restoreChannelBindings(
-  options: RestoreChannelBindingsOptions,
-): Promise<RestoredChannelBindings> {
+export async function restoreConversationBindings(
+  options: RestoreConversationBindingsOptions,
+): Promise<RestoredConversationBindings> {
   const leaseDurationMs = options.leaseDurationMs ?? 30_000;
   if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 1) {
     throw new RangeError("leaseDurationMs must be a positive integer");
@@ -766,18 +766,18 @@ export async function restoreChannelBindings(
     throw new RangeError("statusTimeoutMs must be a positive integer");
   }
   const now = options.now ?? (() => new Date());
-  const channel = await options.client.getChannel(options.channelId);
+  const conversation = await options.client.getConversation(options.conversationId);
   const [candidates, workspaceMembers, workspaceConfig] = await Promise.all([
-    options.store.listChannelBindings(options.channelId),
-    options.client.listWorkspaceMembers(channel.workspaceId),
-    options.store.getWorkspaceConfig(channel.workspaceId),
+    options.store.listConversationBindings(options.conversationId),
+    options.client.listWorkspaceMembers(conversation.workspaceId),
+    options.store.getWorkspaceConfig(conversation.workspaceId),
   ]);
   if (!workspaceConfig) throw new Error("Private Workspace configuration is required");
-  const bindings: AgentChannelBinding[] = [];
-  const records: ChannelAgentBindingRecord[] = [];
+  const bindings: AgentConversationBinding[] = [];
+  const records: ConversationAgentBindingRecord[] = [];
   const outcomes = new Map<string, RestoreBindingOutcome>();
   const provisionalRenewals = new Map<string, {
-    record: ChannelAgentBindingRecord;
+    record: ConversationAgentBindingRecord;
     timer: NodeJS.Timeout;
     inFlight: Set<Promise<unknown>>;
   }>();
@@ -835,9 +835,9 @@ export async function restoreChannelBindings(
       options.store.getAgentConfig(leased.workspaceAgentConfigId),
       options.client.getIdentity(leased.agentIdentityId).catch(() => undefined),
     ]);
-    const participant = channel.participants.find(({ id }) => id === leased.agentIdentityId);
+    const participant = conversation.participants.find(({ id }) => id === leased.agentIdentityId);
     const member = workspaceMembers.find(({ identityId }) => identityId === leased.agentIdentityId);
-    if (leased.workspaceId !== channel.workspaceId || !participant || !member
+    if (leased.workspaceId !== conversation.workspaceId || !participant || !member
       || member.status !== "active" || !identity || identity.status !== "active"
       || (identity.type !== "agent" && identity.type !== "service")
       || !config || config.status !== "active" || config.workspaceId !== leased.workspaceId
@@ -925,7 +925,7 @@ export async function restoreChannelBindings(
     // Stop and drain provisional renewal before transferring every surviving lease. Draining
     // first prevents an already-started renewal from racing a later close/release.
     await Promise.all([...provisionalRenewals.keys()].map(stopProvisional));
-    return new RestoredChannelBindings(
+    return new RestoredConversationBindings(
       bindings,
       outcomes,
       records,

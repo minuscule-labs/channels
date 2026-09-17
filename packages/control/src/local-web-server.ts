@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import { extname, resolve, sep } from "node:path";
-import { DEFAULT_WEB_PORT, isLocalChannelsHostname } from "./local-host.ts";
+import { DEFAULT_WEB_PORT, isLocalConversationsHostname } from "./local-host.ts";
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".css": "text/css; charset=utf-8",
@@ -20,12 +20,12 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
 };
 
 export interface LocalWebServerOptions {
-  channelsEndpoint: string;
+  conversationsEndpoint: string;
   controlEndpoint: string;
   webDirectory: string;
   host?: "127.0.0.1" | "::1";
   port?: number;
-  channelsServiceToken: string;
+  conversationsServiceToken: string;
   authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
   isQuiescing?(): boolean;
 }
@@ -38,7 +38,7 @@ export interface LocalWebServer {
 function targetFor(pathname: string, options: LocalWebServerOptions): string | undefined {
   if (["/conversations", "/workspaces", "/identities"].some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
-  )) return options.channelsEndpoint;
+  )) return options.conversationsEndpoint;
   if (pathname === "/local" || pathname.startsWith("/local/")) return options.controlEndpoint;
   return undefined;
 }
@@ -137,7 +137,7 @@ async function serveStatic(
 function loopbackRequestHost(request: IncomingMessage): boolean {
   try {
     const hostname = new URL(`http://${request.headers.host ?? ""}`).hostname;
-    return isLocalChannelsHostname(hostname);
+    return isLocalConversationsHostname(hostname);
   } catch { return false; }
 }
 
@@ -171,15 +171,15 @@ export async function createLocalWebServer(
       }
       const url = new URL(request.url ?? "/", "http://minu.local");
       const mutation = request.method !== "GET" && request.method !== "HEAD";
-      const durableChannelMessage = request.method === "POST"
+      const durableConversationMessage = request.method === "POST"
         && /^\/conversations\/[^/]+\/messages$/.test(url.pathname);
-      if (options.isQuiescing?.() && mutation && !durableChannelMessage) {
+      if (options.isQuiescing?.() && mutation && !durableConversationMessage) {
         response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
         response.end(`${JSON.stringify({ error: "MinuChannels is restarting" })}\n`);
         return;
       }
       const target = targetFor(url.pathname, options);
-      if (target === options.channelsEndpoint) {
+      if (target === options.conversationsEndpoint) {
         const session = options.authenticateBrowser(request.headers.cookie);
         if (!session) {
           response.writeHead(401, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -187,7 +187,7 @@ export async function createLocalWebServer(
           return;
         }
         proxy(request, response, target, {
-          authorization: `Bearer ${options.channelsServiceToken}`,
+          authorization: `Bearer ${options.conversationsServiceToken}`,
           "x-minu-actor-id": session.identityId,
         });
       } else if (target) proxy(request, response, target, {}, true);

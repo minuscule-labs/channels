@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
 import test from "node:test";
-import { DrizzleLibSqlChannelStorage } from "../src/storage.ts";
+import { DrizzleLibSqlConversationStorage } from "../src/storage.ts";
 import { createV006ChannelsDatabase } from "./v006-fixture.ts";
 
 test("production Conversation migration upgrades a populated v0.0.6 collaboration database", async () => {
@@ -36,11 +36,11 @@ test("production Conversation migration upgrades a populated v0.0.6 collaboratio
       `);
     } finally { client.close(); }
 
-    const storage = await DrizzleLibSqlChannelStorage.open({ url: fixture.url });
+    const storage = await DrizzleLibSqlConversationStorage.open({ url: fixture.url });
     try {
-      const channel = await storage.getChannel(channelId);
-      assert.equal(channel?.name, "Preserved");
-      assert.deepEqual(channel?.messages.map(({ id }) => id), ["message_trigger", "message_response"]);
+      const conversation = await storage.getConversation(channelId);
+      assert.equal(conversation?.name, "Preserved");
+      assert.deepEqual(conversation?.messages.map(({ id }) => id), ["message_trigger", "message_response"]);
       assert.equal(await storage.getCursor(channelId, "identity_agent"), 2);
     } finally { await storage.close(); }
 

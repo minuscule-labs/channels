@@ -1,13 +1,13 @@
 import type {
   LocalBulkAgentLifecycleResult,
-  LocalChannelAgent,
+  LocalConversationAgent,
   LocalLiveCapabilityState,
 } from "@minu/channels-control/contracts";
-import type { ChannelMessage, Participant } from "@minu/channels-core/types";
+import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { useEffect, useState } from "react";
 import { participantLabel } from "../lib/participants";
 import { shortId } from "../lib/messages";
-import { queuedTurnsSummary } from "./channel-activity-strip";
+import { queuedTurnsSummary } from "./conversation-activity-strip";
 import { ParticipantActionsMenu } from "./participant-actions-menu";
 import { ParticipantSessionActionsMenu } from "./participant-session-actions-menu";
 import { DrawerCloseButton } from "./ui/drawer";
@@ -18,7 +18,7 @@ function elapsedLabel(startedAt: string, now: number): string {
   return minutes ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
-function runtimeStateLabel(agent: LocalChannelAgent): string {
+function runtimeStateLabel(agent: LocalConversationAgent): string {
   switch (agent.state) {
     case "running": return agent.activity
       && agent.diagnostics?.capabilities.safeActivityEvents === "available"
@@ -53,7 +53,7 @@ function bulkReasonLabel(reason: LocalBulkAgentLifecycleResult["reason"]): strin
   }
 }
 
-function messageSnippet(message: ChannelMessage | undefined): string | undefined {
+function messageSnippet(message: ConversationMessage | undefined): string | undefined {
   if (!message) return undefined;
   const plainText = message.body.replace(/\s+/g, " ").trim();
   return plainText.length > 140 ? `${plainText.slice(0, 137)}…` : plainText;
@@ -85,8 +85,8 @@ export function MemberRoster({
 }: {
   participants: Participant[];
   currentHumanIdentityId?: string;
-  messages?: readonly ChannelMessage[];
-  localAgents?: ReadonlyMap<string, LocalChannelAgent>;
+  messages?: readonly ConversationMessage[];
+  localAgents?: ReadonlyMap<string, LocalConversationAgent>;
   localStatus?: "loading" | "available" | "unavailable";
   showDiagnostics?: boolean;
   drawer?: boolean;

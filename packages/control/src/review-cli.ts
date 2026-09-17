@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 import { createLocalProductApp } from "./local.ts";
-import { localChannelsUrl } from "./local-host.ts";
+import { localConversationsUrl } from "./local-host.ts";
 import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
 
 // Keep source/review processes distinct from the installed product (47410–47412).
@@ -48,7 +48,7 @@ async function loadPiRuntime(specifier?: string): Promise<LocalReviewManagedRunt
   return {
     adapter: "pi",
     runtime,
-    personaPrompt: "You are the implementation agent for this MinuChannels Workspace. Follow the human's Channel requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Channel responses.",
+    personaPrompt: "You are the implementation agent for this MinuChannels Workspace. Follow the human's Conversation requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Conversation responses.",
   };
 }
 
@@ -126,7 +126,7 @@ async function main(): Promise<void> {
   const { values } = parseArgs({
     args: arguments_,
     options: {
-      "channels-port": { type: "string" },
+      "conversations-port": { type: "string" },
       "control-port": { type: "string" },
       "web-port": { type: "string" },
       cwd: { type: "string" },
@@ -140,17 +140,17 @@ async function main(): Promise<void> {
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --channels-port <port>  Channels API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --conversations-port <port>  Conversations API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 
-  const channelsPort = port(values["channels-port"], DEFAULT_DEVELOPMENT_CHANNELS_PORT, "channels-port");
+  const conversationsPort = port(values["conversations-port"], DEFAULT_DEVELOPMENT_CHANNELS_PORT, "conversations-port");
   const controlPort = port(values["control-port"], DEFAULT_DEVELOPMENT_CONTROL_PORT, "control-port");
   const webPort = port(values["web-port"], DEFAULT_DEVELOPMENT_WEB_PORT, "web-port");
-  if (new Set([channelsPort, controlPort, webPort]).size !== 3) {
+  if (new Set([conversationsPort, controlPort, webPort]).size !== 3) {
     throw new Error("Review service ports must be distinct");
   }
-  const webUrl = localChannelsUrl(webPort);
+  const webUrl = localConversationsUrl(webPort);
   const persistent = values.local;
   const managedRuntime = values["live-pi"] || persistent
     ? await loadPiRuntime(values["pi-module"])
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   };
   const app = persistent
     ? await createLocalProductApp({
-      channelsPort,
+      conversationsPort,
       controlPort,
       webUrl,
       workspaceRoot: values.cwd,
@@ -171,7 +171,7 @@ async function main(): Promise<void> {
       onAudit,
     })
     : await createLocalReviewApp({
-      channelsPort,
+      conversationsPort,
       controlPort,
       webUrl,
       workspaceRoot: values.cwd,
@@ -186,8 +186,8 @@ async function main(): Promise<void> {
       detached: process.platform !== "win32",
       env: {
         ...process.env,
-        VITE_CHANNELS_PROXY_TARGET: app.channelsEndpoint,
-        MINU_CHANNELS_SERVICE_TOKEN: app.channelsServiceToken,
+        VITE_CHANNELS_PROXY_TARGET: app.conversationsEndpoint,
+        MINU_CHANNELS_SERVICE_TOKEN: app.conversationsServiceToken,
         VITE_CHANNELS_CONTROL_PROXY_TARGET: app.controlEndpoint,
       },
       stdio: "inherit",
@@ -223,7 +223,7 @@ async function main(): Promise<void> {
     const launchUrl = app.issueBrowserLaunchUrl();
     console.log(`\nMinuChannels ${persistent ? "local app" : "review app"} is ready`);
     console.log(`  Web:      ${webUrl}`);
-    console.log(`  Channels: ${app.channelsEndpoint}`);
+    console.log(`  Conversations: ${app.conversationsEndpoint}`);
     console.log(`  Control:  ${app.controlEndpoint}`);
     console.log(`  Handles:  ${persistent ? "@you, @builder" : "@you, @builder, @reviewer"}`);
     console.log(managedRuntime

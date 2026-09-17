@@ -1,18 +1,18 @@
-import type { ChannelEvent } from "@minu/channels-core/types";
+import type { ConversationEvent } from "@minu/channels-core/types";
 
-export type ChannelCacheAction =
-  | { type: "merge-message"; message: Extract<ChannelEvent, { type: "message.created" }>["message"] }
+export type ConversationCacheAction =
+  | { type: "merge-message"; message: Extract<ConversationEvent, { type: "message.created" }>["message"] }
   | { type: "refresh-metadata"; rosterRevision?: number }
   | { type: "ignore" };
 
-export function channelCacheAction(
-  event: ChannelEvent,
+export function conversationCacheAction(
+  event: ConversationEvent,
   currentRosterRevision: number | undefined,
-): ChannelCacheAction {
+): ConversationCacheAction {
   if (event.type === "message.created") {
     return { type: "merge-message", message: event.message };
   }
-  if (event.type === "channel.updated") return { type: "refresh-metadata" };
+  if (event.type === "conversation.updated") return { type: "refresh-metadata" };
   if (currentRosterRevision === undefined || event.rosterRevision > currentRosterRevision) {
     return { type: "refresh-metadata", rosterRevision: event.rosterRevision };
   }

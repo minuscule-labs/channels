@@ -2,7 +2,7 @@ import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
-import { channels, localControl } from "../lib/api";
+import { conversations, localControl } from "../lib/api";
 import {
   initialLaunchModel,
   initialLaunchModelForProvider,
@@ -79,11 +79,11 @@ export function AddWorkspaceParticipantForm({
   );
   const mutation = useMutation({
     mutationFn: async () => {
-      const identity = await channels.createIdentity({
+      const identity = await conversations.createIdentity({
         type,
         displayName: displayName.trim(),
       });
-      const member = await channels.addWorkspaceMember(workspaceId, {
+      const member = await conversations.addWorkspaceMember(workspaceId, {
         identityId: identity.id,
         mentionHandle: normalizedHandle,
         roleLabel: roleLabel.trim() || undefined,

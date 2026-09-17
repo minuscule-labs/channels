@@ -1,9 +1,9 @@
 export {
   backupLocalLibSqlDatabase,
-  defaultChannelMigrationsFolder,
-  DrizzleLibSqlChannelStorage,
+  defaultConversationMigrationsFolder,
+  DrizzleLibSqlConversationStorage,
   hasPendingLocalLibSqlMigrations,
   localLibSqlUrl,
   type DrizzleLibSqlStorageOptions,
 } from "./storage.ts";
-export * as channelSchema from "./schema.ts";
+export * as conversationSchema from "./schema.ts";

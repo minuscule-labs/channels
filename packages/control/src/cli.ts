@@ -5,12 +5,12 @@ import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon } from "./daemon.ts";
-import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
 
 interface CliOptions {
   port: number;
-  channelsUrl: string;
-  channelsServiceToken: string;
+  conversationsUrl: string;
+  conversationsServiceToken: string;
   relayDb?: string;
   webUrl: string;
   humanIdentityId: string;
@@ -88,10 +88,10 @@ async function main(): Promise<void> {
     .name("minu-channels-control")
     .description("Run the authenticated loopback MinuChannels control daemon")
     .option("--port <number>", "loopback control port", integer, DEFAULT_CONTROL_PORT)
-    .option("--channels-url <url>", "MinuChannels HTTP endpoint", `http://127.0.0.1:${DEFAULT_CHANNELS_PORT}`)
-    .requiredOption("--channels-service-token <token>", "private Channels service credential", process.env.MINU_CHANNELS_SERVICE_TOKEN)
+    .option("--conversations-url <url>", "MinuChannels HTTP endpoint", `http://127.0.0.1:${DEFAULT_CHANNELS_PORT}`)
+    .requiredOption("--conversations-service-token <token>", "private Conversations service credential", process.env.MINU_CHANNELS_SERVICE_TOKEN)
     .option("--relay-db <path>", "private local Relay database path")
-    .option("--web-url <url>", "loopback web client URL", localChannelsUrl(DEFAULT_WEB_PORT))
+    .option("--web-url <url>", "loopback web client URL", localConversationsUrl(DEFAULT_WEB_PORT))
     .requiredOption("--human-identity-id <id>", "stable human identity bound to the browser session")
     .option(
       "--runtime-adapter <name=module[#export]>",
@@ -110,8 +110,8 @@ async function main(): Promise<void> {
   }
   const daemon = await createLocalControlDaemon({
     currentHumanIdentityId: options.humanIdentityId,
-    channelsEndpoint: options.channelsUrl,
-    channelsServiceToken: options.channelsServiceToken,
+    conversationsEndpoint: options.conversationsUrl,
+    conversationsServiceToken: options.conversationsServiceToken,
     relayDatabasePath: options.relayDb,
     webUrl: options.webUrl,
     port: options.port,

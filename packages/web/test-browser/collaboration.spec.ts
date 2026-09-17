@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
-const channelsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
+const conversationsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const controlBase = `http://127.0.0.1:${process.env.MINU_TEST_CONTROL_PORT ?? 58411}`;
 const fixtureBase = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
 
@@ -22,14 +22,14 @@ async function openParticipantActions(page: Page, participantName: string): Prom
 }
 
 test("sends idempotently, refreshes rosters, and catches up after reconnect", async ({ page, request }) => {
-  const workspacesResponse = await request.get(`${channelsBase}/workspaces`);
+  const workspacesResponse = await request.get(`${conversationsBase}/workspaces`);
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
-  const channelsResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`);
-  const { channels } = await channelsResponse.json() as { channels: Array<{ id: string; rosterRevision: number }> };
-  const channelId = channels[0]!.id;
-  const initialRosterRevision = channels[0]!.rosterRevision;
-  const membersResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/members`);
+  const conversationsResponse = await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`);
+  const { conversations } = await conversationsResponse.json() as { conversations: Array<{ id: string; rosterRevision: number }> };
+  const conversationId = conversations[0]!.id;
+  const initialRosterRevision = conversations[0]!.rosterRevision;
+  const membersResponse = await request.get(`${conversationsBase}/workspaces/${workspaceId}/members`);
   const { members } = await membersResponse.json() as {
     members: Array<{ identityId: string; mentionHandle: string }>;
   };
@@ -39,7 +39,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   const idempotencyKeys: string[] = [];
   const messageAuthors: string[] = [];
   page.on("request", (outgoing) => {
-    if (outgoing.method() === "POST" && outgoing.url().endsWith(`/conversations/${channelId}/messages`)) {
+    if (outgoing.method() === "POST" && outgoing.url().endsWith(`/conversations/${conversationId}/messages`)) {
       const key = outgoing.headers()["idempotency-key"];
       if (key) idempotencyKeys.push(key);
       const body = outgoing.postDataJSON() as { participantId?: string };
@@ -50,7 +50,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await launchAuthenticated(
     page,
     request,
-    `/app/workspaces/${workspaceId}/conversations/${channelId}`,
+    `/app/workspaces/${workspaceId}/conversations/${conversationId}`,
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
@@ -62,7 +62,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByText("Send as", { exact: true })).toHaveCount(0);
 
   await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
-    key: `minu.channels.author.${workspaceId}`,
+    key: `minu.conversations.author.${workspaceId}`,
     value: agent.identityId,
   });
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -95,7 +95,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("log").getByText(/First line\s+Second line/)).toBeVisible();
 
   const update = await request.patch(
-    `${channelsBase}/workspaces/${workspaceId}/members/${agent.identityId}`,
+    `${conversationsBase}/workspaces/${workspaceId}/members/${agent.identityId}`,
     { data: { actorIdentityId: human.identityId, roleLabel: "principal builder" } },
   );
   expect(update.ok()).toBe(true);
@@ -123,16 +123,16 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
 });
 
 test("keeps Workspace navigation responsive with more Conversations than the browser connection limit", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
   const primary = workspaces.find(({ name }) => name === "Browser Test")!;
   const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${primary.id}/conversations`)).json() as {
-    channels: Array<{ id: string; name: string }>;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${primary.id}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
   };
-  expect(channels.length).toBeGreaterThan(6);
-  const active = channels.find(({ name }) => name === "browser-collaboration")!;
+  expect(conversations.length).toBeGreaterThan(6);
+  const active = conversations.find(({ name }) => name === "browser-collaboration")!;
   const eventRequests: string[] = [];
   page.on("request", (outgoing) => {
     const url = new URL(outgoing.url());
@@ -160,14 +160,14 @@ test("keeps Workspace navigation responsive with more Conversations than the bro
 });
 
 test("tracks durable unread mentions and plays only opt-in contextual sound", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
-    channels: Array<{ id: string; name: string }>;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
   };
-  const channelId = channels[0]!.id;
+  const conversationId = conversations[0]!.id;
   await page.addInitScript(() => {
     Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
     class TestAudioContext {
@@ -187,7 +187,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
     }
     Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 
@@ -229,18 +229,18 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
 });
 
 test("tracks an inactive visited Workspace incrementally with cursor-bounded requests", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
   const primary = workspaces.find(({ name }) => name === "Browser Test")!;
   const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
-  const { channels: secondaryChannels } = await (await request.get(`${channelsBase}/workspaces/${secondary.id}/conversations`)).json() as {
-    channels: Array<{ id: string }>;
+  const { conversations: secondaryConversations } = await (await request.get(`${conversationsBase}/workspaces/${secondary.id}/conversations`)).json() as {
+    conversations: Array<{ id: string }>;
   };
-  const secondaryChannelId = secondaryChannels[0]!.id;
+  const secondaryConversationId = secondaryConversations[0]!.id;
   const messageRequests: string[] = [];
   page.on("request", (outgoing) => {
-    if (outgoing.url().includes(`/conversations/${secondaryChannelId}/messages`)) messageRequests.push(outgoing.url());
+    if (outgoing.url().includes(`/conversations/${secondaryConversationId}/messages`)) messageRequests.push(outgoing.url());
   });
   await page.addInitScript(() => {
     Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
@@ -258,7 +258,7 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
     }
     Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/conversations/${secondaryChannelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/conversations/${secondaryConversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   messageRequests.length = 0;
   await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
@@ -283,13 +283,13 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
 });
 
 test("resets near-end and unseen state across parameter-only Conversation navigation", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
-    channels: Array<{ id: string; name: string }>;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
   };
-  const primary = channels.find(({ name }) => name === "browser-collaboration")!;
-  const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
+  const primary = conversations.find(({ name }) => name === "browser-collaboration")!;
+  const alternate = conversations.find(({ name }) => name === "alternate-collaboration")!;
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${primary.id}`);
   await request.post(`${fixtureBase}/peer-message?count=35&body=Navigation%20scroll`);
   await expect(page.getByText("Navigation scroll 35", { exact: true })).toBeVisible();
@@ -297,7 +297,7 @@ test("resets near-end and unseen state across parameter-only Conversation naviga
   await timeline.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event("scroll")); });
   await page.getByRole("link", { name: "alternate-collaboration" }).first().click();
   await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
-  await request.post(`${fixtureBase}/peer-message?channel=alternate&body=Alternate%20fresh`);
+  await request.post(`${fixtureBase}/peer-message?conversation=alternate&body=Alternate%20fresh`);
   await expect(page.getByText("Alternate fresh", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /new message/ })).toHaveCount(0);
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
@@ -305,11 +305,11 @@ test("resets near-end and unseen state across parameter-only Conversation naviga
 });
 
 test("advances the durable read cursor only when a real visible timeline is near its end", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as { channels: Array<{ id: string }> };
-  const channelId = channels[0]!.id;
-  const { members } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/members`)).json() as {
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as { conversations: Array<{ id: string }> };
+  const conversationId = conversations[0]!.id;
+  const { members } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/members`)).json() as {
     members: Array<{ identityId: string; mentionHandle: string }>;
   };
   const humanId = members.find(({ mentionHandle }) => mentionHandle === "david")!.identityId;
@@ -327,13 +327,13 @@ test("advances the durable read cursor only when a real visible timeline is near
     }
     Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await page.getByLabel("Notification sound").first().selectOption("mentions");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
   await request.post(`${fixtureBase}/peer-message?count=35&body=Scroll%20fixture`);
   await expect(page.getByText("Scroll fixture 35", { exact: true })).toBeVisible();
-  const cursorKey = `minu-channels:last-read:${humanId}:${channelId}`;
+  const cursorKey = `minu-channels:last-read:${humanId}:${conversationId}`;
   await expect.poll(() => page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBeGreaterThan(0);
 
   const timeline = page.locator(".minu-scroll.absolute");
@@ -355,7 +355,7 @@ test("advances the durable read cursor only when a real visible timeline is near
 });
 
 test("hides identity-scoped notification preferences when session capability is unavailable", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
   await page.route("**/local/session", (route) => route.fulfill({
     status: 503,
@@ -368,13 +368,13 @@ test("hides identity-scoped notification preferences when session capability is 
 });
 
 test("summarizes Conversation-wide agent activity below the composer", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
-    channels: Array<{ id: string; name: string }>;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
   };
-  const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  const conversationId = conversations.find(({ name }) => name === "browser-collaboration")!.id;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
   const strip = page.getByRole("region", { name: "Conversation agent activity" });
   await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 queued/, { timeout: 10_000 });
@@ -400,21 +400,21 @@ test("summarizes Conversation-wide agent activity below the composer", async ({ 
 });
 
 test("reconnects an existing reachable session and exposes only safe diagnostics", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
-    channels: Array<{ id: string; name: string }>;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
   };
-  const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
+  const conversationId = conversations.find(({ name }) => name === "browser-collaboration")!.id;
   const lifecycleRequests: string[] = [];
   page.on("request", (outgoing) => {
     if (/\/(reconnect|replace)$/.test(new URL(outgoing.url()).pathname)) lifecycleRequests.push(new URL(outgoing.url()).pathname);
   });
   const unauthorizedDiagnostic = await request.post(
-    `${controlBase}/local/conversations/${channelId}/agents/agent-private/open-diagnostic`,
+    `${controlBase}/local/conversations/${conversationId}/agents/agent-private/open-diagnostic`,
   );
   expect(unauthorizedDiagnostic.status()).toBe(401);
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await request.post(`${fixtureBase}/detach-agent`);
   await expect(page.getByTitle("Runtime: Disconnected")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Open actions for Builder Agent" }).first()).toBeVisible();
@@ -448,7 +448,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   expect(lifecycleRequests).toHaveLength(1);
-  expect(lifecycleRequests[0]).toMatch(new RegExp(`^/local/conversations/${channelId}/agents/[^/]+/reconnect$`));
+  expect(lifecycleRequests[0]).toMatch(new RegExp(`^/local/conversations/${conversationId}/agents/[^/]+/reconnect$`));
   expect(lifecycleRequests.some((path) => path.endsWith("/replace"))).toBe(false);
 
   await request.post(`${fixtureBase}/detach-agent`);
@@ -469,28 +469,28 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
 });
 
 test("runs Conversation-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/conversations`,
-  )).json() as { channels: Array<{ id: string }> };
-  const channelId = channels[0]!.id;
-  const { channel: channelMetadata } = await (await request.get(
-    `${channelsBase}/conversations/${channelId}`,
-  )).json() as { channel: {
+  const { conversations } = await (await request.get(
+    `${conversationsBase}/workspaces/${workspaceId}/conversations`,
+  )).json() as { conversations: Array<{ id: string }> };
+  const conversationId = conversations[0]!.id;
+  const { conversation: conversationMetadata } = await (await request.get(
+    `${conversationsBase}/conversations/${conversationId}`,
+  )).json() as { conversation: {
     participants: Array<Record<string, unknown> & { id: string }>;
     [key: string]: unknown;
   } };
-  const builder = channelMetadata.participants.find(({ type }) => type === "agent")!;
+  const builder = conversationMetadata.participants.find(({ type }) => type === "agent")!;
   const unboundId = "agent-unbound-browser";
-  await page.route(`**/conversations/${channelId}`, (route) => route.fulfill({
+  await page.route(`**/conversations/${conversationId}`, (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
-    body: JSON.stringify({ channel: {
-      ...channelMetadata,
-      participants: [...channelMetadata.participants, {
+    body: JSON.stringify({ conversation: {
+      ...conversationMetadata,
+      participants: [...conversationMetadata.participants, {
         id: unboundId,
         type: "agent",
         displayName: "Unbound Agent",
@@ -499,19 +499,19 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       }],
     } }),
   }));
-  await page.route(`**/local/conversations/${channelId}/agents`, (route) => route.fulfill({
+  await page.route(`**/local/conversations/${conversationId}/agents`, (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
       protocolVersion: 17,
-      channelId,
+      conversationId,
       agents: [
         {
-          workspaceId, channelId, identityId: builder.id, state: "idle",
+          workspaceId, conversationId, identityId: builder.id, state: "idle",
           capabilities: { start: false, replace: false, stop: true, steer: false, interrupt: false, reconnect: false },
         },
         {
-          workspaceId, channelId, identityId: unboundId, state: "unbound",
+          workspaceId, conversationId, identityId: unboundId, state: "unbound",
           capabilities: { start: true, replace: false, stop: false, steer: false, interrupt: false, reconnect: false },
         },
       ],
@@ -520,7 +520,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
   let releaseRequest!: () => void;
   const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
   let requests = 0;
-  await page.route(`**/local/conversations/${channelId}/agents/stop-all`, async (route) => {
+  await page.route(`**/local/conversations/${conversationId}/agents/stop-all`, async (route) => {
     requests += 1;
     await requestGate;
     await route.fulfill({
@@ -528,7 +528,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       contentType: "application/json",
       body: JSON.stringify({
         protocolVersion: 17,
-        channelId,
+        conversationId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
           { identityId: unboundId, outcome: "skipped", reason: "uncertain" },
@@ -536,7 +536,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       }),
     });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
   const unboundRow = page.getByRole("listitem").filter({
     has: page.getByText("@unbound-agent · agent", { exact: true }),
@@ -572,14 +572,14 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
 });
 
 test("hides bulk lifecycle controls when the local capability is unavailable", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/conversations`,
-  )).json() as { channels: Array<{ id: string }> };
-  const channelId = channels[0]!.id;
+  const { conversations } = await (await request.get(
+    `${conversationsBase}/workspaces/${workspaceId}/conversations`,
+  )).json() as { conversations: Array<{ id: string }> };
+  const conversationId = conversations[0]!.id;
   await page.route("**/local/capabilities", (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -587,10 +587,10 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
       protocolVersion: 17,
       features: {
         currentSession: true,
-        channelAgentStatus: true,
+        conversationAgentStatus: true,
         workspaceConfigRead: true,
         workspaceConfigWrite: true,
-        channelWorkingFolders: true,
+        conversationWorkingFolders: true,
         agentCreate: false,
         agentRuntimeOptions: true,
         agentSkills: true,
@@ -605,7 +605,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
       },
     }),
   }));
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open participant actions" })).toHaveCount(0);
   await openParticipantActions(page, "Builder Agent");
@@ -613,7 +613,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
 });
 
 test("shows saved instructions and Runtime selections only on authenticated agent detail", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
   const workspace = workspaces[0]!;
@@ -714,7 +714,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
 });
 
 test("lists agents, opens a detail page, and adds an agent", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
   const workspace = workspaces[0]!;
@@ -752,7 +752,7 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
 });
 
 test("repairs a failed initial agent launch profile without creating a duplicate", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspace = workspaces[0]!;
@@ -787,7 +787,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
           skillsConfigured: false,
           selectedSkillCount: 0,
           status: input.runtimeAdapter ? "active" : "unconfigured",
-          boundChannelCount: 0,
+          boundConversationCount: 0,
           changesApplyToNewSessions: true,
         }],
       }),
@@ -848,12 +848,12 @@ test("creates and renames a Workspace with a private source path", async ({ page
 });
 
 test("creates named Conversations and revisioned participant rosters", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
   const workspace = workspaces[0]!;
   const { members } = await (await request.get(
-    `${channelsBase}/workspaces/${workspace.id}/members`,
+    `${conversationsBase}/workspaces/${workspace.id}/members`,
   )).json() as { members: Array<{ identityId: string; mentionHandle: string }> };
   const builder = members.find(({ mentionHandle }) => mentionHandle === "builder")!;
   await launchAuthenticated(page, request, "/");
@@ -870,18 +870,18 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await createDialog.getByRole("button", { name: "Create Conversation" }).click();
   const createResponse = await createResponsePromise;
   expect(createResponse.ok()).toBe(true);
-  const { channel } = await createResponse.json() as { channel: { id: string } };
-  await expect(page).toHaveURL(new RegExp(`/conversations/${channel.id}$`));
+  const { conversation } = await createResponse.json() as { conversation: { id: string } };
+  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
   await expect(page.getByRole("heading", { name: "#roster-administration" })).toBeVisible();
   const startResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
-    && response.url().endsWith(`/local/conversations/${channel.id}/agents/${builder.identityId}/start`));
+    && response.url().endsWith(`/local/conversations/${conversation.id}/agents/${builder.identityId}/start`));
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "Start", exact: true }).click();
   expect((await startResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
-  const replacePath = `/local/conversations/${channel.id}/agents/${builder.identityId}/replace`;
+  const replacePath = `/local/conversations/${conversation.id}/agents/${builder.identityId}/replace`;
   await page.route(`**${replacePath}`, (route) => route.fulfill({
     status: 409,
     contentType: "application/json",
@@ -915,7 +915,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
 
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
-    && response.url().endsWith(`/local/conversations/${channel.id}/agents/${builder.identityId}/stop`));
+    && response.url().endsWith(`/local/conversations/${conversation.id}/agents/${builder.identityId}/stop`));
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "Stop agent", exact: true }).click();
   lifecycleDialog = page.getByRole("dialog", { name: "Stop Builder Agent?" });
@@ -930,7 +930,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
-  const historical = await request.post(`${channelsBase}/conversations/${channel.id}/messages`, {
+  const historical = await request.post(`${conversationsBase}/conversations/${conversation.id}/messages`, {
     data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },
   });
   expect(historical.ok()).toBe(true);
@@ -941,7 +941,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
   await rosterDialog.getByLabel("Conversation name").fill("delivery-room");
   const renameResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "PATCH" && response.url().endsWith(`/conversations/${channel.id}`));
+    response.request().method() === "PATCH" && response.url().endsWith(`/conversations/${conversation.id}`));
   await rosterDialog.getByRole("button", { name: "Save name" }).click();
   expect((await renameResponsePromise).ok()).toBe(true);
   await expect(page.getByRole("heading", { name: "#delivery-room" })).toBeVisible();
@@ -982,15 +982,15 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
 
 test("caps wrapped drafts on mobile and restores them after Conversation navigation", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 480 });
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
   const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspace.id}/conversations`)).json() as {
-    channels: Array<{ id: string; name: string }>;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
   };
-  const primary = channels.find(({ name }) => name === "browser-collaboration")!;
-  const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
+  const primary = conversations.find(({ name }) => name === "browser-collaboration")!;
+  const alternate = conversations.find(({ name }) => name === "alternate-collaboration")!;
 
   await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/conversations/${primary.id}`);
   const composer = page.getByRole("combobox", { name: "Conversation message" });
@@ -1013,14 +1013,14 @@ test("caps wrapped drafts on mobile and restores them after Conversation navigat
 
 test("uses accessible mobile navigation and participant drawers", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/conversations`,
-  )).json() as { channels: Array<{ id: string }> };
-  const channelId = channels[0]!.id;
+  const { conversations } = await (await request.get(
+    `${conversationsBase}/workspaces/${workspaceId}/conversations`,
+  )).json() as { conversations: Array<{ id: string }> };
+  const conversationId = conversations[0]!.id;
 
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Open navigation" }).click();
@@ -1028,7 +1028,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await expect(navigation).toBeVisible();
   await navigation.getByRole("link", { name: /browser-collaboration/ }).click();
   await expect(navigation).toBeHidden();
-  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${channelId}$`));
+  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${conversationId}$`));
 
   await page.getByRole("button", { name: "Show participants" }).click();
   const participants = page.getByRole("dialog", { name: "Participants" });
@@ -1054,20 +1054,20 @@ test("shows required browser onboarding when no Workspace exists", async ({ page
 });
 
 test("keeps messaging available when Runtime status is unavailable", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/conversations`,
-  )).json() as { channels: Array<{ id: string }> };
-  const channelId = channels[0]!.id;
-  await page.route(`**/local/conversations/${channelId}/agents`, (route) => route.abort("connectionfailed"));
+  const { conversations } = await (await request.get(
+    `${conversationsBase}/workspaces/${workspaceId}/conversations`,
+  )).json() as { conversations: Array<{ id: string }> };
+  const conversationId = conversations[0]!.id;
+  await page.route(`**/local/conversations/${conversationId}/agents`, (route) => route.abort("connectionfailed"));
 
   await launchAuthenticated(
     page,
     request,
-    `/app/workspaces/${workspaceId}/conversations/${channelId}`,
+    `/app/workspaces/${workspaceId}/conversations/${conversationId}`,
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Runtime status unavailable")).toBeVisible();

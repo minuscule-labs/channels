@@ -3,7 +3,7 @@ import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-export interface ChannelsDataDirectoryOptions {
+export interface ConversationsDataDirectoryOptions {
   explicit?: string;
   env?: NodeJS.ProcessEnv;
   homeDirectory?: string;
@@ -25,9 +25,9 @@ function resolveFromHome(value: string, homeDirectory: string): string {
   return resolve(value);
 }
 
-/** Resolves Channels state without writing directly into the shared Minu root. */
-export function resolveChannelsDataDirectory(
-  options: ChannelsDataDirectoryOptions = {},
+/** Resolves Conversations state without writing directly into the shared Minu root. */
+export function resolveConversationsDataDirectory(
+  options: ConversationsDataDirectoryOptions = {},
 ): string {
   const env = options.env ?? process.env;
   const homeDirectory = resolve(options.homeDirectory ?? homedir());
@@ -41,7 +41,7 @@ export function resolveChannelsDataDirectory(
     : join(homeDirectory, ".minu", "channels");
 }
 
-export async function prepareChannelsDataDirectory(path: string): Promise<void> {
+export async function prepareConversationsDataDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   await chmod(path, 0o700);
   const runDirectory = join(path, "run");
@@ -51,7 +51,7 @@ export async function prepareChannelsDataDirectory(path: string): Promise<void> 
 
 const LOCK_INITIALIZATION_GRACE_MS = 30_000;
 
-export async function acquireChannelsDataDirectoryLock(
+export async function acquireConversationsDataDirectoryLock(
   dataDirectory: string,
 ): Promise<ProductDirectoryLock> {
   const lockPath = join(dataDirectory, "run", "instance.lock");

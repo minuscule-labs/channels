@@ -1,12 +1,12 @@
 import {
-  ChannelClient,
-  ChannelService,
-  createChannelHttpServer,
-  InMemoryChannelStorage,
-  type ChannelHttpServer,
+  ConversationClient,
+  ConversationService,
+  createConversationHttpServer,
+  InMemoryConversationStorage,
+  type ConversationHttpServer,
 } from "@minu/channels-core";
 import {
-  ChannelRuntimeRelay,
+  ConversationRuntimeRelay,
   type AgentRuntimePort,
   type RuntimePortMessage,
 } from "@minu/channels-relay";
@@ -20,7 +20,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import { createLocalControlDaemon, type LocalControlDaemon } from "./daemon.ts";
-import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
 class SimulatedReviewRuntime implements AgentRuntimePort {
@@ -83,7 +83,7 @@ export interface LocalReviewManagedRuntime {
 }
 
 export interface LocalReviewAppOptions {
-  channelsPort?: number;
+  conversationsPort?: number;
   controlPort?: number;
   webUrl?: string;
   workspaceRoot?: string;
@@ -92,11 +92,11 @@ export interface LocalReviewAppOptions {
 }
 
 export interface LocalReviewApp {
-  channelsEndpoint: string;
-  channelsServiceToken: string;
+  conversationsEndpoint: string;
+  conversationsServiceToken: string;
   controlEndpoint: string;
   workspaceId: string;
-  channelId: string;
+  conversationId: string;
   humanIdentityId: string;
   issueBrowserLaunchUrl(): string;
   authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
@@ -108,15 +108,15 @@ export async function createLocalReviewApp(
 ): Promise<LocalReviewApp> {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-review-"));
   const relayDatabasePath = join(directory, "relay.db");
-  let channelsServer: ChannelHttpServer | undefined;
+  let conversationsServer: ConversationHttpServer | undefined;
   let controlDaemon: LocalControlDaemon | undefined;
-  let relay: ChannelRuntimeRelay | undefined;
+  let relay: ConversationRuntimeRelay | undefined;
   try {
-    channelsServer = await createChannelHttpServer({
-      port: options.channelsPort ?? DEFAULT_CHANNELS_PORT,
-      service: new ChannelService(new InMemoryChannelStorage()),
+    conversationsServer = await createConversationHttpServer({
+      port: options.conversationsPort ?? DEFAULT_CHANNELS_PORT,
+      service: new ConversationService(new InMemoryConversationStorage()),
     });
-    const client = new ChannelClient(channelsServer.endpoint, { serviceToken: channelsServer.serviceToken });
+    const client = new ConversationClient(conversationsServer.endpoint, { serviceToken: conversationsServer.serviceToken });
     const [human, builder, reviewer] = await Promise.all([
       client.createIdentity({
         type: "human",
@@ -160,22 +160,22 @@ export async function createLocalReviewApp(
         profileOverride: "Reviews correctness, security, regressions, and missing tests.",
       }),
     ]);
-    const channel = await client.createChannel({
+    const conversation = await client.createConversation({
       workspaceId: workspace.id,
       name: "product-review",
       participantIds: [human.id, builder.id, reviewer.id],
     });
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: human.id,
       to: [builder.id],
       body: "@builder Please prepare the first implementation pass and hand it to @reviewer.",
     });
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: builder.id,
       to: [human.id, reviewer.id],
       body: "Review mode is ready. Send @builder a message to test the simulated Relay response. Unaddressed messages remain shared context and do not wake agents.",
     });
-    await client.postMessage(channel.id, {
+    await client.postMessage(conversation.id, {
       participantId: reviewer.id,
       to: [human.id],
       body: "I’ll independently review the result and report concrete findings here.",
@@ -206,7 +206,7 @@ export async function createLocalReviewApp(
           id: "review-builder-binding",
           workspaceAgentConfigId: "review-builder-config",
           workspaceId: workspace.id,
-          channelId: channel.id,
+          conversationId: conversation.id,
           agentIdentityId: builder.id,
           runtimeAdapter: "review-mode",
           runtimeSessionId: "review-builder-session",
@@ -227,19 +227,19 @@ export async function createLocalReviewApp(
     const runtimeAdapter = options.managedRuntime?.adapter ?? "review-mode";
     controlDaemon = await createLocalControlDaemon({
       currentHumanIdentityId: human.id,
-      channelsEndpoint: channelsServer.endpoint,
-      channelsServiceToken: channelsServer.serviceToken,
+      conversationsEndpoint: conversationsServer.endpoint,
+      conversationsServiceToken: conversationsServer.serviceToken,
       relayDatabasePath,
-      webUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
+      webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [runtimeAdapter]: runtime },
       stopStartedSessionsOnClose: Boolean(options.managedRuntime),
       onAudit: options.onAudit,
     });
     if (!options.managedRuntime) {
-      relay = new ChannelRuntimeRelay({
+      relay = new ConversationRuntimeRelay({
         client,
-        channelId: channel.id,
+        conversationId: conversation.id,
         bindings: [{
           participantId: builder.id,
           sessionId: "review-builder-session",
@@ -253,27 +253,27 @@ export async function createLocalReviewApp(
 
     let closed = false;
     return {
-      channelsEndpoint: channelsServer.endpoint,
-      channelsServiceToken: channelsServer.serviceToken,
+      conversationsEndpoint: conversationsServer.endpoint,
+      conversationsServiceToken: conversationsServer.serviceToken,
       controlEndpoint: controlDaemon.endpoint,
       workspaceId: workspace.id,
-      channelId: channel.id,
+      conversationId: conversation.id,
       humanIdentityId: human.id,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
-        `/app/workspaces/${workspace.id}/conversations/${channel.id}`,
+        `/app/workspaces/${workspace.id}/conversations/${conversation.id}`,
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
       async close() {
         if (closed) return;
         closed = true;
         await relay?.stop().catch(() => undefined);
-        await Promise.allSettled([controlDaemon!.close(), channelsServer!.close()]);
+        await Promise.allSettled([controlDaemon!.close(), conversationsServer!.close()]);
         await rm(directory, { recursive: true, force: true });
       },
     };
   } catch (error) {
     await relay?.stop().catch(() => undefined);
-    await Promise.allSettled([controlDaemon?.close(), channelsServer?.close()]);
+    await Promise.allSettled([controlDaemon?.close(), conversationsServer?.close()]);
     await rm(directory, { recursive: true, force: true });
     throw error;
   }

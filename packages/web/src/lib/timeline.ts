@@ -1,8 +1,8 @@
-import type { ChannelMessage } from "@minu/channels-core/types";
+import type { ConversationMessage } from "@minu/channels-core/types";
 
 export type TimelineRow =
   | { id: string; kind: "day-divider"; day: string; createdAt: string }
-  | { id: string; kind: "message"; message: ChannelMessage; continuation: boolean };
+  | { id: string; kind: "message"; message: ConversationMessage; continuation: boolean };
 
 const CONTINUATION_WINDOW_MS = 5 * 60 * 1_000;
 export const TIMELINE_END_THRESHOLD_PX = 120;
@@ -19,21 +19,21 @@ function utcDay(createdAt: string): string {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : createdAt;
 }
 
-function sameAudience(left: ChannelMessage, right: ChannelMessage): boolean {
+function sameAudience(left: ConversationMessage, right: ConversationMessage): boolean {
   return left.to.length === right.to.length && left.to.every((target, index) => target === right.to[index]);
 }
 
-function isContinuation(previous: ChannelMessage | undefined, message: ChannelMessage): boolean {
+function isContinuation(previous: ConversationMessage | undefined, message: ConversationMessage): boolean {
   if (!previous || previous.participantId !== message.participantId || previous.replyTo || message.replyTo) return false;
   if (!sameAudience(previous, message)) return false;
   const elapsed = Date.parse(message.createdAt) - Date.parse(previous.createdAt);
   return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= CONTINUATION_WINDOW_MS;
 }
 
-export function projectTimeline(messages: ChannelMessage[]): TimelineRow[] {
+export function projectTimeline(messages: ConversationMessage[]): TimelineRow[] {
   const ordered = [...messages].sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
   const rows: TimelineRow[] = [];
-  let previous: ChannelMessage | undefined;
+  let previous: ConversationMessage | undefined;
   let previousDay: string | undefined;
 
   for (const message of ordered) {

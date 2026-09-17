@@ -1,11 +1,11 @@
-import type { ChannelEvent, ChannelMessage } from "@minu/channels-core/types";
+import type { ConversationEvent, ConversationMessage } from "@minu/channels-core/types";
 import { describe, expect, it } from "vitest";
-import { runBackgroundChannelsConnection } from "../src/lib/background-channel";
+import { runBackgroundConversationsConnection } from "../src/lib/background-conversation";
 import { mergeMessages } from "../src/lib/messages";
 
-const message = (sequence: number, channelId = "channel-a"): ChannelMessage => ({
-  id: `${channelId}-message-${sequence}`,
-  channelId,
+const message = (sequence: number, conversationId = "conversation-a"): ConversationMessage => ({
+  id: `${conversationId}-message-${sequence}`,
+  conversationId,
   sequence,
   participantId: "agent-a",
   to: [],
@@ -13,7 +13,7 @@ const message = (sequence: number, channelId = "channel-a"): ChannelMessage => (
   createdAt: new Date(sequence).toISOString(),
 });
 
-async function overtakingConnection(initial: ChannelMessage[], older: ChannelMessage[], liveSequence: number) {
+async function overtakingConnection(initial: ConversationMessage[], older: ConversationMessage[], liveSequence: number) {
   let cached = initial;
   const requested: number[] = [];
   const controller = new AbortController();
@@ -21,10 +21,10 @@ async function overtakingConnection(initial: ChannelMessage[], older: ChannelMes
   const catchUpDelivered: number[] = [];
   let resolveLive!: () => void;
   const liveMerged = new Promise<void>((resolve) => { resolveLive = resolve; });
-  await runBackgroundChannelsConnection({
+  await runBackgroundConversationsConnection({
     signal: controller.signal,
-    channels: [{
-      channelId: "channel-a",
+    conversations: [{
+      conversationId: "conversation-a",
       currentMessages: () => cached,
       listMessages: async ({ afterSequence }) => {
         requested.push(afterSequence);
@@ -49,16 +49,16 @@ async function overtakingConnection(initial: ChannelMessage[], older: ChannelMes
       yield {
         id: "live-event",
         type: "message.created",
-        channelId: "channel-a",
+        conversationId: "conversation-a",
         message: message(liveSequence),
         createdAt: new Date().toISOString(),
-      } satisfies ChannelEvent;
+      } satisfies ConversationEvent;
     },
   });
   return { cached, requested, liveDelivered, catchUpDelivered };
 }
 
-describe("inactive Channel catch-up ordering", () => {
+describe("inactive Conversation catch-up ordering", () => {
   it("fences initialization before a higher live event overtakes delayed history", async () => {
     const result = await overtakingConnection([], [message(1), message(2)], 50);
     expect(result.requested).toEqual([0]);
@@ -75,17 +75,17 @@ describe("inactive Channel catch-up ordering", () => {
     expect(result.catchUpDelivered).toEqual([101, 149]);
   });
 
-  it("routes one shared stream to independent Channel state", async () => {
+  it("routes one shared stream to independent Conversation state", async () => {
     const live: string[] = [];
     const caughtUp: string[] = [];
-    await runBackgroundChannelsConnection({
+    await runBackgroundConversationsConnection({
       signal: new AbortController().signal,
-      channels: ["channel-a", "channel-b"].map((channelId) => ({
-        channelId,
+      conversations: ["conversation-a", "conversation-b"].map((conversationId) => ({
+        conversationId,
         currentMessages: () => [],
-        listMessages: async () => [message(1, channelId)],
-        onLiveMessage: (next: ChannelMessage) => live.push(next.id),
-        onCatchUpMessage: (next: ChannelMessage) => caughtUp.push(next.id),
+        listMessages: async () => [message(1, conversationId)],
+        onLiveMessage: (next: ConversationMessage) => live.push(next.id),
+        onCatchUpMessage: (next: ConversationMessage) => caughtUp.push(next.id),
         onRosterUpdated: () => undefined,
       })),
       events: async function* ({ onReady }) {
@@ -93,22 +93,22 @@ describe("inactive Channel catch-up ordering", () => {
         yield {
           id: "live-b",
           type: "message.created",
-          channelId: "channel-b",
-          message: message(2, "channel-b"),
+          conversationId: "conversation-b",
+          message: message(2, "conversation-b"),
           createdAt: new Date().toISOString(),
-        } satisfies ChannelEvent;
+        } satisfies ConversationEvent;
       },
     });
-    expect(live).toEqual(["channel-b-message-2"]);
-    expect(caughtUp).toEqual(["channel-a-message-1", "channel-b-message-1"]);
+    expect(live).toEqual(["conversation-b-message-2"]);
+    expect(caughtUp).toEqual(["conversation-a-message-1", "conversation-b-message-1"]);
   });
 
   it("aborts the shared stream when catch-up fails", async () => {
     let streamAborted = false;
-    await expect(runBackgroundChannelsConnection({
+    await expect(runBackgroundConversationsConnection({
       signal: new AbortController().signal,
-      channels: [{
-        channelId: "channel-a",
+      conversations: [{
+        conversationId: "conversation-a",
         currentMessages: () => [],
         listMessages: async () => { throw new Error("catch-up failed"); },
         onLiveMessage: () => undefined,
@@ -127,10 +127,10 @@ describe("inactive Channel catch-up ordering", () => {
   });
 
   it("rejects a stream that closes before readiness", async () => {
-    await expect(runBackgroundChannelsConnection({
+    await expect(runBackgroundConversationsConnection({
       signal: new AbortController().signal,
-      channels: [{
-        channelId: "channel-a",
+      conversations: [{
+        conversationId: "conversation-a",
         currentMessages: () => [],
         listMessages: async () => [],
         onLiveMessage: () => undefined,

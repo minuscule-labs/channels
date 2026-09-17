@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type {
-  ChannelAgentBindingRecord,
-  ChannelWorkingFolder,
+  ConversationAgentBindingRecord,
+  ConversationWorkingFolder,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
@@ -17,21 +17,21 @@ test("private relay storage rejects remote database URLs", async () => {
   );
 });
 
-test("private Channel working folders are ordered, isolated, atomic, and survive reopen", async () => {
+test("private Conversation working folders are ordered, isolated, atomic, and survive reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-relay-folders-"));
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));
   const first = await DrizzleLibSqlRelayStorage.open({ url });
-  const folders: ChannelWorkingFolder[] = [
+  const folders: ConversationWorkingFolder[] = [
     {
       workspaceId: "workspace-a",
-      channelId: "channel-a",
+      conversationId: "conversation-a",
       relativePath: "apps/web",
       position: 0,
       primary: true,
     },
     {
       workspaceId: "workspace-a",
-      channelId: "channel-a",
+      conversationId: "conversation-a",
       relativePath: "packages/shared",
       position: 1,
       primary: false,
@@ -39,42 +39,42 @@ test("private Channel working folders are ordered, isolated, atomic, and survive
   ];
   try {
     assert.deepEqual(
-      await first.replaceChannelWorkingFolders("workspace-a", "channel-a", folders),
+      await first.replaceConversationWorkingFolders("workspace-a", "conversation-a", folders),
       folders,
     );
-    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
-    await first.replaceChannelWorkingFolders("workspace-a", "channel-b", [{
+    assert.deepEqual(await first.getConversationWorkingFolders("workspace-a", "conversation-a"), folders);
+    await first.replaceConversationWorkingFolders("workspace-a", "conversation-b", [{
       workspaceId: "workspace-a",
-      channelId: "channel-b",
+      conversationId: "conversation-b",
       relativePath: "apps/api",
       position: 0,
       primary: true,
     }]);
-    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-b"), [{
+    assert.deepEqual(await first.getConversationWorkingFolders("workspace-a", "conversation-b"), [{
       workspaceId: "workspace-a",
-      channelId: "channel-b",
+      conversationId: "conversation-b",
       relativePath: "apps/api",
       position: 0,
       primary: true,
     }]);
-    await assert.rejects(first.replaceChannelWorkingFolders("workspace-a", "channel-a", [
+    await assert.rejects(first.replaceConversationWorkingFolders("workspace-a", "conversation-a", [
       folders[0]!,
       { ...folders[1]!, relativePath: "apps/api", position: 0 },
     ]), /unique paths and positions/);
-    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
-    await assert.rejects(first.replaceChannelWorkingFolders("workspace-a", "channel-a", [
+    assert.deepEqual(await first.getConversationWorkingFolders("workspace-a", "conversation-a"), folders);
+    await assert.rejects(first.replaceConversationWorkingFolders("workspace-a", "conversation-a", [
       { ...folders[0]!, primary: false },
     ]), /exactly one primary/);
-    assert.deepEqual(await first.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
+    assert.deepEqual(await first.getConversationWorkingFolders("workspace-a", "conversation-a"), folders);
   } finally {
     await first.close();
   }
 
   const reopened = await DrizzleLibSqlRelayStorage.open({ url });
   try {
-    assert.deepEqual(await reopened.getChannelWorkingFolders("workspace-a", "channel-a"), folders);
-    assert.deepEqual(await reopened.replaceChannelWorkingFolders("workspace-a", "channel-a", []), []);
-    assert.deepEqual(await reopened.getChannelWorkingFolders("workspace-a", "channel-a"), []);
+    assert.deepEqual(await reopened.getConversationWorkingFolders("workspace-a", "conversation-a"), folders);
+    assert.deepEqual(await reopened.replaceConversationWorkingFolders("workspace-a", "conversation-a", []), []);
+    assert.deepEqual(await reopened.getConversationWorkingFolders("workspace-a", "conversation-a"), []);
   } finally {
     await reopened.close();
     await rm(directory, { recursive: true, force: true });
@@ -102,11 +102,11 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const record: ChannelAgentBindingRecord = {
+  const record: ConversationAgentBindingRecord = {
     id: "binding-a",
     workspaceAgentConfigId: config.id,
     workspaceId: config.workspaceId,
-    channelId: "channel-a",
+    conversationId: "conversation-a",
     agentIdentityId: config.agentIdentityId,
     runtimeAdapter: "pi",
     runtimeSessionId: "runtime-session-a",
@@ -129,8 +129,8 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     });
     await first.putAgentConfig(config);
     await first.putBinding(record);
-    await first.setCursor(record.channelId, record.agentIdentityId, 3);
-    await second.setCursor(record.channelId, record.agentIdentityId, 2);
+    await first.setCursor(record.conversationId, record.agentIdentityId, 3);
+    await second.setCursor(record.conversationId, record.agentIdentityId, 2);
 
     const [leaseA, leaseB] = await Promise.all([
       first.acquireBindingLease(
@@ -190,7 +190,7 @@ test("private relay storage preserves configs and arbitrates binding leases acro
       undefined,
     );
     const deadLetter = {
-      channelId: record.channelId,
+      conversationId: record.conversationId,
       participantId: record.agentIdentityId,
       triggerMessageId: "message-poison",
       triggerSequence: 7,
@@ -225,12 +225,12 @@ test("private relay storage preserves configs and arbitrates binding leases acro
     assert.equal(persisted?.runtimeSessionId, "runtime-session-b");
     assert.equal(persisted?.generation, 2);
     assert.equal(persisted?.leaseOwner, undefined);
-    assert.equal(await reopened.getCursor(record.channelId, record.agentIdentityId), 7);
+    assert.equal(await reopened.getCursor(record.conversationId, record.agentIdentityId), 7);
     assert.deepEqual(await reopened.listDeliveryDeadLetters(
-      record.channelId,
+      record.conversationId,
       record.agentIdentityId,
     ), [{
-      channelId: record.channelId,
+      conversationId: record.conversationId,
       participantId: record.agentIdentityId,
       triggerMessageId: "message-poison",
       triggerSequence: 7,

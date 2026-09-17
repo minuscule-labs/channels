@@ -1,4 +1,4 @@
-import type { ChannelMessage, Participant } from "@minu/channels-core/types";
+import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { Menu } from "lucide-react";
 import { useMemo } from "react";
 import { shortId } from "../lib/messages";
@@ -11,13 +11,13 @@ function MessageRow({
   participants,
   continuation,
 }: {
-  message: ChannelMessage;
+  message: ConversationMessage;
   participants: Participant[];
   continuation: boolean;
 }) {
   const author = participants.find(({ id }) => id === message.participantId);
   const targets = message.to.map((id) =>
-    id === "@channel" ? "@channel" : `@${participantHandle(participants.find((participant) => participant.id === id), id)}`,
+    id === "@conversation" ? "@conversation" : `@${participantHandle(participants.find((participant) => participant.id === id), id)}`,
   );
   const timestamp = new Date(message.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
@@ -73,7 +73,7 @@ function TimelineRowView({ row, participants }: { row: TimelineRow; participants
   return <MessageRow message={row.message} participants={participants} continuation={row.continuation} />;
 }
 
-export function ChannelTimeline({ messages, participants }: { messages: ChannelMessage[]; participants: Participant[] }) {
+export function ConversationTimeline({ messages, participants }: { messages: ConversationMessage[]; participants: Participant[] }) {
   const rows = useMemo(() => projectTimeline(messages), [messages]);
 
   if (!rows.length) {

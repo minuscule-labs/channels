@@ -22,7 +22,7 @@ const options: LocalRuntimeOptions = {
   defaultReasoningLevel: "high",
 };
 
-describe("Channels launch preferences", () => {
+describe("Conversations launch preferences", () => {
   it("preselects codex Sol with medium reasoning ahead of Runtime defaults", () => {
     expect(CHANNELS_PREFERRED_MODEL).toEqual({ provider: "openai-codex", id: "gpt-5.6-sol" });
     expect(CHANNELS_PREFERRED_REASONING).toBe("medium");

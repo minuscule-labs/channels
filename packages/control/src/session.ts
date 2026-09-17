@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { isLocalChannelsHostname } from "./local-host.ts";
+import { isLocalConversationsHostname } from "./local-host.ts";
 
 const DEFAULT_LAUNCH_CODE_TTL_MS = 60_000;
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1_000;
@@ -11,7 +11,7 @@ export type LocalControlAuditAction =
   | "launch.rejected"
   | "session.rejected"
   | "workspace.config.updated"
-  | "channel.working-folders.updated"
+  | "conversation.working-folders.updated"
   | "runtime.models.updated"
   | "agent.config.updated"
   | "agent.session.started"
@@ -43,7 +43,7 @@ export interface LocalControlAuditEvent {
     | "uncertain";
   actorIdentityId?: string;
   workspaceId?: string;
-  channelId?: string;
+  conversationId?: string;
   targetIdentityId?: string;
 }
 
@@ -96,8 +96,8 @@ function loopbackBrowserUrl(value: string): URL {
   if (url.protocol !== "http:") {
     throw new Error("browserUrl must use loopback HTTP");
   }
-  if (!isLocalChannelsHostname(url.hostname)) {
-    throw new Error("browserUrl must use an approved local Channels host");
+  if (!isLocalConversationsHostname(url.hostname)) {
+    throw new Error("browserUrl must use an approved local Conversations host");
   }
   if (url.username || url.password) throw new Error("browserUrl must not contain credentials");
   url.hash = "";
@@ -141,8 +141,8 @@ export class LocalControlBrowserSessions {
 
   issueLaunchUrl(controlEndpoint: string, destinationPath?: string): string {
     const endpoint = new URL(controlEndpoint);
-    if (endpoint.protocol !== "http:" || !isLocalChannelsHostname(endpoint.hostname)) {
-      throw new Error("controlEndpoint must use approved local Channels HTTP");
+    if (endpoint.protocol !== "http:" || !isLocalConversationsHostname(endpoint.hostname)) {
+      throw new Error("controlEndpoint must use approved local Conversations HTTP");
     }
     const redirectUrl = destinationPath === undefined
       ? this.browserUrl.href

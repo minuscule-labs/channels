@@ -6,23 +6,23 @@ import { Command, InvalidArgumentError } from "commander";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
-import { coordinateChannelsUpdate } from "./coordinated-update.ts";
+import { coordinateConversationsUpdate } from "./coordinated-update.ts";
 import { createLocalProductApp } from "./local.ts";
-import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
-import { resolveChannelsDataDirectory } from "./local-paths.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
+import { resolveConversationsDataDirectory } from "./local-paths.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
 import { LocalServiceLifecycle, type LocalServiceStatus } from "./service-lifecycle.ts";
 import { BoundedServiceLog } from "./service-log.ts";
 import { requestServiceBrowserLaunchUrl, startServiceOpenBroker } from "./service-open.ts";
 import { requestServiceRestart, startServiceRestartBroker, type ServiceQuiesceAction } from "./service-restart.ts";
-import { confirmChannelsUpdate } from "./update-confirmation.ts";
+import { confirmConversationsUpdate } from "./update-confirmation.ts";
 import { checkForUpdate, compareVersions, registerInstallationInstance, type UpdateCheck } from "./updater.ts";
 
 let backgroundServiceLog: BoundedServiceLog | undefined;
 let backgroundServiceMode = false;
 
 interface LocalCliOptions {
-  channelsPort: number;
+  conversationsPort: number;
   controlPort: number;
   webPort: number;
   dataDir?: string;
@@ -55,7 +55,7 @@ function defaultWebDirectory(): string {
   return existsSync(packaged) ? packaged : resolve(repositoryRoot(), "packages/web/dist");
 }
 
-function defaultMigrationsFolder(kind: "channels" | "agent-host"): string | undefined {
+function defaultMigrationsFolder(kind: "conversations" | "agent-host"): string | undefined {
   const packaged = packagedPath("assets", "migrations", kind);
   return existsSync(packaged) ? packaged : undefined;
 }
@@ -146,7 +146,7 @@ async function utilityCommand(args: string[]): Promise<boolean> {
     if (command === "restart") utility.option("--when-idle", "wait for currently active agent turns before restarting");
     utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
     const options = utility.opts<{ dataDir?: string; json?: boolean; whenIdle?: boolean }>();
-    const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+    const dataDirectory = resolveConversationsDataDirectory({ explicit: options.dataDir });
     const service = new LocalServiceLifecycle({
       dataDirectory,
       nodeExecutable: process.execPath,
@@ -192,9 +192,9 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   }
   utility.parse([process.argv[0]!, process.argv[1]!, ...args.slice(1)]);
   const options = utility.opts<{ dataDir?: string; json?: boolean; check?: boolean; yes?: boolean }>();
-  const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+  const dataDirectory = resolveConversationsDataDirectory({ explicit: options.dataDir });
   if (command === "paths") {
-    const paths = { dataDirectory, channelsDatabase: join(dataDirectory, "channels.db"), relayDatabase: join(dataDirectory, "relay.db"), profile: join(dataDirectory, "local-profile.json"), lock: join(dataDirectory, "run", "instance.lock") };
+    const paths = { dataDirectory, conversationsDatabase: join(dataDirectory, "channels.db"), relayDatabase: join(dataDirectory, "relay.db"), profile: join(dataDirectory, "local-profile.json"), lock: join(dataDirectory, "run", "instance.lock") };
     if (options.json) console.log(JSON.stringify(paths, null, 2));
     else Object.entries(paths).forEach(([label, path]) => console.log(`${label}: ${path}`));
     return true;
@@ -218,13 +218,13 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   }
   const update = await checkForUpdate({ currentVersion: await currentVersion() });
   if (options.check || !update.updateAvailable) printUpdate(update, Boolean(options.json));
-  else if (await confirmChannelsUpdate({ assumeYes: Boolean(options.yes), json: Boolean(options.json) })) {
+  else if (await confirmConversationsUpdate({ assumeYes: Boolean(options.yes), json: Boolean(options.json) })) {
     const service = process.platform === "darwin" ? new LocalServiceLifecycle({
       dataDirectory,
       nodeExecutable: process.execPath,
       cliEntryPoint: fileURLToPath(import.meta.url),
     }) : undefined;
-    const installed = await coordinateChannelsUpdate(update, { dataDirectory, service });
+    const installed = await coordinateConversationsUpdate(update, { dataDirectory, service });
     if (options.json) console.log(JSON.stringify(installed));
     else console.log(`Updated MinuChannels from ${installed.previousVersion} to ${installed.version}${installed.serviceRestarted ? " and restarted the background service" : ""}.`);
   } else {
@@ -242,7 +242,7 @@ async function main(): Promise<void> {
     .name("minu-channels")
     .description("Start the persistent local MinuChannels product")
     .argument("[directory]", "Workspace source directory shortcut")
-    .option("--channels-port <number>", "internal Channels API port", port, DEFAULT_CHANNELS_PORT)
+    .option("--conversations-port <number>", "internal Conversations API port", port, DEFAULT_CHANNELS_PORT)
     .option("--control-port <number>", "internal authenticated control port", port, DEFAULT_CONTROL_PORT)
     .option("--web-port <number>", "local product web port", port, DEFAULT_WEB_PORT)
     .option("--data-dir <path>", "persistent local data directory")
@@ -267,7 +267,7 @@ Other commands:
     throw new Error("Pass the Workspace directory as either a positional argument or --cwd, not both");
   }
   const directoryArgumentProvided = Boolean(options.cwd ?? program.args[0]);
-  const dataDirectory = resolveChannelsDataDirectory({ explicit: options.dataDir });
+  const dataDirectory = resolveConversationsDataDirectory({ explicit: options.dataDir });
   const serviceLog = options.serviceMode
     ? new BoundedServiceLog(join(dataDirectory, "logs", "service.log"))
     : undefined;
@@ -289,10 +289,10 @@ Other commands:
   }
   const workspaceName = options.workspaceName?.trim()
     || (workspaceRoot ? basename(workspaceRoot) || "Workspace" : undefined);
-  if (new Set([options.channelsPort, options.controlPort, options.webPort]).size !== 3) {
-    throw new Error("Channels, control, and web ports must be distinct");
+  if (new Set([options.conversationsPort, options.controlPort, options.webPort]).size !== 3) {
+    throw new Error("Conversations, control, and web ports must be distinct");
   }
-  const webUrl = localChannelsUrl(options.webPort);
+  const webUrl = localConversationsUrl(options.webPort);
   const runtime = await loadPiRuntime(options.runtimeModule);
   const installationInstance = await registerInstallationInstance({
     kind: options.serviceMode ? "service" : "foreground",
@@ -301,7 +301,7 @@ Other commands:
   let app: Awaited<ReturnType<typeof createLocalProductApp>>;
   try {
     app = await createLocalProductApp({
-      channelsPort: options.channelsPort,
+      conversationsPort: options.conversationsPort,
       controlPort: options.controlPort,
       webUrl,
       workspaceRoot,
@@ -310,7 +310,7 @@ Other commands:
       selectWorkspaceRoot: !freshInstallation && directoryArgumentProvided,
       runtimeAdapter: "pi",
       runtime,
-      channelsMigrationsFolder: defaultMigrationsFolder("channels"),
+      conversationsMigrationsFolder: defaultMigrationsFolder("conversations"),
       relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
       onAudit(event) {
         diagnostic(JSON.stringify({ source: "minu-channels", ...event }));
@@ -350,8 +350,8 @@ Other commands:
   };
   try {
     web = await createLocalWebServer({
-      channelsEndpoint: app.channelsEndpoint,
-      channelsServiceToken: app.channelsServiceToken,
+      conversationsEndpoint: app.conversationsEndpoint,
+      conversationsServiceToken: app.conversationsServiceToken,
       authenticateBrowser: app.authenticateBrowser,
       isQuiescing: () => app.workSnapshot().state !== "running",
       controlEndpoint: app.controlEndpoint,

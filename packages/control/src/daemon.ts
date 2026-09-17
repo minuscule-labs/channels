@@ -1,4 +1,4 @@
-import { ChannelClient } from "@minu/channels-core/client";
+import { ConversationClient } from "@minu/channels-core/client";
 import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
@@ -12,8 +12,8 @@ import {
   type LocalManagedRuntimePort,
 } from "./agent-host.ts";
 import { LocalAgentHostConfiguration } from "./configuration.ts";
-import { DEFAULT_CHANNELS_PORT, DEFAULT_WEB_PORT, localChannelsUrl } from "./local-host.ts";
-import { resolveChannelsDataDirectory } from "./local-paths.ts";
+import { DEFAULT_CHANNELS_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
+import { resolveConversationsDataDirectory } from "./local-paths.ts";
 import {
   createLocalControlHttpServer,
   LocalControlService,
@@ -26,8 +26,8 @@ import {
 
 export interface LocalControlDaemonOptions {
   currentHumanIdentityId: string;
-  channelsEndpoint?: string;
-  channelsServiceToken?: string;
+  conversationsEndpoint?: string;
+  conversationsServiceToken?: string;
   relayDatabasePath?: string;
   relayMigrationsFolder?: string;
   webUrl?: string;
@@ -53,7 +53,7 @@ export interface LocalControlDaemon {
 }
 
 export function defaultRelayDatabasePath(): string {
-  return join(resolveChannelsDataDirectory(), "relay.db");
+  return join(resolveConversationsDataDirectory(), "relay.db");
 }
 
 export async function createLocalControlDaemon(
@@ -76,15 +76,15 @@ export async function createLocalControlDaemon(
       });
     }
     const browserSessions = new LocalControlBrowserSessions({
-      browserUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
+      browserUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       currentHumanIdentityId: options.currentHumanIdentityId,
       launchCodeTtlMs: options.launchCodeTtlMs,
       sessionTtlMs: options.sessionTtlMs,
       now: options.now,
       onAudit: options.onAudit,
     });
-    const client = new ChannelClient(options.channelsEndpoint ?? `http://127.0.0.1:${DEFAULT_CHANNELS_PORT}`, {
-      serviceToken: options.channelsServiceToken,
+    const client = new ConversationClient(options.conversationsEndpoint ?? `http://127.0.0.1:${DEFAULT_CHANNELS_PORT}`, {
+      serviceToken: options.conversationsServiceToken,
     });
     agentHost = new LocalAgentHost({
       client,
@@ -97,7 +97,7 @@ export async function createLocalControlDaemon(
     });
     await agentHost.restore();
     const service = new LocalControlService({
-      channels: client,
+      conversations: client,
       bindings: store,
       runtimes: options.runtimes ?? {},
       lifecycle: agentHost,

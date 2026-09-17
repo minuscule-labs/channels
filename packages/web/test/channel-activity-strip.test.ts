@@ -1,7 +1,7 @@
-import type { LocalChannelAgent } from "@minu/channels-control/contracts";
+import type { LocalConversationAgent } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
 import { describe, expect, it } from "vitest";
-import { activitySummaryItems } from "../src/components/channel-activity-strip";
+import { activitySummaryItems } from "../src/components/conversation-activity-strip";
 
 const participant = (id: string, handle: string): Participant => ({
   id,
@@ -14,9 +14,9 @@ const agent = (
   phase: "running" | "using_tools" | "responding" | "retrying" | "canceling",
   queuedTurns: number,
   queuedTurnsExact = true,
-): LocalChannelAgent => ({
+): LocalConversationAgent => ({
   workspaceId: "workspace-a",
-  channelId: "channel-a",
+  conversationId: "conversation-a",
   identityId,
   state: "running",
   activity: {
@@ -31,7 +31,7 @@ const agent = (
   capabilities: { start: false, replace: false, stop: true, steer: false, interrupt: true, reconnect: false },
 });
 
-describe("Channel activity summary", () => {
+describe("Conversation activity summary", () => {
   it("summarizes every active agent using only coarse presentation-safe state", () => {
     const items = activitySummaryItems(
       [

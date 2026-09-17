@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { MessageSquare } from "lucide-react";
 import { AgentCreatePage, AgentDetailPage, AgentManagementPage } from "./components/agent-management-page";
 import { AppShell } from "./components/app-shell";
-import { ChannelPage } from "./components/channel-page";
+import { ConversationPage } from "./components/conversation-page";
 
 const rootRoute = createRootRoute({ component: AppShell });
 
@@ -39,32 +39,32 @@ const agentDetailRoute = createRoute({
   component: AgentDetailPage,
 });
 
-const channelRoute = createRoute({
+const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/app/workspaces/$workspaceId/conversations/$channelId",
-  component: ChannelPage,
+  path: "/app/workspaces/$workspaceId/conversations/$conversationId",
+  component: ConversationPage,
 });
 
-function LegacyChannelRedirect() {
-  const { workspaceId, channelId } = useParams({ from: "/app/workspaces/$workspaceId/channels/$channelId" });
+function LegacyConversationRedirect() {
+  const { workspaceId, conversationId } = useParams({ from: "/app/workspaces/$workspaceId/channels/$conversationId" });
   const navigate = useNavigate();
   useEffect(() => {
     void navigate({
-      to: "/app/workspaces/$workspaceId/conversations/$channelId",
-      params: { workspaceId, channelId },
+      to: "/app/workspaces/$workspaceId/conversations/$conversationId",
+      params: { workspaceId, conversationId },
       replace: true,
     });
-  }, [channelId, navigate, workspaceId]);
+  }, [conversationId, navigate, workspaceId]);
   return null;
 }
 
-const legacyChannelRoute = createRoute({
+const legacyConversationRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/app/workspaces/$workspaceId/channels/$channelId",
-  component: LegacyChannelRedirect,
+  path: "/app/workspaces/$workspaceId/channels/$conversationId",
+  component: LegacyConversationRedirect,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, channelRoute, legacyChannelRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, legacyConversationRoute]);
 export const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {

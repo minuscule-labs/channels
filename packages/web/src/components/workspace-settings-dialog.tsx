@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, FolderOpen, LoaderCircle, Settings, X } from "lucide-react";
 import { useMemo, useState } from "react";
-import { channels, localControl } from "../lib/api";
+import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 
 function ConfigurationState({ configured, label }: { configured: boolean; label: string }) {
@@ -23,7 +23,7 @@ function WorkspaceNameForm({ workspace, actorIdentityId }: { workspace: Workspac
   const queryClient = useQueryClient();
   const [name, setName] = useState(workspace.name);
   const mutation = useMutation({
-    mutationFn: () => channels.updateWorkspace(workspace.id, { actorIdentityId, name: name.trim() }),
+    mutationFn: () => conversations.updateWorkspace(workspace.id, { actorIdentityId, name: name.trim() }),
     onSuccess: (updated) => {
       queryClient.setQueryData(queryKeys.workspace(workspace.id), updated);
       queryClient.setQueryData<Workspace[]>(queryKeys.workspaces(), (current = []) =>
@@ -136,7 +136,7 @@ export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace })
   });
   const members = useQuery({
     queryKey: queryKeys.workspaceMembers(workspace.id),
-    queryFn: () => channels.listWorkspaceMembers(workspace.id),
+    queryFn: () => conversations.listWorkspaceMembers(workspace.id),
     enabled: open,
   });
   const membersById = useMemo(

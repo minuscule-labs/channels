@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { coordinateChannelsUpdate } from "../src/coordinated-update.ts";
-import { confirmChannelsUpdate } from "../src/update-confirmation.ts";
+import { coordinateConversationsUpdate } from "../src/coordinated-update.ts";
+import { confirmConversationsUpdate } from "../src/update-confirmation.ts";
 import { checkForUpdate, compareVersions, installationDataDirectoryId, installUpdate, registerInstallationInstance } from "../src/updater.ts";
 
 const release = {
@@ -24,24 +24,24 @@ test("requires explicit update confirmation unless --yes is supplied", async () 
   input.isTTY = true;
   output.isTTY = true;
   input.end("yes\n");
-  assert.equal(await confirmChannelsUpdate({ assumeYes: false, json: false, input, output }), true);
+  assert.equal(await confirmConversationsUpdate({ assumeYes: false, json: false, input, output }), true);
 
   const declinedInput = new PassThrough() as PassThrough & { isTTY?: boolean };
   const declinedOutput = new PassThrough() as PassThrough & { isTTY?: boolean };
   declinedInput.isTTY = true;
   declinedOutput.isTTY = true;
   declinedInput.end("\n");
-  assert.equal(await confirmChannelsUpdate({
+  assert.equal(await confirmConversationsUpdate({
     assumeYes: false, json: false, input: declinedInput, output: declinedOutput,
   }), false);
 
-  assert.equal(await confirmChannelsUpdate({ assumeYes: true, json: true }), true);
+  assert.equal(await confirmConversationsUpdate({ assumeYes: true, json: true }), true);
   await assert.rejects(
-    confirmChannelsUpdate({ assumeYes: false, json: true }),
+    confirmConversationsUpdate({ assumeYes: false, json: true }),
     /requires --yes/,
   );
   await assert.rejects(
-    confirmChannelsUpdate({
+    confirmConversationsUpdate({
       assumeYes: false,
       json: false,
       input: new PassThrough(),
@@ -51,7 +51,7 @@ test("requires explicit update confirmation unless --yes is supplied", async () 
   );
 });
 
-test("discovers the latest checksum-addressed Channels release", async () => {
+test("discovers the latest checksum-addressed Conversations release", async () => {
   const update = await checkForUpdate({
     currentVersion: "1.2.2",
     fetch: async () => new Response(JSON.stringify(release), { status: 200 }),
@@ -66,7 +66,7 @@ test("discovers the latest checksum-addressed Channels release", async () => {
 test("installs only a checksum-verified writable global npm package", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-"));
   const globalRoot = join(root, "lib", "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("verified release artifact");
   const checksum = createHash("sha256").update(artifact).digest("hex");
@@ -103,7 +103,7 @@ test("installs only a checksum-verified writable global npm package", async () =
 test("refuses self-update while the same installation has a running instance", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-active-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const instance = await registerInstallationInstance({
     packageRoot,
@@ -131,7 +131,7 @@ test("refuses self-update while the same installation has a running instance", a
 test("refuses an unrelated running service from the same installation", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-unrelated-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const instance = await registerInstallationInstance({
     packageRoot, kind: "service", dataDirectory: join(root, "other-data"),
@@ -158,7 +158,7 @@ test("refuses an unrelated running service from the same installation", async ()
 test("treats a live legacy installation marker as unverified", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-legacy-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
   const coordination = join(tmpdir(), `minu-channels-install-${key}`);
@@ -188,7 +188,7 @@ test("treats a live legacy installation marker as unverified", async () => {
 
 test("rejects a symlinked installation coordination directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-symlink-"));
-  const packageRoot = join(root, "node_modules", "@minu", "channels");
+  const packageRoot = join(root, "node_modules", "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
   const coordination = join(tmpdir(), `minu-channels-install-${key}`);
@@ -210,7 +210,7 @@ test("rejects a symlinked installation coordination directory", async () => {
 test("downloads and verifies before coordinating the selected running service", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-service-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   const dataDirectory = join(root, "service-data");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("coordinated verified artifact");
@@ -280,7 +280,7 @@ test("coordinates update shutdown and restarts only a previously running service
     artifactUrl: release.assets[0]!.browser_download_url,
     checksumUrl: release.assets[1]!.browser_download_url,
   };
-  const result = await coordinateChannelsUpdate(update, {
+  const result = await coordinateConversationsUpdate(update, {
     dataDirectory: "/private/data-is-never-returned",
     service,
     requestQuiesce: async (_directory, options) => {
@@ -309,7 +309,7 @@ test("restarts the service when installation fails after coordinated shutdown", 
     async waitForStop() { return { installed: true, loaded: true, running: false, ready: false, loginEnabled: false }; },
     async start() { starts += 1; return { installed: true, loaded: true, running: true, ready: true, loginEnabled: false }; },
   };
-  await assert.rejects(coordinateChannelsUpdate({
+  await assert.rejects(coordinateConversationsUpdate({
     currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
     releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
     artifactUrl: release.assets[0]!.browser_download_url,
@@ -329,7 +329,7 @@ test("restarts the service when installation fails after coordinated shutdown", 
 
 test("restarts after a claimed update stop even when the quiesce caller times out", async () => {
   const events: string[] = [];
-  await assert.rejects(coordinateChannelsUpdate({
+  await assert.rejects(coordinateConversationsUpdate({
     currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
     releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
     artifactUrl: release.assets[0]!.browser_download_url,
@@ -363,7 +363,7 @@ test("restarts after a claimed update stop even when the quiesce caller times ou
 });
 
 test("reports the installed version when service restart fails", async () => {
-  await assert.rejects(coordinateChannelsUpdate({
+  await assert.rejects(coordinateConversationsUpdate({
     currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
     releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
     artifactUrl: release.assets[0]!.browser_download_url,
@@ -388,7 +388,7 @@ test("reports the installed version when service restart fails", async () => {
 
 test("leaves a stopped service stopped after update", async () => {
   let starts = 0;
-  const result = await coordinateChannelsUpdate({
+  const result = await coordinateConversationsUpdate({
     currentVersion: "1.2.2", latestVersion: "1.2.3", updateAvailable: true,
     releaseUrl: release.html_url, artifactName: "minu-channels-1.2.3.tgz",
     artifactUrl: release.assets[0]!.browser_download_url,
@@ -415,7 +415,7 @@ test("leaves a stopped service stopped after update", async () => {
 test("serializes concurrent self-updates for one installation", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-concurrent-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("concurrent verified artifact");
   const checksum = createHash("sha256").update(artifact).digest("hex");
@@ -455,7 +455,7 @@ test("serializes concurrent self-updates for one installation", async () => {
 test("recovers an interrupted update lock owned by a dead process", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-recovery-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
   const coordination = join(tmpdir(), `minu-channels-install-${key}`);
@@ -491,7 +491,7 @@ test("recovers an interrupted update lock owned by a dead process", async () => 
 test("sanitizes global npm failures after verification", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-npm-failure-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("verified but install fails");
   const checksum = createHash("sha256").update(artifact).digest("hex");
@@ -521,7 +521,7 @@ test("sanitizes global npm failures after verification", async () => {
 test("rejects release artifacts whose checksum does not match", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-bad-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "channels");
+  const packageRoot = join(globalRoot, "@minu", "conversations");
   await mkdir(packageRoot, { recursive: true });
   try {
     await assert.rejects(installUpdate({

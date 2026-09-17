@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { ChannelClient } from "@minu/channels-core/client";
-import { createChannelHttpServer } from "@minu/channels-core";
-import type { ChannelMetadata } from "@minu/channels-core/types";
+import { ConversationClient } from "@minu/channels-core/client";
+import { createConversationHttpServer } from "@minu/channels-core";
+import type { ConversationMetadata } from "@minu/channels-core/types";
 import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import {
@@ -21,9 +21,9 @@ import { createLocalControlDaemon } from "../src/daemon.ts";
 import { developmentDataDirectory, resetDevelopmentData } from "../src/dev-data.ts";
 import { createLocalProductApp } from "../src/local.ts";
 import {
-  acquireChannelsDataDirectoryLock,
-  prepareChannelsDataDirectory,
-  resolveChannelsDataDirectory,
+  acquireConversationsDataDirectoryLock,
+  prepareConversationsDataDirectory,
+  resolveConversationsDataDirectory,
 } from "../src/local-paths.ts";
 import { createLocalWebServer } from "../src/local-web-server.ts";
 import { createLocalReviewApp } from "../src/review.ts";
@@ -36,8 +36,8 @@ import {
   type LocalControlRuntimePort,
 } from "../src/server.ts";
 
-const channel: ChannelMetadata = {
-  id: "channel-1",
+const conversation: ConversationMetadata = {
+  id: "conversation-1",
   workspaceId: "workspace-1",
   name: "Control Test",
   rosterRevision: 1,
@@ -205,13 +205,13 @@ async function waitUntil(assertion: () => Promise<boolean>, timeoutMs = 2_000): 
 function service() {
   const statusCalls: string[] = [];
   const control = new LocalControlService({
-    channels: {
-      async getChannel(channelId) {
-        assert.equal(channelId, channel.id);
-        return channel;
+    conversations: {
+      async getConversation(conversationId) {
+        assert.equal(conversationId, conversation.id);
+        return conversation;
       },
     },
-    bindings: { async listChannelBindings() { return records; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: {
       "pi-private-adapter": {
         async status(sessionId) {
@@ -224,9 +224,9 @@ function service() {
   return { control, statusCalls };
 }
 
-test("projects private bindings into presentation-safe Channel agent status", async () => {
+test("projects private bindings into presentation-safe Conversation agent status", async () => {
   const { control, statusCalls } = service();
-  const result = await control.listChannelAgents(channel.id);
+  const result = await control.listConversationAgents(conversation.id);
 
   assert.deepEqual(result.agents.map(({ identityId, state }) => ({ identityId, state })), [
     { identityId: "agent-running", state: "running" },
@@ -246,8 +246,8 @@ test("projects private bindings into presentation-safe Channel agent status", as
 test("projects Relay activity and accepts cancellation without exposing Runtime details", async () => {
   let cancelCalls = 0;
   const control = new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: {
       "pi-private-adapter": {
         async status() { return "working" as const; },
@@ -267,10 +267,10 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
     },
     lifecycle: {
       available: true,
-      async startChannelAgent() {},
-      async replaceChannelAgent() {},
-      async stopChannelAgent() {},
-      async cancelCurrentChannelAgent() { cancelCalls += 1; },
+      async startConversationAgent() {},
+      async replaceConversationAgent() {},
+      async stopConversationAgent() {},
+      async cancelCurrentConversationAgent() { cancelCalls += 1; },
       activity() {
         return {
           phase: "running",
@@ -286,7 +286,7 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
       },
     },
   });
-  const result = await control.listChannelAgents(channel.id);
+  const result = await control.listConversationAgents(conversation.id);
   assert.deepEqual(result.agents[0]?.activity, {
     phase: "running",
     triggerMessageId: "message-public-id",
@@ -300,7 +300,7 @@ test("projects Relay activity and accepts cancellation without exposing Runtime 
     JSON.stringify(result),
     /runtime-session-secret|pi-private-adapter|SECRET_TOOL_NAME|SECRET_PROMPT|SECRET_PROVIDER_PAYLOAD/,
   );
-  await control.cancelCurrentChannelAgent(channel.id, "agent-running", "human-1");
+  await control.cancelCurrentConversationAgent(conversation.id, "agent-running", "human-1");
   assert.equal(cancelCalls, 1);
 });
 
@@ -316,13 +316,13 @@ test("projects verified live capabilities and treats missing or failed queries a
   };
   const lifecycle = {
     available: true,
-    async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
-    async reconnectChannelAgent() {}, async cancelCurrentChannelAgent() {},
+    async startConversationAgent() {}, async replaceConversationAgent() {}, async stopConversationAgent() {},
+    async reconnectConversationAgent() {}, async cancelCurrentConversationAgent() {},
     isAttached() { return false; },
   };
   const createControl = (runtime: LocalControlRuntimePort) => new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: { "pi-private-adapter": runtime },
     lifecycle,
     statusTimeoutMs: 10,
@@ -333,7 +333,7 @@ test("projects verified live capabilities and treats missing or failed queries a
     async sessionCapabilities() {
       return { ...verified, privateProvider: "SECRET_PROVIDER" };
     },
-  }).listChannelAgents(channel.id);
+  }).listConversationAgents(conversation.id);
   assert.equal(available.agents[0]?.state, "disconnected");
   assert.equal(available.agents[0]?.capabilities.reconnect, true);
   assert.deepEqual(available.agents[0]?.diagnostics?.capabilities, {
@@ -347,7 +347,7 @@ test("projects verified live capabilities and treats missing or failed queries a
   assert.doesNotMatch(JSON.stringify(available), /SECRET_PROVIDER|privateProvider/);
 
   const absent = await createControl({ async status() { return "idle"; } })
-    .listChannelAgents(channel.id);
+    .listConversationAgents(conversation.id);
   assert.equal(absent.agents[0]?.capabilities.reconnect, false);
   assert.deepEqual(
     new Set(Object.values(absent.agents[0]!.diagnostics!.capabilities)),
@@ -357,7 +357,7 @@ test("projects verified live capabilities and treats missing or failed queries a
   const failed = await createControl({
     async status() { return "idle"; },
     async sessionCapabilities() { throw new Error("SECRET_CAPABILITY_TRANSPORT"); },
-  }).listChannelAgents(channel.id);
+  }).listConversationAgents(conversation.id);
   assert.deepEqual(
     new Set(Object.values(failed.agents[0]!.diagnostics!.capabilities)),
     new Set(["not_verified"]),
@@ -367,7 +367,7 @@ test("projects verified live capabilities and treats missing or failed queries a
   const malformed = await createControl({
     async status() { return "idle"; },
     async sessionCapabilities() { return { ...verified, version: 2 as 1 }; },
-  }).listChannelAgents(channel.id);
+  }).listConversationAgents(conversation.id);
   assert.deepEqual(
     new Set(Object.values(malformed.agents[0]!.diagnostics!.capabilities)),
     new Set(["not_verified"]),
@@ -377,7 +377,7 @@ test("projects verified live capabilities and treats missing or failed queries a
   const timedOut = await createControl({
     async status() { return "idle"; },
     async sessionCapabilities() { return await new Promise<never>(() => {}); },
-  }).listChannelAgents(channel.id);
+  }).listConversationAgents(conversation.id);
   assert.ok(Date.now() - timeoutStartedAt < 500);
   assert.deepEqual(
     new Set(Object.values(timedOut.agents[0]!.diagnostics!.capabilities)),
@@ -387,32 +387,32 @@ test("projects verified live capabilities and treats missing or failed queries a
 
 test("distinguishes failed and stalled Runtime verification from confirmed offline without leaking errors", async () => {
   const control = new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: {
       "pi-private-adapter": { async status() { throw new Error("credential: secret-token"); } },
     },
   });
-  const result = await control.listChannelAgents(channel.id);
+  const result = await control.listConversationAgents(conversation.id);
   assert.equal(result.agents[0]?.state, "uncertain");
   assert.equal(result.agents[0]?.diagnostics?.connection, "uncertain");
   assert.equal(result.agents[0]?.capabilities.replace, false);
   assert.doesNotMatch(JSON.stringify(result), /secret-token|credential/);
 
   const stalled = new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: { "pi-private-adapter": { async status() { return new Promise<"idle">(() => {}); } } },
     statusTimeoutMs: 1,
   });
-  assert.equal((await stalled.listChannelAgents(channel.id)).agents[0]?.state, "uncertain");
+  assert.equal((await stalled.listConversationAgents(conversation.id)).agents[0]?.state, "uncertain");
 
   const offline = new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: { "pi-private-adapter": { async status() { return "offline" as const; } } },
   });
-  const offlineAgent = (await offline.listChannelAgents(channel.id)).agents[0]!;
+  const offlineAgent = (await offline.listConversationAgents(conversation.id)).agents[0]!;
   assert.equal(offlineAgent.state, "offline");
   assert.deepEqual(
     new Set(Object.values(offlineAgent.diagnostics!.capabilities)),
@@ -428,8 +428,8 @@ test("validates browser identity and bounded client and Runtime status options",
   assert.throws(() => new LocalControlClient("", { timeoutMs: 0 }), /positive integer/);
   assert.throws(() => new LocalControlClient("", { lifecycleTimeoutMs: 0 }), /positive integer/);
   assert.throws(() => new LocalControlService({
-    channels: { async getChannel() { return channel; } },
-    bindings: { async listChannelBindings() { return []; } },
+    conversations: { async getConversation() { return conversation; } },
+    bindings: { async listConversationBindings() { return []; } },
     runtimes: {},
     statusTimeoutMs: 0,
   }), /positive integer/);
@@ -449,7 +449,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
-  const agents = await client.listChannelAgents(channel.id);
+  const agents = await client.listConversationAgents(conversation.id);
   assert.equal(agents.agents[0]?.identityId, "agent-running");
 
   const allowedOrigin = await fetch(`${server.endpoint}/local/health`, {
@@ -476,7 +476,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   assert.equal(write.status, 405);
 
   await assert.rejects(
-    () => new LocalControlClient(server.endpoint).listChannelAgents("missing"),
+    () => new LocalControlClient(server.endpoint).listConversationAgents("missing"),
     (error: unknown) => error instanceof LocalControlClientError
       && error.status === 502
       && error.message === "Local control status unavailable",
@@ -505,12 +505,12 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
 
   const unauthenticated = await fetch(`${server.endpoint}/local/health`);
   assert.equal(unauthenticated.status, 401);
-  const launchUrl = sessions.issueLaunchUrl(server.endpoint, "/app/workspaces/workspace-1/conversations/channel-1");
+  const launchUrl = sessions.issueLaunchUrl(server.endpoint, "/app/workspaces/workspace-1/conversations/conversation-1");
   const bootstrap = await fetch(launchUrl, { redirect: "manual" });
   assert.equal(bootstrap.status, 303);
   assert.equal(
     bootstrap.headers.get("location"),
-    "http://127.0.0.1:5174/app/workspaces/workspace-1/conversations/channel-1",
+    "http://127.0.0.1:5174/app/workspaces/workspace-1/conversations/conversation-1",
   );
   assert.equal(bootstrap.headers.get("referrer-policy"), "no-referrer");
   const setCookie = bootstrap.headers.get("set-cookie");
@@ -557,15 +557,15 @@ test("accepts authenticated local session actions with opaque diagnostic respons
     currentHumanIdentityId: "human-1",
   });
   const control = new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: { "pi-private-adapter": { async status() { return "working" as const; }, async interrupt() {} } },
     lifecycle: {
       available: true,
-      async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
-      async reconnectChannelAgent(_channelId, _identityId, actorIdentityId) { reconnectActors.push(actorIdentityId); },
-      async cancelCurrentChannelAgent() { cancelCalls += 1; },
-      async openChannelAgentDiagnostic() { diagnosticCalls += 1; },
+      async startConversationAgent() {}, async replaceConversationAgent() {}, async stopConversationAgent() {},
+      async reconnectConversationAgent(_conversationId, _identityId, actorIdentityId) { reconnectActors.push(actorIdentityId); },
+      async cancelCurrentConversationAgent() { cancelCalls += 1; },
+      async openConversationAgentDiagnostic() { diagnosticCalls += 1; },
       activity() {
         return {
           phase: "canceling", triggerMessageId: "message-37", triggerSequence: 37,
@@ -581,7 +581,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
     browserSessions: sessions,
   });
   context.after(() => server.close());
-  const endpoint = `/local/conversations/${channel.id}/agents/agent-running/cancel-current`;
+  const endpoint = `/local/conversations/${conversation.id}/agents/agent-running/cancel-current`;
   assert.equal((await fetch(`${server.endpoint}${endpoint}`, { method: "POST" })).status, 401);
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
@@ -594,7 +594,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   const body = await response.json() as { agent: { activity?: { phase: string } } };
   assert.equal(body.agent.activity?.phase, "canceling");
 
-  const reconnectEndpoint = `/local/conversations/${channel.id}/agents/agent-running/reconnect`;
+  const reconnectEndpoint = `/local/conversations/${conversation.id}/agents/agent-running/reconnect`;
   assert.equal((await fetch(`${server.endpoint}${reconnectEndpoint}`, { method: "POST" })).status, 401);
   const reconnected = await fetch(`${server.endpoint}${reconnectEndpoint}`, {
     method: "POST",
@@ -603,7 +603,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   assert.equal(reconnected.status, 200);
   assert.deepEqual(reconnectActors, ["human-1"]);
 
-  const diagnosticEndpoint = `/local/conversations/${channel.id}/agents/agent-running/open-diagnostic`;
+  const diagnosticEndpoint = `/local/conversations/${conversation.id}/agents/agent-running/open-diagnostic`;
   assert.equal((await fetch(`${server.endpoint}${diagnosticEndpoint}`, { method: "POST" })).status, 401);
   const opened = await fetch(`${server.endpoint}${diagnosticEndpoint}`, {
     method: "POST",
@@ -623,17 +623,17 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
   });
   const fail = async (): Promise<void> => { throw new Error(secret); };
   const control = new LocalControlService({
-    channels: { async getChannel() { return { ...channel, participants: [channel.participants[1]!] }; } },
-    bindings: { async listChannelBindings() { return records; } },
+    conversations: { async getConversation() { return { ...conversation, participants: [conversation.participants[1]!] }; } },
+    bindings: { async listConversationBindings() { return records; } },
     runtimes: { "pi-private-adapter": { async status() { throw new Error(secret); } } },
     lifecycle: {
       available: true,
-      startChannelAgent: fail,
-      replaceChannelAgent: fail,
-      stopChannelAgent: fail,
-      reconnectChannelAgent: fail,
-      cancelCurrentChannelAgent: fail,
-      openChannelAgentDiagnostic: fail,
+      startConversationAgent: fail,
+      replaceConversationAgent: fail,
+      stopConversationAgent: fail,
+      reconnectConversationAgent: fail,
+      cancelCurrentConversationAgent: fail,
+      openConversationAgentDiagnostic: fail,
       activity() {
         if (!exposeActivity) return undefined;
         return {
@@ -661,7 +661,7 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
   const headers = { cookie, origin: sessions.browserOrigin };
-  const agentsPath = `/local/conversations/${channel.id}/agents`;
+  const agentsPath = `/local/conversations/${conversation.id}/agents`;
 
   const activeResponse = await fetch(`${server.endpoint}${agentsPath}`, { headers });
   assert.equal(activeResponse.status, 200);
@@ -700,22 +700,22 @@ test("serves authenticated bulk lifecycle partial results", async (context) => {
   });
   const calls: string[] = [];
   const control = new LocalControlService({
-    channels: { async getChannel() { return channel; } },
-    bindings: { async listChannelBindings() { return []; } },
+    conversations: { async getConversation() { return conversation; } },
+    bindings: { async listConversationBindings() { return []; } },
     runtimes: {},
     lifecycle: {
       available: true,
-      async startChannelAgent() {}, async replaceChannelAgent() {}, async stopChannelAgent() {},
-      async cancelCurrentChannelAgent() {},
-      async startAllChannelAgents(channelId, actorIdentityId) {
-        calls.push(`start:${channelId}:${actorIdentityId}`);
+      async startConversationAgent() {}, async replaceConversationAgent() {}, async stopConversationAgent() {},
+      async cancelCurrentConversationAgent() {},
+      async startAllConversationAgents(conversationId, actorIdentityId) {
+        calls.push(`start:${conversationId}:${actorIdentityId}`);
         return [
           { identityId: "agent-a", outcome: "started" },
           { identityId: "agent-b", outcome: "skipped", reason: "unconfigured" },
         ];
       },
-      async stopAllChannelAgents(channelId, actorIdentityId) {
-        calls.push(`stop:${channelId}:${actorIdentityId}`);
+      async stopAllConversationAgents(conversationId, actorIdentityId) {
+        calls.push(`stop:${conversationId}:${actorIdentityId}`);
         return [{ identityId: "agent-a", outcome: "stopped" }];
       },
     },
@@ -730,7 +730,7 @@ test("serves authenticated bulk lifecycle partial results", async (context) => {
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
   const request = (action: "start" | "stop") => fetch(
-    `${server.endpoint}/local/conversations/${channel.id}/agents/${action}-all`,
+    `${server.endpoint}/local/conversations/${conversation.id}/agents/${action}-all`,
     { method: "POST", headers: { cookie, origin: sessions.browserOrigin } },
   );
   assert.equal((await request("start")).status, 200);
@@ -740,8 +740,8 @@ test("serves authenticated bulk lifecycle partial results", async (context) => {
     { identityId: "agent-a", outcome: "stopped" },
   ]);
   assert.deepEqual(calls, [
-    `start:${channel.id}:human-bulk`,
-    `stop:${channel.id}:human-bulk`,
+    `start:${conversation.id}:human-bulk`,
+    `stop:${conversation.id}:human-bulk`,
   ]);
 });
 
@@ -763,8 +763,8 @@ test("authenticated folder selection supports root paths and cancellation", asyn
     currentHumanIdentityId: "human-folder-test",
   });
   const service = new LocalControlService({
-    channels: { async getChannel() { return channel; } },
-    bindings: { async listChannelBindings() { return []; } },
+    conversations: { async getConversation() { return conversation; } },
+    bindings: { async listConversationBindings() { return []; } },
     runtimes: {},
   });
   let selected: string | undefined = "/";
@@ -790,19 +790,19 @@ test("authenticated folder selection supports root paths and cancellation", asyn
 
 test("review app seeds a disposable Workspace and authenticated presentation states", async () => {
   const app = await createLocalReviewApp({
-    channelsPort: 0,
+    conversationsPort: 0,
     controlPort: 0,
     webUrl: "http://127.0.0.1:5174/",
   });
   try {
-    const client = new ChannelClient(app.channelsEndpoint, { serviceToken: app.channelsServiceToken });
+    const client = new ConversationClient(app.conversationsEndpoint, { serviceToken: app.conversationsServiceToken });
     const workspaces = await client.listWorkspaces();
     assert.deepEqual(workspaces.map(({ id, name }) => ({ id, name })), [{
       id: app.workspaceId,
       name: "MinuChannels Review",
     }]);
-    assert.equal((await client.listWorkspaceChannels(app.workspaceId))[0]?.name, "product-review");
-    const messages = await client.listMessages(app.channelId);
+    assert.equal((await client.listWorkspaceConversations(app.workspaceId))[0]?.name, "product-review");
+    const messages = await client.listMessages(app.conversationId);
     assert.deepEqual(messages.map(({ sequence, body }) => ({ sequence, body })), [
       {
         sequence: 1,
@@ -822,14 +822,14 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
       },
     ]);
 
-    await client.postMessage(app.channelId, {
+    await client.postMessage(app.conversationId, {
       participantId: app.humanIdentityId,
       body: "@builder Confirm this review message.",
     });
-    let updatedMessages = await client.listMessages(app.channelId);
+    let updatedMessages = await client.listMessages(app.conversationId);
     for (let attempt = 0; attempt < 20 && updatedMessages.length < 6; attempt++) {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
-      updatedMessages = await client.listMessages(app.channelId);
+      updatedMessages = await client.listMessages(app.conversationId);
     }
     assert.equal(updatedMessages[5]?.body, "[Simulated review agent] I received “＠builder Confirm this review message”. This confirms mention routing, Relay delivery, and response posting are working. Live Pi execution is not enabled in review mode.");
 
@@ -845,7 +845,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
       protocolVersion: 17,
       identityId: app.humanIdentityId,
     });
-    const response = await fetch(`${app.controlEndpoint}/local/conversations/${app.channelId}/agents`, {
+    const response = await fetch(`${app.controlEndpoint}/local/conversations/${app.conversationId}/agents`, {
       headers,
     });
     assert.equal(response.status, 200);
@@ -864,9 +864,9 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     writeFile(join(webDirectory, "index.html"), "<main>MinuChannels production</main>"),
     writeFile(join(webDirectory, "assets", "app.js"), "console.log('minu')"),
   ]);
-  const channelsBackend = createNodeServer((request, response) => {
+  const conversationsBackend = createNodeServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ source: "channels", path: request.url }));
+    response.end(JSON.stringify({ source: "conversations", path: request.url }));
   });
   const controlBackend = createNodeServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -882,18 +882,18 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     if (!address || typeof address === "string") throw new Error("Missing test server address");
     return `http://127.0.0.1:${address.port}`;
   };
-  const [channelsEndpoint, controlEndpoint] = await Promise.all([
-    listen(channelsBackend),
+  const [conversationsEndpoint, controlEndpoint] = await Promise.all([
+    listen(conversationsBackend),
     listen(controlBackend),
   ]);
   let browserAuthenticated = true;
   let quiescing = false;
   const web = await createLocalWebServer({
-    channelsEndpoint,
+    conversationsEndpoint,
     controlEndpoint,
     webDirectory,
     port: 0,
-    channelsServiceToken: "web-test-token",
+    conversationsServiceToken: "web-test-token",
     authenticateBrowser: () => browserAuthenticated ? { identityId: "human-web-test" } : undefined,
     isQuiescing: () => quiescing,
   });
@@ -901,14 +901,14 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     assert.equal(await requestStatus(`${web.endpoint}/`, {
       host: "minu-channels.localhost:47412",
     }), 200);
-    const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/conversations/channel`);
+    const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/conversations/conversation`);
     assert.equal(spa.status, 200);
     assert.match(await spa.text(), /MinuChannels production/);
     const asset = await fetch(`${web.endpoint}/assets/app.js`);
     assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
     assert.match(await asset.text(), /console\.log/);
-    const channelsResponse = await (await fetch(`${web.endpoint}/identities`)).json() as { source: string };
-    assert.equal(channelsResponse.source, "channels");
+    const conversationsResponse = await (await fetch(`${web.endpoint}/identities`)).json() as { source: string };
+    assert.equal(conversationsResponse.source, "conversations");
     browserAuthenticated = false;
     assert.equal((await fetch(`${web.endpoint}/identities`)).status, 401);
     browserAuthenticated = true;
@@ -925,57 +925,57 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     assert.equal(blocked.status, 503);
     assert.deepEqual(await blocked.json(), { error: "MinuChannels is restarting" });
     assert.equal((await fetch(`${web.endpoint}/local/workspaces/workspace/config`, { method: "PATCH" })).status, 503);
-    assert.equal((await fetch(`${web.endpoint}/conversations/channel/messages`, { method: "POST" })).status, 200);
+    assert.equal((await fetch(`${web.endpoint}/conversations/conversation/messages`, { method: "POST" })).status, 200);
     assert.equal((await fetch(`${web.endpoint}/identities`)).status, 200);
   } finally {
     await web.close();
     await Promise.all([
-      new Promise<void>((resolveClose) => channelsBackend.close(() => resolveClose())),
+      new Promise<void>((resolveClose) => conversationsBackend.close(() => resolveClose())),
       new Promise<void>((resolveClose) => controlBackend.close(() => resolveClose())),
       rm(webDirectory, { recursive: true, force: true }),
     ]);
   }
 });
 
-test("resolves isolated Channels data paths and arbitrates product-directory locks", async () => {
-  assert.equal(resolveChannelsDataDirectory({
-    explicit: "~/explicit-channels",
+test("resolves isolated Conversations data paths and arbitrates product-directory locks", async () => {
+  assert.equal(resolveConversationsDataDirectory({
+    explicit: "~/explicit-conversations",
     env: { MINU_CHANNELS_HOME: "/ignored-product", MINU_HOME: "/ignored-minu" },
     homeDirectory: "/home/tester",
-  }), "/home/tester/explicit-channels");
-  assert.equal(resolveChannelsDataDirectory({
+  }), "/home/tester/explicit-conversations");
+  assert.equal(resolveConversationsDataDirectory({
     env: { MINU_CHANNELS_HOME: "/product-home", MINU_HOME: "/ignored-minu" },
     homeDirectory: "/home/tester",
   }), "/product-home");
-  assert.equal(resolveChannelsDataDirectory({
+  assert.equal(resolveConversationsDataDirectory({
     env: { MINU_HOME: "/shared-minu" },
     homeDirectory: "/home/tester",
   }), "/shared-minu/channels");
-  assert.equal(resolveChannelsDataDirectory({ env: {}, homeDirectory: "/home/tester" }), "/home/tester/.minu/channels");
+  assert.equal(resolveConversationsDataDirectory({ env: {}, homeDirectory: "/home/tester" }), "/home/tester/.minu/channels");
 
   const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-paths-"));
   try {
-    await prepareChannelsDataDirectory(dataDirectory);
-    const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
+    await prepareConversationsDataDirectory(dataDirectory);
+    const lock = await acquireConversationsDataDirectoryLock(dataDirectory);
     assert.equal((await stat(dataDirectory)).mode & 0o777, 0o700);
     assert.equal((await stat(join(dataDirectory, "run"))).mode & 0o777, 0o700);
     assert.equal((await stat(lock.path)).mode & 0o777, 0o700);
-    await assert.rejects(acquireChannelsDataDirectoryLock(dataDirectory), /already using data directory/);
+    await assert.rejects(acquireConversationsDataDirectoryLock(dataDirectory), /already using data directory/);
     await lock.release();
     await writeFile(join(dataDirectory, "run", "instance.lock"), '{"pid":999999,"token":"stale"}\n');
-    const replacement = await acquireChannelsDataDirectoryLock(dataDirectory);
+    const replacement = await acquireConversationsDataDirectoryLock(dataDirectory);
     await replacement.release();
 
     const initializingPath = join(dataDirectory, "run", "instance.lock");
     await mkdir(initializingPath);
-    await assert.rejects(acquireChannelsDataDirectoryLock(dataDirectory), /already using data directory/);
+    await assert.rejects(acquireConversationsDataDirectoryLock(dataDirectory), /already using data directory/);
     assert.equal((await stat(initializingPath)).isDirectory(), true);
     await rm(initializingPath, { recursive: true });
 
     await mkdir(initializingPath);
     await writeFile(join(initializingPath, "owner.json"), '{"pid":999999,"token":"stale"}\n');
     const attempts = await Promise.allSettled(Array.from({ length: 4 }, () =>
-      acquireChannelsDataDirectoryLock(dataDirectory)));
+      acquireConversationsDataDirectoryLock(dataDirectory)));
     const winners = attempts.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
     assert.equal(winners.length, 1);
     await winners[0]!.release();
@@ -990,9 +990,9 @@ test("development data reset is fixed-scope, active-instance-aware, and symlink-
   const dataDirectory = developmentDataDirectory(homeDirectory);
   try {
     assert.equal(await resetDevelopmentData({ homeDirectory }), "absent");
-    await prepareChannelsDataDirectory(dataDirectory);
+    await prepareConversationsDataDirectory(dataDirectory);
     await writeFile(join(dataDirectory, "marker"), "development-only");
-    const lock = await acquireChannelsDataDirectoryLock(dataDirectory);
+    const lock = await acquireConversationsDataDirectoryLock(dataDirectory);
     await assert.rejects(
       resetDevelopmentData({ homeDirectory }),
       /already using data directory/,
@@ -1028,23 +1028,23 @@ test("local product initializes once and reopens persistent collaboration data",
       dataDirectory,
       workspaceRoot,
       workspaceName: "Chosen Workspace",
-      channelsPort: 0,
+      conversationsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
       runtimeAdapter: "managed-test",
       runtime,
     });
     assert.equal(first.initialized, true);
-    const firstClient = new ChannelClient(first.channelsEndpoint, { serviceToken: first.channelsServiceToken });
+    const firstClient = new ConversationClient(first.conversationsEndpoint, { serviceToken: first.conversationsServiceToken });
     assert.equal((await firstClient.listIdentities()).length, 2);
     assert.deepEqual((await firstClient.listWorkspaces()).map(({ name }) => name), ["Chosen Workspace"]);
-    assert.equal((await firstClient.listWorkspaceChannels(first.workspaceId!)).length, 1);
-    assert.deepEqual(await firstClient.listMessages(first.channelId!), []);
+    assert.equal((await firstClient.listWorkspaceConversations(first.workspaceId!)).length, 1);
+    assert.deepEqual(await firstClient.listMessages(first.conversationId!), []);
     assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o700);
     await assert.rejects(createLocalProductApp({
       dataDirectory,
       workspaceRoot,
-      channelsPort: 0,
+      conversationsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
       runtimeAdapter: "managed-test",
@@ -1053,7 +1053,7 @@ test("local product initializes once and reopens persistent collaboration data",
     const original = {
       humanIdentityId: first.humanIdentityId,
       workspaceId: first.workspaceId,
-      channelId: first.channelId,
+      conversationId: first.conversationId,
     };
     await first.close();
     first = undefined;
@@ -1062,7 +1062,7 @@ test("local product initializes once and reopens persistent collaboration data",
       dataDirectory,
       workspaceRoot,
       selectWorkspaceRoot: true,
-      channelsPort: 0,
+      conversationsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
       runtimeAdapter: "managed-test",
@@ -1072,9 +1072,9 @@ test("local product initializes once and reopens persistent collaboration data",
     assert.deepEqual({
       humanIdentityId: reopened.humanIdentityId,
       workspaceId: reopened.workspaceId,
-      channelId: reopened.channelId,
+      conversationId: reopened.conversationId,
     }, original);
-    const reopenedClient = new ChannelClient(reopened.channelsEndpoint, { serviceToken: reopened.channelsServiceToken });
+    const reopenedClient = new ConversationClient(reopened.conversationsEndpoint, { serviceToken: reopened.conversationsServiceToken });
     assert.equal((await reopenedClient.listIdentities()).length, 2);
     assert.equal((await reopenedClient.listWorkspaces()).length, 1);
     assert.equal((await stat(join(dataDirectory, "local-profile.json"))).mode & 0o777, 0o600);
@@ -1098,7 +1098,7 @@ test("local product snapshots both databases before applying an update migration
     app = await createLocalProductApp({
       dataDirectory,
       workspaceRoot,
-      channelsPort: 0,
+      conversationsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
       runtimeAdapter: "managed-test",
@@ -1115,8 +1115,8 @@ test("local product snapshots both databases before applying an update migration
 
     app = await createLocalProductApp({
       dataDirectory,
-      channelsMigrationsFolder: migrationsFolder,
-      channelsPort: 0,
+      conversationsMigrationsFolder: migrationsFolder,
+      conversationsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
       runtimeAdapter: "managed-test",
@@ -1144,7 +1144,7 @@ test("fresh local product starts without a terminal Workspace and provisions it 
   try {
     app = await createLocalProductApp({
       dataDirectory,
-      channelsPort: 0,
+      conversationsPort: 0,
       controlPort: 0,
       webUrl: "http://127.0.0.1:5199/",
       runtimeAdapter: "managed-test",
@@ -1152,8 +1152,8 @@ test("fresh local product starts without a terminal Workspace and provisions it 
     });
     assert.equal(app.initialized, true);
     assert.equal(app.workspaceId, undefined);
-    assert.equal(app.channelId, undefined);
-    const client = new ChannelClient(app.channelsEndpoint, { serviceToken: app.channelsServiceToken });
+    assert.equal(app.conversationId, undefined);
+    const client = new ConversationClient(app.conversationsEndpoint, { serviceToken: app.conversationsServiceToken });
     assert.equal((await client.listIdentities()).length, 1);
     assert.deepEqual(await client.listWorkspaces(), []);
 
@@ -1167,12 +1167,12 @@ test("fresh local product starts without a terminal Workspace and provisions it 
       body: JSON.stringify({ slug: "browser-first", name: "Browser First", rootUri: workspaceRoot }),
     });
     assert.equal(provisionedResponse.status, 201);
-    const provisioned = await provisionedResponse.json() as { workspaceId: string; channelId: string };
+    const provisioned = await provisionedResponse.json() as { workspaceId: string; conversationId: string };
     assert.deepEqual((await client.listWorkspaces()).map(({ id, name }) => ({ id, name })), [{
       id: provisioned.workspaceId,
       name: "Browser First",
     }]);
-    assert.equal((await client.listWorkspaceChannels(provisioned.workspaceId))[0]?.id, provisioned.channelId);
+    assert.equal((await client.listWorkspaceConversations(provisioned.workspaceId))[0]?.id, provisioned.conversationId);
   } finally {
     await app?.close().catch(() => undefined);
     await Promise.all([
@@ -1189,7 +1189,7 @@ test("first-run initialization resumes after private-store setup fails", async (
     dataDirectory,
     workspaceRoot,
     workspaceName: "Recoverable Workspace",
-    channelsPort: 0,
+    conversationsPort: 0,
     controlPort: 0,
     runtimeAdapter: "managed-test",
     runtime: new ManagedFakeRuntime(),
@@ -1202,10 +1202,10 @@ test("first-run initialization resumes after private-store setup fails", async (
     assert.equal((await stat(join(dataDirectory, "local-profile.json.initializing"))).isFile(), true);
     const recovered = await createLocalProductApp(options);
     try {
-      const client = new ChannelClient(recovered.channelsEndpoint, { serviceToken: recovered.channelsServiceToken });
+      const client = new ConversationClient(recovered.conversationsEndpoint, { serviceToken: recovered.conversationsServiceToken });
       assert.equal((await client.listIdentities()).length, 2);
       assert.equal((await client.listWorkspaces()).length, 1);
-      assert.equal((await client.listWorkspaceChannels(recovered.workspaceId!)).length, 1);
+      assert.equal((await client.listWorkspaceConversations(recovered.workspaceId!)).length, 1);
     } finally { await recovered.close(); }
     await assert.rejects(stat(join(dataDirectory, "local-profile.json.initializing")), /ENOENT/);
   } finally {
@@ -1214,10 +1214,10 @@ test("first-run initialization resumes after private-store setup fails", async (
 });
 
 test("Workspace provisioning validates first and resumes idempotently", async () => {
-  const server = await createChannelHttpServer();
+  const server = await createConversationHttpServer();
   const root = await mkdtemp(join(tmpdir(), "minu-provision-root-"));
   try {
-    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
     const owner = await client.createIdentity({ type: "human" });
     const store = new InMemoryRelayBindingStore();
     const configuration = new LocalAgentHostConfiguration({ client, store });
@@ -1233,17 +1233,17 @@ test("Workspace provisioning validates first and resumes idempotently", async ()
     });
     assert.deepEqual(replay, first);
     assert.equal((await client.listWorkspaces()).length, 1);
-    assert.equal((await client.listWorkspaceChannels(first.workspaceId)).length, 1);
+    assert.equal((await client.listWorkspaceConversations(first.workspaceId)).length, 1);
     assert.equal((await client.listWorkspaceMembers(first.workspaceId)).length, 1);
   } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("Runtime discovery is scoped by canonical Workspace source root", async () => {
-  const server = await createChannelHttpServer();
+  const server = await createConversationHttpServer();
   const firstRoot = await mkdtemp(join(tmpdir(), "minu-runtime-root-a-"));
   const secondRoot = await mkdtemp(join(tmpdir(), "minu-runtime-root-b-"));
   try {
-    const client = new ChannelClient(server.endpoint, { serviceToken: server.serviceToken });
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
     const owner = await client.createIdentity({ type: "human" });
     const first = await client.createWorkspace({ slug: "runtime-root-a", name: "A" });
     const second = await client.createWorkspace({ slug: "runtime-root-b", name: "B" });
@@ -1278,11 +1278,11 @@ test("Runtime discovery is scoped by canonical Workspace source root", async () 
 });
 
 test("private configuration keeps lists redacted and returns agent details only to authorized local owners", async () => {
-  const channelServer = await createChannelHttpServer({ port: 0 });
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const audit: LocalControlAuditEvent[] = [];
   try {
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
     const member = await client.createIdentity({ type: "human", displayName: "Member" });
     const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
@@ -1348,7 +1348,7 @@ test("private configuration keeps lists redacted and returns agent details only 
       skillsConfigured: false,
       selectedSkillCount: 0,
       status: "active",
-      boundChannelCount: 0,
+      boundConversationCount: 0,
       changesApplyToNewSessions: true,
     }]);
     const detail = await configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id);
@@ -1392,12 +1392,12 @@ test("private configuration keeps lists redacted and returns agent details only 
     ]);
   } finally {
     await store.close();
-    await channelServer.close();
+    await conversationServer.close();
   }
 });
 
-test("Channel working folders are private, canonical, and owner-controlled", async () => {
-  const channelServer = await createChannelHttpServer({ port: 0 });
+test("Conversation working folders are private, canonical, and owner-controlled", async () => {
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const root = await mkdtemp(join(tmpdir(), "minu-working-folders-root-"));
   const outside = await mkdtemp(join(tmpdir(), "minu-working-folders-outside-"));
   const store = new InMemoryRelayBindingStore();
@@ -1408,7 +1408,7 @@ test("Channel working folders are private, canonical, and owner-controlled", asy
       mkdir(join(root, "packages", "shared"), { recursive: true }),
     ]);
     await symlink(outside, join(root, "outside-link"));
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const [owner, member] = await Promise.all([
       client.createIdentity({ type: "human", displayName: "Owner" }),
       client.createIdentity({ type: "human", displayName: "Member" }),
@@ -1418,7 +1418,7 @@ test("Channel working folders are private, canonical, and owner-controlled", asy
       client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
       client.addWorkspaceMember(workspace.id, { identityId: member.id, mentionHandle: "member" }),
     ]);
-    const channel = await client.createChannel({
+    const conversation = await client.createConversation({
       workspaceId: workspace.id,
       participantIds: [owner.id, member.id],
     });
@@ -1428,25 +1428,25 @@ test("Channel working folders are private, canonical, and owner-controlled", asy
       onAudit: (event) => audit.push(event),
     });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
-    assert.deepEqual(await configuration.getChannelWorkingFolders(channel.id, owner.id), {
+    assert.deepEqual(await configuration.getConversationWorkingFolders(conversation.id, owner.id), {
       protocolVersion: 17,
       workspaceId: workspace.id,
-      channelId: channel.id,
+      conversationId: conversation.id,
       inheritedFromWorkspace: true,
       folders: [],
       changesApplyToNewSessions: true,
       enforcement: "advisory",
     });
-    assert.deepEqual(await configuration.previewChannelWorkingFolder(channel.id, owner.id, {
+    assert.deepEqual(await configuration.previewConversationWorkingFolder(conversation.id, owner.id, {
       path: join(root, "apps", "web"), primary: false,
     }), { relativePath: "apps/web" });
-    await assert.rejects(configuration.previewChannelWorkingFolder(channel.id, member.id, {
+    await assert.rejects(configuration.previewConversationWorkingFolder(conversation.id, member.id, {
       path: join(root, "apps", "web"), primary: false,
     }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
-    await assert.rejects(configuration.previewChannelWorkingFolder(channel.id, owner.id, {
+    await assert.rejects(configuration.previewConversationWorkingFolder(conversation.id, owner.id, {
       path: join(root, "outside-link"), primary: false,
     }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
-    const updated = await configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+    const updated = await configuration.updateConversationWorkingFolders(conversation.id, owner.id, {
       folders: [
         { path: join(root, "apps", "web"), primary: true },
         { relativePath: "packages/shared", primary: false },
@@ -1457,30 +1457,30 @@ test("Channel working folders are private, canonical, and owner-controlled", asy
       { relativePath: "packages/shared", position: 1, primary: false },
     ]);
     assert.equal(updated.inheritedFromWorkspace, false);
-    assert.deepEqual(await store.getChannelWorkingFolders(workspace.id, channel.id), [
-      { workspaceId: workspace.id, channelId: channel.id, relativePath: "apps/web", position: 0, primary: true },
-      { workspaceId: workspace.id, channelId: channel.id, relativePath: "packages/shared", position: 1, primary: false },
+    assert.deepEqual(await store.getConversationWorkingFolders(workspace.id, conversation.id), [
+      { workspaceId: workspace.id, conversationId: conversation.id, relativePath: "apps/web", position: 0, primary: true },
+      { workspaceId: workspace.id, conversationId: conversation.id, relativePath: "packages/shared", position: 1, primary: false },
     ]);
-    await assert.rejects(configuration.updateChannelWorkingFolders(channel.id, member.id, {
+    await assert.rejects(configuration.updateConversationWorkingFolders(conversation.id, member.id, {
       folders: [],
     }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
-    await assert.rejects(configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+    await assert.rejects(configuration.updateConversationWorkingFolders(conversation.id, owner.id, {
       folders: [{ path: join(root, "outside-link"), primary: true }],
     }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
-    await assert.rejects(configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+    await assert.rejects(configuration.updateConversationWorkingFolders(conversation.id, owner.id, {
       folders: [{ relativePath: "../escape", primary: true }],
     }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
-    await configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+    await configuration.updateConversationWorkingFolders(conversation.id, owner.id, {
       folders: [{ relativePath: ".", primary: true }],
     });
-    assert.deepEqual(await store.getChannelWorkingFolders(workspace.id, channel.id), []);
+    assert.deepEqual(await store.getConversationWorkingFolders(workspace.id, conversation.id), []);
     const auditJson = JSON.stringify(audit);
     assert.doesNotMatch(auditJson, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(auditJson, /outside-link|packages\/shared|apps\/web/);
   } finally {
     await Promise.all([
       store.close(),
-      channelServer.close(),
+      conversationServer.close(),
       rm(root, { recursive: true, force: true }),
       rm(outside, { recursive: true, force: true }),
     ]);
@@ -1509,7 +1509,7 @@ test("agent host quiescing drains accepted lifecycle work before freezing Relay 
     },
   };
   const host = new LocalAgentHost({
-    client: {} as ChannelClient,
+    client: {} as ConversationClient,
     store: {} as InMemoryRelayBindingStore,
     runtimes: {
       managed: {
@@ -1525,7 +1525,7 @@ test("agent host quiescing drains accepted lifecycle work before freezing Relay 
     runners: Map<string, { relay: typeof relay }>;
   };
   internals.pending.set("accepted-operation", pending);
-  internals.runners.set("private-channel", { relay });
+  internals.runners.set("private-conversation", { relay });
 
   assert.deepEqual(host.workSnapshot(), {
     state: "running",
@@ -1556,7 +1556,7 @@ test("agent host quiescing drains accepted lifecycle work before freezing Relay 
   });
   assert.equal(waitCalls, 1);
   await assert.rejects(
-    host.cancelCurrentChannelAgent("private-channel", "private-agent", "private-owner"),
+    host.cancelCurrentConversationAgent("private-conversation", "private-agent", "private-owner"),
     (error: unknown) => error instanceof LocalConfigurationRequestError
       && error.message === "Agent host is unavailable",
   );
@@ -1565,21 +1565,21 @@ test("agent host quiescing drains accepted lifecycle work before freezing Relay 
 test("agent host sanitizes unexpected cancellation failures and audit output", async () => {
   const audit: LocalControlAuditEvent[] = [];
   const host = new LocalAgentHost({
-    client: {} as ChannelClient,
+    client: {} as ConversationClient,
     store: {} as InMemoryRelayBindingStore,
     runtimes: {},
     onAudit: (event) => audit.push(event),
   });
   const internals = host as unknown as {
-    baseContext: () => Promise<{ channel: { workspaceId: string } }>;
+    baseContext: () => Promise<{ conversation: { workspaceId: string } }>;
     runners: Map<string, { relay: { cancelCurrent(): Promise<void> } }>;
   };
-  internals.baseContext = async () => ({ channel: { workspaceId: "workspace-safe" } });
-  internals.runners.set("channel-safe", {
+  internals.baseContext = async () => ({ conversation: { workspaceId: "workspace-safe" } });
+  internals.runners.set("conversation-safe", {
     relay: { async cancelCurrent() { throw new Error("SECRET_DATABASE_URL=/private/path"); } },
   });
   await assert.rejects(
-    host.cancelCurrentChannelAgent("channel-safe", "agent-safe", "owner-safe"),
+    host.cancelCurrentConversationAgent("conversation-safe", "agent-safe", "owner-safe"),
     (error: unknown) => error instanceof LocalConfigurationRequestError
       && error.message === "Agent turn could not be canceled",
   );
@@ -1593,7 +1593,7 @@ test("agent host sanitizes unexpected cancellation failures and audit output", a
     reason: "unavailable",
     actorIdentityId: "owner-safe",
     workspaceId: "workspace-safe",
-    channelId: "channel-safe",
+    conversationId: "conversation-safe",
     targetIdentityId: "agent-safe",
   });
 });
@@ -1622,14 +1622,14 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
     },
   };
   const host = new LocalAgentHost({
-    client: {} as ChannelClient,
+    client: {} as ConversationClient,
     store: {} as InMemoryRelayBindingStore,
     runtimes: { "private-adapter": runtime },
     onAudit: (event) => audit.push(event),
   });
   const internals = host as unknown as {
     baseContext(): Promise<{
-      channel: { workspaceId: string };
+      conversation: { workspaceId: string };
       bindings: Array<{
         id: string;
         agentIdentityId: string;
@@ -1640,7 +1640,7 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
     }>;
   };
   internals.baseContext = async () => ({
-    channel: { workspaceId: "workspace-safe" },
+    conversation: { workspaceId: "workspace-safe" },
     bindings: [{
       id: "binding-private",
       agentIdentityId: "agent-safe",
@@ -1650,12 +1650,12 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
     }],
   });
 
-  await host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "owner-safe");
+  await host.openConversationAgentDiagnostic("conversation-safe", "agent-safe", "owner-safe");
   assert.equal(openCalls, 1);
 
   capabilityAvailable = false;
   await assert.rejects(
-    host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "owner-safe"),
+    host.openConversationAgentDiagnostic("conversation-safe", "agent-safe", "owner-safe"),
     (error: unknown) => error instanceof LocalConfigurationRequestError
       && error.message === "Agent diagnostic unavailable",
   );
@@ -1664,7 +1664,7 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
   capabilityAvailable = true;
   failOpening = true;
   await assert.rejects(
-    host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "owner-safe"),
+    host.openConversationAgentDiagnostic("conversation-safe", "agent-safe", "owner-safe"),
     (error: unknown) => error instanceof LocalConfigurationRequestError
       && error.message === "Agent diagnostic could not be opened",
   );
@@ -1674,7 +1674,7 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
     throw new LocalConfigurationRequestError("Workspace owner or admin required", 403, "forbidden");
   };
   await assert.rejects(
-    host.openChannelAgentDiagnostic("channel-safe", "agent-safe", "member-safe"),
+    host.openConversationAgentDiagnostic("conversation-safe", "agent-safe", "member-safe"),
     (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
   );
   assert.equal(openCalls, 2);
@@ -1689,7 +1689,7 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
 
 test("one binding queue drain does not hold the shared Relay ownership lock", async () => {
   const host = new LocalAgentHost({
-    client: {} as ChannelClient,
+    client: {} as ConversationClient,
     store: {} as InMemoryRelayBindingStore,
     runtimes: {},
   });
@@ -1700,9 +1700,9 @@ test("one binding queue drain does not hold the shared Relay ownership lock", as
   const retired: string[] = [];
   const internals = host as unknown as {
     runners: Map<string, unknown>;
-    retireBinding(channelId: string, participantId: string): Promise<void>;
+    retireBinding(conversationId: string, participantId: string): Promise<void>;
   };
-  internals.runners.set("channel-shared", {
+  internals.runners.set("conversation-shared", {
     relay: {
       async retire(participantId: string) {
         retired.push(participantId);
@@ -1722,9 +1722,9 @@ test("one binding queue drain does not hold the shared Relay ownership lock", as
       ["agent-b", { async close() {} }],
     ]),
   });
-  const retiringA = internals.retireBinding("channel-shared", "agent-a");
+  const retiringA = internals.retireBinding("conversation-shared", "agent-a");
   await aStarted;
-  await internals.retireBinding("channel-shared", "agent-b");
+  await internals.retireBinding("conversation-shared", "agent-b");
   assert.deepEqual(retired, ["agent-a", "agent-b"]);
   releaseA();
   await retiringA;
@@ -1732,7 +1732,7 @@ test("one binding queue drain does not hold the shared Relay ownership lock", as
 
 test("bulk lifecycle bounds concurrency and preserves participant order", async () => {
   const host = new LocalAgentHost({
-    client: {} as ChannelClient,
+    client: {} as ConversationClient,
     store: {} as InMemoryRelayBindingStore,
     runtimes: {},
   });
@@ -1743,13 +1743,13 @@ test("bulk lifecycle bounds concurrency and preserves participant order", async 
   const internals = host as unknown as {
     bulkTargets(): Promise<{ workspaceId: string; targets: typeof targets }>;
     bulkStartOne(
-      _channelId: string,
+      _conversationId: string,
       _workspaceId: string,
       target: typeof targets[number],
     ): Promise<{ identityId: string; outcome: "started" }>;
   };
   internals.bulkTargets = async () => ({ workspaceId: "workspace-bulk", targets });
-  internals.bulkStartOne = async (_channelId, _workspaceId, { identityId }) => {
+  internals.bulkStartOne = async (_conversationId, _workspaceId, { identityId }) => {
     active += 1;
     maximum = Math.max(maximum, active);
     await new Promise((resolve) => setTimeout(resolve, identityId === "agent-1" ? 20 : 5));
@@ -1757,7 +1757,7 @@ test("bulk lifecycle bounds concurrency and preserves participant order", async 
     if (identityId === "agent-2") throw new Error("target-local preflight failed");
     return { identityId, outcome: "started" };
   };
-  const results = await host.startAllChannelAgents("channel-bulk", "owner-bulk");
+  const results = await host.startAllConversationAgents("conversation-bulk", "owner-bulk");
   assert.equal(maximum, 3);
   assert.deepEqual(results, identityIds.map((identityId) => identityId === "agent-2"
     ? { identityId, outcome: "failed", reason: "unavailable" }
@@ -1766,12 +1766,12 @@ test("bulk lifecycle bounds concurrency and preserves participant order", async 
 
 test("bulk stop does not reverse a real individual start accepted after its snapshot", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-bulk-race-")));
-  const channelServer = await createChannelHttpServer({ port: 0 });
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const runtime = new ManagedFakeRuntime();
   let host: LocalAgentHost | undefined;
   try {
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
     const agents = await Promise.all(["A", "B", "C", "D"].map((name) =>
       client.createIdentity({ type: "agent", displayName: `Agent ${name}` })));
@@ -1787,7 +1787,7 @@ test("bulk stop does not reverse a real individual start accepted after its snap
         mentionHandle: `agent-${String.fromCharCode(97 + index)}`,
       });
     }
-    const channel = await client.createChannel({
+    const conversation = await client.createConversation({
       workspaceId: workspace.id,
       name: "bulk-race",
       participantIds: [owner.id, ...agents.map(({ id }) => id)],
@@ -1809,15 +1809,15 @@ test("bulk stop does not reverse a real individual start accepted after its snap
     }
     host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
     await Promise.all(agents.slice(0, 3).map((agent) =>
-      host!.startChannelAgent(channel.id, agent.id, owner.id)));
-    const initialBindings = await store.listChannelBindings(channel.id);
+      host!.startConversationAgent(conversation.id, agent.id, owner.id)));
+    const initialBindings = await store.listConversationBindings(conversation.id);
     const heldStatuses = initialBindings.map(({ runtimeSessionId }) => runtime.holdStatus(runtimeSessionId));
 
-    const stopping = host.stopAllChannelAgents(channel.id, owner.id);
+    const stopping = host.stopAllConversationAgents(conversation.id, owner.id);
     await Promise.all(heldStatuses.map(({ entered }) => entered));
     const agentD = agents[3]!;
-    await host.startChannelAgent(channel.id, agentD.id, owner.id);
-    const startedD = (await store.listChannelBindings(channel.id))
+    await host.startConversationAgent(conversation.id, agentD.id, owner.id);
+    const startedD = (await store.listConversationBindings(conversation.id))
       .find(({ agentIdentityId }) => agentIdentityId === agentD.id)!;
     assert.equal(startedD.state, "connected");
     assert.equal(startedD.generation, 1);
@@ -1842,9 +1842,9 @@ test("bulk stop does not reverse a real individual start accepted after its snap
     const nextSessionNumber = runtime.starts.length + 1;
     const heldStarts = [0, 1, 2].map((offset) =>
       runtime.holdStatus(`managed-session-${nextSessionNumber + offset}`));
-    const starting = host.startAllChannelAgents(channel.id, owner.id);
+    const starting = host.startAllConversationAgents(conversation.id, owner.id);
     await Promise.all(heldStarts.map(({ entered }) => entered));
-    await host.stopChannelAgent(channel.id, agentD.id, owner.id);
+    await host.stopConversationAgent(conversation.id, agentD.id, owner.id);
     for (const held of heldStarts) held.release();
     const startResults = await starting;
     assert.deepEqual(startResults.at(-1), {
@@ -1859,16 +1859,16 @@ test("bulk stop does not reverse a real individual start accepted after its snap
   } finally {
     await host?.close().catch(() => undefined);
     await store.close();
-    await channelServer.close();
+    await conversationServer.close();
     await rm(sourceDirectory, { recursive: true, force: true });
   }
 });
 
-test("new Channel sessions use a validated primary working folder and advisory guidance", async () => {
+test("new Conversation sessions use a validated primary working folder and advisory guidance", async () => {
   const sourceDirectory = await mkdtemp(join(tmpdir(), "minu-working-folder-launch-"));
   const primaryDirectory = join(sourceDirectory, "apps", "web");
   const additionalDirectory = join(sourceDirectory, "packages", "shared");
-  const channelServer = await createChannelHttpServer({ port: 0 });
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const runtime = new ManagedFakeRuntime();
   let host: LocalAgentHost | undefined;
@@ -1877,7 +1877,7 @@ test("new Channel sessions use a validated primary working folder and advisory g
       mkdir(primaryDirectory, { recursive: true }),
       mkdir(additionalDirectory, { recursive: true }),
     ]);
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const [owner, agent] = await Promise.all([
       client.createIdentity({ type: "human", displayName: "Owner" }),
       client.createIdentity({ type: "agent", displayName: "Builder" }),
@@ -1887,57 +1887,57 @@ test("new Channel sessions use a validated primary working folder and advisory g
       client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
       client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
     ]);
-    const channel = await client.createChannel({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
+    const conversation = await client.createConversation({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
     const configuration = new LocalAgentHostConfiguration({ client, store });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
     await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
       personaPrompt: "Use the saved persona.",
       runtimeAdapter: "managed-test",
     });
-    await configuration.updateChannelWorkingFolders(channel.id, owner.id, {
+    await configuration.updateConversationWorkingFolders(conversation.id, owner.id, {
       folders: [
         { relativePath: "apps/web", primary: true },
         { relativePath: "packages/shared", primary: false },
       ],
     });
     host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
-    await host.startChannelAgent(channel.id, agent.id, owner.id);
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
     assert.deepEqual(runtime.starts[0]?.config, {
       cwd: await realpath(primaryDirectory),
       appendSystemPrompt: [
         "Use the saved persona.",
-        "Channel working folders (paths below are relative to the current working directory):\n- Primary folder: .\n- Additional folder: ../../packages/shared\nWorking folders guide where you should work. They are not a filesystem sandbox.",
+        "Conversation working folders (paths below are relative to the current working directory):\n- Primary folder: .\n- Additional folder: ../../packages/shared\nWorking folders guide where you should work. They are not a filesystem sandbox.",
       ].join("\n\n"),
     });
     const additionalPath = runtime.starts[0]?.config.appendSystemPrompt?.match(/Additional folder: ([^\n]+)/)?.[1];
     assert.equal(resolve(runtime.starts[0]!.config.cwd, additionalPath!), await realpath(additionalDirectory));
-    await host.replaceChannelAgent(channel.id, agent.id, owner.id);
+    await host.replaceConversationAgent(conversation.id, agent.id, owner.id);
     assert.equal(runtime.starts[1]?.config.cwd, await realpath(primaryDirectory));
     await rm(primaryDirectory, { recursive: true, force: true });
     await assert.rejects(
-      host.replaceChannelAgent(channel.id, agent.id, owner.id),
+      host.replaceConversationAgent(conversation.id, agent.id, owner.id),
       (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 409,
     );
   } finally {
     await host?.close();
     await Promise.all([
       store.close(),
-      channelServer.close(),
+      conversationServer.close(),
       rm(sourceDirectory, { recursive: true, force: true }),
     ]);
   }
 });
 
-test("agent host starts isolated Channel sessions with private roots and personas", async () => {
+test("agent host starts isolated Conversation sessions with private roots and personas", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-host-source-")));
-  const channelServer = await createChannelHttpServer({ port: 0 });
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const runtime = new ManagedFakeRuntime();
   const audit: LocalControlAuditEvent[] = [];
   let host: LocalAgentHost | undefined;
   let restoredHost: LocalAgentHost | undefined;
   try {
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const [owner, agent] = await Promise.all([
       client.createIdentity({ type: "human", displayName: "Owner" }),
       client.createIdentity({ type: "agent", displayName: "Builder" }),
@@ -1954,15 +1954,15 @@ test("agent host starts isolated Channel sessions with private roots and persona
         mentionHandle: "builder",
       }),
     ]);
-    const [channelA, channelB] = await Promise.all([
-      client.createChannel({
+    const [conversationA, conversationB] = await Promise.all([
+      client.createConversation({
         workspaceId: workspace.id,
-        name: "channel-a",
+        name: "conversation-a",
         participantIds: [owner.id, agent.id],
       }),
-      client.createChannel({
+      client.createConversation({
         workspaceId: workspace.id,
-        name: "channel-b",
+        name: "conversation-b",
         participantIds: [owner.id, agent.id],
       }),
     ]);
@@ -1978,7 +1978,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
       reasoningLevel: "high",
       skillIds: ["skill:review"],
     });
-    await client.postMessage(channelA.id, {
+    await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder historical work must not auto-run",
     });
@@ -1992,11 +1992,11 @@ test("agent host starts isolated Channel sessions with private roots and persona
     });
     assert.equal(host.available, true);
     await assert.rejects(
-      host.startChannelAgent(channelA.id, agent.id, agent.id),
+      host.startConversationAgent(conversationA.id, agent.id, agent.id),
       (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
     );
-    await host.startChannelAgent(channelA.id, agent.id, owner.id);
-    await host.startChannelAgent(channelB.id, agent.id, owner.id);
+    await host.startConversationAgent(conversationA.id, agent.id, owner.id);
+    await host.startConversationAgent(conversationB.id, agent.id, owner.id);
     assert.deepEqual(runtime.starts.map(({ config }) => config), [
       {
         cwd: sourceDirectory,
@@ -2015,27 +2015,27 @@ test("agent host starts isolated Channel sessions with private roots and persona
     ]);
     assert.notEqual(runtime.starts[0]?.sessionId, runtime.starts[1]?.sessionId);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-    assert.equal((await client.listMessages(channelA.id)).length, 1);
+    assert.equal((await client.listMessages(conversationA.id)).length, 1);
 
     await Promise.all([
-      client.postMessage(channelA.id, { participantId: owner.id, body: "@builder work only in A" }),
-      client.postMessage(channelB.id, { participantId: owner.id, body: "@builder work only in B" }),
+      client.postMessage(conversationA.id, { participantId: owner.id, body: "@builder work only in A" }),
+      client.postMessage(conversationB.id, { participantId: owner.id, body: "@builder work only in B" }),
     ]);
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 3
-      && (await client.listMessages(channelB.id)).length === 2);
-    assert.match((await client.listMessages(channelA.id))[2]?.body ?? "", /managed-session-1/);
-    assert.match((await client.listMessages(channelB.id))[1]?.body ?? "", /managed-session-2/);
+    await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 3
+      && (await client.listMessages(conversationB.id)).length === 2);
+    assert.match((await client.listMessages(conversationA.id))[2]?.body ?? "", /managed-session-1/);
+    assert.match((await client.listMessages(conversationB.id))[1]?.body ?? "", /managed-session-2/);
     assert.doesNotMatch(runtime.prompts.get("managed-session-1")?.[0] ?? "", /work only in B/);
     assert.doesNotMatch(runtime.prompts.get("managed-session-2")?.[0] ?? "", /work only in A/);
     assert.equal((await configuration.getWorkspaceConfiguration(workspace.id, owner.id))
-      .agents[0]?.boundChannelCount, 2);
+      .agents[0]?.boundConversationCount, 2);
 
-    const originalBinding = (await store.listChannelBindings(channelA.id))[0]!;
-    await (host as unknown as { retireBinding(channelId: string, identityId: string): Promise<void> })
-      .retireBinding(channelA.id, agent.id);
-    assert.equal(host.isAttached(channelA.id, agent.id), false);
-    await client.postMessage(channelA.id, { participantId: owner.id, body: "@builder queued while disconnected" });
-    await assert.rejects(host.reconnectChannelAgent(channelA.id, agent.id, agent.id),
+    const originalBinding = (await store.listConversationBindings(conversationA.id))[0]!;
+    await (host as unknown as { retireBinding(conversationId: string, identityId: string): Promise<void> })
+      .retireBinding(conversationA.id, agent.id);
+    assert.equal(host.isAttached(conversationA.id, agent.id), false);
+    await client.postMessage(conversationA.id, { participantId: owner.id, body: "@builder queued while disconnected" });
+    await assert.rejects(host.reconnectConversationAgent(conversationA.id, agent.id, agent.id),
       (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
     let releaseCatchUp!: () => void;
     let signalCatchUp!: () => void;
@@ -2044,7 +2044,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
     const originalListMessages = client.listMessages.bind(client);
     let delayCatchUp = true;
     client.listMessages = async (...args) => {
-      if (delayCatchUp && args[0] === channelA.id) {
+      if (delayCatchUp && args[0] === conversationA.id) {
         delayCatchUp = false;
         signalCatchUp();
         await catchUpReleased;
@@ -2052,9 +2052,9 @@ test("agent host starts isolated Channel sessions with private roots and persona
       return originalListMessages(...args);
     };
     const heldReconnectStatus = runtime.holdStatus(originalBinding.runtimeSessionId);
-    const reconnecting = host.reconnectChannelAgent(channelA.id, agent.id, owner.id);
+    const reconnecting = host.reconnectConversationAgent(conversationA.id, agent.id, owner.id);
     await heldReconnectStatus.entered;
-    await host.stopChannelAgent(channelB.id, agent.id, owner.id);
+    await host.stopConversationAgent(conversationB.id, agent.id, owner.id);
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 45));
     heldReconnectStatus.release();
     await catchUpEntered;
@@ -2065,13 +2065,13 @@ test("agent host starts isolated Channel sessions with private roots and persona
     releaseCatchUp();
     await reconnecting;
     client.listMessages = originalListMessages;
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 5);
-    const reconnectedBinding = (await store.listChannelBindings(channelA.id))[0]!;
+    await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 5);
+    const reconnectedBinding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(reconnectedBinding.id, originalBinding.id);
     assert.equal(reconnectedBinding.generation, originalBinding.generation);
     assert.equal(reconnectedBinding.runtimeSessionId, originalBinding.runtimeSessionId);
     assert.equal(runtime.starts.length, 2);
-    assert.equal(host.isAttached(channelA.id, agent.id), true);
+    assert.equal(host.isAttached(conversationA.id, agent.id), true);
 
     await host.close();
     host = undefined;
@@ -2092,9 +2092,9 @@ test("agent host starts isolated Channel sessions with private roots and persona
       onDiagnostic: (event) => diagnostics.push(event),
     });
     await restoredHost.restore();
-    assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
+    assert.equal(restoredHost.isAttached(conversationA.id, agent.id), false);
     assert.equal((await store.getBinding(originalBinding.id))?.leaseOwner, undefined);
-    await waitUntil(async () => restoredHost!.isAttached(channelA.id, agent.id));
+    await waitUntil(async () => restoredHost!.isAttached(conversationA.id, agent.id));
     assert.deepEqual(diagnostics.slice(0, 2).map(({ category, outcome }) => ({ category, outcome })), [
       { category: "binding_restore", outcome: "retrying" },
       { category: "binding_restore", outcome: "attached" },
@@ -2104,94 +2104,94 @@ test("agent host starts isolated Channel sessions with private roots and persona
     const startsBeforeSleep = runtime.starts.length;
     const stopsBeforeSleep = runtime.stops.length;
     const beforeSleep = await store.getBinding(originalBinding.id);
-    const cursorBeforeSleep = await store.getCursor(channelA.id, agent.id);
+    const cursorBeforeSleep = await store.getCursor(conversationA.id, agent.id);
     restoredNow += 31;
     await waitUntil(async () => diagnostics.some(
       ({ category, outcome }) => category === "binding_lease" && outcome === "reattached",
     ));
     const afterSleep = await store.getBinding(originalBinding.id);
-    assert.equal(restoredHost.isAttached(channelA.id, agent.id), true);
+    assert.equal(restoredHost.isAttached(conversationA.id, agent.id), true);
     assert.equal(afterSleep?.generation, beforeSleep?.generation);
     assert.equal(afterSleep?.runtimeSessionId, beforeSleep?.runtimeSessionId);
-    assert.equal(await store.getCursor(channelA.id, agent.id), cursorBeforeSleep);
+    assert.equal(await store.getCursor(conversationA.id, agent.id), cursorBeforeSleep);
     assert.equal(runtime.starts.length, startsBeforeSleep);
     assert.equal(runtime.stops.length, stopsBeforeSleep);
 
-    await client.postMessage(channelA.id, {
+    await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder resume only A",
     });
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 7);
-    assert.equal(await store.getCursor(channelA.id, agent.id), 6);
+    await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 7);
+    assert.equal(await store.getCursor(conversationA.id, agent.id), 6);
 
     runtime.setStatus("managed-session-1", "working");
     await assert.rejects(
-      restoredHost.replaceChannelAgent(channelA.id, agent.id, owner.id),
+      restoredHost.replaceConversationAgent(conversationA.id, agent.id, owner.id),
       /active agent work/,
     );
     assert.equal(runtime.starts.length, 2);
     runtime.setStatus("managed-session-1", "idle");
-    await restoredHost.replaceChannelAgent(channelA.id, agent.id, owner.id);
-    let binding = (await store.listChannelBindings(channelA.id))[0]!;
+    await restoredHost.replaceConversationAgent(conversationA.id, agent.id, owner.id);
+    let binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.generation, 2);
     assert.equal(binding.runtimeSessionId, "managed-session-3");
     assert.equal(await runtime.status("managed-session-1"), "offline");
-    await client.postMessage(channelA.id, {
+    await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder replaced session work",
     });
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 9);
-    assert.match((await client.listMessages(channelA.id))[8]?.body ?? "", /managed-session-3/);
+    await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 9);
+    assert.match((await client.listMessages(conversationA.id))[8]?.body ?? "", /managed-session-3/);
 
     runtime.setStatus("managed-session-3", "working");
-    await restoredHost.stopChannelAgent(channelA.id, agent.id, owner.id);
-    binding = (await store.listChannelBindings(channelA.id))[0]!;
+    await restoredHost.stopConversationAgent(conversationA.id, agent.id, owner.id);
+    binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.state, "disabled");
     assert.equal(binding.generation, 3);
     assert.equal(await runtime.status("managed-session-3"), "offline");
-    await client.postMessage(channelA.id, {
+    await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder stopped work must not run",
     });
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-    assert.equal((await client.listMessages(channelA.id)).length, 10);
+    assert.equal((await client.listMessages(conversationA.id)).length, 10);
 
-    await restoredHost.replaceChannelAgent(channelA.id, agent.id, owner.id);
-    binding = (await store.listChannelBindings(channelA.id))[0]!;
+    await restoredHost.replaceConversationAgent(conversationA.id, agent.id, owner.id);
+    binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.state, "connected");
     assert.equal(binding.generation, 4);
     assert.equal(binding.runtimeSessionId, "managed-session-4");
-    await client.postMessage(channelA.id, {
+    await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder restarted work only",
     });
-    await waitUntil(async () => (await client.listMessages(channelA.id)).length === 12);
-    assert.match((await client.listMessages(channelA.id))[11]?.body ?? "", /managed-session-4/);
-    assert.equal(await store.getCursor(channelA.id, agent.id), 11);
+    await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 12);
+    assert.match((await client.listMessages(conversationA.id))[11]?.body ?? "", /managed-session-4/);
+    assert.equal(await store.getCursor(conversationA.id, agent.id), 11);
 
-    await (restoredHost as unknown as { retireBinding(channelId: string, identityId: string): Promise<void> })
-      .retireBinding(channelA.id, agent.id);
+    await (restoredHost as unknown as { retireBinding(conversationId: string, identityId: string): Promise<void> })
+      .retireBinding(conversationA.id, agent.id);
     const neverResolvingStatus = runtime.holdStatus("managed-session-4");
     const timeoutStartedAt = Date.now();
     await assert.rejects(
-      restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
+      restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
       /could not be reconnected/,
     );
     assert.equal(Date.now() - timeoutStartedAt < 500, true);
     neverResolvingStatus.release();
-    const unreachableBinding = (await store.listChannelBindings(channelA.id))[0]!;
+    const unreachableBinding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(unreachableBinding.state, "connected");
     assert.equal(unreachableBinding.generation, 4);
     assert.equal(unreachableBinding.runtimeSessionId, "managed-session-4");
     assert.equal(runtime.starts.length, 4);
-    assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
+    assert.equal(restoredHost.isAttached(conversationA.id, agent.id), false);
 
     runtime.setStatus("managed-session-4", "offline");
     await assert.rejects(
-      restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
+      restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
       /use New session instead/,
     );
-    assert.equal((await store.listChannelBindings(channelA.id))[0]!.state, "offline");
+    assert.equal((await store.listConversationBindings(conversationA.id))[0]!.state, "offline");
 
     assert.doesNotMatch(
       JSON.stringify(audit),
@@ -2214,7 +2214,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
 
     runtime.setStatus("managed-session-4", "idle");
     const heldShutdownReconnect = runtime.holdStatus("managed-session-4");
-    const reconnectDuringShutdown = restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id);
+    const reconnectDuringShutdown = restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id);
     await heldShutdownReconnect.entered;
     let shutdownFinished = false;
     const shutdown = restoredHost.close().then(() => { shutdownFinished = true; });
@@ -2223,9 +2223,9 @@ test("agent host starts isolated Channel sessions with private roots and persona
     heldShutdownReconnect.release();
     await reconnectDuringShutdown;
     await shutdown;
-    assert.equal(restoredHost.isAttached(channelA.id, agent.id), false);
+    assert.equal(restoredHost.isAttached(conversationA.id, agent.id), false);
     await assert.rejects(
-      restoredHost.reconnectChannelAgent(channelA.id, agent.id, owner.id),
+      restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
       /Agent host is unavailable/,
     );
     restoredHost = undefined;
@@ -2242,7 +2242,7 @@ test("agent host starts isolated Channel sessions with private roots and persona
     await shutdownRecoveryHost.restore();
     await shutdownRecoveryHost.close();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-    assert.equal(shutdownRecoveryHost.isAttached(channelA.id, agent.id), false);
+    assert.equal(shutdownRecoveryHost.isAttached(conversationA.id, agent.id), false);
 
     runtime.failNextStatus("managed-session-4", new Error("transient generation recovery failure"));
     const generationRecoveryHost = new LocalAgentHost({
@@ -2252,14 +2252,14 @@ test("agent host starts isolated Channel sessions with private roots and persona
       recoveryBackoffMs: [30],
     });
     await generationRecoveryHost.restore();
-    const beforeGenerationFence = (await store.listChannelBindings(channelA.id))[0]!;
+    const beforeGenerationFence = (await store.listConversationBindings(conversationA.id))[0]!;
     await store.disableBinding(
       beforeGenerationFence.id,
       beforeGenerationFence.generation,
       new Date().toISOString(),
     );
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-    assert.equal(generationRecoveryHost.isAttached(channelA.id, agent.id), false);
+    assert.equal(generationRecoveryHost.isAttached(conversationA.id, agent.id), false);
     assert.equal(runtime.starts.length, startsBeforeRecoveryFences);
     assert.equal(runtime.stops.length, stopsBeforeRecoveryFences);
     await generationRecoveryHost.close();
@@ -2267,20 +2267,20 @@ test("agent host starts isolated Channel sessions with private roots and persona
     await host?.close().catch(() => undefined);
     await restoredHost?.close().catch(() => undefined);
     await store.close();
-    await channelServer.close();
+    await conversationServer.close();
     await rm(sourceDirectory, { recursive: true, force: true });
   }
 });
 
-test("agent lifecycle changes remain isolated within one shared Channel Relay", async () => {
+test("agent lifecycle changes remain isolated within one shared Conversation Relay", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-isolation-")));
-  const channelServer = await createChannelHttpServer({ port: 0 });
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
   const runtime = new ManagedFakeRuntime();
   const audit: LocalControlAuditEvent[] = [];
   let host: LocalAgentHost | undefined;
   try {
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const owner = await client.createIdentity({ type: "human", displayName: "Owner" });
     const agentA = await client.createIdentity({ type: "agent", displayName: "Agent A" });
     const agentB = await client.createIdentity({ type: "agent", displayName: "Agent B" });
@@ -2292,7 +2292,7 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
     await client.addWorkspaceMember(workspace.id, { identityId: agentA.id, mentionHandle: "agent-a" });
     await client.addWorkspaceMember(workspace.id, { identityId: agentB.id, mentionHandle: "agent-b" });
     await client.addWorkspaceMember(workspace.id, { identityId: agentC.id, mentionHandle: "agent-c" });
-    const channel = await client.createChannel({
+    const conversation = await client.createConversation({
       workspaceId: workspace.id,
       name: "shared-relay",
       participantIds: [owner.id, agentA.id, agentB.id, agentC.id],
@@ -2315,20 +2315,20 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
       onAudit: (event) => audit.push(event),
     });
     await Promise.all([
-      host.startChannelAgent(channel.id, agentA.id, owner.id),
-      host.startChannelAgent(channel.id, agentB.id, owner.id),
+      host.startConversationAgent(conversation.id, agentA.id, owner.id),
+      host.startConversationAgent(conversation.id, agentB.id, owner.id),
     ]);
-    const bindings = await store.listChannelBindings(channel.id);
+    const bindings = await store.listConversationBindings(conversation.id);
     const bindingA = bindings.find(({ agentIdentityId }) => agentIdentityId === agentA.id)!;
     const bindingB = bindings.find(({ agentIdentityId }) => agentIdentityId === agentB.id)!;
     assert.equal(bindings.length, 2);
     await assert.rejects(
-      host.startAllChannelAgents(channel.id, agentA.id),
+      host.startAllConversationAgents(conversation.id, agentA.id),
       (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403,
     );
 
     const heldB = runtime.holdSend(bindingB.runtimeSessionId);
-    const triggerB = await client.postMessage(channel.id, {
+    const triggerB = await client.postMessage(conversation.id, {
       participantId: owner.id,
       to: [agentB.id],
       body: "Agent B in-flight work must survive Agent A lifecycle changes",
@@ -2336,21 +2336,21 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
     await heldB.entered;
     const beforeB = await store.getBinding(bindingB.id);
 
-    await host.replaceChannelAgent(channel.id, agentA.id, owner.id);
-    const replacedA = (await store.listChannelBindings(channel.id))
+    await host.replaceConversationAgent(conversation.id, agentA.id, owner.id);
+    const replacedA = (await store.listConversationBindings(conversation.id))
       .find(({ agentIdentityId }) => agentIdentityId === agentA.id)!;
     assert.equal(replacedA.generation, 2);
-    await host.stopChannelAgent(channel.id, agentA.id, owner.id);
-    assert.equal((await client.listMessages(channel.id)).filter(
+    await host.stopConversationAgent(conversation.id, agentA.id, owner.id);
+    assert.equal((await client.listMessages(conversation.id)).filter(
       ({ participantId }) => participantId === agentB.id,
     ).length, 0);
 
     heldB.release();
-    await waitUntil(async () => (await client.listMessages(channel.id)).filter(
+    await waitUntil(async () => (await client.listMessages(conversation.id)).filter(
       ({ participantId }) => participantId === agentB.id,
     ).length === 1);
     const afterB = await store.getBinding(bindingB.id);
-    assert.equal(await store.getCursor(channel.id, agentB.id), triggerB.sequence);
+    assert.equal(await store.getCursor(conversation.id, agentB.id), triggerB.sequence);
     assert.equal(afterB?.generation, beforeB?.generation);
     assert.equal(afterB?.runtimeSessionId, beforeB?.runtimeSessionId);
     assert.equal(afterB?.leaseOwner, beforeB?.leaseOwner);
@@ -2365,7 +2365,7 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
     store.acquireBindingLease = async (bindingId, ...args) =>
       bindingId === bindingB.id ? undefined : acquireBindingLease(bindingId, ...args);
     await assert.rejects(
-      host.replaceChannelAgent(channel.id, agentB.id, owner.id),
+      host.replaceConversationAgent(conversation.id, agentB.id, owner.id),
       /requires reconciliation/,
     );
     assert.equal((await store.getBinding(bindingB.id))?.state, "replacing");
@@ -2375,10 +2375,10 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
 
     const nextAgentASession = `managed-session-${runtime.starts.length + 1}`;
     const heldAStatus = runtime.holdStatus(nextAgentASession);
-    const attachingA = host.replaceChannelAgent(channel.id, agentA.id, owner.id);
+    const attachingA = host.replaceConversationAgent(conversation.id, agentA.id, owner.id);
     await heldAStatus.entered;
     await Promise.race([
-      host.stopChannelAgent(channel.id, agentB.id, owner.id),
+      host.stopConversationAgent(conversation.id, agentB.id, owner.id),
       new Promise<never>((_resolve, reject) => setTimeout(
         () => reject(new Error("Agent B lifecycle was blocked by Agent A attachment status")),
         500,
@@ -2387,12 +2387,12 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
     heldAStatus.release();
     await attachingA;
 
-    assert.deepEqual(await host.startAllChannelAgents(channel.id, owner.id), [
+    assert.deepEqual(await host.startAllConversationAgents(conversation.id, owner.id), [
       { identityId: agentA.id, outcome: "skipped", reason: "already_idle" },
       { identityId: agentB.id, outcome: "started" },
       { identityId: agentC.id, outcome: "skipped", reason: "unconfigured" },
     ]);
-    assert.deepEqual(await host.stopAllChannelAgents(channel.id, owner.id), [
+    assert.deepEqual(await host.stopAllConversationAgents(conversation.id, owner.id), [
       { identityId: agentA.id, outcome: "stopped" },
       { identityId: agentB.id, outcome: "stopped" },
       { identityId: agentC.id, outcome: "skipped", reason: "already_idle" },
@@ -2407,19 +2407,19 @@ test("agent lifecycle changes remain isolated within one shared Channel Relay", 
   } finally {
     await host?.close().catch(() => undefined);
     await store.close();
-    await channelServer.close();
+    await conversationServer.close();
     await rm(sourceDirectory, { recursive: true, force: true });
   }
 });
 
-test("daemon composes public Channels, private Relay storage, Runtime status, and browser auth", async () => {
+test("daemon composes public Conversations, private Relay storage, Runtime status, and browser auth", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-control-daemon-"));
   const databasePath = join(directory, "relay.db");
-  const channelServer = await createChannelHttpServer({ port: 0 });
+  const conversationServer = await createConversationHttpServer({ port: 0 });
   const audit: LocalControlAuditEvent[] = [];
   let daemon: Awaited<ReturnType<typeof createLocalControlDaemon>> | undefined;
   try {
-    const client = new ChannelClient(channelServer.endpoint, { serviceToken: channelServer.serviceToken });
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
     const human = await client.createIdentity({ type: "human", displayName: "Owner" });
     const agent = await client.createIdentity({ type: "agent", displayName: "Builder" });
     const workspace = await client.createWorkspace({ slug: "daemon-test", name: "Daemon Test" });
@@ -2432,7 +2432,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       identityId: agent.id,
       mentionHandle: "builder",
     });
-    const createdChannel = await client.createChannel({
+    const createdConversation = await client.createConversation({
       workspaceId: workspace.id,
       participantIds: [human.id, agent.id],
     });
@@ -2458,7 +2458,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       id: "private-binding",
       workspaceAgentConfigId: "private-agent-config",
       workspaceId: workspace.id,
-      channelId: createdChannel.id,
+      conversationId: createdConversation.id,
       agentIdentityId: agent.id,
       runtimeAdapter: "test-runtime",
       runtimeSessionId: "private-runtime-session",
@@ -2472,8 +2472,8 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
 
     daemon = await createLocalControlDaemon({
       currentHumanIdentityId: human.id,
-      channelsEndpoint: channelServer.endpoint,
-      channelsServiceToken: channelServer.serviceToken,
+      conversationsEndpoint: conversationServer.endpoint,
+      conversationsServiceToken: conversationServer.serviceToken,
       relayDatabasePath: databasePath,
       webUrl: "http://127.0.0.1:5174/",
       port: 0,
@@ -2649,7 +2649,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     assert.equal(configurationResponse.status, 200);
     const configurationBody = await configurationResponse.json() as {
       rootConfigured: boolean;
-      agents: Array<{ personaConfigured: boolean; runtimeConfigured: boolean; boundChannelCount: number }>;
+      agents: Array<{ personaConfigured: boolean; runtimeConfigured: boolean; boundConversationCount: number }>;
     };
     assert.equal(configurationBody.rootConfigured, true);
     assert.deepEqual(configurationBody.agents, [{
@@ -2663,7 +2663,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       skillsConfigured: false,
       selectedSkillCount: 0,
       status: "active",
-      boundChannelCount: 1,
+      boundConversationCount: 1,
       changesApplyToNewSessions: true,
     }]);
     assert.doesNotMatch(
@@ -2675,14 +2675,14 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       /new\/private|DAEMON PRIVATE PERSONA|pi-owned-private/,
     );
 
-    const response = await fetch(`${daemon.endpoint}/local/conversations/${createdChannel.id}/agents`, {
+    const response = await fetch(`${daemon.endpoint}/local/conversations/${createdConversation.id}/agents`, {
       headers: { cookie, origin: "http://127.0.0.1:5174" },
     });
     assert.equal(response.status, 200);
     const body = await response.json() as { agents: Array<{ identityId: string; state: string }> };
     assert.deepEqual(body.agents, [{
       workspaceId: workspace.id,
-      channelId: createdChannel.id,
+      conversationId: createdConversation.id,
       identityId: agent.id,
       state: "disconnected",
       wakePolicy: "mentions",
@@ -2707,7 +2707,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
     );
   } finally {
     await daemon?.close().catch(() => undefined);
-    await channelServer.close().catch(() => undefined);
+    await conversationServer.close().catch(() => undefined);
     await rm(directory, { recursive: true, force: true });
   }
 });
