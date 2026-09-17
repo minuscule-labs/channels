@@ -43,7 +43,7 @@ async function startAndStop(expectedSetup, portBase, options = {}) {
       ...(options.explicitRun ? ["run"] : []),
       "--no-open",
       "--data-dir", options.dataDirectory ?? dataDirectory,
-      "--channels-port", String(portBase),
+      "--conversations-port", String(portBase),
       "--control-port", String(portBase + 1),
       "--web-port", String(portBase + 2),
       ...(workspacePath ? [workspacePath] : []),
