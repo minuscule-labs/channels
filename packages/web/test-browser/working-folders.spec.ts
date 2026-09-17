@@ -12,11 +12,11 @@ async function launchAuthenticated(page: Page, request: APIRequestContext, desti
 test("working folders recover from an initial load failure and save previewed, de-duplicated selections", async ({ page, request }) => {
   const workspaces = (await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> }).workspaces;
   const workspaceId = workspaces[0]!.id;
-  const channelId = ((await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as { channels: Array<{ id: string }> }).channels[0]!).id;
+  const channelId = ((await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as { channels: Array<{ id: string }> }).channels[0]!).id;
   let folderLoads = 0;
   const puts: unknown[] = [];
   let pickerCalls = 0;
-  await page.route(`**/local/channels/${channelId}/working-folders`, async (route) => {
+  await page.route(`**/local/conversations/${channelId}/working-folders`, async (route) => {
     if (route.request().method() === "GET") {
       folderLoads += 1;
       if (folderLoads === 1) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
@@ -25,7 +25,7 @@ test("working folders recover from an initial load failure and save previewed, d
     puts.push(route.request().postDataJSON());
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 17, workspaceId, channelId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
   });
-  await page.route(`**/local/channels/${channelId}/working-folders/preview`, (route) => {
+  await page.route(`**/local/conversations/${channelId}/working-folders/preview`, (route) => {
     const { path } = route.request().postDataJSON() as { path: string };
     const relativePath = path.endsWith("/2") ? "packages/shared" : "apps/web";
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ relativePath }) });

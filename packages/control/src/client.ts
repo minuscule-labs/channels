@@ -74,12 +74,12 @@ export class LocalControlClient {
   }
 
   async listChannelAgents(channelId: string): Promise<LocalChannelAgentsResponse> {
-    return this.get<LocalChannelAgentsResponse>(`/local/channels/${encodeURIComponent(channelId)}/agents`);
+    return this.get<LocalChannelAgentsResponse>(`/local/conversations/${encodeURIComponent(channelId)}/agents`);
   }
 
   async getChannelWorkingFolders(channelId: string): Promise<LocalChannelWorkingFolders> {
     return this.get<LocalChannelWorkingFolders>(
-      `/local/channels/${encodeURIComponent(channelId)}/working-folders`,
+      `/local/conversations/${encodeURIComponent(channelId)}/working-folders`,
     );
   }
 
@@ -88,7 +88,7 @@ export class LocalControlClient {
     path: string,
   ): Promise<LocalChannelWorkingFolderPreview> {
     return this.request<LocalChannelWorkingFolderPreview>(
-      `/local/channels/${encodeURIComponent(channelId)}/working-folders/preview`,
+      `/local/conversations/${encodeURIComponent(channelId)}/working-folders/preview`,
       { method: "POST", body: JSON.stringify({ path, primary: false }) },
     );
   }
@@ -98,14 +98,14 @@ export class LocalControlClient {
     input: UpdateLocalChannelWorkingFoldersInput,
   ): Promise<LocalChannelWorkingFolders> {
     return this.request<LocalChannelWorkingFolders>(
-      `/local/channels/${encodeURIComponent(channelId)}/working-folders`,
+      `/local/conversations/${encodeURIComponent(channelId)}/working-folders`,
       { method: "PUT", body: JSON.stringify(input) },
     );
   }
 
   async startAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {
     return this.request<LocalBulkAgentLifecycleResponse>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/start-all`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/start-all`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -113,7 +113,7 @@ export class LocalControlClient {
 
   async stopAllChannelAgents(channelId: string): Promise<LocalBulkAgentLifecycleResponse> {
     return this.request<LocalBulkAgentLifecycleResponse>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/stop-all`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/stop-all`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -121,7 +121,7 @@ export class LocalControlClient {
 
   async startChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/start`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/start`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -130,7 +130,7 @@ export class LocalControlClient {
 
   async reconnectChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/reconnect`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/reconnect`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -139,7 +139,7 @@ export class LocalControlClient {
 
   async replaceChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/replace`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/replace`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -148,7 +148,7 @@ export class LocalControlClient {
 
   async stopChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/stop`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/stop`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -157,7 +157,7 @@ export class LocalControlClient {
 
   async cancelCurrentChannelAgent(channelId: string, identityId: string): Promise<LocalChannelAgent> {
     const response = await this.request<{ agent: LocalChannelAgent }>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/cancel-current`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/cancel-current`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );
@@ -169,7 +169,7 @@ export class LocalControlClient {
     identityId: string,
   ): Promise<LocalOpenDiagnosticResponse> {
     return this.request<LocalOpenDiagnosticResponse>(
-      `/local/channels/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/open-diagnostic`,
+      `/local/conversations/${encodeURIComponent(channelId)}/agents/${encodeURIComponent(identityId)}/open-diagnostic`,
       { method: "POST" },
       this.lifecycleTimeoutMs,
     );

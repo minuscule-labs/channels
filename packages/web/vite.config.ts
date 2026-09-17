@@ -20,7 +20,7 @@ export default defineConfig(({ mode }) => {
     server: {
       allowedHosts: ["minu-channels.localhost"],
       proxy: {
-        "/channels": channelProxy,
+        "/conversations": channelProxy,
         "/workspaces": channelProxy,
         "/identities": channelProxy,
         "/local": { target: controlTarget, changeOrigin: true },

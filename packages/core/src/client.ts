@@ -148,12 +148,12 @@ export class ChannelClient {
   }
 
   async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
-    const response = await this.request(`/workspaces/${workspaceId}/channels`);
+    const response = await this.request(`/workspaces/${workspaceId}/conversations`);
     return ((await response.json()) as { channels: ChannelMetadata[] }).channels;
   }
 
   async createChannel(input: CreateChannelInput): Promise<Channel> {
-    const response = await this.request("/channels", {
+    const response = await this.request("/conversations", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -162,7 +162,7 @@ export class ChannelClient {
   }
 
   async updateChannel(channelId: string, input: UpdateChannelInput): Promise<ChannelMetadata> {
-    const response = await this.request(`/channels/${channelId}`, {
+    const response = await this.request(`/conversations/${channelId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -174,7 +174,7 @@ export class ChannelClient {
     channelId: string,
     input: UpdateChannelParticipantsInput,
   ): Promise<ChannelMetadata> {
-    const response = await this.request(`/channels/${channelId}/participants`, {
+    const response = await this.request(`/conversations/${channelId}/participants`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -183,7 +183,7 @@ export class ChannelClient {
   }
 
   async getChannel(channelId: string): Promise<ChannelMetadata> {
-    const response = await this.request(`/channels/${channelId}`);
+    const response = await this.request(`/conversations/${channelId}`);
     return ((await response.json()) as { channel: ChannelMetadata }).channel;
   }
 
@@ -196,7 +196,7 @@ export class ChannelClient {
     if (options.idempotencyKey !== undefined) {
       headers["idempotency-key"] = options.idempotencyKey;
     }
-    const response = await this.request(`/channels/${channelId}/messages`, {
+    const response = await this.request(`/conversations/${channelId}/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify(input),
@@ -208,7 +208,7 @@ export class ChannelClient {
     channelId: string,
     input: CreateResponseInput,
   ): Promise<ResponseResult> {
-    const response = await this.request(`/channels/${channelId}/responses`, {
+    const response = await this.request(`/conversations/${channelId}/responses`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -222,21 +222,21 @@ export class ChannelClient {
     if (options.beforeSequence !== undefined) query.set("beforeSequence", String(options.beforeSequence));
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     const suffix = query.size > 0 ? `?${query}` : "";
-    const response = await this.request(`/channels/${channelId}/messages${suffix}`, {
+    const response = await this.request(`/conversations/${channelId}/messages${suffix}`, {
       signal: options.signal,
     });
     return ((await response.json()) as { messages: ChannelMessage[] }).messages;
   }
 
   events(channelId: string, options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
-    return this.eventStream(`/channels/${channelId}/events`, options);
+    return this.eventStream(`/conversations/${channelId}/events`, options);
   }
 
   eventsMany(channelIds: readonly string[], options: ChannelEventOptions = {}): AsyncIterable<ChannelEvent> {
     if (channelIds.length === 0) throw new RangeError("eventsMany requires at least one Channel");
     const query = new URLSearchParams();
     for (const channelId of [...new Set(channelIds)]) query.append("channelId", channelId);
-    return this.eventStream(`/channels/events?${query}`, options);
+    return this.eventStream(`/conversations/events?${query}`, options);
   }
 
   private async *eventStream(path: string, options: ChannelEventOptions): AsyncIterable<ChannelEvent> {

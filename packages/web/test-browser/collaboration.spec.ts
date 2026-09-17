@@ -25,7 +25,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   const workspacesResponse = await request.get(`${channelsBase}/workspaces`);
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
-  const channelsResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`);
+  const channelsResponse = await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`);
   const { channels } = await channelsResponse.json() as { channels: Array<{ id: string; rosterRevision: number }> };
   const channelId = channels[0]!.id;
   const initialRosterRevision = channels[0]!.rosterRevision;
@@ -39,7 +39,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   const idempotencyKeys: string[] = [];
   const messageAuthors: string[] = [];
   page.on("request", (outgoing) => {
-    if (outgoing.method() === "POST" && outgoing.url().endsWith(`/channels/${channelId}/messages`)) {
+    if (outgoing.method() === "POST" && outgoing.url().endsWith(`/conversations/${channelId}/messages`)) {
       const key = outgoing.headers()["idempotency-key"];
       if (key) idempotencyKeys.push(key);
       const body = outgoing.postDataJSON() as { participantId?: string };
@@ -128,7 +128,7 @@ test("keeps Workspace navigation responsive with more Conversations than the bro
   };
   const primary = workspaces.find(({ name }) => name === "Browser Test")!;
   const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${primary.id}/channels`)).json() as {
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${primary.id}/conversations`)).json() as {
     channels: Array<{ id: string; name: string }>;
   };
   expect(channels.length).toBeGreaterThan(6);
@@ -141,9 +141,9 @@ test("keeps Workspace navigation responsive with more Conversations than the bro
 
   await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/conversations/${active.id}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
-  await expect.poll(() => eventRequests.some((url) => url.startsWith("/channels/events?"))).toBe(true);
-  expect(new Set(eventRequests.filter((url) => /^\/channels\/[^/]+\/events$/.test(url))))
-    .toEqual(new Set([`/channels/${active.id}/events`]));
+  await expect.poll(() => eventRequests.some((url) => url.startsWith("/conversations/events?"))).toBe(true);
+  expect(new Set(eventRequests.filter((url) => /^\/conversations\/[^/]+\/events$/.test(url))))
+    .toEqual(new Set([`/conversations/${active.id}/events`]));
 
   const fetchDuration = await page.evaluate(async () => {
     const startedAt = performance.now();
@@ -164,7 +164,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
     workspaces: Array<{ id: string }>;
   };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     channels: Array<{ id: string; name: string }>;
   };
   const channelId = channels[0]!.id;
@@ -234,13 +234,13 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
   };
   const primary = workspaces.find(({ name }) => name === "Browser Test")!;
   const secondary = workspaces.find(({ name }) => name === "Browser Secondary")!;
-  const { channels: secondaryChannels } = await (await request.get(`${channelsBase}/workspaces/${secondary.id}/channels`)).json() as {
+  const { channels: secondaryChannels } = await (await request.get(`${channelsBase}/workspaces/${secondary.id}/conversations`)).json() as {
     channels: Array<{ id: string }>;
   };
   const secondaryChannelId = secondaryChannels[0]!.id;
   const messageRequests: string[] = [];
   page.on("request", (outgoing) => {
-    if (outgoing.url().includes(`/channels/${secondaryChannelId}/messages`)) messageRequests.push(outgoing.url());
+    if (outgoing.url().includes(`/conversations/${secondaryChannelId}/messages`)) messageRequests.push(outgoing.url());
   });
   await page.addInitScript(() => {
     Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
@@ -285,7 +285,7 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
 test("resets near-end and unseen state across parameter-only Conversation navigation", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     channels: Array<{ id: string; name: string }>;
   };
   const primary = channels.find(({ name }) => name === "browser-collaboration")!;
@@ -307,7 +307,7 @@ test("resets near-end and unseen state across parameter-only Conversation naviga
 test("advances the durable read cursor only when a real visible timeline is near its end", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as { channels: Array<{ id: string }> };
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
   const { members } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/members`)).json() as {
     members: Array<{ identityId: string; mentionHandle: string }>;
@@ -370,7 +370,7 @@ test("hides identity-scoped notification preferences when session capability is 
 test("summarizes Conversation-wide agent activity below the composer", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     channels: Array<{ id: string; name: string }>;
   };
   const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
@@ -402,7 +402,7 @@ test("summarizes Conversation-wide agent activity below the composer", async ({ 
 test("reconnects an existing reachable session and exposes only safe diagnostics", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     channels: Array<{ id: string; name: string }>;
   };
   const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
@@ -411,7 +411,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
     if (/\/(reconnect|replace)$/.test(new URL(outgoing.url()).pathname)) lifecycleRequests.push(new URL(outgoing.url()).pathname);
   });
   const unauthorizedDiagnostic = await request.post(
-    `${controlBase}/local/channels/${channelId}/agents/agent-private/open-diagnostic`,
+    `${controlBase}/local/conversations/${channelId}/agents/agent-private/open-diagnostic`,
   );
   expect(unauthorizedDiagnostic.status()).toBe(401);
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
@@ -448,7 +448,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await page.getByRole("button", { name: "Reconnect", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   expect(lifecycleRequests).toHaveLength(1);
-  expect(lifecycleRequests[0]).toMatch(new RegExp(`^/local/channels/${channelId}/agents/[^/]+/reconnect$`));
+  expect(lifecycleRequests[0]).toMatch(new RegExp(`^/local/conversations/${channelId}/agents/[^/]+/reconnect$`));
   expect(lifecycleRequests.some((path) => path.endsWith("/replace"))).toBe(false);
 
   await request.post(`${fixtureBase}/detach-agent`);
@@ -474,18 +474,18 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
   };
   const workspaceId = workspaces[0]!.id;
   const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/channels`,
+    `${channelsBase}/workspaces/${workspaceId}/conversations`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
   const { channel: channelMetadata } = await (await request.get(
-    `${channelsBase}/channels/${channelId}`,
+    `${channelsBase}/conversations/${channelId}`,
   )).json() as { channel: {
     participants: Array<Record<string, unknown> & { id: string }>;
     [key: string]: unknown;
   } };
   const builder = channelMetadata.participants.find(({ type }) => type === "agent")!;
   const unboundId = "agent-unbound-browser";
-  await page.route(`**/channels/${channelId}`, (route) => route.fulfill({
+  await page.route(`**/conversations/${channelId}`, (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({ channel: {
@@ -499,7 +499,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       }],
     } }),
   }));
-  await page.route(`**/local/channels/${channelId}/agents`, (route) => route.fulfill({
+  await page.route(`**/local/conversations/${channelId}/agents`, (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
@@ -520,7 +520,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
   let releaseRequest!: () => void;
   const requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
   let requests = 0;
-  await page.route(`**/local/channels/${channelId}/agents/stop-all`, async (route) => {
+  await page.route(`**/local/conversations/${channelId}/agents/stop-all`, async (route) => {
     requests += 1;
     await requestGate;
     await route.fulfill({
@@ -577,7 +577,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
   };
   const workspaceId = workspaces[0]!.id;
   const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/channels`,
+    `${channelsBase}/workspaces/${workspaceId}/conversations`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
   await page.route("**/local/capabilities", (route) => route.fulfill({
@@ -866,7 +866,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toHaveCount(0);
   await createDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   const createResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "POST" && response.url().endsWith("/channels"));
+    response.request().method() === "POST" && response.url().endsWith("/conversations"));
   await createDialog.getByRole("button", { name: "Create Conversation" }).click();
   const createResponse = await createResponsePromise;
   expect(createResponse.ok()).toBe(true);
@@ -875,13 +875,13 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await expect(page.getByRole("heading", { name: "#roster-administration" })).toBeVisible();
   const startResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
-    && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/start`));
+    && response.url().endsWith(`/local/conversations/${channel.id}/agents/${builder.identityId}/start`));
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "Start", exact: true }).click();
   expect((await startResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
-  const replacePath = `/local/channels/${channel.id}/agents/${builder.identityId}/replace`;
+  const replacePath = `/local/conversations/${channel.id}/agents/${builder.identityId}/replace`;
   await page.route(`**${replacePath}`, (route) => route.fulfill({
     status: 409,
     contentType: "application/json",
@@ -915,7 +915,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
 
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
-    && response.url().endsWith(`/local/channels/${channel.id}/agents/${builder.identityId}/stop`));
+    && response.url().endsWith(`/local/conversations/${channel.id}/agents/${builder.identityId}/stop`));
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "Stop agent", exact: true }).click();
   lifecycleDialog = page.getByRole("dialog", { name: "Stop Builder Agent?" });
@@ -930,7 +930,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
-  const historical = await request.post(`${channelsBase}/channels/${channel.id}/messages`, {
+  const historical = await request.post(`${channelsBase}/conversations/${channel.id}/messages`, {
     data: { participantId: builder.identityId, body: "Builder attribution survives roster removal." },
   });
   expect(historical.ok()).toBe(true);
@@ -941,7 +941,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
   await rosterDialog.getByLabel("Conversation name").fill("delivery-room");
   const renameResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === "PATCH" && response.url().endsWith(`/channels/${channel.id}`));
+    response.request().method() === "PATCH" && response.url().endsWith(`/conversations/${channel.id}`));
   await rosterDialog.getByRole("button", { name: "Save name" }).click();
   expect((await renameResponsePromise).ok()).toBe(true);
   await expect(page.getByRole("heading", { name: "#delivery-room" })).toBeVisible();
@@ -986,7 +986,7 @@ test("caps wrapped drafts on mobile and restores them after Conversation navigat
     workspaces: Array<{ id: string; name: string }>;
   };
   const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
-  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspace.id}/channels`)).json() as {
+  const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspace.id}/conversations`)).json() as {
     channels: Array<{ id: string; name: string }>;
   };
   const primary = channels.find(({ name }) => name === "browser-collaboration")!;
@@ -1018,7 +1018,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   };
   const workspaceId = workspaces[0]!.id;
   const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/channels`,
+    `${channelsBase}/workspaces/${workspaceId}/conversations`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
 
@@ -1059,10 +1059,10 @@ test("keeps messaging available when Runtime status is unavailable", async ({ pa
   };
   const workspaceId = workspaces[0]!.id;
   const { channels } = await (await request.get(
-    `${channelsBase}/workspaces/${workspaceId}/channels`,
+    `${channelsBase}/workspaces/${workspaceId}/conversations`,
   )).json() as { channels: Array<{ id: string }> };
   const channelId = channels[0]!.id;
-  await page.route(`**/local/channels/${channelId}/agents`, (route) => route.abort("connectionfailed"));
+  await page.route(`**/local/conversations/${channelId}/agents`, (route) => route.abort("connectionfailed"));
 
   await launchAuthenticated(
     page,

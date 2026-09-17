@@ -124,7 +124,7 @@ export async function createChannelHttpServer(
         return;
       }
       const actor = authenticatedActor(request);
-      const url = new URL(request.url ?? "/", "http://channels.local");
+      const url = new URL(request.url ?? "/", "http://conversations.local");
 
       if (url.pathname === "/identities" && request.method === "POST") {
         const identity = await service.createIdentity((await readJson(request)) as CreateIdentityInput);
@@ -198,7 +198,7 @@ export async function createChannelHttpServer(
         json(response, 200, { member });
         return;
       }
-      const workspaceChannelsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/channels$/);
+      const workspaceChannelsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/conversations$/);
       if (workspaceChannelsMatch && request.method === "POST") {
         const input = (await readJson(request)) as CreateChannelInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
@@ -217,7 +217,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      if (request.method === "POST" && url.pathname === "/channels") {
+      if (request.method === "POST" && url.pathname === "/conversations") {
         const input = (await readJson(request)) as CreateChannelInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
           throw new ChannelValidationError("actorIdentityId must match the authenticated browser identity");
@@ -227,7 +227,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      if (url.pathname === "/channels/events" && request.method === "GET") {
+      if (url.pathname === "/conversations/events" && request.method === "GET") {
         const channelIds = [...new Set(url.searchParams.getAll("channelId"))];
         if (channelIds.length === 0 || channelIds.length > 100 || channelIds.some((channelId) => !channelId)) {
           throw new ChannelValidationError("channelId must identify between 1 and 100 Channels");
@@ -260,7 +260,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const channelMatch = url.pathname.match(/^\/channels\/([^/]+)$/);
+      const channelMatch = url.pathname.match(/^\/conversations\/([^/]+)$/);
       if (channelMatch && request.method === "GET") {
         json(response, 200, { channel: await service.getChannelMetadata(channelMatch[1]!) });
         return;
@@ -276,7 +276,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const participantsMatch = url.pathname.match(/^\/channels\/([^/]+)\/participants$/);
+      const participantsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/participants$/);
       if (participantsMatch && request.method === "PATCH") {
         const input = (await readJson(request)) as UpdateChannelParticipantsInput;
         requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
@@ -288,7 +288,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const messagesMatch = url.pathname.match(/^\/channels\/([^/]+)\/messages$/);
+      const messagesMatch = url.pathname.match(/^\/conversations\/([^/]+)\/messages$/);
       if (messagesMatch && request.method === "GET") {
         const integerQuery = (name: string): number | undefined => {
           const value = url.searchParams.get(name);
@@ -319,7 +319,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const responseMatch = url.pathname.match(/^\/channels\/([^/]+)\/responses$/);
+      const responseMatch = url.pathname.match(/^\/conversations\/([^/]+)\/responses$/);
       if (responseMatch && request.method === "POST") {
         const input = (await readJson(request)) as CreateResponseInput;
         requireActor(input as unknown as Record<string, unknown>, actor, "participantId");
@@ -331,7 +331,7 @@ export async function createChannelHttpServer(
         return;
       }
 
-      const eventsMatch = url.pathname.match(/^\/channels\/([^/]+)\/events$/);
+      const eventsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/events$/);
       if (eventsMatch && request.method === "GET") {
         const channelId = eventsMatch[1]!;
         const unsubscribe = await service.subscribe(channelId, (event) => sendEvent(response, event));

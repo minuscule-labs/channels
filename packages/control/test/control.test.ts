@@ -505,12 +505,12 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
 
   const unauthenticated = await fetch(`${server.endpoint}/local/health`);
   assert.equal(unauthenticated.status, 401);
-  const launchUrl = sessions.issueLaunchUrl(server.endpoint, "/app/workspaces/workspace-1/channels/channel-1");
+  const launchUrl = sessions.issueLaunchUrl(server.endpoint, "/app/workspaces/workspace-1/conversations/channel-1");
   const bootstrap = await fetch(launchUrl, { redirect: "manual" });
   assert.equal(bootstrap.status, 303);
   assert.equal(
     bootstrap.headers.get("location"),
-    "http://127.0.0.1:5174/app/workspaces/workspace-1/channels/channel-1",
+    "http://127.0.0.1:5174/app/workspaces/workspace-1/conversations/channel-1",
   );
   assert.equal(bootstrap.headers.get("referrer-policy"), "no-referrer");
   const setCookie = bootstrap.headers.get("set-cookie");
@@ -581,7 +581,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
     browserSessions: sessions,
   });
   context.after(() => server.close());
-  const endpoint = `/local/channels/${channel.id}/agents/agent-running/cancel-current`;
+  const endpoint = `/local/conversations/${channel.id}/agents/agent-running/cancel-current`;
   assert.equal((await fetch(`${server.endpoint}${endpoint}`, { method: "POST" })).status, 401);
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
@@ -594,7 +594,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   const body = await response.json() as { agent: { activity?: { phase: string } } };
   assert.equal(body.agent.activity?.phase, "canceling");
 
-  const reconnectEndpoint = `/local/channels/${channel.id}/agents/agent-running/reconnect`;
+  const reconnectEndpoint = `/local/conversations/${channel.id}/agents/agent-running/reconnect`;
   assert.equal((await fetch(`${server.endpoint}${reconnectEndpoint}`, { method: "POST" })).status, 401);
   const reconnected = await fetch(`${server.endpoint}${reconnectEndpoint}`, {
     method: "POST",
@@ -603,7 +603,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   assert.equal(reconnected.status, 200);
   assert.deepEqual(reconnectActors, ["human-1"]);
 
-  const diagnosticEndpoint = `/local/channels/${channel.id}/agents/agent-running/open-diagnostic`;
+  const diagnosticEndpoint = `/local/conversations/${channel.id}/agents/agent-running/open-diagnostic`;
   assert.equal((await fetch(`${server.endpoint}${diagnosticEndpoint}`, { method: "POST" })).status, 401);
   const opened = await fetch(`${server.endpoint}${diagnosticEndpoint}`, {
     method: "POST",
@@ -661,7 +661,7 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
   const headers = { cookie, origin: sessions.browserOrigin };
-  const agentsPath = `/local/channels/${channel.id}/agents`;
+  const agentsPath = `/local/conversations/${channel.id}/agents`;
 
   const activeResponse = await fetch(`${server.endpoint}${agentsPath}`, { headers });
   assert.equal(activeResponse.status, 200);
@@ -730,7 +730,7 @@ test("serves authenticated bulk lifecycle partial results", async (context) => {
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
   const request = (action: "start" | "stop") => fetch(
-    `${server.endpoint}/local/channels/${channel.id}/agents/${action}-all`,
+    `${server.endpoint}/local/conversations/${channel.id}/agents/${action}-all`,
     { method: "POST", headers: { cookie, origin: sessions.browserOrigin } },
   );
   assert.equal((await request("start")).status, 200);
@@ -845,7 +845,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
       protocolVersion: 17,
       identityId: app.humanIdentityId,
     });
-    const response = await fetch(`${app.controlEndpoint}/local/channels/${app.channelId}/agents`, {
+    const response = await fetch(`${app.controlEndpoint}/local/conversations/${app.channelId}/agents`, {
       headers,
     });
     assert.equal(response.status, 200);
@@ -901,7 +901,7 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     assert.equal(await requestStatus(`${web.endpoint}/`, {
       host: "minu-channels.localhost:47412",
     }), 200);
-    const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/channels/channel`);
+    const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/conversations/channel`);
     assert.equal(spa.status, 200);
     assert.match(await spa.text(), /MinuChannels production/);
     const asset = await fetch(`${web.endpoint}/assets/app.js`);
@@ -925,7 +925,7 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     assert.equal(blocked.status, 503);
     assert.deepEqual(await blocked.json(), { error: "MinuChannels is restarting" });
     assert.equal((await fetch(`${web.endpoint}/local/workspaces/workspace/config`, { method: "PATCH" })).status, 503);
-    assert.equal((await fetch(`${web.endpoint}/channels/channel/messages`, { method: "POST" })).status, 200);
+    assert.equal((await fetch(`${web.endpoint}/conversations/channel/messages`, { method: "POST" })).status, 200);
     assert.equal((await fetch(`${web.endpoint}/identities`)).status, 200);
   } finally {
     await web.close();
@@ -2675,7 +2675,7 @@ test("daemon composes public Channels, private Relay storage, Runtime status, an
       /new\/private|DAEMON PRIVATE PERSONA|pi-owned-private/,
     );
 
-    const response = await fetch(`${daemon.endpoint}/local/channels/${createdChannel.id}/agents`, {
+    const response = await fetch(`${daemon.endpoint}/local/conversations/${createdChannel.id}/agents`, {
       headers: { cookie, origin: "http://127.0.0.1:5174" },
     });
     assert.equal(response.status, 200);

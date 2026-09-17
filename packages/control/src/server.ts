@@ -886,11 +886,11 @@ export async function createLocalControlHttpServer(
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAllowedPost = request.method === "POST" && (
-      /^\/local\/channels\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current|open-diagnostic)$/.test(requestPath)
-      || /^\/local\/channels\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
+      /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current|open-diagnostic)$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
-      || /^\/local\/channels\/[^/]+\/working-folders\/preview$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
     );
     if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost) {
       response.setHeader("allow", "GET, PATCH, PUT, POST");
@@ -1031,7 +1031,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, result, origin);
         return;
       }
-      const workingFoldersPreviewMatch = path.match(/^\/local\/channels\/([^/]+)\/working-folders\/preview$/);
+      const workingFoldersPreviewMatch = path.match(/^\/local\/conversations\/([^/]+)\/working-folders\/preview$/);
       if (workingFoldersPreviewMatch && browserSession && request.method === "POST") {
         json(response, 200, await options.service.previewChannelWorkingFolder(
           decodeURIComponent(workingFoldersPreviewMatch[1]!),
@@ -1040,7 +1040,7 @@ export async function createLocalControlHttpServer(
         ), origin);
         return;
       }
-      const workingFoldersMatch = path.match(/^\/local\/channels\/([^/]+)\/working-folders$/);
+      const workingFoldersMatch = path.match(/^\/local\/conversations\/([^/]+)\/working-folders$/);
       if (workingFoldersMatch && browserSession
         && (request.method === "GET" || request.method === "PUT")) {
         const channelId = decodeURIComponent(workingFoldersMatch[1]!);
@@ -1054,7 +1054,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, result, origin);
         return;
       }
-      const bulkStartMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/start-all$/);
+      const bulkStartMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/start-all$/);
       if (bulkStartMatch && browserSession && request.method === "POST") {
         const result = await options.service.startAllChannelAgents(
           decodeURIComponent(bulkStartMatch[1]!),
@@ -1063,7 +1063,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, result, origin);
         return;
       }
-      const bulkStopMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/stop-all$/);
+      const bulkStopMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/stop-all$/);
       if (bulkStopMatch && browserSession && request.method === "POST") {
         const result = await options.service.stopAllChannelAgents(
           decodeURIComponent(bulkStopMatch[1]!),
@@ -1072,7 +1072,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, result, origin);
         return;
       }
-      const agentStartMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/start$/);
+      const agentStartMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/start$/);
       if (agentStartMatch && browserSession && request.method === "POST") {
         const agent = await options.service.startChannelAgent(
           decodeURIComponent(agentStartMatch[1]!),
@@ -1082,7 +1082,7 @@ export async function createLocalControlHttpServer(
         json(response, 201, { agent }, origin);
         return;
       }
-      const agentReconnectMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/reconnect$/);
+      const agentReconnectMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/reconnect$/);
       if (agentReconnectMatch && browserSession && request.method === "POST") {
         const agent = await options.service.reconnectChannelAgent(
           decodeURIComponent(agentReconnectMatch[1]!),
@@ -1092,7 +1092,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, { agent }, origin);
         return;
       }
-      const agentReplaceMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/replace$/);
+      const agentReplaceMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/replace$/);
       if (agentReplaceMatch && browserSession && request.method === "POST") {
         const agent = await options.service.replaceChannelAgent(
           decodeURIComponent(agentReplaceMatch[1]!),
@@ -1102,7 +1102,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, { agent }, origin);
         return;
       }
-      const agentStopMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/stop$/);
+      const agentStopMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/stop$/);
       if (agentStopMatch && browserSession && request.method === "POST") {
         const agent = await options.service.stopChannelAgent(
           decodeURIComponent(agentStopMatch[1]!),
@@ -1112,7 +1112,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, { agent }, origin);
         return;
       }
-      const agentCancelMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/cancel-current$/);
+      const agentCancelMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/cancel-current$/);
       if (agentCancelMatch && browserSession && request.method === "POST") {
         const agent = await options.service.cancelCurrentChannelAgent(
           decodeURIComponent(agentCancelMatch[1]!),
@@ -1122,7 +1122,7 @@ export async function createLocalControlHttpServer(
         json(response, 202, { agent }, origin);
         return;
       }
-      const agentDiagnosticMatch = path.match(/^\/local\/channels\/([^/]+)\/agents\/([^/]+)\/open-diagnostic$/);
+      const agentDiagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/open-diagnostic$/);
       if (agentDiagnosticMatch && browserSession && request.method === "POST") {
         const result = await options.service.openChannelAgentDiagnostic(
           decodeURIComponent(agentDiagnosticMatch[1]!),
@@ -1132,7 +1132,7 @@ export async function createLocalControlHttpServer(
         json(response, 202, result, origin);
         return;
       }
-      const match = path.match(/^\/local\/channels\/([^/]+)\/agents$/);
+      const match = path.match(/^\/local\/conversations\/([^/]+)\/agents$/);
       if (match && request.method === "GET") {
         const result = await options.service.listChannelAgents(decodeURIComponent(match[1]!));
         json(response, 200, result, origin);

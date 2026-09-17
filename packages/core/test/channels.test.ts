@@ -46,7 +46,7 @@ test("creates typed resource ids with UUID-strength random payloads", () => {
 });
 
 async function createTestChannel(server: ChannelHttpServer) {
-  const result = await jsonRequest(server, "/channels", {
+  const result = await jsonRequest(server, "/conversations", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -82,7 +82,7 @@ test("creates a channel and starts with no messages", async () => {
     assert.equal(channel.participants.length, 2);
     assert.deepEqual(channel.messages, []);
 
-    const fetched = await jsonRequest(server, `/channels/${channel.id}`);
+    const fetched = await jsonRequest(server, `/conversations/${channel.id}`);
     assert.equal(fetched.response.status, 200);
     const fetchedChannel = fetched.body.channel as {
       name: string;
@@ -101,7 +101,7 @@ test("creates a channel and starts with no messages", async () => {
       status: "active",
     });
 
-    const listed = await jsonRequest(server, `/channels/${channel.id}/messages`);
+    const listed = await jsonRequest(server, `/conversations/${channel.id}/messages`);
     assert.equal(listed.response.status, 200);
     assert.deepEqual(listed.body.messages, []);
   } finally {
@@ -439,7 +439,7 @@ test("assigns per-channel sequences and resolves channel mentions", async () => 
     const channel = await createTestChannel(server);
     const clientMessage = async (body: string) =>
       (
-        await jsonRequest(server, `/channels/${channel.id}/messages`, {
+        await jsonRequest(server, `/conversations/${channel.id}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ participantId: "agent-a", body }),
@@ -465,7 +465,7 @@ test("replays sequential and concurrent message retries without another sequence
     const unsubscribe = await server.service.subscribe(channel.id, () => {
       events += 1;
     });
-    const post = (key: string) => jsonRequest(server, `/channels/${channel.id}/messages`, {
+    const post = (key: string) => jsonRequest(server, `/conversations/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": key },
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b review" }),
@@ -508,7 +508,7 @@ test("rejects reuse with a changed effective payload and accepts intentional dup
       body: "reply anchor",
     });
     const post = (key: string | undefined, input: Record<string, unknown>) =>
-      jsonRequest(server, `/channels/${channel.id}/messages`, {
+      jsonRequest(server, `/conversations/${channel.id}/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -612,7 +612,7 @@ test("commits one idempotent response and advances its cursor atomically", async
   const server = await createChannelHttpServer();
   try {
     const channel = await createTestChannel(server);
-    const triggerResult = await jsonRequest(server, `/channels/${channel.id}/messages`, {
+    const triggerResult = await jsonRequest(server, `/conversations/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b review this" }),
@@ -629,12 +629,12 @@ test("commits one idempotent response and advances its cursor atomically", async
       triggerSequence: trigger.sequence,
     };
     const [first, duplicate] = await Promise.all([
-      jsonRequest(server, `/channels/${channel.id}/responses`, {
+      jsonRequest(server, `/conversations/${channel.id}/responses`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       }),
-      jsonRequest(server, `/channels/${channel.id}/responses`, {
+      jsonRequest(server, `/conversations/${channel.id}/responses`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
@@ -666,14 +666,14 @@ test("posts a message and emits it over SSE", async () => {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const channel = await createTestChannel(server);
-    const eventResponse = await fetch(`${server.endpoint}/channels/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
+    const eventResponse = await fetch(`${server.endpoint}/conversations/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
     assert.equal(eventResponse.status, 200);
     assert.ok(eventResponse.body);
     reader = eventResponse.body!.getReader();
     const stream = { buffer: "" };
     assert.match(await readSseFrame(reader, stream), /event: ready/);
 
-    const posted = await jsonRequest(server, `/channels/${channel.id}/messages`, {
+    const posted = await jsonRequest(server, `/conversations/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ participantId: "agent-a", body: "@agent-b Please review README.md" }),
@@ -696,7 +696,7 @@ test("posts a message and emits it over SSE", async () => {
     assert.deepEqual(event.message.to, ["agent-b"]);
     assert.equal(event.message.body, "@agent-b Please review README.md");
 
-    const listed = await jsonRequest(server, `/channels/${channel.id}/messages`);
+    const listed = await jsonRequest(server, `/conversations/${channel.id}/messages`);
     assert.equal((listed.body.messages as unknown[]).length, 1);
   } finally {
     await reader?.cancel();
@@ -713,7 +713,7 @@ test("multiplexes several Channels over one SSE connection", async () => {
     const query = new URLSearchParams();
     query.append("channelId", first.id);
     query.append("channelId", second.id);
-    const eventResponse = await fetch(`${server.endpoint}/channels/events?${query}`, {
+    const eventResponse = await fetch(`${server.endpoint}/conversations/events?${query}`, {
       headers: { authorization: `Bearer ${server.serviceToken}` },
     });
     assert.equal(eventResponse.status, 200);
@@ -743,7 +743,7 @@ test("multiplexes several Channels over one SSE connection", async () => {
 test("rejects invalid multiplexed SSE Channel sets and cleans up partial subscriptions", async () => {
   const server = await createChannelHttpServer();
   try {
-    const response = await fetch(`${server.endpoint}/channels/events`, {
+    const response = await fetch(`${server.endpoint}/conversations/events`, {
       headers: { authorization: `Bearer ${server.serviceToken}` },
     });
     assert.equal(response.status, 400);
@@ -765,7 +765,7 @@ test("rejects messages from participants outside the channel", async () => {
   const server = await createChannelHttpServer();
   try {
     const channel = await createTestChannel(server);
-    const result = await jsonRequest(server, `/channels/${channel.id}/messages`, {
+    const result = await jsonRequest(server, `/conversations/${channel.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ participantId: "intruder", body: "hello" }),
@@ -786,7 +786,7 @@ test("SSE connections receive validated heartbeats while a Channel is quiet", as
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     const channel = await createTestChannel(server);
-    const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
+    const response = await fetch(`${server.endpoint}/conversations/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
     assert.ok(response.body);
     reader = response.body!.getReader();
     const stream = { buffer: "" };
@@ -801,7 +801,7 @@ test("SSE connections receive validated heartbeats while a Channel is quiet", as
 test("server shutdown closes active SSE connections", async () => {
   const server = await createChannelHttpServer();
   const channel = await createTestChannel(server);
-  const response = await fetch(`${server.endpoint}/channels/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
+  const response = await fetch(`${server.endpoint}/conversations/${channel.id}/events`, { headers: { authorization: `Bearer ${server.serviceToken}` } });
   assert.equal(response.status, 200);
   await server.close();
 });
@@ -843,7 +843,7 @@ test("direct collaboration HTTP requires its service credential and rejects brow
     assert.equal(wrongType.status, 400);
 
     const channel = await createTestChannel(server);
-    const spoofed = await fetch(`${server.endpoint}/channels/${channel.id}/messages`, {
+    const spoofed = await fetch(`${server.endpoint}/conversations/${channel.id}/messages`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${server.serviceToken}`,
@@ -866,7 +866,7 @@ test("lists messages with bounded sequence pagination", async () => {
     }
     assert.deepEqual((await client.listMessages(channel.id, { afterSequence: 1, limit: 2 })).map(({ sequence }) => sequence), [2, 3]);
     assert.deepEqual((await client.listMessages(channel.id, { beforeSequence: 4, limit: 2 })).map(({ sequence }) => sequence), [2, 3]);
-    const invalid = await jsonRequest(server, `/channels/${channel.id}/messages?afterSequence=1&beforeSequence=4`);
+    const invalid = await jsonRequest(server, `/conversations/${channel.id}/messages?afterSequence=1&beforeSequence=4`);
     assert.equal(invalid.response.status, 400);
   } finally { await server.close(); }
 });
@@ -919,7 +919,7 @@ test("ChannelClient exposes only bounded retry metadata from failed responses", 
 test("returns 404 for an unknown channel", async () => {
   const server = await createChannelHttpServer();
   try {
-    const result = await jsonRequest(server, "/channels/missing/messages");
+    const result = await jsonRequest(server, "/conversations/missing/messages");
     assert.equal(result.response.status, 404);
   } finally {
     await server.close();

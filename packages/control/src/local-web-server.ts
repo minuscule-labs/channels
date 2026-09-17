@@ -36,7 +36,7 @@ export interface LocalWebServer {
 }
 
 function targetFor(pathname: string, options: LocalWebServerOptions): string | undefined {
-  if (["/channels", "/workspaces", "/identities"].some(
+  if (["/conversations", "/workspaces", "/identities"].some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   )) return options.channelsEndpoint;
   if (pathname === "/local" || pathname.startsWith("/local/")) return options.controlEndpoint;
@@ -172,7 +172,7 @@ export async function createLocalWebServer(
       const url = new URL(request.url ?? "/", "http://minu.local");
       const mutation = request.method !== "GET" && request.method !== "HEAD";
       const durableChannelMessage = request.method === "POST"
-        && /^\/channels\/[^/]+\/messages$/.test(url.pathname);
+        && /^\/conversations\/[^/]+\/messages$/.test(url.pathname);
       if (options.isQuiescing?.() && mutation && !durableChannelMessage) {
         response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
         response.end(`${JSON.stringify({ error: "MinuChannels is restarting" })}\n`);
