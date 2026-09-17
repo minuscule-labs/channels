@@ -57,6 +57,13 @@
       "when": 1799020800000,
       "tag": "0007_channel_working_folders",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1799107200000,
+      "tag": "0008_channel_conversations",
+      "breakpoints": true
     }
   ]
 }

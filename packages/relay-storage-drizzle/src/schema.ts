@@ -10,21 +10,21 @@ export const localWorkspaceConfigs = sqliteTable("local_workspace_config", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const channelWorkingFolders = sqliteTable("channel_working_folders", {
+export const conversationWorkingFolders = sqliteTable("conversation_working_folders", {
   workspaceId: text("workspace_id").notNull(),
-  channelId: text("channel_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
   relativePath: text("relative_path").notNull(),
   position: integer("position").notNull(),
   isPrimary: integer("is_primary").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
-  primaryKey({ columns: [table.channelId, table.relativePath] }),
-  uniqueIndex("channel_working_folders_position_unique").on(table.channelId, table.position),
-  uniqueIndex("channel_working_folders_primary_unique")
-    .on(table.channelId)
+  primaryKey({ columns: [table.conversationId, table.relativePath] }),
+  uniqueIndex("conversation_working_folders_position_unique").on(table.conversationId, table.position),
+  uniqueIndex("conversation_working_folders_primary_unique")
+    .on(table.conversationId)
     .where(sql`${table.isPrimary} = 1`),
-  index("channel_working_folders_workspace_channel_idx").on(table.workspaceId, table.channelId),
+  index("conversation_working_folders_workspace_channel_idx").on(table.workspaceId, table.conversationId),
 ]);
 
 export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
@@ -49,16 +49,16 @@ export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
 ]);
 
 export const agentHostCursors = sqliteTable("agent_host_cursors", {
-  channelId: text("channel_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
   participantId: text("participant_id").notNull(),
   lastProcessedSequence: integer("last_processed_sequence").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
-  uniqueIndex("agent_host_cursors_route_unique").on(table.channelId, table.participantId),
+  uniqueIndex("agent_host_cursors_conversation_route_unique").on(table.conversationId, table.participantId),
 ]);
 
 export const deliveryDeadLetters = sqliteTable("delivery_dead_letters", {
-  channelId: text("channel_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
   participantId: text("participant_id").notNull(),
   triggerMessageId: text("trigger_message_id").notNull(),
   triggerSequence: integer("trigger_sequence").notNull(),
@@ -68,18 +68,18 @@ export const deliveryDeadLetters = sqliteTable("delivery_dead_letters", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
-  uniqueIndex("delivery_dead_letters_trigger_unique")
-    .on(table.channelId, table.participantId, table.triggerMessageId),
-  index("delivery_dead_letters_route_sequence_idx")
-    .on(table.channelId, table.participantId, table.triggerSequence),
+  uniqueIndex("delivery_dead_letters_conversation_trigger_unique")
+    .on(table.conversationId, table.participantId, table.triggerMessageId),
+  index("delivery_dead_letters_conversation_route_sequence_idx")
+    .on(table.conversationId, table.participantId, table.triggerSequence),
 ]);
 
-export const channelAgentBindings = sqliteTable("channel_agent_bindings", {
+export const conversationAgentBindings = sqliteTable("conversation_agent_bindings", {
   id: text("id").primaryKey(),
   workspaceAgentConfigId: text("workspace_agent_config_id").notNull()
     .references(() => workspaceAgentConfigs.id),
   workspaceId: text("workspace_id").notNull(),
-  channelId: text("channel_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
   agentIdentityId: text("agent_identity_id").notNull(),
   executionEnvironmentId: text("execution_environment_id"),
   runtimeAdapter: text("runtime_adapter").notNull(),
@@ -95,9 +95,9 @@ export const channelAgentBindings = sqliteTable("channel_agent_bindings", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
-  uniqueIndex("channel_agent_bindings_route_unique")
-    .on(table.workspaceId, table.channelId, table.agentIdentityId),
-  uniqueIndex("channel_agent_bindings_runtime_session_unique")
+  uniqueIndex("conversation_agent_bindings_route_unique")
+    .on(table.workspaceId, table.conversationId, table.agentIdentityId),
+  uniqueIndex("conversation_agent_bindings_runtime_session_unique")
     .on(table.runtimeAdapter, table.runtimeSessionId),
-  index("channel_agent_bindings_channel_idx").on(table.channelId),
+  index("conversation_agent_bindings_channel_idx").on(table.conversationId),
 ]);
