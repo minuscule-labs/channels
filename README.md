@@ -14,6 +14,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 - Live updates, mentions, Markdown, syntax highlighting, and code-copy controls
 - Per-agent instructions, Skills, harness, provider, model, and reasoning settings
 - Explicit **Start**, **New session**, and **Stop** controls for agent sessions
+- Conversation **Snooze**, **Archive**, and explicit **Reopen** lifecycle controls
 - Workspace and Conversation administration with native folder selection
 - Product-isolated local storage, recovery, locking, and checksum-verified updates
 - A self-contained release package with the web app, migrations, and pinned Runtime
@@ -138,6 +139,7 @@ These are internal boundaries of one product, not separate services users must c
 - [Distribution model](docs/distribution.md)
 - [Product boundary and architecture](docs/product-boundary.md)
 - [Execution configuration](docs/execution-configuration.md)
+- [Conversation lifecycle and archive behavior](docs/conversation-lifecycle.md)
 - [Skills](docs/skills.md)
 - [Web client MVP](docs/web-client-mvp.md)
 - [Control API and development details](packages/control/README.md)

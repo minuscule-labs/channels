@@ -4,6 +4,7 @@
 
 - Rename the canonical collaboration primitive from **Channel** to **Conversation** across the public database, private Relay database, HTTP/local-control APIs, browser routes, events, and TypeScript contracts. Existing `channel_` IDs and bookmarked `/channels/...` browser URLs remain valid; new conversations receive `conversation_` IDs.
 - Before this migration runs, create owner-private, SQLite-consistent backups of `channels.db` and `relay.db` under `backups/before-migration-*`. The MinuChannels package, CLI, hostname, and `~/.minu/channels` data location remain unchanged.
+- Add Channels-owned Conversation lifecycle state: configurable Snooze, Archive, explicit Reopen, idle-only managed-work coordination, and archived read-only roster/transcript preservation.
 
 ## 0.0.6
 

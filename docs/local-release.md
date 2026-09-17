@@ -69,6 +69,8 @@ The service uses the existing default data at `~/.minu/channels`; passing `--dat
 
 The built-in updater supports writable global npm installations. It downloads the release tarball and `SHA256SUMS` with bounded requests, verifies the exact artifact checksum, installs with lifecycle scripts disabled, and verifies the installed version. A selected running macOS service is quiesced only after verification, stopped without terminating Runtime workers, and restarted only after the installed version is verified. A selected service that was already stopped remains stopped. Foreground processes, other data-directory services, legacy or unverified live markers, source checkouts, unsupported package-manager layouts, and concurrent updates are refused. Interrupted update locks are recovered only after their owner process is confirmed dead.
 
+When an update has pending database migrations, MinuChannels snapshots both its public collaboration database and private Relay database before applying them. The Conversation lifecycle migration adds lifecycle records without rewriting existing messages, sequences, rosters, or Runtime bindings; Conversations with no record remain Active. Do not run migrations manually against `~/.minu/channels`. See [Conversation lifecycle](conversation-lifecycle.md) for lifecycle behavior and archive guarantees.
+
 1. Stop any foreground MinuChannels process; a running selected macOS service may remain running.
 2. Back up the data directory.
 3. Run the updater and confirm installation.
