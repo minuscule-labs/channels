@@ -20,12 +20,18 @@ function ConversationNavigationLink({
   workspaceId,
   activeConversationId,
   unread,
+  lifecycleState,
+  onLifecycleChange,
+  pendingLifecycle,
   onNavigate,
 }: {
   conversation: ConversationMetadata;
   workspaceId: string;
   activeConversationId?: string;
   unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
+  lifecycleState: ConversationLifecycleState;
+  onLifecycleChange?(conversationId: string, state: ConversationLifecycleState): void;
+  pendingLifecycle?: boolean;
   onNavigate?(): void;
 }) {
   const active = conversation.id === activeConversationId;
@@ -54,6 +60,19 @@ function ConversationNavigationLink({
           </span>
         ) : null}
       </Link>
+      {onLifecycleChange ? (
+        <details className="relative -mt-8 ml-auto mr-1 w-7" onClick={(event) => event.stopPropagation()}>
+          <summary className="icon-button ml-auto flex h-7 w-7 cursor-pointer list-none items-center justify-center text-xs" aria-label={`Conversation actions for ${conversation.name}`}>•••</summary>
+          <div className="absolute right-0 z-30 mt-1 w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
+            {lifecycleState === "active" ? <>
+              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, "snoozed")}>Snooze for 1 hour</button>
+              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, "settled")}>Settle to Archive</button>
+            </> : (
+              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, "active")}>Reopen Conversation</button>
+            )}
+          </div>
+        </details>
+      ) : null}
     </li>
   );
 }
@@ -71,6 +90,8 @@ export function NavigationSidebar({
   onSoundChange,
   onTestSound,
   workspaceUnread = new Map(),
+  onLifecycleChange,
+  pendingLifecycleConversationId,
 }: {
   items: WorkspaceNavigationItem[];
   activeConversationId?: string;
@@ -84,6 +105,8 @@ export function NavigationSidebar({
   onSoundChange?(sound: NotificationSound): void;
   onTestSound?(): void;
   workspaceUnread?: ReadonlyMap<string, number>;
+  onLifecycleChange?(conversationId: string, state: ConversationLifecycleState): void;
+  pendingLifecycleConversationId?: string;
 }) {
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -161,6 +184,9 @@ export function NavigationSidebar({
                     workspaceId={workspace.id}
                     activeConversationId={activeConversationId}
                     unread={unread}
+                    lifecycleState={lifecycle?.get(conversation.id) ?? "active"}
+                    onLifecycleChange={onLifecycleChange}
+                    pendingLifecycle={pendingLifecycleConversationId === conversation.id}
                     onNavigate={onNavigate}
                   />
                 );

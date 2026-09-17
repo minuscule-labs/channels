@@ -1,5 +1,5 @@
 import type { ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -48,6 +48,19 @@ export function AppShell() {
       enabled: Boolean(currentSession.data?.identityId),
       staleTime: 5_000,
     })),
+  });
+  const lifecycleAction = useMutation({
+    mutationFn: ({ conversationId, state }: { conversationId: string; state: "active" | "snoozed" | "settled" }) =>
+      localControl.updateConversationLifecycle(
+        conversationId,
+        state === "snoozed"
+          ? { state, snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }
+          : { state },
+      ),
+    onSuccess: (_lifecycle, { conversationId }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
+    },
   });
   const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
   const observedConversations = useMemo(() => {
@@ -311,6 +324,8 @@ export function AppShell() {
           sound={sound}
           onSoundChange={currentSession.isSuccess ? changeSound : undefined}
           onTestSound={() => { if (activateAudio()) playSound(); }}
+          onLifecycleChange={(conversationId, state) => lifecycleAction.mutate({ conversationId, state })}
+          pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
         />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -341,6 +356,8 @@ export function AppShell() {
             sound={sound}
             onSoundChange={currentSession.isSuccess ? changeSound : undefined}
             onTestSound={() => { if (activateAudio()) playSound(); }}
+            onLifecycleChange={(conversationId, state) => lifecycleAction.mutate({ conversationId, state })}
+            pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
             onNavigate={() => setNavigationOpen(false)}
             onClose={() => setNavigationOpen(false)}
           />
