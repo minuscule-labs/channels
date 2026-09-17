@@ -41,6 +41,14 @@ export function AppShell() {
     retry: false,
     staleTime: 60_000,
   });
+  const conversationLifecycleQueries = useQueries({
+    queries: (selectedConversations.data ?? []).map((conversation) => ({
+      queryKey: queryKeys.localConversationLifecycle(conversation.id),
+      queryFn: () => localControl.getConversationLifecycle(conversation.id),
+      enabled: Boolean(currentSession.data?.identityId),
+      staleTime: 5_000,
+    })),
+  });
   const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
   const observedConversations = useMemo(() => {
     const byId = new Map(knownConversations.map((conversation) => [conversation.id, conversation]));
@@ -79,12 +87,17 @@ export function AppShell() {
       .filter((conversation) => conversation.workspaceId === workspace.id)
       .reduce((sum, conversation) => sum + (allUnread.get(conversation.id)?.count ?? 0), 0),
   ])), [allUnread, observedConversations, workspaces.data]);
+  const conversationLifecycles = useMemo(() => new Map((selectedConversations.data ?? []).map((conversation, index) => [
+    conversation.id,
+    conversationLifecycleQueries[index]?.data?.state ?? "active",
+  ])), [conversationLifecycleQueries, selectedConversations.data]);
   const navigationItems = useMemo<WorkspaceNavigationItem[]>(() => selectedWorkspace ? [{
     workspace: selectedWorkspace,
     conversations: selectedConversations.data ?? [],
     loading: selectedConversations.isLoading,
+    lifecycle: conversationLifecycles,
     unread,
-  }] : [], [selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, unread]);
+  }] : [], [conversationLifecycles, selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, unread]);
 
   const selectWorkspace = async (workspaceId: string) => {
     const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);

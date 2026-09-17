@@ -16,5 +16,6 @@ export const queryKeys = {
   conversation: (conversationId: string) => ["conversation", conversationId] as const,
   conversationMessages: (conversationId: string) => ["conversation", conversationId, "messages"] as const,
   localConversationAgents: (conversationId: string) => ["local", "conversation", conversationId, "agents"] as const,
+  localConversationLifecycle: (conversationId: string) => ["local", "conversation", conversationId, "lifecycle"] as const,
   conversationWorkingFolders: (conversationId: string) => ["local", "conversation", conversationId, "working-folders"] as const,
 };

@@ -53,6 +53,12 @@ export function ConversationPage() {
     retry: false,
     refetchInterval: 60_000,
   });
+  const lifecycle = useQuery({
+    queryKey: queryKeys.localConversationLifecycle(conversationId),
+    queryFn: () => localControl.getConversationLifecycle(conversationId),
+    retry: false,
+    staleTime: 5_000,
+  });
   const localCapabilities = useQuery({
     queryKey: queryKeys.localCapabilities(),
     queryFn: () => localControl.capabilities(),
@@ -97,6 +103,19 @@ export function ConversationPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
+    },
+  });
+  const lifecycleAction = useMutation({
+    mutationFn: (state: "active" | "snoozed" | "settled") => localControl.updateConversationLifecycle(
+      conversationId,
+      state === "snoozed"
+        ? { state, snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }
+        : { state },
+    ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
   });
   const diagnosticAction = useMutation({
@@ -238,6 +257,19 @@ export function ConversationPage() {
             </button>
           ) : null}
           <EditConversationParticipantsDialog conversation={metadata.data} />
+          {canOpenDiagnostics && lifecycle.data ? (
+            <details className="relative">
+              <summary className="icon-button inline-flex cursor-pointer list-none" aria-label="Conversation lifecycle" title="Conversation lifecycle">•••</summary>
+              <div className="absolute right-0 z-20 mt-1 w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
+                {lifecycle.data.state === "active" ? <>
+                  <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("snoozed")}>Snooze for 1 hour</button>
+                  <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("settled")}>Settle to Archive</button>
+                </> : (
+                  <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("active")}>Reopen Conversation</button>
+                )}
+              </div>
+            </details>
+          ) : null}
           <Drawer
             open={rosterOpen}
             onOpenChange={setRosterOpen}
@@ -283,9 +315,9 @@ export function ConversationPage() {
             />
           </Drawer>
         </header>
-        {agentAction.error || diagnosticAction.error || bulkAgentAction.error ? (
+        {agentAction.error || diagnosticAction.error || bulkAgentAction.error || lifecycleAction.error ? (
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
-            {(agentAction.error ?? diagnosticAction.error ?? bulkAgentAction.error)?.message}
+            {(agentAction.error ?? diagnosticAction.error ?? bulkAgentAction.error ?? lifecycleAction.error)?.message}
           </div>
         ) : null}
         <div className="relative min-h-0 flex-1">

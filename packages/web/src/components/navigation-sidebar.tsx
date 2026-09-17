@@ -1,6 +1,7 @@
-import type { ConversationMetadata, Workspace } from "@minu/channels-core/types";
+import type { ConversationLifecycleState, ConversationMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
-import { Bell, Bot, Hash, MessageSquare, X } from "lucide-react";
+import { useState } from "react";
+import { Archive, Bell, Bot, ChevronDown, Clock3, Hash, MessageSquare, X } from "lucide-react";
 import type { NotificationSound } from "../lib/conversation-notifications";
 import { CreateConversationDialog } from "./conversation-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
@@ -10,7 +11,51 @@ export interface WorkspaceNavigationItem {
   workspace: Workspace;
   conversations: ConversationMetadata[];
   loading: boolean;
+  lifecycle?: ReadonlyMap<string, ConversationLifecycleState>;
   unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
+}
+
+function ConversationNavigationLink({
+  conversation,
+  workspaceId,
+  activeConversationId,
+  unread,
+  onNavigate,
+}: {
+  conversation: ConversationMetadata;
+  workspaceId: string;
+  activeConversationId?: string;
+  unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
+  onNavigate?(): void;
+}) {
+  const active = conversation.id === activeConversationId;
+  const unreadState = unread?.get(conversation.id);
+  return (
+    <li key={conversation.id}>
+      <Link
+        to="/app/workspaces/$workspaceId/conversations/$conversationId"
+        params={{ workspaceId, conversationId: conversation.id }}
+        onClick={onNavigate}
+        className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
+          active
+            ? "bg-[var(--selected)] text-[var(--text)]"
+            : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
+        }`}
+        aria-current={active ? "page" : undefined}
+      >
+        <Hash className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{conversation.name}</span>
+        {unreadState?.count ? (
+          <span
+            className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-semibold ${unreadState.mentionCount ? "bg-[var(--accent)] text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
+            aria-label={`${unreadState.count} unread message${unreadState.count === 1 ? "" : "s"}${unreadState.mentionCount ? `, ${unreadState.mentionCount} direct mention${unreadState.mentionCount === 1 ? "" : "s"}` : ""}`}
+          >
+            {unreadState.count}
+          </span>
+        ) : null}
+      </Link>
+    </li>
+  );
 }
 
 export function NavigationSidebar({
@@ -40,6 +85,8 @@ export function NavigationSidebar({
   onTestSound?(): void;
   workspaceUnread?: ReadonlyMap<string, number>;
 }) {
+  const [snoozedOpen, setSnoozedOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-[var(--border)] bg-[var(--panel-muted)] md:w-72">
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
@@ -73,7 +120,7 @@ export function NavigationSidebar({
           <p className="px-2 py-6 text-sm text-[var(--muted)]">No Workspaces yet.</p>
         ) : null}
         <div className="space-y-5">
-          {items.map(({ workspace, conversations, loading, unread }) => (
+          {items.map(({ workspace, conversations, loading, lifecycle, unread }) => (
             <section key={workspace.id}>
               <div className="mb-1 flex items-end justify-between gap-2 px-2">
                 <div className="min-w-0">
@@ -103,37 +150,52 @@ export function NavigationSidebar({
                 <span>Agents</span>
               </Link>
               {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
-              <ul className="space-y-1">
-                {conversations.map((conversation) => {
-                  const active = conversation.id === activeConversationId;
-                  return (
-                    <li key={conversation.id}>
-                      <Link
-                        to="/app/workspaces/$workspaceId/conversations/$conversationId"
-                        params={{ workspaceId: workspace.id, conversationId: conversation.id }}
-                        onClick={onNavigate}
-                        className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
-                          active
-                            ? "bg-[var(--selected)] text-[var(--text)]"
-                            : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
-                        }`}
-                        aria-current={active ? "page" : undefined}
-                      >
-                        <Hash className="h-3.5 w-3.5 shrink-0" />
-                        <span className="min-w-0 flex-1 truncate">{conversation.name}</span>
-                        {unread?.get(conversation.id)?.count ? (
-                          <span
-                            className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-semibold ${unread.get(conversation.id)!.mentionCount ? "bg-[var(--accent)] text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
-                            aria-label={`${unread.get(conversation.id)!.count} unread message${unread.get(conversation.id)!.count === 1 ? "" : "s"}${unread.get(conversation.id)!.mentionCount ? `, ${unread.get(conversation.id)!.mentionCount} direct mention${unread.get(conversation.id)!.mentionCount === 1 ? "" : "s"}` : ""}`}
-                          >
-                            {unread.get(conversation.id)!.count}
-                          </span>
-                        ) : null}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
+              {(() => {
+                const active = conversations.filter((conversation) => (lifecycle?.get(conversation.id) ?? "active") === "active");
+                const snoozed = conversations.filter((conversation) => lifecycle?.get(conversation.id) === "snoozed");
+                const settled = conversations.filter((conversation) => lifecycle?.get(conversation.id) === "settled");
+                const link = (conversation: ConversationMetadata) => (
+                  <ConversationNavigationLink
+                    key={conversation.id}
+                    conversation={conversation}
+                    workspaceId={workspace.id}
+                    activeConversationId={activeConversationId}
+                    unread={unread}
+                    onNavigate={onNavigate}
+                  />
+                );
+                return <>
+                  <ul className="space-y-1">{active.map(link)}</ul>
+                  {(snoozed.length > 0 || settled.length > 0) ? (
+                    <div className="mt-4 border-t border-[var(--border)] pt-2">
+                      {snoozed.length > 0 ? <>
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--hover)]"
+                          aria-expanded={snoozedOpen}
+                          onClick={() => setSnoozedOpen((open) => !open)}
+                        >
+                          <Clock3 className="h-3.5 w-3.5" /> Snoozed
+                          <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${snoozedOpen ? "rotate-180" : ""}`} />
+                        </button>
+                        {snoozedOpen ? <ul className="space-y-1">{snoozed.map(link)}</ul> : null}
+                      </> : null}
+                      {settled.length > 0 ? <>
+                        <button
+                          type="button"
+                          className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--muted)] hover:bg-[var(--hover)]"
+                          aria-expanded={archiveOpen}
+                          onClick={() => setArchiveOpen((open) => !open)}
+                        >
+                          <Archive className="h-3.5 w-3.5" /> Archive
+                          <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${archiveOpen ? "rotate-180" : ""}`} />
+                        </button>
+                        {archiveOpen ? <ul className="space-y-1">{settled.map(link)}</ul> : null}
+                      </> : null}
+                    </div>
+                  ) : null}
+                </>;
+              })()}
             </section>
           ))}
         </div>
