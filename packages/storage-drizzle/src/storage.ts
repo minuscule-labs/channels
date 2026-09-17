@@ -147,12 +147,20 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       if (!updated) return undefined;
       const affected = await transaction.select({ conversationId: schema.participants.conversationId })
         .from(schema.participants)
-        .where(eq(schema.participants.id, identity.id));
-      await transaction.update(schema.participants).set({
-        displayName: identity.displayName,
-      }).where(eq(schema.participants.id, identity.id));
+        .innerJoin(schema.conversations, eq(schema.conversations.id, schema.participants.conversationId))
+        .leftJoin(schema.conversationLifecycles, eq(schema.conversationLifecycles.conversationId, schema.participants.conversationId))
+        .where(and(
+          eq(schema.participants.id, identity.id),
+          sql`coalesce(${schema.conversationLifecycles.state}, 'active') <> 'settled'`,
+        ));
       const rosters: IdentityUpdateResult["rosters"] = [];
       for (const { conversationId } of affected) {
+        await transaction.update(schema.participants).set({
+          displayName: identity.displayName,
+        }).where(and(
+          eq(schema.participants.conversationId, conversationId),
+          eq(schema.participants.id, identity.id),
+        ));
         const [conversation] = await transaction.update(schema.conversations).set({
           rosterRevision: sql`${schema.conversations.rosterRevision} + 1`,
         }).where(eq(schema.conversations.id, conversationId)).returning({
@@ -261,9 +269,11 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       const affected = await transaction.select({ conversationId: schema.participants.conversationId })
         .from(schema.participants)
         .innerJoin(schema.conversations, eq(schema.conversations.id, schema.participants.conversationId))
+        .leftJoin(schema.conversationLifecycles, eq(schema.conversationLifecycles.conversationId, schema.participants.conversationId))
         .where(and(
           eq(schema.conversations.workspaceId, member.workspaceId),
           eq(schema.participants.id, member.identityId),
+          sql`coalesce(${schema.conversationLifecycles.state}, 'active') <> 'settled'`,
         ));
       const rosters: WorkspaceMemberUpdateResult["rosters"] = [];
       for (const { conversationId } of affected) {

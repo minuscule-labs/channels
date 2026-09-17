@@ -391,6 +391,19 @@ test("owner-governed Conversation lifecycle is durable and evaluates expired sno
       actorIdentityId: owner.id,
       state: "settled",
     }), { state: "settled", settledAt: (await client.getConversationLifecycle(conversation.id)).settledAt });
+    const archived = await client.getConversation(conversation.id);
+    await client.updateIdentity(builder.id, {
+      workspaceId: workspace.id,
+      actorIdentityId: owner.id,
+      displayName: "Renamed Builder",
+    });
+    await client.updateWorkspaceMember(workspace.id, builder.id, {
+      actorIdentityId: owner.id,
+      roleLabel: "Updated outside the archive",
+    });
+    const stillArchived = await client.getConversation(conversation.id);
+    assert.equal(stillArchived.rosterRevision, archived.rosterRevision);
+    assert.deepEqual(stillArchived.participants, archived.participants);
     await assert.rejects(client.postMessage(conversation.id, {
       participantId: owner.id,
       body: "This must not change the archive",

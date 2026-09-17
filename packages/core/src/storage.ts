@@ -119,6 +119,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     this.identities.set(identity.id, { ...identity });
     const rosters: IdentityUpdateResult["rosters"] = [];
     for (const conversation of this.conversations.values()) {
+      if (this.lifecycles.get(conversation.id)?.state === "settled") continue;
       const participant = conversation.participants.find(({ id }) => id === identity.id);
       if (!participant) continue;
       participant.displayName = identity.displayName;
@@ -189,7 +190,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     this.workspaceMembers.set(key, { ...member });
     const rosters: WorkspaceMemberUpdateResult["rosters"] = [];
     for (const conversation of this.conversations.values()) {
-      if (conversation.workspaceId !== member.workspaceId) continue;
+      if (conversation.workspaceId !== member.workspaceId || this.lifecycles.get(conversation.id)?.state === "settled") continue;
       const index = conversation.participants.findIndex(({ id }) => id === member.identityId);
       if (index < 0) continue;
       conversation.participants[index] = { ...participant };
