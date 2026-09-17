@@ -47,7 +47,7 @@ export const workspaceMembers = sqliteTable(
   ],
 );
 
-export const channels = sqliteTable("channels", {
+export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id").references(() => workspaces.id),
   name: text("name").notNull().default("Untitled Channel"),
@@ -59,9 +59,9 @@ export const channels = sqliteTable("channels", {
 export const participants = sqliteTable(
   "participants",
   {
-    channelId: text("channel_id")
+    conversationId: text("conversation_id")
       .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
+      .references(() => conversations.id, { onDelete: "cascade" }),
     id: text("id").notNull(),
     handle: text("handle"),
     type: text("type", { enum: ["human", "agent", "service"] }).notNull(),
@@ -71,16 +71,16 @@ export const participants = sqliteTable(
     status: text("status", { enum: ["active", "disabled"] }).notNull().default("active"),
     position: integer("position").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.channelId, table.id] })],
+  (table) => [primaryKey({ columns: [table.conversationId, table.id] })],
 );
 
 export const messages = sqliteTable(
   "messages",
   {
     id: text("id").primaryKey(),
-    channelId: text("channel_id")
+    conversationId: text("conversation_id")
       .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
+      .references(() => conversations.id, { onDelete: "cascade" }),
     sequence: integer("sequence").notNull(),
     participantId: text("participant_id").notNull(),
     targets: text("targets_json", { mode: "json" }).$type<string[]>().notNull(),
@@ -89,17 +89,17 @@ export const messages = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (table) => [
-    uniqueIndex("messages_channel_sequence_unique").on(table.channelId, table.sequence),
-    index("messages_channel_sequence").on(table.channelId, table.sequence),
+    uniqueIndex("messages_conversation_sequence_unique").on(table.conversationId, table.sequence),
+    index("messages_conversation_sequence").on(table.conversationId, table.sequence),
   ],
 );
 
 export const messageIdempotency = sqliteTable(
   "message_idempotency",
   {
-    channelId: text("channel_id")
+    conversationId: text("conversation_id")
       .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
+      .references(() => conversations.id, { onDelete: "cascade" }),
     participantId: text("participant_id").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     requestFingerprint: text("request_fingerprint").notNull(),
@@ -109,7 +109,7 @@ export const messageIdempotency = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.channelId, table.participantId, table.idempotencyKey] }),
+    primaryKey({ columns: [table.conversationId, table.participantId, table.idempotencyKey] }),
     uniqueIndex("message_idempotency_message_unique").on(table.messageId),
   ],
 );
@@ -117,9 +117,9 @@ export const messageIdempotency = sqliteTable(
 export const responseDeliveries = sqliteTable(
   "response_deliveries",
   {
-    channelId: text("channel_id")
+    conversationId: text("conversation_id")
       .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
+      .references(() => conversations.id, { onDelete: "cascade" }),
     participantId: text("participant_id").notNull(),
     triggerMessageId: text("trigger_message_id")
       .notNull()
@@ -131,7 +131,7 @@ export const responseDeliveries = sqliteTable(
     createdAt: text("created_at").notNull(),
   },
   (table) => [
-    primaryKey({ columns: [table.channelId, table.participantId, table.triggerMessageId] }),
+    primaryKey({ columns: [table.conversationId, table.participantId, table.triggerMessageId] }),
     uniqueIndex("response_deliveries_response_unique").on(table.responseMessageId),
   ],
 );
@@ -139,12 +139,12 @@ export const responseDeliveries = sqliteTable(
 export const agentCursors = sqliteTable(
   "agent_cursors",
   {
-    channelId: text("channel_id")
+    conversationId: text("conversation_id")
       .notNull()
-      .references(() => channels.id, { onDelete: "cascade" }),
+      .references(() => conversations.id, { onDelete: "cascade" }),
     participantId: text("participant_id").notNull(),
     lastProcessedSequence: integer("last_processed_sequence").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.channelId, table.participantId] })],
+  (table) => [primaryKey({ columns: [table.conversationId, table.participantId] })],
 );

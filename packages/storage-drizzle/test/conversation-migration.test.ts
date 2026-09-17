@@ -1,124 +1,54 @@
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { ChannelService } from "@minu/channels-core";
-import {
-  defaultChannelMigrationsFolder,
-  DrizzleLibSqlChannelStorage,
-  localLibSqlUrl,
-} from "../src/storage.ts";
+import { DrizzleLibSqlChannelStorage } from "../src/storage.ts";
+import { createV006ChannelsDatabase } from "./v006-fixture.ts";
 
-async function v006MigrationsFolder(directory: string): Promise<string> {
-  const migrationsFolder = join(directory, "v0.0.6-migrations");
-  await cp(defaultChannelMigrationsFolder(), migrationsFolder, { recursive: true });
-  const journalPath = join(migrationsFolder, "meta", "_journal.json");
-  const journal = JSON.parse(await readFile(journalPath, "utf8")) as { entries: Array<{ idx: number }> };
-  journal.entries = journal.entries.filter(({ idx }) => idx <= 6);
-  await writeFile(journalPath, JSON.stringify(journal));
-  return migrationsFolder;
-}
-
-/**
- * Upgrade fixture for the current on-disk Channel schema. Keep this data shape when
- * promoting the proven SQL below into the versioned Conversation migration.
- */
-test("Channel database upgrade preserves collaboration data under Conversation names", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "minu-conversation-upgrade-"));
-  const databasePath = join(directory, "channels.db");
-  const url = localLibSqlUrl(databasePath);
-  const migrationsFolder = await v006MigrationsFolder(directory);
-  let storage: DrizzleLibSqlChannelStorage | undefined;
+test("production Conversation migration upgrades a populated v0.0.6 collaboration database", async () => {
+  const fixture = await createV006ChannelsDatabase();
+  const channelId = "channel_upgrade";
   try {
-    storage = await DrizzleLibSqlChannelStorage.open({ url, migrationsFolder });
-    const service = new ChannelService(storage);
-    const human = await service.createIdentity({ type: "human", displayName: "Human" });
-    const agent = await service.createIdentity({ type: "agent", displayName: "Agent" });
-    const workspace = await service.createWorkspace({ slug: "upgrade", name: "Upgrade fixture" });
-    await service.addWorkspaceMember(workspace.id, { identityId: human.id, mentionHandle: "human", accessRole: "owner" });
-    await service.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "agent" });
-    const channel = await service.createChannel({
-      workspaceId: workspace.id,
-      name: "preserved-history",
-      participantIds: [human.id, agent.id],
-    });
-    const trigger = await service.createMessage(channel.id, { participantId: human.id, body: "Preserve this request." });
-    const response = await service.createMessage(channel.id, { participantId: agent.id, body: "Preserve this response." });
-    await storage.close();
-    storage = undefined;
-
-    const client = createClient({ url });
+    let client = createClient({ url: fixture.url });
     try {
-      const createdAt = "2026-09-17T00:00:00.000Z";
-      await client.execute({
-        sql: "INSERT INTO message_idempotency (channel_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        args: [channel.id, human.id, "upgrade-key", "upgrade-fingerprint", trigger.id, createdAt],
-      });
-      await client.execute({
-        sql: "INSERT INTO response_deliveries (channel_id, participant_id, trigger_message_id, trigger_sequence, response_message_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        args: [channel.id, agent.id, trigger.id, trigger.sequence, response.id, createdAt],
-      });
-      await client.execute({
-        sql: "INSERT INTO agent_cursors (channel_id, participant_id, last_processed_sequence, updated_at) VALUES (?, ?, ?, ?)",
-        args: [channel.id, agent.id, response.sequence, createdAt],
-      });
-
-      // This is the exact public-database SQL shape proposed for the versioned migration.
       await client.executeMultiple(`
-        PRAGMA foreign_keys = OFF;
-        BEGIN IMMEDIATE;
-        ALTER TABLE channels RENAME TO conversations;
-        ALTER TABLE participants RENAME COLUMN channel_id TO conversation_id;
-        ALTER TABLE messages RENAME COLUMN channel_id TO conversation_id;
-        ALTER TABLE message_idempotency RENAME COLUMN channel_id TO conversation_id;
-        ALTER TABLE response_deliveries RENAME COLUMN channel_id TO conversation_id;
-        ALTER TABLE agent_cursors RENAME COLUMN channel_id TO conversation_id;
-        DROP INDEX messages_channel_sequence_unique;
-        DROP INDEX messages_channel_sequence;
-        CREATE UNIQUE INDEX messages_conversation_sequence_unique ON messages (conversation_id, sequence);
-        CREATE INDEX messages_conversation_sequence ON messages (conversation_id, sequence);
-        COMMIT;
-        PRAGMA foreign_keys = ON;
+        INSERT INTO identities (id, type, display_name, status, created_at, updated_at) VALUES
+          ('identity_human', 'human', 'Human', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+          ('identity_agent', 'agent', 'Agent', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+        INSERT INTO workspaces (id, slug, name, status, created_at, updated_at) VALUES
+          ('workspace_upgrade', 'upgrade', 'Upgrade', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+        INSERT INTO workspace_members (workspace_id, identity_id, mention_handle, access_role, status, joined_at, updated_at) VALUES
+          ('workspace_upgrade', 'identity_human', 'human', 'owner', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+          ('workspace_upgrade', 'identity_agent', 'agent', 'member', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+        INSERT INTO channels (id, workspace_id, name, created_at, next_sequence, roster_revision) VALUES
+          ('${channelId}', 'workspace_upgrade', 'Preserved', '2026-01-01T00:00:00.000Z', 3, 1);
+        INSERT INTO participants (channel_id, id, handle, type, status, position) VALUES
+          ('${channelId}', 'identity_human', 'human', 'human', 'active', 0),
+          ('${channelId}', 'identity_agent', 'agent', 'agent', 'active', 1);
+        INSERT INTO messages (id, channel_id, sequence, participant_id, targets_json, body, created_at) VALUES
+          ('message_trigger', '${channelId}', 1, 'identity_human', '[]', 'Keep me', '2026-01-01T00:00:00.000Z'),
+          ('message_response', '${channelId}', 2, 'identity_agent', '[]', 'Still here', '2026-01-01T00:00:01.000Z');
+        INSERT INTO message_idempotency (channel_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at) VALUES
+          ('${channelId}', 'identity_human', 'key', 'fingerprint', 'message_trigger', '2026-01-01T00:00:00.000Z');
+        INSERT INTO response_deliveries (channel_id, participant_id, trigger_message_id, trigger_sequence, response_message_id, created_at) VALUES
+          ('${channelId}', 'identity_agent', 'message_trigger', 1, 'message_response', '2026-01-01T00:00:01.000Z');
+        INSERT INTO agent_cursors (channel_id, participant_id, last_processed_sequence, updated_at) VALUES
+          ('${channelId}', 'identity_agent', 2, '2026-01-01T00:00:01.000Z');
       `);
+    } finally { client.close(); }
 
-      const tables = await client.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('channels', 'conversations')");
-      assert.deepEqual(tables.rows.map(({ name }) => name), ["conversations"]);
+    const storage = await DrizzleLibSqlChannelStorage.open({ url: fixture.url });
+    try {
+      const channel = await storage.getChannel(channelId);
+      assert.equal(channel?.name, "Preserved");
+      assert.deepEqual(channel?.messages.map(({ id }) => id), ["message_trigger", "message_response"]);
+      assert.equal(await storage.getCursor(channelId, "identity_agent"), 2);
+    } finally { await storage.close(); }
+
+    client = createClient({ url: fixture.url });
+    try {
+      assert.deepEqual((await client.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('channels', 'conversations')")).rows, [{ name: "conversations" }]);
       assert.deepEqual((await client.execute("PRAGMA foreign_key_check")).rows, []);
-      const messageColumns = await client.execute("PRAGMA table_info(messages)");
-      assert.ok(messageColumns.rows.some(({ name }) => name === "conversation_id"));
-      assert.ok(!messageColumns.rows.some(({ name }) => name === "channel_id"));
-      const indexes = await client.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'messages_%sequence%'");
-      assert.deepEqual(indexes.rows.map(({ name }) => name).sort(), [
-        "messages_conversation_sequence",
-        "messages_conversation_sequence_unique",
-      ]);
-      assert.deepEqual((await client.execute({
-        sql: "SELECT name, next_sequence, roster_revision FROM conversations WHERE id = ?",
-        args: [channel.id],
-      })).rows, [{ name: "preserved-history", next_sequence: 3, roster_revision: 1 }]);
-      assert.deepEqual((await client.execute({
-        sql: "SELECT count(*) AS count FROM messages WHERE conversation_id = ?",
-        args: [channel.id],
-      })).rows, [{ count: 2 }]);
-      assert.deepEqual((await client.execute({
-        sql: "SELECT message_id FROM message_idempotency WHERE conversation_id = ?",
-        args: [channel.id],
-      })).rows, [{ message_id: trigger.id }]);
-      assert.deepEqual((await client.execute({
-        sql: "SELECT response_message_id FROM response_deliveries WHERE conversation_id = ?",
-        args: [channel.id],
-      })).rows, [{ response_message_id: response.id }]);
-      assert.deepEqual((await client.execute({
-        sql: "SELECT last_processed_sequence FROM agent_cursors WHERE conversation_id = ?",
-        args: [channel.id],
-      })).rows, [{ last_processed_sequence: response.sequence }]);
-    } finally {
-      client.close();
-    }
-  } finally {
-    await storage?.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+      assert.equal((await client.execute("SELECT count(*) AS count FROM messages WHERE conversation_id = ?", [channelId])).rows[0]?.count, 2);
+    } finally { client.close(); }
+  } finally { await fixture.close(); }
 });

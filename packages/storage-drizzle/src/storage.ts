@@ -129,7 +129,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         updatedAt: identity.updatedAt,
       }).where(eq(schema.identities.id, identity.id)).returning();
       if (!updated) return undefined;
-      const affected = await transaction.select({ channelId: schema.participants.channelId })
+      const affected = await transaction.select({ channelId: schema.participants.conversationId })
         .from(schema.participants)
         .where(eq(schema.participants.id, identity.id));
       await transaction.update(schema.participants).set({
@@ -137,10 +137,10 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       }).where(eq(schema.participants.id, identity.id));
       const rosters: IdentityUpdateResult["rosters"] = [];
       for (const { channelId } of affected) {
-        const [channel] = await transaction.update(schema.channels).set({
-          rosterRevision: sql`${schema.channels.rosterRevision} + 1`,
-        }).where(eq(schema.channels.id, channelId)).returning({
-          rosterRevision: schema.channels.rosterRevision,
+        const [channel] = await transaction.update(schema.conversations).set({
+          rosterRevision: sql`${schema.conversations.rosterRevision} + 1`,
+        }).where(eq(schema.conversations.id, channelId)).returning({
+          rosterRevision: schema.conversations.rosterRevision,
         });
         rosters.push({ channelId, rosterRevision: channel!.rosterRevision });
       }
@@ -242,11 +242,11 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
         eq(schema.workspaceMembers.updatedAt, expectedUpdatedAt),
       )).returning();
       if (!updated[0]) return undefined;
-      const affected = await transaction.select({ channelId: schema.participants.channelId })
+      const affected = await transaction.select({ channelId: schema.participants.conversationId })
         .from(schema.participants)
-        .innerJoin(schema.channels, eq(schema.channels.id, schema.participants.channelId))
+        .innerJoin(schema.conversations, eq(schema.conversations.id, schema.participants.conversationId))
         .where(and(
-          eq(schema.channels.workspaceId, member.workspaceId),
+          eq(schema.conversations.workspaceId, member.workspaceId),
           eq(schema.participants.id, member.identityId),
         ));
       const rosters: WorkspaceMemberUpdateResult["rosters"] = [];
@@ -258,25 +258,25 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
           profile: participant.profile,
           status: participant.status ?? "active",
         }).where(and(
-          eq(schema.participants.channelId, channelId),
+          eq(schema.participants.conversationId, channelId),
           eq(schema.participants.id, member.identityId),
         ));
-        const revisions = await transaction.update(schema.channels).set({
-          rosterRevision: sql`${schema.channels.rosterRevision} + 1`,
-        }).where(eq(schema.channels.id, channelId)).returning({
-          rosterRevision: schema.channels.rosterRevision,
+        const revisions = await transaction.update(schema.conversations).set({
+          rosterRevision: sql`${schema.conversations.rosterRevision} + 1`,
+        }).where(eq(schema.conversations.id, channelId)).returning({
+          rosterRevision: schema.conversations.rosterRevision,
         });
         if (member.status === "disabled") {
           const latest = await transaction.select({
             sequence: sql<number>`coalesce(max(${schema.messages.sequence}), 0)`,
-          }).from(schema.messages).where(eq(schema.messages.channelId, channelId));
+          }).from(schema.messages).where(eq(schema.messages.conversationId, channelId));
           await transaction.insert(schema.agentCursors).values({
-            channelId,
+            conversationId: channelId,
             participantId: member.identityId,
             lastProcessedSequence: latest[0]?.sequence ?? 0,
             updatedAt: member.updatedAt,
           }).onConflictDoUpdate({
-            target: [schema.agentCursors.channelId, schema.agentCursors.participantId],
+            target: [schema.agentCursors.conversationId, schema.agentCursors.participantId],
             set: {
               lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${latest[0]?.sequence ?? 0})`,
               updatedAt: member.updatedAt,
@@ -323,7 +323,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
 
   async createChannel(channel: Channel): Promise<Channel> {
     await this.database.transaction(async (transaction) => {
-      await transaction.insert(schema.channels).values({
+      await transaction.insert(schema.conversations).values({
         id: channel.id,
         workspaceId: channel.workspaceId,
         name: channel.name,
@@ -334,7 +334,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       if (channel.participants.length > 0) {
         await transaction.insert(schema.participants).values(
           channel.participants.map((participant, position) => ({
-            channelId: channel.id,
+            conversationId: channel.id,
             id: participant.id,
             handle: participant.handle,
             type: participant.type,
@@ -356,23 +356,23 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
 
   async listWorkspaceChannels(workspaceId: string): Promise<ChannelMetadata[]> {
     const channels = await this.database
-      .select({ id: schema.channels.id })
-      .from(schema.channels)
-      .where(eq(schema.channels.workspaceId, workspaceId))
-      .orderBy(asc(schema.channels.createdAt));
+      .select({ id: schema.conversations.id })
+      .from(schema.conversations)
+      .where(eq(schema.conversations.workspaceId, workspaceId))
+      .orderBy(asc(schema.conversations.createdAt));
     const metadata = await Promise.all(channels.map((channel) => this.getChannelMetadata(channel.id)));
     return metadata.filter((channel): channel is ChannelMetadata => channel !== undefined);
   }
 
   async getChannelMetadata(channelId: string): Promise<ChannelMetadata | undefined> {
-    const channel = await this.database.query.channels.findFirst({
-      where: eq(schema.channels.id, channelId),
+    const channel = await this.database.query.conversations.findFirst({
+      where: eq(schema.conversations.id, channelId),
     });
     if (!channel) return undefined;
     const participants = await this.database
       .select()
       .from(schema.participants)
-      .where(eq(schema.participants.channelId, channelId))
+      .where(eq(schema.participants.conversationId, channelId))
       .orderBy(asc(schema.participants.position));
     return {
       id: channel.id,
@@ -393,10 +393,10 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
   }
 
   async updateChannelName(channelId: string, name: string): Promise<ChannelMetadata | undefined> {
-    const updated = await this.database.update(schema.channels)
+    const updated = await this.database.update(schema.conversations)
       .set({ name })
-      .where(eq(schema.channels.id, channelId))
-      .returning({ id: schema.channels.id });
+      .where(eq(schema.conversations.id, channelId))
+      .returning({ id: schema.conversations.id });
     return updated[0] ? await this.getChannelMetadata(channelId) : undefined;
   }
 
@@ -434,28 +434,28 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
   ): Promise<ChannelRosterUpdateResult | undefined> {
     return await this.database.transaction(async (transaction) => {
       const [channel] = await transaction.select({
-        id: schema.channels.id,
-        workspaceId: schema.channels.workspaceId,
-        name: schema.channels.name,
-        createdAt: schema.channels.createdAt,
-      }).from(schema.channels).where(eq(schema.channels.id, channelId)).limit(1);
+        id: schema.conversations.id,
+        workspaceId: schema.conversations.workspaceId,
+        name: schema.conversations.name,
+        createdAt: schema.conversations.createdAt,
+      }).from(schema.conversations).where(eq(schema.conversations.id, channelId)).limit(1);
       const previous = await transaction.select({ id: schema.participants.id })
         .from(schema.participants)
-        .where(eq(schema.participants.channelId, channelId));
-      const revisions = await transaction.update(schema.channels).set({
-        rosterRevision: sql`${schema.channels.rosterRevision} + 1`,
+        .where(eq(schema.participants.conversationId, channelId));
+      const revisions = await transaction.update(schema.conversations).set({
+        rosterRevision: sql`${schema.conversations.rosterRevision} + 1`,
       }).where(and(
-        eq(schema.channels.id, channelId),
-        eq(schema.channels.rosterRevision, expectedRosterRevision),
-      )).returning({ rosterRevision: schema.channels.rosterRevision });
+        eq(schema.conversations.id, channelId),
+        eq(schema.conversations.rosterRevision, expectedRosterRevision),
+      )).returning({ rosterRevision: schema.conversations.rosterRevision });
       if (!revisions[0]) return undefined;
 
       await transaction.delete(schema.participants)
-        .where(eq(schema.participants.channelId, channelId));
+        .where(eq(schema.participants.conversationId, channelId));
       if (participants.length > 0) {
         await transaction.insert(schema.participants).values(
           participants.map((participant, position) => ({
-            channelId,
+            conversationId: channelId,
             id: participant.id,
             handle: participant.handle,
             type: participant.type,
@@ -475,16 +475,16 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       if (removedParticipantIds.length > 0) {
         const latest = await transaction.select({
           sequence: sql<number>`coalesce(max(${schema.messages.sequence}), 0)`,
-        }).from(schema.messages).where(eq(schema.messages.channelId, channelId));
+        }).from(schema.messages).where(eq(schema.messages.conversationId, channelId));
         const headSequence = latest[0]?.sequence ?? 0;
         for (const participantId of removedParticipantIds) {
           await transaction.insert(schema.agentCursors).values({
-            channelId,
+            conversationId: channelId,
             participantId,
             lastProcessedSequence: headSequence,
             updatedAt,
           }).onConflictDoUpdate({
-            target: [schema.agentCursors.channelId, schema.agentCursors.participantId],
+            target: [schema.agentCursors.conversationId, schema.agentCursors.participantId],
             set: {
               lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${headSequence})`,
               updatedAt,
@@ -508,20 +508,20 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
   }
 
   async getChannel(channelId: string): Promise<Channel | undefined> {
-    const channel = await this.database.query.channels.findFirst({
-      where: eq(schema.channels.id, channelId),
+    const channel = await this.database.query.conversations.findFirst({
+      where: eq(schema.conversations.id, channelId),
     });
     if (!channel) return undefined;
     const [participants, messages] = await Promise.all([
       this.database
         .select()
         .from(schema.participants)
-        .where(eq(schema.participants.channelId, channelId))
+        .where(eq(schema.participants.conversationId, channelId))
         .orderBy(asc(schema.participants.position)),
       this.database
         .select()
         .from(schema.messages)
-        .where(eq(schema.messages.channelId, channelId))
+        .where(eq(schema.messages.conversationId, channelId))
         .orderBy(asc(schema.messages.sequence)),
     ]);
     return {
@@ -541,7 +541,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       })),
       messages: messages.map((message) => ({
         id: message.id,
-        channelId: message.channelId,
+        channelId: message.conversationId,
         sequence: message.sequence,
         participantId: message.participantId,
         to: [...message.targets],
@@ -556,12 +556,12 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     channelId: string,
     options: MessageListOptions = {},
   ): Promise<ChannelMessage[] | undefined> {
-    const channel = await this.database.query.channels.findFirst({
+    const channel = await this.database.query.conversations.findFirst({
       columns: { id: true },
-      where: eq(schema.channels.id, channelId),
+      where: eq(schema.conversations.id, channelId),
     });
     if (!channel) return undefined;
-    const conditions = [eq(schema.messages.channelId, channelId)];
+    const conditions = [eq(schema.messages.conversationId, channelId)];
     if (options.afterSequence !== undefined) conditions.push(gt(schema.messages.sequence, options.afterSequence));
     if (options.beforeSequence !== undefined) conditions.push(lt(schema.messages.sequence, options.beforeSequence));
     const rows = await this.database
@@ -573,7 +573,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     if (options.beforeSequence !== undefined) rows.reverse();
     return rows.map((message) => ({
       id: message.id,
-      channelId: message.channelId,
+      channelId: message.conversationId,
       sequence: message.sequence,
       participantId: message.participantId,
       to: [...message.targets],
@@ -586,14 +586,14 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
   async appendMessage(message: NewChannelMessage): Promise<ChannelMessage> {
     return await this.database.transaction(async (transaction) => {
       const [allocated] = await transaction
-        .update(schema.channels)
-        .set({ nextSequence: sql`${schema.channels.nextSequence} + 1` })
-        .where(eq(schema.channels.id, message.channelId))
-        .returning({ sequence: sql<number>`${schema.channels.nextSequence} - 1` });
+        .update(schema.conversations)
+        .set({ nextSequence: sql`${schema.conversations.nextSequence} + 1` })
+        .where(eq(schema.conversations.id, message.channelId))
+        .returning({ sequence: sql<number>`${schema.conversations.nextSequence} - 1` });
       if (!allocated) throw new Error(`Channel not found: ${message.channelId}`);
       await transaction.insert(schema.messages).values({
         id: message.id,
-        channelId: message.channelId,
+        conversationId: message.channelId,
         sequence: allocated.sequence,
         participantId: message.participantId,
         targets: message.to,
@@ -671,11 +671,11 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     try {
       const existingResult = await transaction.execute({
         sql: `
-          SELECT i.request_fingerprint, m.id, m.channel_id, m.sequence,
+          SELECT i.request_fingerprint, m.id, m.conversation_id, m.sequence,
                  m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at
           FROM message_idempotency i
           JOIN messages m ON m.id = i.message_id
-          WHERE i.channel_id = ? AND i.participant_id = ? AND i.idempotency_key = ?
+          WHERE i.conversation_id = ? AND i.participant_id = ? AND i.idempotency_key = ?
           LIMIT 1
         `,
         args: [message.channelId, message.participantId, idempotencyKey],
@@ -687,7 +687,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
           outcome: existing.request_fingerprint === requestFingerprint ? "replayed" : "conflict",
           message: {
             id: String(existing.id),
-            channelId: String(existing.channel_id),
+            channelId: String(existing.conversation_id),
             sequence: Number(existing.sequence),
             participantId: String(existing.participant_id),
             to: JSON.parse(String(existing.targets_json)) as string[],
@@ -700,7 +700,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
 
       const allocatedResult = await transaction.execute({
         sql: `
-          UPDATE channels SET next_sequence = next_sequence + 1
+          UPDATE conversations SET next_sequence = next_sequence + 1
           WHERE id = ? RETURNING next_sequence - 1 AS sequence
         `,
         args: [message.channelId],
@@ -711,7 +711,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       await transaction.execute({
         sql: `
           INSERT INTO messages
-            (id, channel_id, sequence, participant_id, targets_json, body, reply_to, created_at)
+            (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `,
         args: [
@@ -728,7 +728,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       await transaction.execute({
         sql: `
           INSERT INTO message_idempotency
-            (channel_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at)
+            (conversation_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at)
           VALUES (?, ?, ?, ?, ?, ?)
         `,
         args: [
@@ -794,17 +794,17 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
   ): Promise<ResponseResult> {
     return await this.database.transaction(async (transaction) => {
       const [lockedChannel] = await transaction
-        .update(schema.channels)
-        .set({ nextSequence: sql`${schema.channels.nextSequence}` })
-        .where(eq(schema.channels.id, message.channelId))
-        .returning({ id: schema.channels.id });
+        .update(schema.conversations)
+        .set({ nextSequence: sql`${schema.conversations.nextSequence}` })
+        .where(eq(schema.conversations.id, message.channelId))
+        .returning({ id: schema.conversations.id });
       if (!lockedChannel) throw new Error(`Channel not found: ${message.channelId}`);
       const [existingDelivery] = await transaction
         .select({ responseMessageId: schema.responseDeliveries.responseMessageId })
         .from(schema.responseDeliveries)
         .where(
           and(
-            eq(schema.responseDeliveries.channelId, message.channelId),
+            eq(schema.responseDeliveries.conversationId, message.channelId),
             eq(schema.responseDeliveries.participantId, message.participantId),
             eq(schema.responseDeliveries.triggerMessageId, message.replyTo),
           ),
@@ -821,7 +821,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
           created: false,
           message: {
             id: existing.id,
-            channelId: existing.channelId,
+            channelId: existing.conversationId,
             sequence: existing.sequence,
             participantId: existing.participantId,
             to: [...existing.targets],
@@ -833,14 +833,14 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       }
 
       const [allocated] = await transaction
-        .update(schema.channels)
-        .set({ nextSequence: sql`${schema.channels.nextSequence} + 1` })
-        .where(eq(schema.channels.id, message.channelId))
-        .returning({ sequence: sql<number>`${schema.channels.nextSequence} - 1` });
+        .update(schema.conversations)
+        .set({ nextSequence: sql`${schema.conversations.nextSequence} + 1` })
+        .where(eq(schema.conversations.id, message.channelId))
+        .returning({ sequence: sql<number>`${schema.conversations.nextSequence} - 1` });
       if (!allocated) throw new Error(`Channel not found: ${message.channelId}`);
       await transaction.insert(schema.messages).values({
         id: message.id,
-        channelId: message.channelId,
+        conversationId: message.channelId,
         sequence: allocated.sequence,
         participantId: message.participantId,
         targets: message.to,
@@ -852,20 +852,20 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       await transaction
         .insert(schema.agentCursors)
         .values({
-          channelId: message.channelId,
+          conversationId: message.channelId,
           participantId: message.participantId,
           lastProcessedSequence: triggerSequence,
           updatedAt,
         })
         .onConflictDoUpdate({
-          target: [schema.agentCursors.channelId, schema.agentCursors.participantId],
+          target: [schema.agentCursors.conversationId, schema.agentCursors.participantId],
           set: {
             lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${triggerSequence})`,
             updatedAt,
           },
         });
       await transaction.insert(schema.responseDeliveries).values({
-        channelId: message.channelId,
+        conversationId: message.channelId,
         participantId: message.participantId,
         triggerMessageId: message.replyTo,
         triggerSequence,
@@ -885,7 +885,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
       .from(schema.agentCursors)
       .where(
         and(
-          eq(schema.agentCursors.channelId, channelId),
+          eq(schema.agentCursors.conversationId, channelId),
           eq(schema.agentCursors.participantId, participantId),
         ),
       )
@@ -897,13 +897,13 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     await this.database
       .insert(schema.agentCursors)
       .values({
-        channelId,
+        conversationId: channelId,
         participantId,
         lastProcessedSequence: sequence,
         updatedAt: new Date().toISOString(),
       })
       .onConflictDoUpdate({
-        target: [schema.agentCursors.channelId, schema.agentCursors.participantId],
+        target: [schema.agentCursors.conversationId, schema.agentCursors.participantId],
         set: {
           lastProcessedSequence: sequence,
           updatedAt: new Date().toISOString(),

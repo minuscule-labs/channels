@@ -50,6 +50,13 @@
       "when": 1788004609371,
       "tag": "0006_channel_names",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1788048000000,
+      "tag": "0007_channel_conversations",
+      "breakpoints": true
     }
   ]
 }
