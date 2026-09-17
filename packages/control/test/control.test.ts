@@ -243,6 +243,61 @@ test("projects private bindings into presentation-safe Conversation agent status
   assert.doesNotMatch(publicJson, /runtimeSessionId|runtimeAdapter|leaseOwner/);
 });
 
+test("Conversation snooze and settle fence admission and require managed agents to be idle", async () => {
+  const managedConversation: ConversationMetadata = {
+    ...conversation,
+    participants: [conversation.participants[0]!, conversation.participants[1]!],
+  };
+  const binding: LocalControlBindingRecord = { ...records[0]! };
+  let runtimeStatus: "idle" | "working" = "idle";
+  let stopped = 0;
+  let fenced = 0;
+  let cleared = 0;
+  const updates: Array<{ state: string; snoozedUntil?: string }> = [];
+  const control = new LocalControlService({
+    conversations: {
+      async getConversation() { return managedConversation; },
+      async getConversationLifecycle() { return { state: "active" }; },
+      async updateConversationLifecycle(_conversationId, input) {
+        updates.push({ state: input.state, snoozedUntil: input.snoozedUntil });
+        return input.state === "snoozed"
+          ? { state: "snoozed", snoozedUntil: input.snoozedUntil }
+          : { state: input.state };
+      },
+    },
+    bindings: { async listConversationBindings() { return [binding]; } },
+    runtimes: { "pi-private-adapter": { async status() { return runtimeStatus; } } },
+    lifecycle: {
+      available: true,
+      fenceConversationAdmission() { fenced += 1; return () => { fenced -= 1; }; },
+      clearConversationAdmissionFence() { cleared += 1; },
+      async startConversationAgent() {},
+      async replaceConversationAgent() {},
+      async stopConversationAgent() { stopped += 1; binding.state = "disabled"; },
+      async cancelCurrentConversationAgent() {},
+    },
+  });
+  const snoozedUntil = new Date(Date.now() + 60_000).toISOString();
+  assert.deepEqual(await control.updateConversationLifecycle(managedConversation.id, "human-1", {
+    state: "snoozed", snoozedUntil,
+  }), { state: "snoozed", snoozedUntil });
+  assert.equal(stopped, 1);
+  assert.equal(fenced, 1);
+  assert.deepEqual(updates, [{ state: "snoozed", snoozedUntil }]);
+
+  assert.deepEqual(await control.updateConversationLifecycle(managedConversation.id, "human-1", {
+    state: "active",
+  }), { state: "active" });
+  assert.equal(cleared, 1);
+  binding.state = "connected";
+  runtimeStatus = "working";
+  await assert.rejects(control.updateConversationLifecycle(managedConversation.id, "human-1", {
+    state: "settled",
+  }), /must be idle or stopped/);
+  assert.equal(fenced, 1);
+  assert.equal(updates.length, 2);
+});
+
 test("projects Relay activity and accepts cancellation without exposing Runtime details", async () => {
   let cancelCalls = 0;
   const control = new LocalControlService({

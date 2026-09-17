@@ -221,6 +221,7 @@ export class LocalAgentHost {
   private readonly pending = new Map<string, Promise<unknown>>();
   private readonly attachingBindings = new Set<string>();
   private readonly recoveries = new Map<string, BindingRecovery>();
+  private readonly conversationAdmissionFences = new Map<string, number>();
   private readonly recoveryBackoffMs: readonly number[];
   private readonly startedSessions = new Map<string, {
     bindingId: string;
@@ -280,6 +281,26 @@ export class LocalAgentHost {
     return this.workSnapshot();
   }
 
+  /** Blocks new managed-session admission while a Conversation lifecycle transition is in progress. */
+  fenceConversationAdmission(conversationId: string): () => void {
+    this.conversationAdmissionFences.set(
+      conversationId,
+      (this.conversationAdmissionFences.get(conversationId) ?? 0) + 1,
+    );
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.conversationAdmissionFences.get(conversationId) ?? 1) - 1;
+      if (remaining <= 0) this.conversationAdmissionFences.delete(conversationId);
+      else this.conversationAdmissionFences.set(conversationId, remaining);
+    };
+  }
+
+  clearConversationAdmissionFence(conversationId: string): void {
+    this.conversationAdmissionFences.delete(conversationId);
+  }
+
   async startAllConversationAgents(
     conversationId: string,
     actorIdentityId: string,
@@ -322,6 +343,7 @@ export class LocalAgentHost {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        await this.assertConversationAdmission(conversationId);
         const conversation = await this.options.client.getConversation(conversationId).catch(() => {
           throw new LocalConfigurationRequestError("Conversation is unavailable", 404, "unavailable");
         });
@@ -468,6 +490,7 @@ export class LocalAgentHost {
       let workspaceId: string | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        await this.assertConversationAdmission(conversationId);
         const context = await this.configuredContext(conversationId, agentIdentityId, actorIdentityId);
         workspaceId = context.conversation.workspaceId;
         assertModelPolicy(context.workspaceConfig, context.agentConfig);
@@ -599,6 +622,7 @@ export class LocalAgentHost {
       let workspaceId: string | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        await this.assertConversationAdmission(conversationId);
         const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
         workspaceId = context.conversation.workspaceId;
         const matches = context.bindings.filter(({ agentIdentityId: candidate }) => candidate === agentIdentityId);
@@ -1232,6 +1256,14 @@ export class LocalAgentHost {
   }
 
   private async attachBinding(conversationId: string, bindingId: string): Promise<AttachmentResult> {
+    if (this.conversationAdmissionFences.has(conversationId)) return "lease_unavailable";
+    try {
+      if ((await this.options.client.getConversationLifecycle(conversationId)).state !== "active") {
+        return "runtime_offline";
+      }
+    } catch {
+      return "runtime_uncertain";
+    }
     const lockKey = `relay:${conversationId}`;
     const reserved = await this.exclusive(lockKey, async () => {
       if (this.attachingBindings.has(bindingId)) return false;
@@ -1497,6 +1529,21 @@ export class LocalAgentHost {
       return runner.relay;
     });
     await relayToStop?.stop();
+  }
+
+  private async assertConversationAdmission(conversationId: string): Promise<void> {
+    if (this.conversationAdmissionFences.has(conversationId)) {
+      throw new LocalConfigurationRequestError("Conversation lifecycle transition is in progress", 409, "unavailable");
+    }
+    let lifecycle: { state: string };
+    try {
+      lifecycle = await this.options.client.getConversationLifecycle(conversationId);
+    } catch {
+      throw new LocalConfigurationRequestError("Conversation lifecycle is unavailable", 409, "unavailable");
+    }
+    if (lifecycle.state !== "active") {
+      throw new LocalConfigurationRequestError("Conversation is not active", 409, "unavailable");
+    }
   }
 
   private bindingKey(conversationId: string, agentIdentityId: string): string {

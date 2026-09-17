@@ -1,4 +1,8 @@
-import type { ConversationMetadata } from "@minu/channels-core/types";
+import type {
+  ConversationMetadata,
+  EffectiveConversationLifecycle,
+  UpdateConversationLifecycleInput,
+} from "@minu/channels-core/types";
 import { execFile } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { promisify } from "node:util";
@@ -69,6 +73,11 @@ import {
 
 export interface LocalControlConversationDirectory {
   getConversation(conversationId: string): Promise<ConversationMetadata>;
+  getConversationLifecycle?(conversationId: string): Promise<EffectiveConversationLifecycle>;
+  updateConversationLifecycle?(
+    conversationId: string,
+    input: UpdateConversationLifecycleInput,
+  ): Promise<EffectiveConversationLifecycle>;
 }
 
 export interface LocalControlBindingRecord {
@@ -109,6 +118,8 @@ export interface LocalControlRuntimePort {
 
 export interface LocalControlAgentLifecyclePort {
   readonly available: boolean;
+  fenceConversationAdmission?(conversationId: string): () => void;
+  clearConversationAdmissionFence?(conversationId: string): void;
   startConversationAgent(
     conversationId: string,
     agentIdentityId: string,
@@ -259,6 +270,7 @@ function presentLiveCapabilities(
 
 export class LocalControlService {
   private readonly statusTimeoutMs: number;
+  private readonly lifecycleTransitions = new Map<string, Promise<EffectiveConversationLifecycle>>();
 
   constructor(private readonly options: LocalControlServiceOptions) {
     this.statusTimeoutMs = options.statusTimeoutMs ?? 2_000;
@@ -269,6 +281,104 @@ export class LocalControlService {
 
   health(): LocalControlHealth {
     return { status: "ok", protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION };
+  }
+
+  async getConversationLifecycle(
+    conversationId: string,
+  ): Promise<EffectiveConversationLifecycle> {
+    if (!this.options.conversations.getConversationLifecycle) {
+      throw new LocalConfigurationRequestError("Conversation lifecycle is unavailable", 409, "unavailable");
+    }
+    return await this.options.conversations.getConversationLifecycle(conversationId);
+  }
+
+  async updateConversationLifecycle(
+    conversationId: string,
+    actorIdentityId: string,
+    input: Omit<UpdateConversationLifecycleInput, "actorIdentityId">,
+  ): Promise<EffectiveConversationLifecycle> {
+    const prior = this.lifecycleTransitions.get(conversationId) ?? Promise.resolve({ state: "active" });
+    const operation = prior.catch(() => ({ state: "active" } as EffectiveConversationLifecycle)).then(
+      () => this.updateConversationLifecycleOnce(conversationId, actorIdentityId, input),
+    );
+    this.lifecycleTransitions.set(conversationId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.lifecycleTransitions.get(conversationId) === operation) {
+        this.lifecycleTransitions.delete(conversationId);
+      }
+    }
+  }
+
+  private async updateConversationLifecycleOnce(
+    conversationId: string,
+    actorIdentityId: string,
+    input: Omit<UpdateConversationLifecycleInput, "actorIdentityId">,
+  ): Promise<EffectiveConversationLifecycle> {
+    if (!this.options.conversations.updateConversationLifecycle) {
+      throw new LocalConfigurationRequestError("Conversation lifecycle is unavailable", 409, "unavailable");
+    }
+    if (!input || !["active", "snoozed", "settled"].includes(input.state)) {
+      throw new LocalConfigurationRequestError("Conversation lifecycle state is invalid", 400, "invalid");
+    }
+    if (input.state === "snoozed" && (
+      typeof input.snoozedUntil !== "string"
+      || Number.isNaN(Date.parse(input.snoozedUntil))
+      || Date.parse(input.snoozedUntil) <= Date.now()
+    )) {
+      throw new LocalConfigurationRequestError("Conversation snooze time must be in the future", 400, "invalid");
+    }
+    const current = await this.getConversationLifecycle(conversationId);
+    if (current.state === "settled" && input.state !== "active") {
+      throw new LocalConfigurationRequestError("A settled Conversation must be reopened first", 409, "unavailable");
+    }
+    if (input.state === "active") {
+      const lifecycle = await this.options.conversations.updateConversationLifecycle(conversationId, {
+        actorIdentityId,
+        state: "active",
+      });
+      this.options.lifecycle?.clearConversationAdmissionFence?.(conversationId);
+      return lifecycle;
+    }
+
+    const releaseFence = this.options.lifecycle?.fenceConversationAdmission?.(conversationId);
+    let committed = false;
+    try {
+      const agents = (await this.listConversationAgents(conversationId)).agents;
+      const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "idle"].includes(state));
+      if (unsafeAgents.length > 0) {
+        throw new LocalConfigurationRequestError(
+          "All managed Conversation agents must be idle or stopped before snoozing or settling",
+          409,
+          "unavailable",
+        );
+      }
+      for (const agent of agents.filter(({ state }) => state === "idle")) {
+        if (!this.options.lifecycle) {
+          throw new LocalConfigurationRequestError("Managed agent control is unavailable", 409, "unavailable");
+        }
+        await this.options.lifecycle.stopConversationAgent(conversationId, agent.identityId, actorIdentityId);
+      }
+      const afterStop = await this.listConversationAgents(conversationId);
+      if (afterStop.agents.some(({ state }) => state !== "unbound" && state !== "disabled")) {
+        throw new LocalConfigurationRequestError(
+          "Conversation agents changed while lifecycle was being updated; retry",
+          409,
+          "unavailable",
+        );
+      }
+      const lifecycle = await this.options.conversations.updateConversationLifecycle(conversationId, {
+        actorIdentityId,
+        state: input.state,
+        ...(input.state === "snoozed" ? { snoozedUntil: input.snoozedUntil } : {}),
+      });
+      committed = true;
+      return lifecycle;
+    } finally {
+      // A persisted non-active lifecycle keeps the admission fence until an explicit reopen.
+      if (!committed) releaseFence?.();
+    }
   }
 
   capabilities(): LocalControlCapabilities {
@@ -943,6 +1053,23 @@ export async function createLocalControlHttpServer(
       }
       if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
+        return;
+      }
+      const conversationLifecycleMatch = path.match(/^\/local\/conversations\/([^/]+)\/lifecycle$/);
+      if (conversationLifecycleMatch && request.method === "GET" && browserSession) {
+        json(response, 200, {
+          lifecycle: await options.service.getConversationLifecycle(decodeURIComponent(conversationLifecycleMatch[1]!)),
+        }, origin);
+        return;
+      }
+      if (conversationLifecycleMatch && request.method === "PATCH" && browserSession) {
+        json(response, 200, {
+          lifecycle: await options.service.updateConversationLifecycle(
+            decodeURIComponent(conversationLifecycleMatch[1]!),
+            browserSession.identityId,
+            (await readJson(request)) as Omit<UpdateConversationLifecycleInput, "actorIdentityId">,
+          ),
+        }, origin);
         return;
       }
       if (path === "/local/folders/select" && request.method === "POST" && browserSession) {

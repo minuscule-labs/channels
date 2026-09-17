@@ -465,6 +465,9 @@ export class ConversationService {
     if (!input || !["active", "snoozed", "settled"].includes(input.state)) {
       throw new ConversationValidationError("Conversation lifecycle state must be active, snoozed, or settled");
     }
+    if (input.state !== "snoozed" && input.snoozedUntil !== undefined) {
+      throw new ConversationValidationError("snoozedUntil is valid only for a snoozed Conversation");
+    }
     if (typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
       throw new ConversationValidationError("actorIdentityId is required");
     }

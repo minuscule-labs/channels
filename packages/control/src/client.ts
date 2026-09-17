@@ -1,4 +1,8 @@
 import type {
+  EffectiveConversationLifecycle,
+  ConversationLifecycleState,
+} from "@minu/channels-core/types";
+import type {
   LocalAgentRuntimeOptions,
   LocalBulkAgentLifecycleResponse,
   LocalConversationAgent,
@@ -75,6 +79,23 @@ export class LocalControlClient {
 
   async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
     return this.get<LocalConversationAgentsResponse>(`/local/conversations/${encodeURIComponent(conversationId)}/agents`);
+  }
+
+  async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
+    return (await this.get<{ lifecycle: EffectiveConversationLifecycle }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/lifecycle`,
+    )).lifecycle;
+  }
+
+  async updateConversationLifecycle(
+    conversationId: string,
+    input: { state: ConversationLifecycleState; snoozedUntil?: string },
+  ): Promise<EffectiveConversationLifecycle> {
+    return (await this.request<{ lifecycle: EffectiveConversationLifecycle }>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/lifecycle`,
+      { method: "PATCH", body: JSON.stringify(input) },
+      this.lifecycleTimeoutMs,
+    )).lifecycle;
   }
 
   async getConversationWorkingFolders(conversationId: string): Promise<LocalConversationWorkingFolders> {
