@@ -137,6 +137,20 @@ function messageTargets(conversation: Conversation, input: CreateMessageInput): 
 
 export class ConversationService {
   private readonly listeners = new Map<string, Set<EventListener>>();
+  private readonly conversationOperations = new Map<string, Promise<unknown>>();
+
+  private async serializeConversation<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    const prior = this.conversationOperations.get(conversationId) ?? Promise.resolve();
+    const current = prior.catch(() => undefined).then(operation);
+    this.conversationOperations.set(conversationId, current);
+    try {
+      return await current;
+    } finally {
+      if (this.conversationOperations.get(conversationId) === current) {
+        this.conversationOperations.delete(conversationId);
+      }
+    }
+  }
 
   constructor(readonly storage: ConversationStorage = new InMemoryConversationStorage()) {}
 
@@ -461,6 +475,16 @@ export class ConversationService {
     conversationId: string,
     input: UpdateConversationLifecycleInput,
   ): Promise<EffectiveConversationLifecycle> {
+    return await this.serializeConversation(
+      conversationId,
+      () => this.updateConversationLifecycleOnce(conversationId, input),
+    );
+  }
+
+  private async updateConversationLifecycleOnce(
+    conversationId: string,
+    input: UpdateConversationLifecycleInput,
+  ): Promise<EffectiveConversationLifecycle> {
     const conversation = await this.getConversationMetadata(conversationId);
     if (!input || !["active", "snoozed", "settled"].includes(input.state)) {
       throw new ConversationValidationError("Conversation lifecycle state must be active, snoozed, or settled");
@@ -679,6 +703,13 @@ export class ConversationService {
   }
 
   async updateConversation(conversationId: string, input: UpdateConversationInput): Promise<ConversationMetadata> {
+    return await this.serializeConversation(
+      conversationId,
+      () => this.updateConversationOnce(conversationId, input),
+    );
+  }
+
+  private async updateConversationOnce(conversationId: string, input: UpdateConversationInput): Promise<ConversationMetadata> {
     if (!input || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
       throw new ConversationValidationError("actorIdentityId is required");
     }
@@ -707,6 +738,16 @@ export class ConversationService {
   }
 
   async updateConversationParticipants(
+    conversationId: string,
+    input: UpdateConversationParticipantsInput,
+  ): Promise<ConversationMetadata> {
+    return await this.serializeConversation(
+      conversationId,
+      () => this.updateConversationParticipantsOnce(conversationId, input),
+    );
+  }
+
+  private async updateConversationParticipantsOnce(
     conversationId: string,
     input: UpdateConversationParticipantsInput,
   ): Promise<ConversationMetadata> {
@@ -800,6 +841,17 @@ export class ConversationService {
     input: CreateMessageInput,
     idempotencyKey?: string,
   ): Promise<ConversationMessage> {
+    return await this.serializeConversation(
+      conversationId,
+      () => this.createMessageOnce(conversationId, input, idempotencyKey),
+    );
+  }
+
+  private async createMessageOnce(
+    conversationId: string,
+    input: CreateMessageInput,
+    idempotencyKey?: string,
+  ): Promise<ConversationMessage> {
     const validatedKey = validateIdempotencyKey(idempotencyKey);
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
@@ -860,6 +912,16 @@ export class ConversationService {
   }
 
   async createResponse(
+    conversationId: string,
+    input: CreateResponseInput,
+  ): Promise<ResponseResult> {
+    return await this.serializeConversation(
+      conversationId,
+      () => this.createResponseOnce(conversationId, input),
+    );
+  }
+
+  private async createResponseOnce(
     conversationId: string,
     input: CreateResponseInput,
   ): Promise<ResponseResult> {

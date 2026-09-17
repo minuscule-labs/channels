@@ -49,6 +49,12 @@ export function AppShell() {
       staleTime: 5_000,
     })),
   });
+  const selectedWorkspaceMembers = useQuery({
+    queryKey: selectedWorkspace ? queryKeys.workspaceMembers(selectedWorkspace.id) : ["workspace", "none", "members"],
+    queryFn: () => conversations.listWorkspaceMembers(selectedWorkspace!.id),
+    enabled: Boolean(selectedWorkspace && currentSession.data?.identityId),
+    staleTime: 60_000,
+  });
   const lifecycleAction = useMutation({
     mutationFn: ({ conversationId, state }: { conversationId: string; state: "active" | "snoozed" | "settled" }) =>
       localControl.updateConversationLifecycle(
@@ -62,6 +68,15 @@ export function AppShell() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
   });
+  const canAdministerLifecycle = selectedWorkspaceMembers.data?.some((member) =>
+    member.identityId === currentSession.data?.identityId
+    && member.status === "active"
+    && (member.accessRole === "owner" || member.accessRole === "admin"),
+  ) ?? false;
+  const runLifecycleChange = (conversationId: string, state: "active" | "snoozed" | "settled") => {
+    lifecycleAction.reset();
+    lifecycleAction.mutate({ conversationId, state });
+  };
   const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
   const observedConversations = useMemo(() => {
     const byId = new Map(knownConversations.map((conversation) => [conversation.id, conversation]));
@@ -312,6 +327,12 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen min-h-0 overflow-hidden bg-[var(--bg)] text-[var(--text)]">
+      {lifecycleAction.error ? (
+        <div className="fixed inset-x-4 top-3 z-50 flex items-center justify-between gap-3 rounded-md border border-[var(--danger)]/40 bg-[var(--panel)] px-3 py-2 text-xs text-[var(--danger)] shadow-lg" role="alert">
+          <span>{lifecycleAction.error.message}</span>
+          <button className="icon-button inline-flex" type="button" aria-label="Dismiss lifecycle error" onClick={() => lifecycleAction.reset()}>×</button>
+        </div>
+      ) : null}
       <div className="hidden md:block">
         <NavigationSidebar
           items={navigationItems}
@@ -324,7 +345,7 @@ export function AppShell() {
           sound={sound}
           onSoundChange={currentSession.isSuccess ? changeSound : undefined}
           onTestSound={() => { if (activateAudio()) playSound(); }}
-          onLifecycleChange={(conversationId, state) => lifecycleAction.mutate({ conversationId, state })}
+          onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
           pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
         />
       </div>
@@ -356,7 +377,7 @@ export function AppShell() {
             sound={sound}
             onSoundChange={currentSession.isSuccess ? changeSound : undefined}
             onTestSound={() => { if (activateAudio()) playSound(); }}
-            onLifecycleChange={(conversationId, state) => lifecycleAction.mutate({ conversationId, state })}
+            onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
             pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
             onNavigate={() => setNavigationOpen(false)}
             onClose={() => setNavigationOpen(false)}

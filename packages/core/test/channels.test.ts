@@ -4,7 +4,31 @@ import test from "node:test";
 import { ConversationClient, ConversationClientError } from "../src/client.ts";
 import { createConversationHttpServer, type ConversationHttpServer } from "../src/http-server.ts";
 import { createResourceId, isResourceId, RESOURCE_ID_PREFIXES } from "../src/ids.ts";
+import { ConversationService } from "../src/conversation-service.ts";
+import { InMemoryConversationStorage } from "../src/storage.ts";
 import type { ConversationEvent } from "../src/types.ts";
+
+class PausingAppendStorage extends InMemoryConversationStorage {
+  private paused = false;
+  private enteredResolve!: () => void;
+  private releaseResolve!: () => void;
+  private readonly entered = new Promise<void>((resolve) => { this.enteredResolve = resolve; });
+  private readonly release = new Promise<void>((resolve) => { this.releaseResolve = resolve; });
+
+  pauseNextAppend(): { entered: Promise<void>; release(): void } {
+    this.paused = true;
+    return { entered: this.entered, release: () => this.releaseResolve() };
+  }
+
+  override async appendMessage(...args: Parameters<InMemoryConversationStorage["appendMessage"]>) {
+    if (this.paused) {
+      this.paused = false;
+      this.enteredResolve();
+      await this.release;
+    }
+    return await super.appendMessage(...args);
+  }
+}
 
 async function jsonRequest(server: ConversationHttpServer, path: string, init?: RequestInit) {
   const response = await fetch(`${server.endpoint}${path}`, {
@@ -384,6 +408,48 @@ test("owner-governed Conversation lifecycle is durable and evaluates expired sno
       actorIdentityId: owner.id,
       state: "active",
     }), { state: "active" });
+  } finally {
+    await server.close();
+  }
+});
+
+test("settlement serializes against a message already admitted by the Conversation service", async () => {
+  const storage = new PausingAppendStorage();
+  const server = await createConversationHttpServer({ service: new ConversationService(storage) });
+  try {
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    const [owner, builder] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "serialized-settlement", name: "Serialized settlement" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: builder.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, builder.id],
+      actorIdentityId: owner.id,
+    });
+    const gate = storage.pauseNextAppend();
+    const posting = client.postMessage(conversation.id, { participantId: owner.id, body: "Message admitted first" });
+    await gate.entered;
+    let settled = false;
+    const settling = server.service.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: owner.id,
+      state: "settled",
+    }).then(() => { settled = true; });
+    await Promise.resolve();
+    assert.equal(settled, false);
+    gate.release();
+    await posting;
+    await settling;
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
+    await assert.rejects(client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "Message after settlement",
+    }), /Settled Conversations are frozen/);
   } finally {
     await server.close();
   }
