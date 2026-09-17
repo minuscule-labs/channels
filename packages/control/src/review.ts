@@ -260,7 +260,7 @@ export async function createLocalReviewApp(
       channelId: channel.id,
       humanIdentityId: human.id,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
-        `/app/workspaces/${workspace.id}/channels/${channel.id}`,
+        `/app/workspaces/${workspace.id}/conversations/${channel.id}`,
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
       async close() {

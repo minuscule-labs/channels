@@ -481,7 +481,7 @@ export async function createLocalProductApp(
       initialized,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
         selectedWorkspaceId && selectedChannelId
-          ? `/app/workspaces/${selectedWorkspaceId}/channels/${selectedChannelId}`
+          ? `/app/workspaces/${selectedWorkspaceId}/conversations/${selectedChannelId}`
           : "/",
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),

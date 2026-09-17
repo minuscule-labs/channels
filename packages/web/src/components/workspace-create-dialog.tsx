@@ -57,7 +57,7 @@ export function WorkspaceCreateDialog({
       provisioningSlug.current = undefined;
       onNavigate?.();
       void navigate({
-        to: "/app/workspaces/$workspaceId/channels/$channelId",
+        to: "/app/workspaces/$workspaceId/conversations/$channelId",
         params: { workspaceId, channelId },
       });
     },

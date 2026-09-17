@@ -221,7 +221,7 @@ export function CreateChannelDialog({
       setOpen(false);
       onNavigate?.();
       void navigate({
-        to: "/app/workspaces/$workspaceId/channels/$channelId",
+        to: "/app/workspaces/$workspaceId/conversations/$channelId",
         params: { workspaceId: workspace.id, channelId: channel.id },
       });
     },

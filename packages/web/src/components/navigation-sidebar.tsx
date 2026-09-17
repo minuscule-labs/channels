@@ -109,7 +109,7 @@ export function NavigationSidebar({
                   return (
                     <li key={channel.id}>
                       <Link
-                        to="/app/workspaces/$workspaceId/channels/$channelId"
+                        to="/app/workspaces/$workspaceId/conversations/$channelId"
                         params={{ workspaceId: workspace.id, channelId: channel.id }}
                         onClick={onNavigate}
                         className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${

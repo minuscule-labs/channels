@@ -50,7 +50,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await launchAuthenticated(
     page,
     request,
-    `/app/workspaces/${workspaceId}/channels/${channelId}`,
+    `/app/workspaces/${workspaceId}/conversations/${channelId}`,
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
@@ -139,7 +139,7 @@ test("keeps Workspace navigation responsive with more Conversations than the bro
     if (url.pathname.endsWith("/events")) eventRequests.push(`${url.pathname}${url.search}`);
   });
 
-  await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/channels/${active.id}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/conversations/${active.id}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => eventRequests.some((url) => url.startsWith("/channels/events?"))).toBe(true);
   expect(new Set(eventRequests.filter((url) => /^\/channels\/[^/]+\/events$/.test(url))))
@@ -187,7 +187,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
     }
     Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 
@@ -258,7 +258,7 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
     }
     Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/channels/${secondaryChannelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/conversations/${secondaryChannelId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   messageRequests.length = 0;
   await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
@@ -290,7 +290,7 @@ test("resets near-end and unseen state across parameter-only Conversation naviga
   };
   const primary = channels.find(({ name }) => name === "browser-collaboration")!;
   const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${primary.id}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${primary.id}`);
   await request.post(`${fixtureBase}/peer-message?count=35&body=Navigation%20scroll`);
   await expect(page.getByText("Navigation scroll 35", { exact: true })).toBeVisible();
   const timeline = page.locator(".minu-scroll.absolute");
@@ -327,7 +327,7 @@ test("advances the durable read cursor only when a real visible timeline is near
     }
     Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await page.getByLabel("Notification sound").first().selectOption("mentions");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
@@ -374,7 +374,7 @@ test("summarizes Conversation-wide agent activity below the composer", async ({ 
     channels: Array<{ id: string; name: string }>;
   };
   const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
   const strip = page.getByRole("region", { name: "Conversation agent activity" });
   await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 queued/, { timeout: 10_000 });
@@ -414,7 +414,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
     `${controlBase}/local/channels/${channelId}/agents/agent-private/open-diagnostic`,
   );
   expect(unauthorizedDiagnostic.status()).toBe(401);
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await request.post(`${fixtureBase}/detach-agent`);
   await expect(page.getByTitle("Runtime: Disconnected")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Open actions for Builder Agent" }).first()).toBeVisible();
@@ -536,7 +536,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       }),
     });
   });
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
   const unboundRow = page.getByRole("listitem").filter({
     has: page.getByText("@unbound-agent · agent", { exact: true }),
@@ -605,7 +605,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
       },
     }),
   }));
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open participant actions" })).toHaveCount(0);
   await openParticipantActions(page, "Builder Agent");
@@ -871,7 +871,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   const createResponse = await createResponsePromise;
   expect(createResponse.ok()).toBe(true);
   const { channel } = await createResponse.json() as { channel: { id: string } };
-  await expect(page).toHaveURL(new RegExp(`/channels/${channel.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${channel.id}$`));
   await expect(page.getByRole("heading", { name: "#roster-administration" })).toBeVisible();
   const startResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
@@ -992,7 +992,7 @@ test("caps wrapped drafts on mobile and restores them after Conversation navigat
   const primary = channels.find(({ name }) => name === "browser-collaboration")!;
   const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
 
-  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/channels/${primary.id}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/conversations/${primary.id}`);
   const composer = page.getByRole("combobox", { name: "Conversation message" });
   const draft = Array.from({ length: 180 }, () => "wrapped").join(" ");
   await composer.fill(draft);
@@ -1004,9 +1004,9 @@ test("caps wrapped drafts on mobile and restores them after Conversation navigat
   expect(await composer.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
   expect((await page.getByRole("button", { name: "Send", exact: true }).boundingBox())!.y).toBeLessThan(480);
 
-  await page.goto(`/app/workspaces/${workspace.id}/channels/${alternate.id}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`/app/workspaces/${workspace.id}/conversations/${alternate.id}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
-  await page.goto(`/app/workspaces/${workspace.id}/channels/${primary.id}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`/app/workspaces/${workspace.id}/conversations/${primary.id}`, { waitUntil: "domcontentloaded" });
   await expect(composer).toHaveValue(draft);
   await expect.poll(() => composer.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
 });
@@ -1028,7 +1028,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await expect(navigation).toBeVisible();
   await navigation.getByRole("link", { name: /browser-collaboration/ }).click();
   await expect(navigation).toBeHidden();
-  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/channels/${channelId}$`));
+  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${channelId}$`));
 
   await page.getByRole("button", { name: "Show participants" }).click();
   const participants = page.getByRole("dialog", { name: "Participants" });
@@ -1067,7 +1067,7 @@ test("keeps messaging available when Runtime status is unavailable", async ({ pa
   await launchAuthenticated(
     page,
     request,
-    `/app/workspaces/${workspaceId}/channels/${channelId}`,
+    `/app/workspaces/${workspaceId}/conversations/${channelId}`,
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Runtime status unavailable")).toBeVisible();

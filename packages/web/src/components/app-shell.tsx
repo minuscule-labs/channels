@@ -41,7 +41,7 @@ export function AppShell() {
     retry: false,
     staleTime: 60_000,
   });
-  const activeChannelId = pathname.match(/\/channels\/([^/]+)/)?.[1];
+  const activeChannelId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
   const observedChannels = useMemo(() => {
     const byId = new Map(knownChannels.map((channel) => [channel.id, channel]));
     for (const channel of selectedChannels.data ?? []) byId.set(channel.id, channel);
@@ -94,7 +94,7 @@ export function AppShell() {
     const rememberedChannelId = localStorage.getItem(`minu-channels:last-channel:${workspaceId}`);
     const channel = channelList.find(({ id }) => id === rememberedChannelId) ?? channelList[0];
     void navigate(channel ? {
-      to: "/app/workspaces/$workspaceId/channels/$channelId",
+      to: "/app/workspaces/$workspaceId/conversations/$channelId",
       params: { workspaceId, channelId: channel.id },
     } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
   };

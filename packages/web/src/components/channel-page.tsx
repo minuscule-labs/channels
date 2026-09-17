@@ -18,7 +18,7 @@ import { MemberRoster } from "./member-roster";
 import { Drawer } from "./ui/drawer";
 
 export function ChannelPage() {
-  const { workspaceId, channelId } = useParams({ from: "/app/workspaces/$workspaceId/channels/$channelId" });
+  const { workspaceId, channelId } = useParams({ from: "/app/workspaces/$workspaceId/conversations/$channelId" });
   const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);

@@ -31,7 +31,7 @@ test("working folders recover from an initial load failure and save previewed, d
     return route.fulfill({ contentType: "application/json", body: JSON.stringify({ relativePath }) });
   });
   await page.route("**/local/folders/select", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ path: `/private/root/${++pickerCalls}` }) }));
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${channelId}`);
   await page.getByRole("button", { name: "Manage Conversation participants" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Could not load working folders.")).toBeVisible();
