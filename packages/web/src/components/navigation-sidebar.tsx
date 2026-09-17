@@ -11,11 +11,26 @@ function snoozeAt(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
-function snoozeAtLocal(hour: number, daysAhead = 0): string {
+function upcomingEvening(): { label: string; snoozedUntil: string } {
   const date = new Date();
-  date.setDate(date.getDate() + daysAhead);
-  date.setHours(hour, 0, 0, 0);
-  if (date.getTime() <= Date.now()) date.setDate(date.getDate() + 1);
+  date.setHours(18, 0, 0, 0);
+  if (date.getTime() > Date.now()) return { label: "This evening", snoozedUntil: date.toISOString() };
+  date.setDate(date.getDate() + 1);
+  return { label: "Tomorrow evening", snoozedUntil: date.toISOString() };
+}
+
+function tomorrowMorning(): string {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  date.setHours(9, 0, 0, 0);
+  return date.toISOString();
+}
+
+function nextMondayMorning(): string {
+  const date = new Date();
+  const daysUntilMonday = (8 - date.getDay()) % 7 || 7;
+  date.setDate(date.getDate() + daysUntilMonday);
+  date.setHours(9, 0, 0, 0);
   return date.toISOString();
 }
 
@@ -58,6 +73,14 @@ function ConversationNavigationLink({
   const unreadState = unread?.get(conversation.id);
   const [customSnoozeUntil, setCustomSnoozeUntil] = useState(() => datetimeLocalValue(snoozeAt(60)));
   const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const evening = upcomingEvening();
+  const snoozePresets: ReadonlyArray<readonly [string, string]> = [
+    ["In 1 hour", snoozeAt(60)],
+    ["In 3 hours", snoozeAt(180)],
+    [evening.label, evening.snoozedUntil],
+    ["Tomorrow", tomorrowMorning()],
+    ["Next week", nextMondayMorning()],
+  ];
   return (
     <li key={conversation.id}>
       <Link
@@ -89,13 +112,7 @@ function ConversationNavigationLink({
             {lifecycleState === "active" ? <>
               <button className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" aria-expanded={snoozeOpen} onClick={() => setSnoozeOpen((open) => !open)}>Snooze <span className="text-[var(--muted)]">›</span></button>
               {snoozeOpen ? <div className="absolute left-full top-0 ml-1 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
-                  {[
-                    ["In 1 hour", snoozeAt(60)],
-                    ["In 3 hours", snoozeAt(180)],
-                    ["This evening", snoozeAtLocal(18)],
-                    ["Tomorrow", snoozeAtLocal(9, 1)],
-                    ["Next week", snoozeAtLocal(9, 7)],
-                  ].map(([label, snoozedUntil]) => (
+                  {snoozePresets.map(([label, snoozedUntil]) => (
                     <button key={label as string} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: snoozedUntil as string })}>{label as string}</button>
                   ))}
                   <form className="mt-1 border-t border-[var(--border)] px-2 pt-2" onSubmit={(event) => {

@@ -54,7 +54,7 @@ test("sidebar lifecycle controls offer snooze schedules and surface a blocked se
     await row.getByRole("button", { name: /^Snooze/ }).click();
     await expect(page.getByText("In 1 hour", { exact: true })).toBeVisible();
     await expect(page.getByText("In 3 hours", { exact: true })).toBeVisible();
-    await expect(page.getByText("This evening", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^(This|Tomorrow) evening$/)).toBeVisible();
     await expect(page.getByText("Tomorrow", { exact: true })).toBeVisible();
     await expect(page.getByText("Next week", { exact: true })).toBeVisible();
     await expect(page.getByLabel(`Snooze ${conversation.name} until`)).toBeVisible();
@@ -1094,11 +1094,19 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
   await dialog.getByLabel("Conversation name").fill(name);
   await dialog.getByRole("button", { name: "Create Conversation" }).click();
   await expect(page.getByRole("heading", { name: `#${name}` })).toBeVisible();
+  const conversationId = new URL(page.url()).pathname.match(/\/conversations\/([^/]+)$/)?.[1];
+  expect(conversationId).toBeTruthy();
 
   const row = page.getByRole("listitem").filter({ has: page.getByRole("link", { name, exact: true }) });
   await row.getByLabel(`Conversation actions for ${name}`).click();
   await row.getByRole("button", { name: /^Snooze/ }).click();
-  await row.getByRole("button", { name: "In 1 hour", exact: true }).click();
+  const lifecycleRequest = page.waitForRequest((request) => request.method() === "PATCH"
+    && request.url().endsWith(`/local/conversations/${conversationId}/lifecycle`));
+  await row.getByRole("button", { name: "Next week", exact: true }).click();
+  const snoozePayload = (await lifecycleRequest).postDataJSON() as { snoozedUntil: string };
+  const nextWeek = new Date(snoozePayload.snoozedUntil);
+  expect(nextWeek.getDay()).toBe(1);
+  expect(nextWeek.getHours()).toBe(9);
   const snoozed = page.getByRole("button", { name: "Snoozed", exact: true });
   await expect(snoozed).toBeVisible();
   await snoozed.click();
