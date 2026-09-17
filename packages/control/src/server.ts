@@ -141,6 +141,7 @@ export interface LocalControlAgentLifecyclePort {
     actorIdentityId: string,
   ): Promise<void>;
   isAttached?(conversationId: string, agentIdentityId: string): boolean;
+  isStarting?(conversationId: string, agentIdentityId: string): boolean;
   startAllConversationAgents?(
     conversationId: string,
     actorIdentityId: string,
@@ -676,6 +677,9 @@ export class LocalControlService {
     const base = { workspaceId: conversation.workspaceId, conversationId: conversation.id, identityId };
     if (membershipStatus === "disabled") {
       return { ...base, state: "disabled", capabilities: disabledCapabilities };
+    }
+    if (this.options.lifecycle?.isStarting?.(conversation.id, identityId)) {
+      return { ...base, state: "starting", capabilities: disabledCapabilities };
     }
     if (matches.length === 0) {
       return {

@@ -175,6 +175,7 @@ export interface LocalControlCapabilities {
 
 export type LocalConversationAgentState =
   | "unbound"
+  | "starting"
   | "idle"
   | "running"
   | "disconnected"

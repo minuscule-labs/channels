@@ -26,6 +26,7 @@ function runtimeStateLabel(agent: LocalConversationAgent): string {
       : "Working · activity unavailable";
     case "idle": return "Idle";
     case "unbound": return "Not started";
+    case "starting": return "Starting…";
     case "disconnected": return "Disconnected";
     case "uncertain": return "Connection uncertain";
     case "offline": return "Offline";

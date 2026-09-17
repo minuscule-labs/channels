@@ -243,6 +243,26 @@ test("projects private bindings into presentation-safe Conversation agent status
   assert.doesNotMatch(publicJson, /runtimeSessionId|runtimeAdapter|leaseOwner/);
 });
 
+test("projects an in-progress managed start distinctly from an offline Runtime", async () => {
+  const control = new LocalControlService({
+    conversations: { async getConversation() { return conversation; } },
+    bindings: { async listConversationBindings() { return []; } },
+    runtimes: {},
+    lifecycle: {
+      available: true,
+      async startConversationAgent() {},
+      async replaceConversationAgent() {},
+      async stopConversationAgent() {},
+      async cancelCurrentConversationAgent() {},
+      isStarting(conversationId, identityId) {
+        return conversationId === conversation.id && identityId === "agent-unbound";
+      },
+    },
+  });
+  const agents = await control.listConversationAgents(conversation.id);
+  assert.equal(agents.agents.find(({ identityId }) => identityId === "agent-unbound")?.state, "starting");
+});
+
 test("Conversation snooze and settle fence admission and require managed agents to be idle", async () => {
   const managedConversation: ConversationMetadata = {
     ...conversation,

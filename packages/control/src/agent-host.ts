@@ -222,6 +222,7 @@ export class LocalAgentHost {
   private readonly attachingBindings = new Set<string>();
   private readonly recoveries = new Map<string, BindingRecovery>();
   private readonly conversationAdmissionFences = new Map<string, number>();
+  private readonly startingBindings = new Set<string>();
   private readonly recoveryBackoffMs: readonly number[];
   private readonly startedSessions = new Map<string, {
     bindingId: string;
@@ -340,7 +341,10 @@ export class LocalAgentHost {
     actorIdentityId: string,
     expectedBinding?: null,
   ): Promise<void> {
-    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
+    const key = this.bindingKey(conversationId, agentIdentityId);
+    this.startingBindings.add(key);
+    try {
+      return await this.exclusive(key, async () => {
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         await this.assertConversationAdmission(conversationId);
@@ -472,7 +476,14 @@ export class LocalAgentHost {
         });
         throw error;
       }
-    });
+      });
+    } finally {
+      this.startingBindings.delete(key);
+    }
+  }
+
+  isStarting(conversationId: string, agentIdentityId: string): boolean {
+    return this.startingBindings.has(this.bindingKey(conversationId, agentIdentityId));
   }
 
   async replaceConversationAgent(
