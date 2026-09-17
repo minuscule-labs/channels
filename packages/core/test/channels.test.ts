@@ -367,6 +367,14 @@ test("owner-governed Conversation lifecycle is durable and evaluates expired sno
       actorIdentityId: owner.id,
       state: "settled",
     }), { state: "settled", settledAt: (await client.getConversationLifecycle(conversation.id)).settledAt });
+    await assert.rejects(client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "This must not change the archive",
+    }), /Settled Conversations are frozen/);
+    await assert.rejects(client.updateConversation(conversation.id, {
+      actorIdentityId: owner.id,
+      name: "renamed after settlement",
+    }), /Settled Conversations are frozen/);
     await assert.rejects(client.updateConversationLifecycle(conversation.id, {
       actorIdentityId: owner.id,
       state: "snoozed",

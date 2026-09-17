@@ -692,6 +692,7 @@ export class ConversationService {
     const conversation = await this.getConversationMetadata(conversationId);
     const workspace = await this.getWorkspace(conversation.workspaceId);
     if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+    await this.assertConversationMutable(conversationId);
     await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
     const updated = await this.storage.updateConversationName(conversationId, name);
     if (!updated) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
@@ -721,6 +722,7 @@ export class ConversationService {
     const conversation = await this.getConversationMetadata(conversationId);
     const workspace = await this.getWorkspace(conversation.workspaceId);
     if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+    await this.assertConversationMutable(conversationId);
     await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
     if (!input.participantIds.includes(input.actorIdentityId)) {
       throw new ConversationValidationError("Conversation participants must include the acting human");
@@ -777,6 +779,12 @@ export class ConversationService {
     return messages;
   }
 
+  private async assertConversationMutable(conversationId: string): Promise<void> {
+    if ((await this.storage.getConversationLifecycle(conversationId))?.state === "settled") {
+      throw new ConversationValidationError("Settled Conversations are frozen; reopen before making changes");
+    }
+  }
+
   private async assertActiveWorkspaceIdentity(conversation: Conversation, identityId: string): Promise<void> {
     const [identity, member] = await Promise.all([
       this.storage.getIdentity(identityId),
@@ -795,6 +803,7 @@ export class ConversationService {
     const validatedKey = validateIdempotencyKey(idempotencyKey);
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
+    await this.assertConversationMutable(conversationId);
     if (!input || typeof input.participantId !== "string" || !input.participantId.trim()) {
       throw new ConversationValidationError("participantId must be a non-empty string");
     }
@@ -856,6 +865,7 @@ export class ConversationService {
   ): Promise<ResponseResult> {
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
+    await this.assertConversationMutable(conversationId);
     if (!input || typeof input.participantId !== "string" || !input.participantId.trim()) {
       throw new ConversationValidationError("participantId must be a non-empty string");
     }
