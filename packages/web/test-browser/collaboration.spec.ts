@@ -1082,6 +1082,43 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await expect(page.getByRole("button", { name: "Show participants" })).toBeFocused();
 });
 
+test("moves a Conversation through Snoozed, Archive, and Reopen navigation", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces[0]!;
+  const name = `lifecycle-${Date.now()}`;
+  await launchAuthenticated(page, request, "/");
+  await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
+  const dialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
+  await dialog.getByLabel("Conversation name").fill(name);
+  await dialog.getByRole("button", { name: "Create Conversation" }).click();
+  await expect(page.getByRole("heading", { name: `#${name}` })).toBeVisible();
+
+  const row = page.getByRole("listitem").filter({ has: page.getByRole("link", { name, exact: true }) });
+  await row.getByLabel(`Conversation actions for ${name}`).click();
+  await row.getByRole("button", { name: /^Snooze/ }).click();
+  await row.getByRole("button", { name: "In 1 hour", exact: true }).click();
+  const snoozed = page.getByRole("button", { name: "Snoozed", exact: true });
+  await expect(snoozed).toBeVisible();
+  await snoozed.click();
+  await row.getByLabel(`Conversation actions for ${name}`).click();
+  await row.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
+  await expect(page.getByText("Active", { exact: true })).toBeVisible();
+
+  await row.getByLabel(`Conversation actions for ${name}`).click();
+  await row.getByRole("button", { name: "Settle to Archive", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("archived and read-only");
+  await expect(page.getByLabel("Conversation message")).toBeDisabled();
+  const archive = page.getByRole("button", { name: "Archive", exact: true });
+  await expect(archive).toBeVisible();
+  await archive.click();
+  await expect(row.getByRole("link", { name, exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Reopen", exact: true }).click();
+  await expect(page.getByText("Active", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Conversation message")).toBeEnabled();
+});
+
 test("shows required browser onboarding when no Workspace exists", async ({ page, request }) => {
   expect((await request.post(`${fixtureBase}/hide-workspaces?value=true`)).ok()).toBe(true);
   try {
