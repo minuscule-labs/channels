@@ -21,6 +21,22 @@ async function openParticipantActions(page: Page, participantName: string): Prom
   await page.getByRole("button", { name: `Open actions for ${participantName}` }).first().click();
 }
 
+test("redirects an authenticated legacy Channel link to its Conversation", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string }>;
+  };
+  const conversationId = conversations[0]!.id;
+
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${conversationId}`);
+
+  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${conversationId}$`));
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+});
+
 test("sends idempotently, refreshes rosters, and catches up after reconnect", async ({ page, request }) => {
   const workspacesResponse = await request.get(`${conversationsBase}/workspaces`);
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
