@@ -1,6 +1,6 @@
 # MinuChannels
 
-MinuChannels is a local-first collaboration app where humans and coding agents work together in shared Channels.
+MinuChannels is a local-first collaboration app where humans and coding agents work together in shared Conversations.
 
 It runs on one computer, stores product data locally, and uses [MinuRuntime](https://github.com/minuscule-labs/runtime) to execute isolated agent sessions through Pi.
 
@@ -9,12 +9,12 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 
 ## What it includes
 
-- Persistent Workspaces, Channels, messages, and membership
+- Persistent Workspaces, Conversations, messages, and membership
 - Reusable human, agent, and service identities
 - Live updates, mentions, Markdown, syntax highlighting, and code-copy controls
 - Per-agent instructions, Skills, harness, provider, model, and reasoning settings
 - Explicit **Start**, **New session**, and **Stop** controls for agent sessions
-- Workspace and Channel administration with native folder selection
+- Workspace and Conversation administration with native folder selection
 - Product-isolated local storage, recovery, locking, and checksum-verified updates
 - A self-contained release package with the web app, migrations, and pinned Runtime
 
@@ -43,7 +43,7 @@ minu-channels run
 
 On macOS, `start`, `stop`, `restart`, `status`, and `open` manage a user-owned background service. `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, lets already-active work finish, and leaves queued Channel work durable for recovery after restart. A checksum-verified global npm `update` safely coordinates the selected service and restarts it only when it was previously running; foreground or unrelated service instances block executable replacement. Login startup remains off until `minu-channels enable-login`; `disable-login` reverses it, and `remove-service` unregisters the service without deleting product data. `minu-channels run` is the explicit foreground command, while bare `minu-channels` remains its compatibility alias.
 
-The authenticated browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Channel; the source path remains private.
+The authenticated browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Conversation; the source path remains private.
 
 Useful commands:
 
@@ -116,13 +116,13 @@ Browser ⇄ Channels HTTP/SSE ⇄ agent host ⇄ MinuRuntime ⇄ Pi
 
 The public Channels core remains communication-only. The product composes it with private agent configuration, Relay delivery, local control, and the independently reusable MinuRuntime execution layer.
 
-Workspace agents can participate in multiple Channels. Each Channel binding owns an isolated Runtime session and transcript. Addressed messages wake agents; ordinary messages in a two-participant human-agent Channel implicitly address the sole agent.
+Workspace agents can participate in multiple Conversations. Each Conversation binding owns an isolated Runtime session and transcript. Addressed messages wake agents; ordinary messages in a two-participant human-agent Conversation implicitly address the sole agent.
 
 Relay delivery uses one absolute per-trigger retry budget across Runtime and Channel operations. Transient network, timeout, `408`, `425`, `429`, and `5xx` failures retry within that budget; other authenticated `4xx` responses are permanent. If a generic public terminal outcome cannot be committed, the private Relay store atomically records a sanitized dead letter and advances the durable cursor so poison delivery cannot block later work.
 
 ## Packages
 
-- `core` — Channel model, storage interface, HTTP/SSE service, and client
+- `core` — Conversation model, storage interface, HTTP/SSE service, and client
 - `storage-drizzle` — durable Drizzle/libSQL collaboration storage
 - `relay` — ordered agent wake-up, context, recovery, and response delivery
 - `relay-storage-drizzle` — private agent configuration and Runtime bindings

@@ -71,7 +71,7 @@ export function ChannelActivityStrip({
   }).join(". "), [agents, participants]);
   if (!items.length) return null;
   return (
-    <section className="flex items-start gap-2 px-1 text-xs text-[var(--muted)]" aria-label="Channel agent activity">
+    <section className="flex items-start gap-2 px-1 text-xs text-[var(--muted)]" aria-label="Conversation agent activity">
       <p className="sr-only" aria-live="polite">{announcement}</p>
       <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent)]" aria-hidden="true" />
       <ul className="flex min-w-0 flex-wrap gap-x-2 gap-y-1">

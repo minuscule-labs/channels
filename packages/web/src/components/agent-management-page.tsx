@@ -635,7 +635,7 @@ export function AgentManagementPage() {
                         <span className="font-mono text-[10px] text-[var(--muted)]">@{member.mentionHandle}</span>
                       </div>
                       <p className="mt-1 truncate text-[11px] text-[var(--muted)]">
-                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · Harness: {config.runtimeAdapter ?? "not configured"} · {assignedChannels.length} {assignedChannels.length === 1 ? "Channel" : "Channels"} · {config.boundChannelCount} active {config.boundChannelCount === 1 ? "binding" : "bindings"}
+                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · Harness: {config.runtimeAdapter ?? "not configured"} · {assignedChannels.length} {assignedChannels.length === 1 ? "Conversation" : "Conversations"} · {config.boundChannelCount} active {config.boundChannelCount === 1 ? "binding" : "bindings"}
                       </p>
                     </div>
                     <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">{config.status}</span>
@@ -754,7 +754,7 @@ export function AgentDetailPage() {
             <div className="mt-3 flex flex-wrap gap-1.5">
               {assignedChannels.length
                 ? assignedChannels.map((channel) => <span key={channel.id} className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]">#{channel.name}</span>)
-                : <span className="text-[11px] text-[var(--muted)]">Not assigned to a Channel</span>}
+                : <span className="text-[11px] text-[var(--muted)]">Not assigned to a Conversation</span>}
             </div>
             {configurationWarning ? (
               <div className="mt-4 rounded-lg border border-[var(--warning)]/40 bg-[var(--bg)] p-3 text-sm text-[var(--warning)]" role="alert">

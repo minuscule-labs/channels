@@ -61,7 +61,7 @@ export function useLiveChannel(channelId: string) {
       })) {
         apply(event);
       }
-      if (!controller.signal.aborted) throw new Error("Channel event stream closed");
+      if (!controller.signal.aborted) throw new Error("Conversation event stream closed");
     })();
     void stream.catch((error) => {
       if (!controller.signal.aborted) rejectReady(error instanceof Error ? error : new Error(String(error)));
@@ -99,7 +99,7 @@ export function useLiveChannel(channelId: string) {
     return () => {
       controller.abort();
       if (retryTimer) clearTimeout(retryTimer);
-      rejectReady(new Error("Channel changed"));
+      rejectReady(new Error("Conversation changed"));
       void stream.catch(() => undefined);
     };
   }, [attempt, channelId, queryClient]);

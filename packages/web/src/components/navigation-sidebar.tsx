@@ -68,7 +68,7 @@ export function NavigationSidebar({
           ) : null}
         </div>
       </div>
-      <nav className="minu-scroll min-h-0 flex-1 overflow-y-auto p-3" aria-label="Workspaces and Channels">
+      <nav className="minu-scroll min-h-0 flex-1 overflow-y-auto p-3" aria-label="Workspaces and Conversations">
         {items.length === 0 ? (
           <p className="px-2 py-6 text-sm text-[var(--muted)]">No Workspaces yet.</p>
         ) : null}
@@ -102,7 +102,7 @@ export function NavigationSidebar({
                 <Bot className="h-3.5 w-3.5 shrink-0" />
                 <span>Agents</span>
               </Link>
-              {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Channels…</p> : null}
+              {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
               <ul className="space-y-1">
                 {channels.map((channel) => {
                   const active = channel.id === activeChannelId;

@@ -143,7 +143,7 @@ export function AddWorkspaceParticipantForm({
           <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
           <div>
             <h2 className="text-sm font-semibold">Create a participant</h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--muted)]">Add a reusable identity to this Workspace and select it for this Channel.</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--muted)]">Add a reusable identity to this Workspace and select it for this Conversation.</p>
           </div>
         </div>
       ) : null}

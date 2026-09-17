@@ -68,7 +68,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
 
-  const composer = page.getByRole("combobox", { name: "Channel message" });
+  const composer = page.getByRole("combobox", { name: "Conversation message" });
   const compactHeight = await composer.evaluate((element) => element.clientHeight);
   await composer.fill(Array.from({ length: 20 }, (_, index) => `visual line ${index + 1}`).join("\n"));
   await expect.poll(() => composer.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY })))
@@ -122,7 +122,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   expect(new Set(messageAuthors)).toEqual(new Set([human.identityId]));
 });
 
-test("keeps Workspace navigation responsive with more Channels than the browser connection limit", async ({ page, request }) => {
+test("keeps Workspace navigation responsive with more Conversations than the browser connection limit", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
@@ -282,7 +282,7 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
     .every((requestUrl) => new URL(requestUrl).searchParams.get("limit") === "100")).toBe(true);
 });
 
-test("resets near-end and unseen state across parameter-only Channel navigation", async ({ page, request }) => {
+test("resets near-end and unseen state across parameter-only Conversation navigation", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
   const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
@@ -367,7 +367,7 @@ test("hides identity-scoped notification preferences when session capability is 
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
-test("summarizes Channel-wide agent activity below the composer", async ({ page, request }) => {
+test("summarizes Conversation-wide agent activity below the composer", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
   const { channels } = await (await request.get(`${channelsBase}/workspaces/${workspaceId}/channels`)).json() as {
@@ -376,11 +376,11 @@ test("summarizes Channel-wide agent activity below the composer", async ({ page,
   const channelId = channels.find(({ name }) => name === "browser-collaboration")!.id;
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${channelId}`);
   await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2`);
-  const strip = page.getByRole("region", { name: "Channel agent activity" });
+  const strip = page.getByRole("region", { name: "Conversation agent activity" });
   await expect(strip).toContainText(/@builder is working · 1m \d+s · 2 queued/, { timeout: 10_000 });
   await expect(page.getByTitle("Runtime: Working · activity unavailable")).toBeVisible();
   await expect(strip).not.toContainText(/Verify the browser collaboration flow|message_|tool|prompt|error/i);
-  expect((await strip.boundingBox())!.y).toBeGreaterThan((await page.getByRole("combobox", { name: "Channel message" }).boundingBox())!.y);
+  expect((await strip.boundingBox())!.y).toBeGreaterThan((await page.getByRole("combobox", { name: "Conversation message" }).boundingBox())!.y);
 
   await request.post(`${fixtureBase}/agent-activity?phase=running&queued=2&exact=false`);
   await expect(strip).toContainText("At least 2 queued", { timeout: 10_000 });
@@ -468,7 +468,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 });
 
-test("runs Channel-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
+test("runs Conversation-scoped bulk lifecycle with one confirmation and visible partial results", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
   };
@@ -847,7 +847,7 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await expect(page.getByLabel("Selected Workspace").locator("option:checked")).toHaveText("Renamed Workspace");
 });
 
-test("creates named Channels and revisioned participant rosters", async ({ page, request }) => {
+test("creates named Conversations and revisioned participant rosters", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
@@ -858,16 +858,16 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   const builder = members.find(({ mentionHandle }) => mentionHandle === "builder")!;
   await launchAuthenticated(page, request, "/");
 
-  await page.getByRole("button", { name: `Create Channel in ${workspace.name}` }).click();
-  const createDialog = page.getByRole("dialog", { name: `Create a Channel in ${workspace.name}` });
+  await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
+  const createDialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
   await expect(createDialog).toBeVisible();
-  await createDialog.getByLabel("Channel name").fill("roster-administration");
+  await createDialog.getByLabel("Conversation name").fill("roster-administration");
   await expect(createDialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
   await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toHaveCount(0);
   await createDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   const createResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/channels"));
-  await createDialog.getByRole("button", { name: "Create Channel" }).click();
+  await createDialog.getByRole("button", { name: "Create Conversation" }).click();
   const createResponse = await createResponsePromise;
   expect(createResponse.ok()).toBe(true);
   const { channel } = await createResponse.json() as { channel: { id: string } };
@@ -890,7 +890,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "New session", exact: true }).click();
   let lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
-  await expect(lifecycleDialog).toContainText("at most 20 recent Channel messages");
+  await expect(lifecycleDialog).toContainText("at most 20 recent Conversation messages");
   await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
   await expect(lifecycleDialog.getByRole("alert")).toHaveText("Replacement temporarily unavailable");
@@ -936,10 +936,10 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   expect(historical.ok()).toBe(true);
   await expect(page.getByRole("log").getByText("Builder attribution survives roster removal.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Manage Channel participants" }).click();
+  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
   let rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
-  await rosterDialog.getByLabel("Channel name").fill("delivery-room");
+  await rosterDialog.getByLabel("Conversation name").fill("delivery-room");
   const renameResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH" && response.url().endsWith(`/channels/${channel.id}`));
   await rosterDialog.getByRole("button", { name: "Save name" }).click();
@@ -972,7 +972,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await expect(page.getByText(/roster 2$/)).toBeVisible();
   await expect(page.getByRole("log").getByText("Builder Agent", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "Manage Channel participants" }).click();
+  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
   rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
@@ -980,7 +980,7 @@ test("creates named Channels and revisioned participant rosters", async ({ page,
   await expect(page.getByText(/roster 3$/)).toBeVisible();
 });
 
-test("caps wrapped drafts on mobile and restores them after Channel navigation", async ({ page, request }) => {
+test("caps wrapped drafts on mobile and restores them after Conversation navigation", async ({ page, request }) => {
   await page.setViewportSize({ width: 390, height: 480 });
   const { workspaces } = await (await request.get(`${channelsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
@@ -993,7 +993,7 @@ test("caps wrapped drafts on mobile and restores them after Channel navigation",
   const alternate = channels.find(({ name }) => name === "alternate-collaboration")!;
 
   await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/channels/${primary.id}`);
-  const composer = page.getByRole("combobox", { name: "Channel message" });
+  const composer = page.getByRole("combobox", { name: "Conversation message" });
   const draft = Array.from({ length: 180 }, () => "wrapped").join(" ");
   await composer.fill(draft);
   await expect.poll(() => composer.evaluate((element) => ({
@@ -1072,7 +1072,7 @@ test("keeps messaging available when Runtime status is unavailable", async ({ pa
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByText("Runtime status unavailable")).toBeVisible();
 
-  const composer = page.getByRole("combobox", { name: "Channel message" });
+  const composer = page.getByRole("combobox", { name: "Conversation message" });
   await composer.fill("Public messaging remains available without local control.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await expect(page.getByRole("log").getByText(

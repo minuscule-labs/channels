@@ -57,7 +57,7 @@ export function ChannelWorkingFolders({ channelId, canAdminister }: {
   return <section className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" aria-label="Working folders">
     <h3 className="text-xs font-medium">Working folders</h3>
     <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
-      {folders.data?.inheritedFromWorkspace ? "Inherited from Workspace. Primary: Workspace source." : "All agents in this Channel share these folders. Changes apply to new sessions."}
+      {folders.data?.inheritedFromWorkspace ? "Inherited from Workspace. Primary: Workspace source." : "All agents in this Conversation share these folders. Changes apply to new sessions."}
     </p>
     <p className="mt-2 text-[11px] leading-4 text-[var(--muted)]">Working folders guide where agents should work. They are not a filesystem sandbox.</p>
     <div className="mt-3 space-y-2">

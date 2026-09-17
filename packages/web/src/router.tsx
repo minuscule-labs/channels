@@ -13,8 +13,8 @@ const indexRoute = createRoute({
     <div className="grid min-h-0 flex-1 place-items-center p-6">
       <div className="empty-state max-w-lg text-center">
         <MessageSquare className="mx-auto h-6 w-6 text-[var(--accent)]" />
-        <h1 className="text-lg font-semibold">Choose a Channel</h1>
-        <p>Select a Workspace Channel from the sidebar to view live messages and participants.</p>
+        <h1 className="text-lg font-semibold">Choose a Conversation</h1>
+        <p>Select a Workspace Conversation from the sidebar to view live messages and participants.</p>
       </div>
     </div>
   ),

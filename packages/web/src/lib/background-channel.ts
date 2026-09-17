@@ -45,7 +45,7 @@ export async function runBackgroundChannelsConnection(input: {
     }
   })();
   void stream.then(
-    () => { if (!readySignaled) rejectReady(new Error("Channel event stream closed before readiness")); },
+    () => { if (!readySignaled) rejectReady(new Error("Conversation event stream closed before readiness")); },
     (error) => rejectReady(error instanceof Error ? error : new Error(String(error))),
   );
 

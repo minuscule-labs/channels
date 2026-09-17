@@ -263,7 +263,7 @@ export function AppShell() {
     return (
       <div className="grid min-h-screen place-items-center p-6">
         <div className="empty-state max-w-lg">
-          <h1 className="text-base font-semibold">Channels API unavailable</h1>
+          <h1 className="text-base font-semibold">Conversations API unavailable</h1>
           <p>{workspaces.error instanceof Error ? workspaces.error.message : "Unable to load Workspaces."}</p>
           <button className="button-secondary" type="button" onClick={() => void workspaces.refetch()}>
             Retry
@@ -306,7 +306,7 @@ export function AppShell() {
           onOpenChange={setNavigationOpen}
           side="left"
           title="Navigation"
-          description="Choose a Workspace and Channel."
+          description="Choose a Workspace and Conversation."
           trigger={(
             <button
               type="button"

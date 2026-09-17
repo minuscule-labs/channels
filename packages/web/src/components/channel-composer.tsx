@@ -257,19 +257,19 @@ export function ChannelComposer({
               }
             }}
             rows={3}
-            aria-label="Channel message"
+            aria-label="Conversation message"
             aria-autocomplete="list"
             aria-controls={suggestions.length ? "channel-mention-suggestions" : undefined}
             aria-expanded={suggestions.length > 0}
             aria-activedescendant={suggestions.length ? `mention-suggestion-${activeSuggestionIndex}` : undefined}
             role="combobox"
             placeholder={authorReady
-              ? "Message this Channel… Use @ to mention an agent."
+              ? "Message this Conversation… Use @ to mention an agent."
               : identityStatus === "loading"
                 ? "Loading your browser identity…"
                 : identityStatus === "unavailable"
                   ? "Relaunch MinuChannels to restore your browser identity."
-                  : "You are not an active human participant in this Channel."}
+                  : "You are not an active human participant in this Conversation."}
             disabled={!activeAuthorId || !authorReady || mutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
@@ -281,7 +281,7 @@ export function ChannelComposer({
                   ? "Loading your identity…"
                   : identityStatus === "unavailable"
                     ? "Browser identity unavailable"
-                    : "Current human is not an active Channel participant"}
+                    : "Current human is not an active Conversation participant"}
             </span>
             <span className="text-[10px] text-[var(--muted)]">Enter sends · Shift or ⌘/Ctrl + Enter adds a line · @mention wakes an agent</span>
             <div className="ml-auto flex items-center gap-2">

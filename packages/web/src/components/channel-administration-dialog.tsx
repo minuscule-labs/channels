@@ -75,7 +75,7 @@ function ParticipantChoices({
     <fieldset>
       <legend className="text-xs font-medium">Participants</legend>
       <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
-        Select active Workspace members. Agents receive an isolated Runtime session for this Channel when bound.
+        Select active Workspace members. Agents receive an isolated Runtime session for this Conversation when bound.
       </p>
       <div className="mt-3 max-h-72 space-y-1 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2">
         {participants.map(({ identity, member }) => {
@@ -235,10 +235,10 @@ export function CreateChannelDialog({
     <AdministrationDialog
       open={open}
       onOpenChange={setOpen}
-      title={`Create a Channel in ${workspace.name}`}
+      title={`Create a Conversation in ${workspace.name}`}
       description="Name the conversation and choose its initial participants."
       trigger={(
-        <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Channel in ${workspace.name}`} title="Create Channel">
+        <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Conversation in ${workspace.name}`} title="Create Conversation">
           <Plus className="h-3.5 w-3.5" />
         </button>
       )}
@@ -246,7 +246,7 @@ export function CreateChannelDialog({
       <QueryState pending={data.pending} error={data.error} canAdminister={data.canAdminister}>
         <form className="space-y-5" onSubmit={submit}>
           <label className="block text-xs font-medium">
-            Channel name
+            Conversation name
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -272,7 +272,7 @@ export function CreateChannelDialog({
             <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>
             <button className="button-primary" type="submit" disabled={!name.trim() || selected.size === 0 || mutation.isPending}>
               {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-              Create Channel
+              Create Conversation
             </button>
           </div>
         </form>
@@ -337,7 +337,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
       title={`Manage #${channel.name}`}
       description={`Choose participants for roster revision ${channel.rosterRevision + 1}. Historical messages retain their author identity.`}
       trigger={(
-        <button type="button" className="icon-button inline-flex" aria-label="Manage Channel participants" title="Manage participants">
+        <button type="button" className="icon-button inline-flex" aria-label="Manage Conversation participants" title="Manage participants">
           <UserRoundCog className="h-4 w-4" />
         </button>
       )}
@@ -354,7 +354,7 @@ export function EditChannelParticipantsDialog({ channel }: { channel: ChannelMet
             }}
           >
             <label className="block text-xs font-medium">
-              Channel name
+              Conversation name
               <input
                 value={name}
                 onChange={(event) => setName(event.target.value)}

@@ -89,7 +89,7 @@ export function ChannelTimeline({ messages, participants }: { messages: ChannelM
   }
 
   return (
-    <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Channel messages">
+    <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
       {rows.map((row) => <TimelineRowView key={row.id} row={row} participants={participants} />)}
     </div>
   );

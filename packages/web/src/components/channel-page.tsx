@@ -202,7 +202,7 @@ export function ChannelPage() {
   }, [markRead]);
 
   if (metadata.isLoading || messages.isLoading) {
-    return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Channel…</div>;
+    return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Conversation…</div>;
   }
   if (metadata.error || messages.error || !metadata.data) {
     const error = metadata.error ?? messages.error;
@@ -210,8 +210,8 @@ export function ChannelPage() {
       <div className="grid h-full place-items-center p-6">
         <div className="empty-state max-w-lg">
           <AlertCircle className="h-5 w-5 text-[var(--danger)]" />
-          <h1 className="font-semibold">Unable to open Channel</h1>
-          <p>{error instanceof Error ? error.message : "Channel metadata is unavailable."}</p>
+          <h1 className="font-semibold">Unable to open Conversation</h1>
+          <p>{error instanceof Error ? error.message : "Conversation metadata is unavailable."}</p>
         </div>
       </div>
     );
@@ -229,7 +229,7 @@ export function ChannelPage() {
               </span>
             </div>
             <p className="truncate text-[11px] text-[var(--muted)]">
-              Workspace: {workspace.data?.name ?? shortId(workspaceId)} · Channel ID {shortId(channelId)} · roster {metadata.data.rosterRevision}
+              Workspace: {workspace.data?.name ?? shortId(workspaceId)} · Conversation ID {shortId(channelId)} · roster {metadata.data.rosterRevision}
             </p>
           </div>
           {connection === "disconnected" ? (
@@ -243,7 +243,7 @@ export function ChannelPage() {
             onOpenChange={setRosterOpen}
             side="right"
             title="Participants"
-            description="Public members of this Channel."
+            description="Public members of this Conversation."
             trigger={(
               <button className="icon-button inline-flex lg:hidden" type="button" aria-label="Show participants">
                 <Users className="h-4 w-4" />
