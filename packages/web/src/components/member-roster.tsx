@@ -68,6 +68,7 @@ export function MemberRoster({
   localStatus = "loading",
   showDiagnostics = false,
   drawer = false,
+  readOnly = false,
   onStartAgent,
   onReconnectAgent,
   onReplaceAgent,
@@ -91,6 +92,7 @@ export function MemberRoster({
   localStatus?: "loading" | "available" | "unavailable";
   showDiagnostics?: boolean;
   drawer?: boolean;
+  readOnly?: boolean;
   onStartAgent?(identityId: string): void | Promise<unknown>;
   onReconnectAgent?(identityId: string): void | Promise<unknown>;
   onReplaceAgent?(identityId: string): void | Promise<unknown>;
@@ -128,7 +130,7 @@ export function MemberRoster({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {(onStartAllAgents || onStopAllAgents) ? (
+          {!readOnly && (onStartAllAgents || onStopAllAgents) ? (
             <ParticipantActionsMenu
               startEligible={startEligible}
               stopEligible={stopEligible}
@@ -150,7 +152,7 @@ export function MemberRoster({
                 <li key={result.identityId}>
                   {participant ? participantLabel(participant, participant.id) : shortId(result.identityId)}: {result.outcome}
                   {result.reason ? ` (${bulkReasonLabel(result.reason)})` : ""}
-                  {result.outcome === "failed" && bulkResultAction ? (
+                  {!readOnly && result.outcome === "failed" && bulkResultAction ? (
                     <button
                       type="button"
                       className="ml-1 underline underline-offset-2 hover:text-[var(--text)]"
@@ -231,7 +233,7 @@ export function MemberRoster({
                     </div>
                   ) : null}
                 </div>
-                {localAgent ? (
+                {localAgent && !readOnly ? (
                   <ParticipantSessionActionsMenu
                     participantName={label}
                     canStart={localAgent.capabilities.start && Boolean(onStartAgent)}

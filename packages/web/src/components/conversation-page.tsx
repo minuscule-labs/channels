@@ -178,6 +178,10 @@ export function ConversationPage() {
   );
   const canOpenDiagnostics = currentMembership?.status === "active"
     && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
+  const settled = lifecycle.data?.state === "settled";
+  const lifecycleLabel = lifecycle.data?.state === "snoozed" ? "Snoozed"
+    : lifecycle.data?.state === "settled" ? "Archived"
+      : "Active";
 
   useEffect(() => {
     nearEndRef.current = true;
@@ -256,19 +260,10 @@ export function ConversationPage() {
               <RefreshCw className="h-3.5 w-3.5" /> Retry
             </button>
           ) : null}
-          <EditConversationParticipantsDialog conversation={metadata.data} />
-          {canOpenDiagnostics && lifecycle.data ? (
-            <details className="relative">
-              <summary className="icon-button inline-flex cursor-pointer list-none" aria-label="Conversation lifecycle" title="Conversation lifecycle">•••</summary>
-              <div className="absolute right-0 z-20 mt-1 w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
-                {lifecycle.data.state === "active" ? <>
-                  <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("snoozed")}>Snooze for 1 hour</button>
-                  <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("settled")}>Settle to Archive</button>
-                </> : (
-                  <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("active")}>Reopen Conversation</button>
-                )}
-              </div>
-            </details>
+          {settled ? null : <EditConversationParticipantsDialog conversation={metadata.data} />}
+          {lifecycle.data ? <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${settled ? "border-[var(--border)] text-[var(--muted)]" : lifecycle.data.state === "snoozed" ? "border-[var(--accent)]/40 text-[var(--accent)]" : "border-[var(--border)] text-[var(--muted)]"}`}>{lifecycleLabel}</span> : null}
+          {canOpenDiagnostics && lifecycle.data && lifecycle.data.state !== "active" ? (
+            <button className="button-secondary" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("active")}>Reopen</button>
           ) : null}
           <Drawer
             open={rosterOpen}
@@ -290,6 +285,7 @@ export function ConversationPage() {
               localStatus={localStatus}
               showDiagnostics={currentSession.isSuccess}
               drawer
+              readOnly={settled}
               onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
               onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
               onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
@@ -315,6 +311,11 @@ export function ConversationPage() {
             />
           </Drawer>
         </header>
+        {settled ? (
+          <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-xs text-[var(--muted)]" role="status">
+            This Conversation is archived and read-only. Reopen it to send messages, edit participants, or manage agents.
+          </div>
+        ) : null}
         {agentAction.error || diagnosticAction.error || bulkAgentAction.error || lifecycleAction.error ? (
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
             {(agentAction.error ?? diagnosticAction.error ?? bulkAgentAction.error ?? lifecycleAction.error)?.message}
@@ -360,6 +361,7 @@ export function ConversationPage() {
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
           activity={<ConversationActivityStrip agents={localAgents.data ?? []} participants={participants} />}
+          readOnlyReason={settled ? "This Conversation is archived. Reopen it to send a message." : undefined}
         />
       </section>
       <div className="hidden lg:block">
@@ -370,6 +372,7 @@ export function ConversationPage() {
           localAgents={localAgentMap}
           localStatus={localStatus}
           showDiagnostics={currentSession.isSuccess}
+          readOnly={settled}
           onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
           onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
           onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}

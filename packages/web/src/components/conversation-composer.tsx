@@ -34,6 +34,7 @@ export function ConversationComposer({
   currentHumanIdentityId,
   identityStatus,
   activity,
+  readOnlyReason,
 }: {
   participants: Participant[];
   workspaceId: string;
@@ -41,6 +42,7 @@ export function ConversationComposer({
   currentHumanIdentityId?: string;
   identityStatus: "loading" | "ready" | "unavailable";
   activity?: ReactNode;
+  readOnlyReason?: string;
 }) {
   const queryClient = useQueryClient();
   const currentHuman = participants.find((participant) =>
@@ -146,7 +148,7 @@ export function ConversationComposer({
     onError: (_error, submission) => setFailedSubmission(submission),
   });
 
-  const canSubmit = Boolean(body.trim()) && !bodyTooLarge && Boolean(activeAuthorId) && authorReady && !mutation.isPending;
+  const canSubmit = Boolean(body.trim()) && !bodyTooLarge && Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
   const submit = (submission?: MessageSubmission) => {
     if (!canSubmit && !submission) return;
     mutation.mutate(submission ?? createMessageSubmission(activeAuthorId, body, participants));
@@ -263,25 +265,25 @@ export function ConversationComposer({
             aria-expanded={suggestions.length > 0}
             aria-activedescendant={suggestions.length ? `mention-suggestion-${activeSuggestionIndex}` : undefined}
             role="combobox"
-            placeholder={authorReady
+            placeholder={readOnlyReason ?? (authorReady
               ? "Message this Conversation… Use @ to mention an agent."
               : identityStatus === "loading"
                 ? "Loading your browser identity…"
                 : identityStatus === "unavailable"
                   ? "Relaunch MinuChannels to restore your browser identity."
-                  : "You are not an active human participant in this Conversation."}
-            disabled={!activeAuthorId || !authorReady || mutation.isPending}
+                  : "You are not an active human participant in this Conversation.")}
+            disabled={Boolean(readOnlyReason) || !activeAuthorId || !authorReady || mutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] px-2.5 py-2">
             <span className="min-w-0 text-xs text-[var(--muted)]">
-              {currentHuman
+              {readOnlyReason ?? (currentHuman
                 ? <>Sending as <strong className="font-mono font-medium text-[var(--text)]">@{currentHuman.handle ?? currentHuman.id}</strong></>
                 : identityStatus === "loading"
                   ? "Loading your identity…"
                   : identityStatus === "unavailable"
                     ? "Browser identity unavailable"
-                    : "Current human is not an active Conversation participant"}
+                    : "Current human is not an active Conversation participant")}
             </span>
             <span className="text-[10px] text-[var(--muted)]">Enter sends · Shift or ⌘/Ctrl + Enter adds a line · @mention wakes an agent</span>
             <div className="ml-auto flex items-center gap-2">
