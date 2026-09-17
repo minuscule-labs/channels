@@ -1,4 +1,5 @@
 export {
+  defaultRelayMigrationsFolder,
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
   type DrizzleLibSqlRelayStorageOptions,

@@ -92,7 +92,7 @@ npm install -g <new-github-release-tarball-url>
 
 The confirmation defaults to **No**. Use `minu-channels update --yes` for intentional non-interactive automation; `--json` installation also requires `--yes`. Confirmation never bypasses installation-instance protection. If installation succeeds but service restart fails, the command reports the installed version and directs you to `minu-channels start`. Automatic rollback is not claimed; restore a compatible backup if a database migration makes downgrade unsafe.
 
-Database migrations run during startup. Downgrading an already-migrated data directory is unsupported; restore the pre-upgrade backup instead.
+Database migrations run during startup. Before applying any pending local database migration, MinuChannels stops writers under its data-directory lock and creates owner-private, SQLite-consistent snapshots of every existing product database in `backups/before-migration-*/`. These automatic database snapshots supplement—not replace—the recommended complete data-directory backup, which also preserves the local profile and other product state. Downgrading an already-migrated data directory is unsupported; restore the pre-upgrade backup instead.
 
 ## Back up and restore
 

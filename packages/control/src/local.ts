@@ -6,10 +6,14 @@ import {
   type ChannelHttpServer,
 } from "@minu/channels-core";
 import {
+  backupLocalLibSqlDatabase,
+  defaultChannelMigrationsFolder,
   DrizzleLibSqlChannelStorage,
+  hasPendingLocalLibSqlMigrations,
   localLibSqlUrl as localChannelLibSqlUrl,
 } from "@minu/channels-storage-drizzle";
 import {
+  defaultRelayMigrationsFolder,
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
@@ -95,6 +99,43 @@ function workspaceSlug(name: string): string {
     .slice(0, 63)
     .replace(/-+$/g, "");
   return slug || "local-workspace";
+}
+
+async function backupDatabasesBeforeMigration(options: {
+  dataDirectory: string;
+  channelsDatabasePath: string;
+  relayDatabasePath: string;
+  channelsMigrationsFolder: string;
+  relayMigrationsFolder: string;
+}): Promise<void> {
+  const databaseState = async (path: string, migrationsFolder: string): Promise<{ exists: boolean; pending: boolean }> => {
+    try {
+      if (!(await stat(path)).isFile()) throw new Error("not a regular file");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false, pending: false };
+      throw new Error(`Local database is unavailable for migration backup: ${basename(path)}`);
+    }
+    return { exists: true, pending: await hasPendingLocalLibSqlMigrations(localChannelLibSqlUrl(path), migrationsFolder) };
+  };
+  const [channels, relay] = await Promise.all([
+    databaseState(options.channelsDatabasePath, options.channelsMigrationsFolder),
+    databaseState(options.relayDatabasePath, options.relayMigrationsFolder),
+  ]);
+  if (!channels.pending && !relay.pending) return;
+
+  const backupDirectory = join(
+    options.dataDirectory,
+    "backups",
+    `before-migration-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+  );
+  await Promise.all([
+    ...(channels.exists ? [backupLocalLibSqlDatabase(
+      localChannelLibSqlUrl(options.channelsDatabasePath), join(backupDirectory, "channels.db"),
+    )] : []),
+    ...(relay.exists ? [backupLocalLibSqlDatabase(
+      localChannelLibSqlUrl(options.relayDatabasePath), join(backupDirectory, "relay.db"),
+    )] : []),
+  ]);
 }
 
 async function secureDatabaseFiles(path: string): Promise<void> {
@@ -332,14 +373,23 @@ export async function createLocalProductApp(
   const channelsDatabasePath = join(dataDirectory, "channels.db");
   const relayDatabasePath = join(dataDirectory, "relay.db");
   const profilePath = join(dataDirectory, "local-profile.json");
+  const channelsMigrationsFolder = options.channelsMigrationsFolder ?? defaultChannelMigrationsFolder();
+  const relayMigrationsFolder = options.relayMigrationsFolder ?? defaultRelayMigrationsFolder();
   await prepareChannelsDataDirectory(dataDirectory);
   const dataDirectoryLock = await acquireChannelsDataDirectoryLock(dataDirectory);
 
   let storage: DrizzleLibSqlChannelStorage;
   try {
+    await backupDatabasesBeforeMigration({
+      dataDirectory,
+      channelsDatabasePath,
+      relayDatabasePath,
+      channelsMigrationsFolder,
+      relayMigrationsFolder,
+    });
     storage = await DrizzleLibSqlChannelStorage.open({
       url: localChannelLibSqlUrl(channelsDatabasePath),
-      migrationsFolder: options.channelsMigrationsFolder,
+      migrationsFolder: channelsMigrationsFolder,
     });
   } catch (error) {
     await dataDirectoryLock.release();
@@ -367,7 +417,7 @@ export async function createLocalProductApp(
         relayDatabasePath,
         options.runtimeAdapter,
         options.personaPrompt ?? DEFAULT_PERSONA,
-        options.relayMigrationsFolder,
+        relayMigrationsFolder,
       );
     } else {
       profile = await initializeBrowserFirstProfile(client, profilePath);
@@ -378,7 +428,7 @@ export async function createLocalProductApp(
     if (!initialized && options.selectWorkspaceRoot && workspaceRoot) {
       const relayStore = await DrizzleLibSqlRelayStorage.open({
         url: localRelayLibSqlUrl(relayDatabasePath),
-        migrationsFolder: options.relayMigrationsFolder,
+        migrationsFolder: relayMigrationsFolder,
       });
       try {
         const matches: string[] = [];
@@ -411,7 +461,7 @@ export async function createLocalProductApp(
       channelsEndpoint: channelsServer.endpoint,
       channelsServiceToken: channelsServer.serviceToken,
       relayDatabasePath,
-      relayMigrationsFolder: options.relayMigrationsFolder,
+      relayMigrationsFolder,
       webUrl: options.webUrl ?? localChannelsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },

@@ -1,5 +1,8 @@
 export {
+  backupLocalLibSqlDatabase,
+  defaultChannelMigrationsFolder,
   DrizzleLibSqlChannelStorage,
+  hasPendingLocalLibSqlMigrations,
   localLibSqlUrl,
   type DrizzleLibSqlStorageOptions,
 } from "./storage.ts";

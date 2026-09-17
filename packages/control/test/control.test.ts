@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer as createNodeServer, request as httpRequest } from "node:http";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -1082,6 +1082,54 @@ test("local product initializes once and reopens persistent collaboration data",
   } finally {
     await first?.close().catch(() => undefined);
     await reopened?.close().catch(() => undefined);
+    await Promise.all([
+      rm(dataDirectory, { recursive: true, force: true }),
+      rm(workspaceRoot, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("local product snapshots both databases before applying an update migration", async () => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-local-migration-backup-"));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-local-migration-workspace-"));
+  const migrationsFolder = join(dataDirectory, "test-migrations");
+  let app: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
+  try {
+    app = await createLocalProductApp({
+      dataDirectory,
+      workspaceRoot,
+      channelsPort: 0,
+      controlPort: 0,
+      webUrl: "http://127.0.0.1:5199/",
+      runtimeAdapter: "managed-test",
+      runtime: new ManagedFakeRuntime(),
+    });
+    await app.close();
+    app = undefined;
+
+    await mkdir(join(migrationsFolder, "meta"), { recursive: true });
+    await writeFile(join(migrationsFolder, "meta", "_journal.json"), JSON.stringify({
+      entries: [{ idx: 0, version: "6", when: 4_102_444_800_000, tag: "0000_update", breakpoints: true }],
+    }));
+    await writeFile(join(migrationsFolder, "0000_update.sql"), "SELECT 1;");
+
+    app = await createLocalProductApp({
+      dataDirectory,
+      channelsMigrationsFolder: migrationsFolder,
+      channelsPort: 0,
+      controlPort: 0,
+      webUrl: "http://127.0.0.1:5199/",
+      runtimeAdapter: "managed-test",
+      runtime: new ManagedFakeRuntime(),
+    });
+    const backups = await readdir(join(dataDirectory, "backups"));
+    assert.equal(backups.length, 1);
+    await Promise.all([
+      stat(join(dataDirectory, "backups", backups[0]!, "channels.db")),
+      stat(join(dataDirectory, "backups", backups[0]!, "relay.db")),
+    ]);
+  } finally {
+    await app?.close().catch(() => undefined);
     await Promise.all([
       rm(dataDirectory, { recursive: true, force: true }),
       rm(workspaceRoot, { recursive: true, force: true }),

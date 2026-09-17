@@ -1,11 +1,53 @@
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ChannelService } from "@minu/channels-core";
-import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "../src/storage.ts";
+import {
+  backupLocalLibSqlDatabase,
+  defaultChannelMigrationsFolder,
+  DrizzleLibSqlChannelStorage,
+  hasPendingLocalLibSqlMigrations,
+  localLibSqlUrl,
+} from "../src/storage.ts";
+
+test("local migration backups snapshot existing data only when a migration is pending", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-backup-"));
+  const databasePath = join(directory, "channels.db");
+  const url = localLibSqlUrl(databasePath);
+  const migrationsFolder = join(directory, "future-migrations");
+  const backupPath = join(directory, "backups", "channels-before-migration.db");
+  try {
+    const storage = await DrizzleLibSqlChannelStorage.open({ url });
+    const service = new ChannelService(storage);
+    const identity = await service.createIdentity({ type: "human", displayName: "Before backup" });
+    await storage.close();
+
+    assert.equal(await hasPendingLocalLibSqlMigrations(url, defaultChannelMigrationsFolder()), false);
+    await mkdir(join(migrationsFolder, "meta"), { recursive: true });
+    await writeFile(join(migrationsFolder, "meta", "_journal.json"), JSON.stringify({
+      entries: [{ idx: 0, version: "6", when: 4_102_444_800_000, tag: "0000_future", breakpoints: true }],
+    }));
+    await writeFile(join(migrationsFolder, "0000_future.sql"), "SELECT 1;");
+    assert.equal(await hasPendingLocalLibSqlMigrations(url, migrationsFolder), true);
+
+    await backupLocalLibSqlDatabase(url, backupPath);
+    const backup = createClient({ url: localLibSqlUrl(backupPath) });
+    try {
+      const result = await backup.execute({
+        sql: "SELECT display_name FROM identities WHERE id = ?",
+        args: [identity.id],
+      });
+      assert.equal(result.rows[0]?.display_name, "Before backup");
+    } finally {
+      backup.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("initial migration adopts the previous raw SQLite schema", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-legacy-"));

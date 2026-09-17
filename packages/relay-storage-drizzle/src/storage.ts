@@ -24,7 +24,7 @@ export interface DrizzleLibSqlRelayStorageOptions {
   migrationsFolder?: string;
 }
 
-function defaultMigrationsFolder(): string {
+export function defaultRelayMigrationsFolder(): string {
   const currentDirectory = dirname(fileURLToPath(import.meta.url));
   const packageRoot = currentDirectory.endsWith("/dist/src")
     ? resolve(currentDirectory, "../..")
@@ -108,7 +108,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     await client.execute("PRAGMA foreign_keys = ON");
     const database = drizzle(client, { schema });
     await migrate(database, {
-      migrationsFolder: options.migrationsFolder ?? defaultMigrationsFolder(),
+      migrationsFolder: options.migrationsFolder ?? defaultRelayMigrationsFolder(),
     });
     return new DrizzleLibSqlRelayStorage(client, database);
   }

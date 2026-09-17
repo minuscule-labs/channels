@@ -1,4 +1,5 @@
 import { createClient, type Client } from "@libsql/client";
+import { chmod, mkdir } from "node:fs/promises";
 import type {
   Channel,
   ChannelCursorStore,
@@ -21,6 +22,7 @@ import type {
 import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "./schema.ts";
@@ -31,7 +33,7 @@ export interface DrizzleLibSqlStorageOptions {
   migrationsFolder?: string;
 }
 
-function defaultMigrationsFolder(): string {
+export function defaultChannelMigrationsFolder(): string {
   const currentDirectory = dirname(fileURLToPath(import.meta.url));
   const packageRoot = currentDirectory.endsWith("/dist/src")
     ? resolve(currentDirectory, "../..")
@@ -41,6 +43,48 @@ function defaultMigrationsFolder(): string {
 
 export function localLibSqlUrl(path: string): string {
   return path.startsWith("file:") ? path : `file:${resolve(path)}`;
+}
+
+function assertLocalDatabaseUrl(url: string): void {
+  if (!url.startsWith("file:")) throw new Error("Database backup requires a local file database");
+}
+
+/** Returns whether migrations in the supplied folder would change this local database. */
+export async function hasPendingLocalLibSqlMigrations(
+  url: string,
+  migrationsFolder: string,
+): Promise<boolean> {
+  assertLocalDatabaseUrl(url);
+  const migrations = readMigrationFiles({ migrationsFolder });
+  if (migrations.length === 0) return false;
+  const client = createClient({ url });
+  try {
+    const result = await client.execute(
+      "SELECT created_at FROM __drizzle_migrations ORDER BY created_at DESC LIMIT 1",
+    );
+    const lastAppliedAt = Number(result.rows[0]?.created_at ?? 0);
+    return migrations.some(({ folderMillis }) => folderMillis > lastAppliedAt);
+  } catch (error) {
+    if (/no such table: __drizzle_migrations/i.test(error instanceof Error ? error.message : "")) return true;
+    throw error;
+  } finally {
+    client.close();
+  }
+}
+
+/** Creates a compact, transactionally consistent SQLite snapshot after the caller has stopped writers. */
+export async function backupLocalLibSqlDatabase(url: string, backupPath: string): Promise<void> {
+  assertLocalDatabaseUrl(url);
+  await mkdir(dirname(backupPath), { recursive: true, mode: 0o700 });
+  const client = createClient({ url });
+  try {
+    await client.execute("PRAGMA busy_timeout = 5000");
+    await client.execute("PRAGMA wal_checkpoint(TRUNCATE)");
+    await client.execute({ sql: "VACUUM INTO ?", args: [backupPath] });
+    await chmod(backupPath, 0o600);
+  } finally {
+    client.close();
+  }
 }
 
 const pendingMessageCommits = new Map<
@@ -66,7 +110,7 @@ export class DrizzleLibSqlChannelStorage implements ChannelStorage, ChannelCurso
     }
     const database = drizzle(client, { schema });
     await migrate(database, {
-      migrationsFolder: options.migrationsFolder ?? defaultMigrationsFolder(),
+      migrationsFolder: options.migrationsFolder ?? defaultChannelMigrationsFolder(),
     });
     return new DrizzleLibSqlChannelStorage(client, database, options.url);
   }
