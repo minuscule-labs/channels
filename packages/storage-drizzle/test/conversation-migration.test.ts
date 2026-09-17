@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ChannelService } from "@minu/channels-core";
-import { DrizzleLibSqlChannelStorage, localLibSqlUrl } from "../src/storage.ts";
+import {
+  defaultChannelMigrationsFolder,
+  DrizzleLibSqlChannelStorage,
+  localLibSqlUrl,
+} from "../src/storage.ts";
+
+async function v006MigrationsFolder(directory: string): Promise<string> {
+  const migrationsFolder = join(directory, "v0.0.6-migrations");
+  await cp(defaultChannelMigrationsFolder(), migrationsFolder, { recursive: true });
+  const journalPath = join(migrationsFolder, "meta", "_journal.json");
+  const journal = JSON.parse(await readFile(journalPath, "utf8")) as { entries: Array<{ idx: number }> };
+  journal.entries = journal.entries.filter(({ idx }) => idx <= 6);
+  await writeFile(journalPath, JSON.stringify(journal));
+  return migrationsFolder;
+}
 
 /**
  * Upgrade fixture for the current on-disk Channel schema. Keep this data shape when
@@ -15,9 +29,10 @@ test("Channel database upgrade preserves collaboration data under Conversation n
   const directory = await mkdtemp(join(tmpdir(), "minu-conversation-upgrade-"));
   const databasePath = join(directory, "channels.db");
   const url = localLibSqlUrl(databasePath);
+  const migrationsFolder = await v006MigrationsFolder(directory);
   let storage: DrizzleLibSqlChannelStorage | undefined;
   try {
-    storage = await DrizzleLibSqlChannelStorage.open({ url });
+    storage = await DrizzleLibSqlChannelStorage.open({ url, migrationsFolder });
     const service = new ChannelService(storage);
     const human = await service.createIdentity({ type: "human", displayName: "Human" });
     const agent = await service.createIdentity({ type: "agent", displayName: "Agent" });

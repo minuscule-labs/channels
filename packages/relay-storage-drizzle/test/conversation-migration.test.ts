@@ -1,10 +1,24 @@
 import assert from "node:assert/strict";
 import { createClient } from "@libsql/client";
-import { mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
+import {
+  defaultRelayMigrationsFolder,
+  DrizzleLibSqlRelayStorage,
+  localRelayLibSqlUrl,
+} from "../src/storage.ts";
+
+async function v006MigrationsFolder(directory: string): Promise<string> {
+  const migrationsFolder = join(directory, "v0.0.6-migrations");
+  await cp(defaultRelayMigrationsFolder(), migrationsFolder, { recursive: true });
+  const journalPath = join(migrationsFolder, "meta", "_journal.json");
+  const journal = JSON.parse(await readFile(journalPath, "utf8")) as { entries: Array<{ idx: number }> };
+  journal.entries = journal.entries.filter(({ idx }) => idx <= 7);
+  await writeFile(journalPath, JSON.stringify(journal));
+  return migrationsFolder;
+}
 
 /**
  * Upgrade fixture for private Relay state produced by the current Channel schema.
@@ -13,9 +27,10 @@ import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.t
 test("private Relay upgrade preserves Channel state under Conversation names", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-relay-conversation-upgrade-"));
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const migrationsFolder = await v006MigrationsFolder(directory);
   const timestamp = "2026-09-17T00:00:00.000Z";
   try {
-    const storage = await DrizzleLibSqlRelayStorage.open({ url });
+    const storage = await DrizzleLibSqlRelayStorage.open({ url, migrationsFolder });
     await storage.close();
     const client = createClient({ url });
     try {
