@@ -322,6 +322,65 @@ test("owner-governed membership updates revise Conversation rosters and preserve
   }
 });
 
+test("owner-governed Conversation lifecycle is durable and evaluates expired snoozes as active", async () => {
+  const server = await createConversationHttpServer();
+  try {
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    const [owner, builder] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "lifecycle", name: "Lifecycle" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, {
+        identityId: owner.id, mentionHandle: "owner", accessRole: "owner",
+      }),
+      client.addWorkspaceMember(workspace.id, { identityId: builder.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, builder.id],
+      actorIdentityId: owner.id,
+    });
+    assert.deepEqual(await client.getConversationLifecycle(conversation.id), { state: "active" });
+    await assert.rejects(client.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: builder.id,
+      state: "snoozed",
+      snoozedUntil: new Date(Date.now() + 60_000).toISOString(),
+    }), /owner or admin is required/);
+    const snoozed = await client.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: owner.id,
+      state: "snoozed",
+      snoozedUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    assert.equal(snoozed.state, "snoozed");
+    await server.service.storage.putConversationLifecycle({
+      workspaceId: workspace.id,
+      conversationId: conversation.id,
+      state: "snoozed",
+      snoozedUntil: "2020-01-01T00:00:00.000Z",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+    });
+    assert.deepEqual(await client.getConversationLifecycle(conversation.id), { state: "active" });
+    assert.deepEqual(await client.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: owner.id,
+      state: "settled",
+    }), { state: "settled", settledAt: (await client.getConversationLifecycle(conversation.id)).settledAt });
+    await assert.rejects(client.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: owner.id,
+      state: "snoozed",
+      snoozedUntil: new Date(Date.now() + 60_000).toISOString(),
+    }), /must be reopened/);
+    assert.deepEqual(await client.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: owner.id,
+      state: "active",
+    }), { state: "active" });
+  } finally {
+    await server.close();
+  }
+});
+
 test("owner-governed Conversation roster replacement is revisioned and preserves message attribution", async () => {
   const server = await createConversationHttpServer();
   try {

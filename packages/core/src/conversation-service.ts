@@ -10,7 +10,9 @@ import {
 import type {
   Conversation,
   ConversationEvent,
+  ConversationLifecycle,
   ConversationMessage,
+  EffectiveConversationLifecycle,
   AddWorkspaceMemberInput,
   ConversationMetadata,
   CreateConversationInput,
@@ -24,6 +26,7 @@ import type {
   Workspace,
   WorkspaceMember,
   UpdateConversationInput,
+  UpdateConversationLifecycleInput,
   UpdateConversationParticipantsInput,
   UpdateIdentityInput,
   UpdateWorkspaceInput,
@@ -447,6 +450,81 @@ export class ConversationService {
   async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {
     await this.getWorkspace(workspaceId);
     return await this.storage.listWorkspaceConversations(workspaceId);
+  }
+
+  async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
+    await this.getConversationMetadata(conversationId);
+    return this.effectiveLifecycle(await this.storage.getConversationLifecycle(conversationId));
+  }
+
+  async updateConversationLifecycle(
+    conversationId: string,
+    input: UpdateConversationLifecycleInput,
+  ): Promise<EffectiveConversationLifecycle> {
+    const conversation = await this.getConversationMetadata(conversationId);
+    if (!input || !["active", "snoozed", "settled"].includes(input.state)) {
+      throw new ConversationValidationError("Conversation lifecycle state must be active, snoozed, or settled");
+    }
+    if (typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+      throw new ConversationValidationError("actorIdentityId is required");
+    }
+    await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
+    const prior = await this.storage.getConversationLifecycle(conversationId);
+    if (prior?.state === "settled" && input.state !== "active") {
+      throw new ConversationValidationError("A settled Conversation must be reopened before changing lifecycle");
+    }
+    const now = new Date(Math.max(Date.now(), prior ? Date.parse(prior.updatedAt) + 1 : 0)).toISOString();
+    let lifecycle: ConversationLifecycle;
+    if (input.state === "snoozed") {
+      if (typeof input.snoozedUntil !== "string" || Number.isNaN(Date.parse(input.snoozedUntil))
+        || Date.parse(input.snoozedUntil) <= Date.now()) {
+        throw new ConversationValidationError("snoozedUntil must be a future ISO-8601 date");
+      }
+      lifecycle = {
+        workspaceId: conversation.workspaceId,
+        conversationId,
+        state: "snoozed",
+        snoozedUntil: new Date(input.snoozedUntil).toISOString(),
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+      };
+    } else if (input.state === "settled") {
+      lifecycle = {
+        workspaceId: conversation.workspaceId,
+        conversationId,
+        state: "settled",
+        settledAt: now,
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+      };
+    } else {
+      lifecycle = {
+        workspaceId: conversation.workspaceId,
+        conversationId,
+        state: "active",
+        createdAt: prior?.createdAt ?? now,
+        updatedAt: now,
+      };
+    }
+    const saved = await this.storage.putConversationLifecycle(lifecycle);
+    const event: ConversationEvent = {
+      id: createResourceId("event"),
+      type: "conversation.updated",
+      conversationId,
+      createdAt: saved.updatedAt,
+    };
+    for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
+    return this.effectiveLifecycle(saved);
+  }
+
+  private effectiveLifecycle(lifecycle: ConversationLifecycle | undefined): EffectiveConversationLifecycle {
+    if (!lifecycle || lifecycle.state === "active") return { state: "active" };
+    if (lifecycle.state === "snoozed" && Date.parse(lifecycle.snoozedUntil!) <= Date.now()) {
+      return { state: "active" };
+    }
+    return lifecycle.state === "snoozed"
+      ? { state: "snoozed", snoozedUntil: lifecycle.snoozedUntil }
+      : { state: "settled", settledAt: lifecycle.settledAt };
   }
 
   private async assertWorkspaceAdministrator(

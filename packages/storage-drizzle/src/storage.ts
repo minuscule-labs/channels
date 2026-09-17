@@ -1,8 +1,10 @@
 import { createClient, type Client } from "@libsql/client";
+import { assertConversationLifecycle } from "@minu/channels-core";
 import { chmod, mkdir } from "node:fs/promises";
 import type {
   Conversation,
   ConversationCursorStore,
+  ConversationLifecycle,
   ConversationMessage,
   ConversationMetadata,
   ConversationRosterUpdateResult,
@@ -94,6 +96,20 @@ const pendingMessageCommits = new Map<
 const pendingResponseCommits = new Map<string, Promise<ResponseResult>>();
 const pendingWorkspaceMemberUpdates = new Map<string, Promise<unknown>>();
 const pendingConversationRosterUpdates = new Map<string, Promise<unknown>>();
+
+function conversationLifecycle(
+  row: typeof schema.conversationLifecycles.$inferSelect,
+): ConversationLifecycle {
+  return {
+    workspaceId: row.workspaceId,
+    conversationId: row.conversationId,
+    state: row.state,
+    ...(row.snoozedUntil ? { snoozedUntil: row.snoozedUntil } : {}),
+    ...(row.settledAt ? { settledAt: row.settledAt } : {}),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 export class DrizzleLibSqlConversationStorage implements ConversationStorage, ConversationCursorStore {
   private constructor(
@@ -390,6 +406,41 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         status: participant.status,
       })),
     };
+  }
+
+  async getConversationLifecycle(conversationId: string): Promise<ConversationLifecycle | undefined> {
+    const lifecycle = await this.database.query.conversationLifecycles.findFirst({
+      where: eq(schema.conversationLifecycles.conversationId, conversationId),
+    });
+    return lifecycle ? conversationLifecycle(lifecycle) : undefined;
+  }
+
+  async putConversationLifecycle(lifecycle: ConversationLifecycle): Promise<ConversationLifecycle> {
+    assertConversationLifecycle(lifecycle);
+    const conversation = await this.getConversationMetadata(lifecycle.conversationId);
+    if (!conversation) throw new Error(`Conversation not found: ${lifecycle.conversationId}`);
+    if (conversation.workspaceId !== lifecycle.workspaceId) {
+      throw new Error(`Conversation Workspace does not match: ${lifecycle.conversationId}`);
+    }
+    await this.database.insert(schema.conversationLifecycles).values({
+      conversationId: lifecycle.conversationId,
+      workspaceId: lifecycle.workspaceId,
+      state: lifecycle.state,
+      snoozedUntil: lifecycle.snoozedUntil ?? null,
+      settledAt: lifecycle.settledAt ?? null,
+      createdAt: lifecycle.createdAt,
+      updatedAt: lifecycle.updatedAt,
+    }).onConflictDoUpdate({
+      target: schema.conversationLifecycles.conversationId,
+      set: {
+        workspaceId: lifecycle.workspaceId,
+        state: lifecycle.state,
+        snoozedUntil: lifecycle.snoozedUntil ?? null,
+        settledAt: lifecycle.settledAt ?? null,
+        updatedAt: lifecycle.updatedAt,
+      },
+    });
+    return (await this.getConversationLifecycle(lifecycle.conversationId))!;
   }
 
   async updateConversationName(conversationId: string, name: string): Promise<ConversationMetadata | undefined> {

@@ -28,11 +28,15 @@ export {
   type ConversationHttpServer,
   type ConversationHttpServerOptions,
 } from "./http-server.ts";
+export { assertConversationLifecycle } from "./types.ts";
 export type {
   AddWorkspaceMemberInput,
   Conversation,
   ConversationCursorStore,
   ConversationEvent,
+  ConversationLifecycle,
+  ConversationLifecycleState,
+  EffectiveConversationLifecycle,
   ConversationUpdatedEvent,
   ConversationMessage,
   ConversationMetadata,
@@ -55,6 +59,7 @@ export type {
   WorkspaceMemberStatus,
   WorkspaceStatus,
   UpdateConversationInput,
+  UpdateConversationLifecycleInput,
   UpdateConversationParticipantsInput,
   UpdateIdentityInput,
   UpdateWorkspaceInput,

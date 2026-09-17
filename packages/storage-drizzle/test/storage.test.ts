@@ -393,6 +393,60 @@ test("Drizzle/libSQL keeps response commits idempotent across reopen", async () 
   }
 });
 
+test("Drizzle/libSQL persists Conversation lifecycle state without changing transcripts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-lifecycle-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  try {
+    const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const service = new ConversationService(firstStorage);
+    const conversation = await service.createConversation({
+      participants: [{ id: "user", type: "human" }],
+    });
+    assert.equal(await firstStorage.getConversationLifecycle(conversation.id), undefined);
+    await assert.rejects(firstStorage.putConversationLifecycle({
+      workspaceId: conversation.workspaceId,
+      conversationId: conversation.id,
+      state: "active",
+      snoozedUntil: "2026-09-18T00:00:00.000Z",
+      createdAt: "2026-09-17T00:00:00.000Z",
+      updatedAt: "2026-09-17T00:00:00.000Z",
+    }), /incompatible timestamps/);
+
+    const createdAt = "2026-09-17T00:00:00.000Z";
+    await firstStorage.putConversationLifecycle({
+      workspaceId: conversation.workspaceId,
+      conversationId: conversation.id,
+      state: "snoozed",
+      snoozedUntil: "2026-09-18T00:00:00.000Z",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await firstStorage.close();
+
+    const secondStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    assert.deepEqual(await secondStorage.getConversationLifecycle(conversation.id), {
+      workspaceId: conversation.workspaceId,
+      conversationId: conversation.id,
+      state: "snoozed",
+      snoozedUntil: "2026-09-18T00:00:00.000Z",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await secondStorage.putConversationLifecycle({
+      workspaceId: conversation.workspaceId,
+      conversationId: conversation.id,
+      state: "settled",
+      settledAt: "2026-09-19T00:00:00.000Z",
+      createdAt,
+      updatedAt: "2026-09-19T00:00:00.000Z",
+    });
+    assert.equal((await secondStorage.listMessages(conversation.id))?.length, 0);
+    await secondStorage.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Drizzle/libSQL preserves conversations, sequences, messages, and cursors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-libsql-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));

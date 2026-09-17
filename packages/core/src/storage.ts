@@ -1,6 +1,8 @@
+import { assertConversationLifecycle } from "./types.ts";
 import type {
   Conversation,
   ConversationCursorStore,
+  ConversationLifecycle,
   ConversationMessage,
   ConversationMetadata,
   Identity,
@@ -60,6 +62,8 @@ export interface ConversationStorage extends ConversationCursorStore {
   listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]>;
   getConversation(conversationId: string): Promise<Conversation | undefined>;
   getConversationMetadata(conversationId: string): Promise<ConversationMetadata | undefined>;
+  getConversationLifecycle(conversationId: string): Promise<ConversationLifecycle | undefined>;
+  putConversationLifecycle(lifecycle: ConversationLifecycle): Promise<ConversationLifecycle>;
   listMessages(conversationId: string, options?: MessageListOptions): Promise<ConversationMessage[] | undefined>;
   updateConversationName(conversationId: string, name: string): Promise<ConversationMetadata | undefined>;
   replaceConversationParticipants(
@@ -94,6 +98,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   private readonly workspaces = new Map<string, Workspace>();
   private readonly workspaceMembers = new Map<string, WorkspaceMember>();
   private readonly conversations = new Map<string, Conversation>();
+  private readonly lifecycles = new Map<string, ConversationLifecycle>();
   private readonly cursors = new Map<string, number>();
   private readonly responses = new Map<string, ConversationMessage>();
   private readonly messageRequests = new Map<
@@ -266,6 +271,22 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
       rosterRevision: conversation.rosterRevision,
       participants: conversation.participants.map((participant) => ({ ...participant })),
     };
+  }
+
+  async getConversationLifecycle(conversationId: string): Promise<ConversationLifecycle | undefined> {
+    const lifecycle = this.lifecycles.get(conversationId);
+    return lifecycle ? { ...lifecycle } : undefined;
+  }
+
+  async putConversationLifecycle(lifecycle: ConversationLifecycle): Promise<ConversationLifecycle> {
+    assertConversationLifecycle(lifecycle);
+    const conversation = this.conversations.get(lifecycle.conversationId);
+    if (!conversation) throw new Error(`Conversation not found: ${lifecycle.conversationId}`);
+    if (conversation.workspaceId !== lifecycle.workspaceId) {
+      throw new Error(`Conversation Workspace does not match: ${lifecycle.conversationId}`);
+    }
+    this.lifecycles.set(lifecycle.conversationId, { ...lifecycle });
+    return { ...lifecycle };
   }
 
   async updateConversationName(conversationId: string, name: string): Promise<ConversationMetadata | undefined> {

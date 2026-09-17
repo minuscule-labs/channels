@@ -16,6 +16,7 @@ import type {
   CreateResponseInput,
   CreateWorkspaceInput,
   UpdateConversationInput,
+  UpdateConversationLifecycleInput,
   UpdateConversationParticipantsInput,
   UpdateIdentityInput,
   UpdateWorkspaceInput,
@@ -256,6 +257,20 @@ export async function createConversationHttpServer(
           clearInterval(heartbeat);
           streams.delete(response);
           unsubscribe();
+        });
+        return;
+      }
+
+      const lifecycleMatch = url.pathname.match(/^\/conversations\/([^/]+)\/lifecycle$/);
+      if (lifecycleMatch && request.method === "GET") {
+        json(response, 200, { lifecycle: await service.getConversationLifecycle(lifecycleMatch[1]!) });
+        return;
+      }
+      if (lifecycleMatch && request.method === "PATCH") {
+        const input = (await readJson(request)) as UpdateConversationLifecycleInput;
+        requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
+        json(response, 200, {
+          lifecycle: await service.updateConversationLifecycle(lifecycleMatch[1]!, input),
         });
         return;
       }

@@ -2,6 +2,7 @@ import type {
   Conversation,
   ConversationEvent,
   ConversationMessage,
+  EffectiveConversationLifecycle,
   ConversationMetadata,
   CreateConversationInput,
   CreateIdentityInput,
@@ -14,6 +15,7 @@ import type {
   Workspace,
   WorkspaceMember,
   UpdateConversationInput,
+  UpdateConversationLifecycleInput,
   UpdateConversationParticipantsInput,
   UpdateIdentityInput,
   UpdateWorkspaceInput,
@@ -168,6 +170,23 @@ export class ConversationClient {
       body: JSON.stringify(input),
     });
     return ((await response.json()) as { conversation: ConversationMetadata }).conversation;
+  }
+
+  async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
+    const response = await this.request(`/conversations/${conversationId}/lifecycle`);
+    return ((await response.json()) as { lifecycle: EffectiveConversationLifecycle }).lifecycle;
+  }
+
+  async updateConversationLifecycle(
+    conversationId: string,
+    input: UpdateConversationLifecycleInput,
+  ): Promise<EffectiveConversationLifecycle> {
+    const response = await this.request(`/conversations/${conversationId}/lifecycle`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return ((await response.json()) as { lifecycle: EffectiveConversationLifecycle }).lifecycle;
   }
 
   async updateConversationParticipants(

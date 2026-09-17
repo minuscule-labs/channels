@@ -56,6 +56,20 @@ export const conversations = sqliteTable("conversations", {
   rosterRevision: integer("roster_revision").notNull().default(1),
 });
 
+export const conversationLifecycles = sqliteTable("conversation_lifecycles", {
+  conversationId: text("conversation_id")
+    .primaryKey()
+    .references(() => conversations.id, { onDelete: "cascade" }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+  state: text("state", { enum: ["active", "snoozed", "settled"] }).notNull(),
+  snoozedUntil: text("snoozed_until"),
+  settledAt: text("settled_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("conversation_lifecycles_workspace_state_idx").on(table.workspaceId, table.state),
+]);
+
 export const participants = sqliteTable(
   "participants",
   {

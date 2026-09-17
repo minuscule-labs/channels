@@ -110,6 +110,52 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
+export type ConversationLifecycleState = "active" | "snoozed" | "settled";
+
+/** Channel-owned lifecycle state. Absence of a stored record means Active. */
+export interface ConversationLifecycle {
+  workspaceId: string;
+  conversationId: string;
+  state: ConversationLifecycleState;
+  snoozedUntil?: string;
+  settledAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Lifecycle after evaluating an expired snooze at read time. */
+export interface EffectiveConversationLifecycle {
+  state: ConversationLifecycleState;
+  snoozedUntil?: string;
+  settledAt?: string;
+}
+
+export interface UpdateConversationLifecycleInput {
+  actorIdentityId: string;
+  state: ConversationLifecycleState;
+  snoozedUntil?: string;
+}
+
+export function assertConversationLifecycle(lifecycle: ConversationLifecycle): void {
+  if (!lifecycle.workspaceId || !lifecycle.conversationId) {
+    throw new Error("Conversation lifecycle requires Workspace and Conversation ids");
+  }
+  const hasSnooze = lifecycle.snoozedUntil !== undefined;
+  const hasSettled = lifecycle.settledAt !== undefined;
+  if (
+    (lifecycle.state === "active" && (hasSnooze || hasSettled))
+    || (lifecycle.state === "snoozed" && (!hasSnooze || hasSettled))
+    || (lifecycle.state === "settled" && (hasSnooze || !hasSettled))
+  ) {
+    throw new Error("Conversation lifecycle state has incompatible timestamps");
+  }
+  for (const timestamp of [lifecycle.snoozedUntil, lifecycle.settledAt, lifecycle.createdAt, lifecycle.updatedAt]) {
+    if (timestamp !== undefined && Number.isNaN(Date.parse(timestamp))) {
+      throw new Error("Conversation lifecycle timestamps must be ISO-8601 dates");
+    }
+  }
+}
+
 export interface ConversationMetadata {
   id: string;
   workspaceId: string;
