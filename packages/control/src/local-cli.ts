@@ -55,7 +55,7 @@ function defaultWebDirectory(): string {
   return existsSync(packaged) ? packaged : resolve(repositoryRoot(), "packages/web/dist");
 }
 
-function defaultMigrationsFolder(kind: "conversations" | "agent-host"): string | undefined {
+function defaultMigrationsFolder(kind: "channels" | "agent-host"): string | undefined {
   const packaged = packagedPath("assets", "migrations", kind);
   return existsSync(packaged) ? packaged : undefined;
 }
@@ -310,7 +310,7 @@ Other commands:
       selectWorkspaceRoot: !freshInstallation && directoryArgumentProvided,
       runtimeAdapter: "pi",
       runtime,
-      conversationsMigrationsFolder: defaultMigrationsFolder("conversations"),
+      conversationsMigrationsFolder: defaultMigrationsFolder("channels"),
       relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
       onAudit(event) {
         diagnostic(JSON.stringify({ source: "minu-channels", ...event }));

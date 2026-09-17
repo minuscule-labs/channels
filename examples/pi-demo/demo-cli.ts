@@ -105,7 +105,7 @@ async function main(): Promise<void> {
 
   const cwd = resolve(options.cwd ?? process.cwd());
   const defaultDatabasePath = join(homedir(), ".minu", "channels", "channels.db");
-  const defaultRelayDatabasePath = join(homedir(), ".minu", "conversations", "relay.db");
+  const defaultRelayDatabasePath = join(homedir(), ".minu", "channels", "relay.db");
   const databaseUrl = options.dbUrl
     ?? (options.db ? localLibSqlUrl(options.db) : process.env.TURSO_DATABASE_URL)
     ?? localLibSqlUrl(defaultDatabasePath);

@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   program.parse(process.argv);
   const options = program.opts<CliOptions>();
 
-  const defaultPath = join(homedir(), ".minu", "conversations", "channels.db");
+  const defaultPath = join(homedir(), ".minu", "channels", "channels.db");
   const databaseUrl = options.dbUrl
     ?? (options.db ? localLibSqlUrl(options.db) : process.env.TURSO_DATABASE_URL)
     ?? localLibSqlUrl(defaultPath);

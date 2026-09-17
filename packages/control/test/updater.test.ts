@@ -66,7 +66,7 @@ test("discovers the latest checksum-addressed Conversations release", async () =
 test("installs only a checksum-verified writable global npm package", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-"));
   const globalRoot = join(root, "lib", "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("verified release artifact");
   const checksum = createHash("sha256").update(artifact).digest("hex");
@@ -103,7 +103,7 @@ test("installs only a checksum-verified writable global npm package", async () =
 test("refuses self-update while the same installation has a running instance", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-active-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const instance = await registerInstallationInstance({
     packageRoot,
@@ -131,7 +131,7 @@ test("refuses self-update while the same installation has a running instance", a
 test("refuses an unrelated running service from the same installation", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-unrelated-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const instance = await registerInstallationInstance({
     packageRoot, kind: "service", dataDirectory: join(root, "other-data"),
@@ -158,7 +158,7 @@ test("refuses an unrelated running service from the same installation", async ()
 test("treats a live legacy installation marker as unverified", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-legacy-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
   const coordination = join(tmpdir(), `minu-channels-install-${key}`);
@@ -188,7 +188,7 @@ test("treats a live legacy installation marker as unverified", async () => {
 
 test("rejects a symlinked installation coordination directory", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-symlink-"));
-  const packageRoot = join(root, "node_modules", "@minu", "conversations");
+  const packageRoot = join(root, "node_modules", "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
   const coordination = join(tmpdir(), `minu-channels-install-${key}`);
@@ -210,7 +210,7 @@ test("rejects a symlinked installation coordination directory", async () => {
 test("downloads and verifies before coordinating the selected running service", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-service-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   const dataDirectory = join(root, "service-data");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("coordinated verified artifact");
@@ -415,7 +415,7 @@ test("leaves a stopped service stopped after update", async () => {
 test("serializes concurrent self-updates for one installation", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-concurrent-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("concurrent verified artifact");
   const checksum = createHash("sha256").update(artifact).digest("hex");
@@ -455,7 +455,7 @@ test("serializes concurrent self-updates for one installation", async () => {
 test("recovers an interrupted update lock owned by a dead process", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-recovery-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const key = createHash("sha256").update(packageRoot).digest("hex").slice(0, 24);
   const coordination = join(tmpdir(), `minu-channels-install-${key}`);
@@ -491,7 +491,7 @@ test("recovers an interrupted update lock owned by a dead process", async () => 
 test("sanitizes global npm failures after verification", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-npm-failure-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   const artifact = Buffer.from("verified but install fails");
   const checksum = createHash("sha256").update(artifact).digest("hex");
@@ -521,7 +521,7 @@ test("sanitizes global npm failures after verification", async () => {
 test("rejects release artifacts whose checksum does not match", async () => {
   const root = await mkdtemp(join(tmpdir(), "minu-channels-updater-bad-"));
   const globalRoot = join(root, "node_modules");
-  const packageRoot = join(globalRoot, "@minu", "conversations");
+  const packageRoot = join(globalRoot, "@minu", "channels");
   await mkdir(packageRoot, { recursive: true });
   try {
     await assert.rejects(installUpdate({
