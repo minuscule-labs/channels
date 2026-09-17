@@ -26,9 +26,9 @@ minu-channels open
 minu-channels run
 ```
 
-The background lifecycle is currently supported on macOS. `start` installs or refreshes a data-directory-scoped user LaunchAgent and starts it without enabling login startup. `open` starts it if needed and obtains a fresh authenticated browser launch through owner-private state. Use `stop`, `restart`, and `status` for normal lifecycle. An ordinary `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, waits for turns already active at the boundary, and leaves queued or newly arriving Channel work durable for processing after restart. It never silently stops or replaces Runtime sessions. Opt into login startup with `enable-login`, reverse it with `disable-login`, and unregister it with `remove-service`. Service removal preserves all product data. Use `minu-channels run` for explicit foreground operation; bare `minu-channels` remains a compatibility alias and Linux remains foreground-capable.
+The background lifecycle is currently supported on macOS. `start` installs or refreshes a data-directory-scoped user LaunchAgent and starts it without enabling login startup. `open` starts it if needed and obtains a fresh authenticated browser launch through owner-private state. Use `stop`, `restart`, and `status` for normal lifecycle. An ordinary `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, waits for turns already active at the boundary, and leaves queued or newly arriving Conversation work durable for processing after restart. It never silently stops or replaces Runtime sessions. Opt into login startup with `enable-login`, reverse it with `disable-login`, and unregister it with `remove-service`. Service removal preserves all product data. Use `minu-channels run` for explicit foreground operation; bare `minu-channels` remains a compatibility alias and Linux remains foreground-capable.
 
-Choose the first Workspace source folder in browser onboarding. Passing an absolute Workspace path remains available as a non-interactive shortcut. Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Channels and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
+Choose the first Workspace source folder in browser onboarding. Passing an absolute Workspace path remains available as a non-interactive shortcut. Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Conversations and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
 
 Installing from a release tarball is supported. Installing directly from a Git branch or repository checkout is not a release installation because it may require source build tools and sibling repositories.
 
@@ -73,7 +73,7 @@ The built-in updater supports writable global npm installations. It downloads th
 2. Back up the data directory.
 3. Run the updater and confirm installation.
 4. If the selected service was running, require the updater to report that it restarted successfully.
-5. Verify Channels, messages, agents, and configuration before removing the backup.
+5. Verify Conversations, messages, agents, and configuration before removing the backup.
 
 ```bash
 minu-channels update
@@ -94,6 +94,10 @@ The confirmation defaults to **No**. Use `minu-channels update --yes` for intent
 
 Database migrations run during startup. Before applying any pending local database migration, MinuChannels stops writers under its data-directory lock and creates owner-private, SQLite-consistent snapshots of every existing product database in `backups/before-migration-*/`. These automatic database snapshots supplement—not replace—the recommended complete data-directory backup, which also preserves the local profile and other product state. Downgrading an already-migrated data directory is unsupported; restore the pre-upgrade backup instead.
 
+### Channel-to-Conversation update
+
+The Conversation update renames the public and private SQLite schema in place while retaining the established `~/.minu/channels` directory and the `channels.db` filename. It preserves all existing opaque `channel_` IDs as Conversation IDs, so saved browser links redirect from `/channels/...` to `/conversations/...`; newly created records use `conversation_` IDs. The update also moves public collaboration and local-control endpoint paths to `/conversations/...` and `/local/conversations/...`. Stop any older foreground process before updating, keep the automatic backup until you have verified conversations, messages, agent bindings, and working folders, and restore the complete pre-update data directory rather than attempting a downgrade.
+
 ## Back up and restore
 
 The default data directory is product-isolated from other Minu applications:
@@ -102,7 +106,7 @@ The default data directory is product-isolated from other Minu applications:
 ~/.minu/channels/
 ```
 
-Channels never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private, atomically owned `run/instance.lock/` directory prevents multiple Channels servers from opening the same data directory and safely serializes stale-lock recovery; use a distinct `--data-dir` for an independent concurrent installation.
+Conversations never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private, atomically owned `run/instance.lock/` directory prevents multiple Conversations servers from opening the same data directory and safely serializes stale-lock recovery; use a distinct `--data-dir` for an independent concurrent installation.
 
 Stop MinuChannels before copying it so the collaboration and private execution databases represent one consistent checkpoint.
 
@@ -135,7 +139,7 @@ minu-channels remove-service
 npm uninstall -g @minu/channels
 ```
 
-Uninstalling the package does not delete `~/.minu/channels`. Remove that directory separately only when its Channels, messages, agent configuration, and bindings are no longer needed.
+Uninstalling the package does not delete `~/.minu/channels`. Remove that directory separately only when its Conversations, messages, agent configuration, and bindings are no longer needed.
 
 ## Verification
 

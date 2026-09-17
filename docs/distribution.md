@@ -23,9 +23,9 @@ pnpm install
 pnpm local -- --cwd /absolute/path/to/workspace
 ```
 
-This provides persistent local collaboration data, restricted agent-host state, browser bootstrap, live Pi startup, terminal logs, and clean foreground supervision. The dedicated `minu-channels` entry point serves the production web build and proxies Channels, control, and SSE traffic through one loopback product URL; Vite is no longer part of persistent local startup.
+This provides persistent local collaboration data, restricted agent-host state, browser bootstrap, live Pi startup, terminal logs, and clean foreground supervision. The dedicated `minu-channels` entry point serves the production web build and proxies Conversations, control, and SSE traffic through one loopback product URL; Vite is no longer part of persistent local startup.
 
-The source-workspace command still builds and loads the adjacent Runtime checkout, but the release build now bundles Runtime core, the Pi adapter, and its owned worker into one product artifact. Release builds require clean Channels and Runtime repositories, enforce the immutable Runtime commit in `runtime-source.json`, record both commit hashes in the package, and support `MINU_RUNTIME_ROOT` when Runtime is not adjacent to the active checkout. The installed artifact has no sibling-repository lookup. `pnpm release:pack` builds both source workspaces, assembles the production web client and both migration trees, rejects common secret/local-data artifacts, creates an npm-compatible tarball, and emits `SHA256SUMS`. `pnpm release:smoke` installs that exact tarball in a temporary directory and proves both first launch and persistent reopen.
+The source-workspace command still builds and loads the adjacent Runtime checkout, but the release build now bundles Runtime core, the Pi adapter, and its owned worker into one product artifact. Release builds require clean Conversations and Runtime repositories, enforce the immutable Runtime commit in `runtime-source.json`, record both commit hashes in the package, and support `MINU_RUNTIME_ROOT` when Runtime is not adjacent to the active checkout. The installed artifact has no sibling-repository lookup. `pnpm release:pack` builds both source workspaces, assembles the production web client and both migration trees, rejects common secret/local-data artifacts, creates an npm-compatible tarball, and emits `SHA256SUMS`. `pnpm release:smoke` installs that exact tarball in a temporary directory and proves both first launch and persistent reopen.
 
 An isolated npm-prefix installation of the generated tarball has started the bundled Pi Runtime and returned the requested `PACKAGED_PI_OK` response through the authenticated local web gateway. The remaining external release gates are clean-account macOS/Linux validation, repository visibility confirmation, and cross-repository checkout access for the pinned Runtime commit. [`local-release.md`](local-release.md) documents installation, upgrades, backup, reset, and uninstall without inventing repository or release URLs before they exist.
 
@@ -68,7 +68,7 @@ npx @minu/channels .
 minu channels .                     # optional umbrella CLI
 ```
 
-First launch creates a local human, one configured but unstarted Builder, one Workspace, and an empty General Channel. Later launches reopen the same data. Setup does not require a separate `init` command and must not execute a model automatically.
+First launch creates a local human, one configured but unstarted Builder, one Workspace, and an empty General Conversation. Later launches reopen the same data. Setup does not require a separate `init` command and must not execute a model automatically.
 
 ## Distribution choices
 
@@ -213,4 +213,4 @@ Before the first public release:
 
 ## MVP decision
 
-Use an npm-compatible tarball attached to a private GitHub Release as the initial distribution, matching the established Minu product pattern. The artifact bundles private Channels internals and the required MinuRuntime Pi implementation; source package boundaries do not become public product boundaries. Keep npm publication, direct repository execution, the optional umbrella CLI, database adapters, native releases, and T3-style background services deferred until the foreground artifact is proven in use.
+Use an npm-compatible tarball attached to a private GitHub Release as the initial distribution, matching the established Minu product pattern. The artifact bundles private Conversations internals and the required MinuRuntime Pi implementation; source package boundaries do not become public product boundaries. Keep npm publication, direct repository execution, the optional umbrella CLI, database adapters, native releases, and T3-style background services deferred until the foreground artifact is proven in use.

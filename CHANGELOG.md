@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Rename the canonical collaboration primitive from **Channel** to **Conversation** across the public database, private Relay database, HTTP/local-control APIs, browser routes, events, and TypeScript contracts. Existing `channel_` IDs and bookmarked `/channels/...` browser URLs remain valid; new conversations receive `conversation_` IDs.
+- Before this migration runs, create owner-private, SQLite-consistent backups of `channels.db` and `relay.db` under `backups/before-migration-*`. The MinuChannels package, CLI, hostname, and `~/.minu/channels` data location remain unchanged.
+
 ## 0.0.6
 
 - Move source and review-mode default ports to `47510–47512`, keeping them separate from the installed product’s `47410–47412` ports.

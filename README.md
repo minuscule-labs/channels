@@ -41,7 +41,7 @@ minu-channels open
 minu-channels run
 ```
 
-On macOS, `start`, `stop`, `restart`, `status`, and `open` manage a user-owned background service. `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, lets already-active work finish, and leaves queued Channel work durable for recovery after restart. A checksum-verified global npm `update` safely coordinates the selected service and restarts it only when it was previously running; foreground or unrelated service instances block executable replacement. Login startup remains off until `minu-channels enable-login`; `disable-login` reverses it, and `remove-service` unregisters the service without deleting product data. `minu-channels run` is the explicit foreground command, while bare `minu-channels` remains its compatibility alias.
+On macOS, `start`, `stop`, `restart`, `status`, and `open` manage a user-owned background service. `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, lets already-active work finish, and leaves queued Conversation work durable for recovery after restart. A checksum-verified global npm `update` safely coordinates the selected service and restarts it only when it was previously running; foreground or unrelated service instances block executable replacement. Login startup remains off until `minu-channels enable-login`; `disable-login` reverses it, and `remove-service` unregisters the service without deleting product data. `minu-channels run` is the explicit foreground command, while bare `minu-channels` remains its compatibility alias.
 
 The authenticated browser opens first-run onboarding. Choose a local source folder and name to create your first Workspace and its empty **General** Conversation; the source path remains private.
 
@@ -63,7 +63,7 @@ This repository expects the [`runtime`](https://github.com/minuscule-labs/runtim
 
 ```text
 minuscule-labs/
-├── channels/
+├── conversations/
 └── runtime/
 ```
 
@@ -104,21 +104,21 @@ The default data directory is:
 
 Override precedence is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default. Collaboration data and private execution configuration are stored separately inside this product directory with owner-only permissions.
 
-The production app binds its sockets to `127.0.0.1` and advertises `http://minu-channels.localhost:47412/`. The reserved `.localhost` name stays on this computer and gives Channels its own browser-cookie namespace. Internal Channels and control ports default to `47410` and `47411`. All three ports remain configurable.
+The production app binds its sockets to `127.0.0.1` and advertises `http://minu-channels.localhost:47412/`. The reserved `.localhost` name stays on this computer and gives Conversations its own browser-cookie namespace. Internal Conversations and control ports default to `47410` and `47411`. All three ports remain configurable.
 
 A one-time browser bootstrap enforces Host and Origin policy and protects direct collaboration traffic with a private service credential. Agent instructions, source paths, Runtime sessions, and credentials are not exposed through public collaboration metadata.
 
 ## Architecture
 
 ```text
-Browser ⇄ Channels HTTP/SSE ⇄ agent host ⇄ MinuRuntime ⇄ Pi
+Browser ⇄ Conversations HTTP/SSE ⇄ agent host ⇄ MinuRuntime ⇄ Pi
 ```
 
-The public Channels core remains communication-only. The product composes it with private agent configuration, Relay delivery, local control, and the independently reusable MinuRuntime execution layer.
+The public Conversations core remains communication-only. The product composes it with private agent configuration, Relay delivery, local control, and the independently reusable MinuRuntime execution layer.
 
 Workspace agents can participate in multiple Conversations. Each Conversation binding owns an isolated Runtime session and transcript. Addressed messages wake agents; ordinary messages in a two-participant human-agent Conversation implicitly address the sole agent.
 
-Relay delivery uses one absolute per-trigger retry budget across Runtime and Channel operations. Transient network, timeout, `408`, `425`, `429`, and `5xx` failures retry within that budget; other authenticated `4xx` responses are permanent. If a generic public terminal outcome cannot be committed, the private Relay store atomically records a sanitized dead letter and advances the durable cursor so poison delivery cannot block later work.
+Relay delivery uses one absolute per-trigger retry budget across Runtime and Conversation operations. Transient network, timeout, `408`, `425`, `429`, and `5xx` failures retry within that budget; other authenticated `4xx` responses are permanent. If a generic public terminal outcome cannot be committed, the private Relay store atomically records a sanitized dead letter and advances the durable cursor so poison delivery cannot block later work.
 
 ## Packages
 

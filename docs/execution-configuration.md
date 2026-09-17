@@ -1,10 +1,10 @@
 # Execution Configuration
 
-**Status:** Workspace-agent model/reasoning launch profiles, adapter-scoped model allowlists, and advisory Channel working folders are implemented; named shared profiles, Channel launch-profile overrides, and enforceable Runtime filesystem scopes remain future work.
+**Status:** Workspace-agent model/reasoning launch profiles, adapter-scoped model allowlists, and advisory Conversation working folders are implemented; named shared profiles, Conversation launch-profile overrides, and enforceable Runtime filesystem scopes remain future work.
 
 ## BLUF
 
-MinuChannels owns the execution-configuration experience, while Channels core remains communication-only. A Workspace provides the source and reusable agent defaults. A Channel may later narrow the working directory beneath that source. Each Channel-agent binding still receives an isolated Runtime session.
+MinuChannels owns the execution-configuration experience, while Conversations core remains communication-only. A Workspace provides the source and reusable agent defaults. A Conversation may later narrow the working directory beneath that source. Each Conversation-agent binding still receives an isolated Runtime session.
 
 ```text
 Workspace
@@ -12,7 +12,7 @@ Workspace
 ├── reusable agents
 │   ├── persona
 │   └── default Runtime launch profile
-└── Channels
+└── Conversations
     ├── optional relative working scope
     └── isolated Runtime session per assigned agent
 ```
@@ -26,23 +26,23 @@ Workspace: minuscule-labs
 Source root: /Users/example/Workspaces/minuscule-labs
 
 #runtime   → runtime/
-#channels  → channels/
+#conversations  → conversations/
 #release   → Workspace root
 ```
 
-Channel creation does not require a source path. Channels remain useful for human collaboration without agent execution. Explicit Runtime Start requires a configured Workspace source root.
+Conversation creation does not require a source path. Conversations remain useful for human collaboration without agent execution. Explicit Runtime Start requires a configured Workspace source root.
 
-A future Channel working scope may narrow the Runtime working directory with a relative path. It must:
+A future Conversation working scope may narrow the Runtime working directory with a relative path. It must:
 
 - default to the Workspace root;
 - resolve to an existing directory beneath the Workspace root;
 - reject absolute paths, `..` escapes, and symlink escapes;
-- apply consistently to every agent session in that Channel unless later evidence justifies a narrower override;
+- apply consistently to every agent session in that Conversation unless later evidence justifies a narrower override;
 - remain restricted agent-host configuration rather than collaboration metadata;
 - expose only a redacted or relative summary in ordinary browser responses; and
 - apply to newly started sessions or explicit **New session** replacements, never mutate an active session.
 
-This is filesystem scoping, not nested Channels. Conversational threads or subchannels are a separate future product decision.
+This is filesystem scoping, not nested Conversations. Conversational threads or subconversations are a separate future product decision.
 
 ## Reusable Workspace agents
 
@@ -51,9 +51,9 @@ An identity may be globally stable, but execution configuration is Workspace-loc
 - its Workspace handle and public delegation profile;
 - its restricted persona;
 - its default Runtime launch profile; and
-- membership in any number of Channels.
+- membership in any number of Conversations.
 
-The same Workspace agent may participate in several Channels, but `(workspaceId, channelId, agentIdentityId)` always maps to a distinct Runtime session and transcript. No global agent session is shared across Channels.
+The same Workspace agent may participate in several Conversations, but `(workspaceId, conversationId, agentIdentityId)` always maps to a distinct Runtime session and transcript. No global agent session is shared across Conversations.
 
 Cross-Workspace identity reuse or cloning remains deferred. If added, each Workspace must supply its own handle, permissions, source access, persona, credentials, and launch profile.
 
@@ -84,7 +84,7 @@ Profiles belong to restricted Workspace execution configuration. The current and
 1. host-registered Runtime adapter and its advertised capabilities;
 2. reusable Workspace launch profile;
 3. Workspace agent default profile; and
-4. a future Channel-agent binding override only if real usage requires it.
+4. a future Conversation-agent binding override only if real usage requires it.
 
 Model names, reasoning levels, provider options, and effective launch defaults must come from adapter capabilities or validated adapter schemas. MinuChannels should not hard-code Pi-specific controls into the collaboration domain. Credentials remain write-only and must never enter collaboration data, messages, SSE, audit values, or ordinary browser responses.
 
@@ -98,11 +98,11 @@ Model management is scoped to a Runtime adapter, not to Pi or to one global mode
 - launch-time revalidation; and
 - sanitized unavailable states that do not expose credentials or provider errors.
 
-The model allowlist enables models per Runtime adapter and filters the adapter's discovered catalog for every Workspace agent using that adapter. Channels shows enabled and disabled state, but it does not store provider credentials or infer access merely because a model exists in a static catalog. Newly started sessions and **New session** replacements fail closed when their configured model has since been disabled.
+The model allowlist enables models per Runtime adapter and filters the adapter's discovered catalog for every Workspace agent using that adapter. Conversations shows enabled and disabled state, but it does not store provider credentials or infer access merely because a model exists in a static catalog. Newly started sessions and **New session** replacements fail closed when their configured model has since been disabled.
 
-A native Codex harness should register as its own MinuRuntime adapter and implement the same capability/start contract. This remains distinct from selecting an `openai-codex` provider through the Pi adapter. Other harnesses can expose the common model and reasoning fields, omit unsupported capabilities, and later contribute capability-defined options without changing Channels core or the collaboration schema.
+A native Codex harness should register as its own MinuRuntime adapter and implement the same capability/start contract. This remains distinct from selecting an `openai-codex` provider through the Pi adapter. Other harnesses can expose the common model and reasoning fields, omit unsupported capabilities, and later contribute capability-defined options without changing Conversations core or the collaboration schema.
 
-Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Channels-authored skill options.
+Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Conversations-authored skill options.
 
 ## Current implementation
 
@@ -117,30 +117,30 @@ The current product supports:
 - harness-discovered, validated per-agent skill selection;
 - redacted configured-state summaries;
 - application of profile changes only to newly started sessions and **New session** replacements; and
-- isolated Runtime sessions per Channel-agent binding.
+- isolated Runtime sessions per Conversation-agent binding.
 
 MinuRuntime's start contract accepts structured provider/model and reasoning selections in addition to `cwd`, `systemPrompt`, and `appendSystemPrompt`. The Pi adapter discovers configured models through RPC, verifies exact selections, checks the selected model's available thinking levels, and fails before registration rather than silently falling back. The complete product flow has been proved with `openai-codex/gpt-5.6-sol`, low reasoning, and genuine output `CHANNEL_PROFILE_OK`.
 
 It does **not** yet support:
 
-- enforceable Runtime filesystem scopes (Channel working folders are advisory only);
+- enforceable Runtime filesystem scopes (Conversation working folders are advisory only);
 - separately named profiles shared by several Workspace agents;
 - arbitrary provider-option schemas;
 - credential management in the profile UI; or
-- per-Channel launch-profile overrides.
+- per-Conversation launch-profile overrides.
 
 ## Ownership boundary
 
-- **MinuChannels UI:** dedicated Workspace-agent administration combining readable public routing metadata with authenticated private launch configuration, selection, and lifecycle guidance. Saved inline instructions and launch selections are readable only on the local single-agent detail page; list and public Channel responses remain redacted. Channel-specific lifecycle actions remain in Channels.
+- **MinuChannels UI:** dedicated Workspace-agent administration combining readable public routing metadata with authenticated private launch configuration, selection, and lifecycle guidance. Saved inline instructions and launch selections are readable only on the local single-agent detail page; list and public Conversation responses remain redacted. Conversation-specific lifecycle actions remain in Conversations.
 - **Private agent host:** authorization, validation, persistence, launch-spec resolution, audit metadata, and binding lifecycle.
 - **MinuRuntime adapter:** capability declaration and faithful execution of validated launch options.
-- **Channels core:** identities, membership, Channels, messages, targets, and events only; it never stores private launch configuration or executes agents.
+- **Conversations core:** identities, membership, Conversations, messages, targets, and events only; it never stores private launch configuration or executes agents.
 
 ## Promotion rule
 
-Workspace-agent model/reasoning profiles were promoted after local usage demonstrated a need for materially different model cost and reasoning behavior and Pi exposed a stable RPC capability/selection contract. Do not promote the remaining Channel scopes, named shared profile libraries, provider-option forms, or binding overrides merely because they are plausible. Require evidence such as:
+Workspace-agent model/reasoning profiles were promoted after local usage demonstrated a need for materially different model cost and reasoning behavior and Pi exposed a stable RPC capability/selection contract. Do not promote the remaining Conversation scopes, named shared profile libraries, provider-option forms, or binding overrides merely because they are plausible. Require evidence such as:
 
 - the Workspace root is too broad for safe or useful agent execution;
 - users repeatedly duplicate the same profile across several agents;
 - an additional adapter exposes a stable option schema that the UI can validate; or
-- one agent demonstrably needs different launch behavior in different Channels.
+- one agent demonstrably needs different launch behavior in different Conversations.

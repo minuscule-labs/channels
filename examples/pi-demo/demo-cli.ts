@@ -6,33 +6,33 @@ import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  ChannelClient,
-  ChannelService,
-  createChannelHttpServer,
-  InMemoryChannelStorage,
-  type ChannelEvent,
+  ConversationClient,
+  ConversationService,
+  createConversationHttpServer,
+  InMemoryConversationStorage,
+  type ConversationEvent,
   type Participant,
 } from "@minu/channels-core";
 import {
-  DrizzleLibSqlChannelStorage,
+  DrizzleLibSqlConversationStorage,
   localLibSqlUrl,
 } from "@minu/channels-storage-drizzle";
 import { PiAgentRuntime } from "@minu/runtime-pi";
 import {
-  ChannelRuntimeRelay,
+  ConversationRuntimeRelay,
   InMemoryRelayBindingStore,
   LocalRelayDirectory,
-  restoreChannelBindings,
+  restoreConversationBindings,
 } from "@minu/channels-relay";
 import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
 
-const BUILDER_PERSONA = `You are Agent A, the builder in a shared MinuChannel.
-Implement or investigate the work you are explicitly addressed with. Inspect the actual project, use tools, and report concrete results rather than speculation. When another review is useful, use the Channel roster to identify the reviewer and mention that participant's exact id with a focused handoff. Do not speak for other participants.`;
+const BUILDER_PERSONA = `You are Agent A, the builder in a shared MinuConversation.
+Implement or investigate the work you are explicitly addressed with. Inspect the actual project, use tools, and report concrete results rather than speculation. When another review is useful, use the Conversation roster to identify the reviewer and mention that participant's exact id with a focused handoff. Do not speak for other participants.`;
 
-const REVIEWER_PERSONA = `You are Agent B, the reviewer in a shared MinuChannel.
+const REVIEWER_PERSONA = `You are Agent B, the reviewer in a shared MinuConversation.
 Independently inspect work you are explicitly addressed with. Prioritize correctness, security, regressions, and missing tests. Report concrete findings with file references when possible. Do not approve work you have not inspected, and do not modify it unless asked.`;
 
 interface DemoOptions {
@@ -66,12 +66,15 @@ function formatParticipant(participant: Participant): string {
   }`;
 }
 
-function formatEvent(event: ChannelEvent, participants: Participant[]): string {
+function formatEvent(event: ConversationEvent, participants: Participant[]): string {
   if (event.type === "roster.updated") {
     return `[roster revision ${event.rosterRevision}] Workspace membership metadata changed`;
   }
+  if (event.type === "conversation.updated") {
+    return "[conversation updated]";
+  }
   const label = (identityId: string) => {
-    if (identityId === "@channel") return identityId;
+    if (identityId === "@conversation") return identityId;
     const participant = participants.find((candidate) => candidate.id === identityId);
     return participant ? `@${participant.handle ?? participant.id}` : identityId;
   };
@@ -81,8 +84,8 @@ function formatEvent(event: ChannelEvent, participants: Participant[]): string {
 
 async function main(): Promise<void> {
   const program = new Command()
-    .name("minu-channel-demo")
-    .description("Run an interactive Channel with builder and reviewer Pi agents")
+    .name("minu-conversation-demo")
+    .description("Run an interactive Conversation with builder and reviewer Pi agents")
     .option("--cwd <path>", "agent working directory")
     .addOption(new Option("--db <path>", "local libSQL database path").conflicts("dbUrl"))
     .addOption(new Option("--db-url <url>", "libSQL or Turso database URL").conflicts("db"))
@@ -102,21 +105,21 @@ async function main(): Promise<void> {
 
   const cwd = resolve(options.cwd ?? process.cwd());
   const defaultDatabasePath = join(homedir(), ".minu", "channels", "channels.db");
-  const defaultRelayDatabasePath = join(homedir(), ".minu", "channels", "relay.db");
+  const defaultRelayDatabasePath = join(homedir(), ".minu", "conversations", "relay.db");
   const databaseUrl = options.dbUrl
     ?? (options.db ? localLibSqlUrl(options.db) : process.env.TURSO_DATABASE_URL)
     ?? localLibSqlUrl(defaultDatabasePath);
   const authToken = options.authToken ?? process.env.TURSO_AUTH_TOKEN;
   const storage = options.memory
-    ? new InMemoryChannelStorage()
-    : await DrizzleLibSqlChannelStorage.open({ url: databaseUrl, authToken });
+    ? new InMemoryConversationStorage()
+    : await DrizzleLibSqlConversationStorage.open({ url: databaseUrl, authToken });
   const relayStorage = options.memory
     ? new InMemoryRelayBindingStore()
     : await DrizzleLibSqlRelayStorage.open({
       url: localRelayLibSqlUrl(options.relayDb ?? defaultRelayDatabasePath),
     });
-  const server = await createChannelHttpServer({ service: new ChannelService(storage) });
-  const client = new ChannelClient(server.endpoint);
+  const server = await createConversationHttpServer({ service: new ConversationService(storage) });
+  const client = new ConversationClient(server.endpoint);
   const runtime = new PiAgentRuntime();
   const [sessions, identities] = await Promise.all([
     Promise.all([
@@ -155,7 +158,7 @@ async function main(): Promise<void> {
       profileOverride: "Independently reviews correctness, security, regressions, and missing tests.",
     }),
   ]);
-  const channel = await client.createChannel({
+  const conversation = await client.createConversation({
     workspaceId: workspace.id,
     name: "pi-collaboration",
     participantIds: [human!.id, agentA!.id, agentB!.id],
@@ -179,29 +182,29 @@ async function main(): Promise<void> {
   ]);
   await Promise.all([
     relayDirectory.bindAgent({
-      channelId: channel.id,
+      conversationId: conversation.id,
       agentIdentityId: agentA!.id,
       runtimeAdapter: "pi",
       runtimeSessionId: sessions[0]!.id,
     }),
     relayDirectory.bindAgent({
-      channelId: channel.id,
+      conversationId: conversation.id,
       agentIdentityId: agentB!.id,
       runtimeAdapter: "pi",
       runtimeSessionId: sessions[1]!.id,
     }),
   ]);
-  const restoredBindings = await restoreChannelBindings({
+  const restoredBindings = await restoreConversationBindings({
     client,
     store: relayStorage,
-    channelId: channel.id,
+    conversationId: conversation.id,
     leaseOwner: `pi-demo:${randomUUID()}`,
     runtimes: { pi: runtime },
   });
 
-  const relay = new ChannelRuntimeRelay({
+  const relay = new ConversationRuntimeRelay({
     client,
-    channelId: channel.id,
+    conversationId: conversation.id,
     bindings: restoredBindings.bindings,
     cursorStore: storage,
     onError(binding, error) {
@@ -217,11 +220,11 @@ async function main(): Promise<void> {
   const ready = new Promise<void>((resolveReady) => (viewerReady = resolveReady));
   const viewer = (async () => {
     try {
-      for await (const event of client.events(channel.id, {
+      for await (const event of client.events(conversation.id, {
         signal: viewerController.signal,
         onReady: viewerReady,
       })) {
-        console.log(`\n${formatEvent(event, channel.participants)}`);
+        console.log(`\n${formatEvent(event, conversation.participants)}`);
         input?.prompt(true);
       }
     } catch (error) {
@@ -230,15 +233,15 @@ async function main(): Promise<void> {
   })();
   await ready;
 
-  console.log(`Local MinuChannel: ${channel.id}`);
+  console.log(`Local MinuConversation: ${conversation.id}`);
   console.log(`Endpoint: ${server.endpoint}`);
-  console.log(options.memory ? "Storage: memory" : `Channel storage: ${databaseUrl}`);
+  console.log(options.memory ? "Storage: memory" : `Conversation storage: ${databaseUrl}`);
   if (!options.memory) {
     console.log(`Private Relay storage: ${localRelayLibSqlUrl(options.relayDb ?? defaultRelayDatabasePath)}`);
   }
   console.log(`agent-a (builder): ${sessions[0]!.id}`);
   console.log(`agent-b (reviewer): ${sessions[1]!.id}`);
-  console.log("\nMention @agent-a, @agent-b, or @channel to wake agents.");
+  console.log("\nMention @agent-a, @agent-b, or @conversation to wake agents.");
   console.log("Unaddressed messages are stored without waking agents.");
   console.log("Commands: /members, /messages, /status, /quit");
   console.log("Controls: /steer @agent-id <message>, /interrupt @agent-id <replacement>\n");
@@ -260,7 +263,7 @@ async function main(): Promise<void> {
       const control = controlCommand(line);
       if (control) {
         try {
-          const target = channel.participants.find(
+          const target = conversation.participants.find(
             (participant) => (participant.handle ?? participant.id) === control.participantId,
           );
           if (!target) throw new Error(`Unknown participant: @${control.participantId}`);
@@ -277,24 +280,24 @@ async function main(): Promise<void> {
       } else if (line.startsWith("/steer") || line.startsWith("/interrupt")) {
         console.error("Usage: /steer @agent-id <message> or /interrupt @agent-id <replacement>");
       } else if (line === "/members") {
-        for (const participant of (await client.getChannel(channel.id)).participants) {
+        for (const participant of (await client.getConversation(conversation.id)).participants) {
           console.log(formatParticipant(participant));
         }
       } else if (line === "/messages") {
-        for (const message of await client.listMessages(channel.id)) {
+        for (const message of await client.listMessages(conversation.id)) {
           console.log(formatEvent({
             id: message.id,
             type: "message.created",
-            channelId: channel.id,
+            conversationId: conversation.id,
             message,
             createdAt: message.createdAt,
-          }, channel.participants));
+          }, conversation.participants));
         }
       } else if (line === "/status") {
         console.log(`agent-a: ${await runtime.status(sessions[0]!.id)}`);
         console.log(`agent-b: ${await runtime.status(sessions[1]!.id)}`);
       } else {
-        await client.postMessage(channel.id, { participantId: human!.id, body: line });
+        await client.postMessage(conversation.id, { participantId: human!.id, body: line });
       }
       input.prompt();
     }
