@@ -7,6 +7,23 @@ import { CreateConversationDialog } from "./conversation-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
 
+function snoozeAt(minutes: number): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+function snoozeAtLocal(hour: number, daysAhead = 0): string {
+  const date = new Date();
+  date.setDate(date.getDate() + daysAhead);
+  date.setHours(hour, 0, 0, 0);
+  if (date.getTime() <= Date.now()) date.setDate(date.getDate() + 1);
+  return date.toISOString();
+}
+
+function datetimeLocalValue(value: string): string {
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
 export interface WorkspaceNavigationItem {
   workspace: Workspace;
   conversations: ConversationMetadata[];
@@ -30,12 +47,17 @@ function ConversationNavigationLink({
   activeConversationId?: string;
   unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
   lifecycleState: ConversationLifecycleState;
-  onLifecycleChange?(conversationId: string, state: ConversationLifecycleState): void;
+  onLifecycleChange?(
+    conversationId: string,
+    input: { state: ConversationLifecycleState; snoozedUntil?: string },
+  ): void;
   pendingLifecycle?: boolean;
   onNavigate?(): void;
 }) {
   const active = conversation.id === activeConversationId;
   const unreadState = unread?.get(conversation.id);
+  const [customSnoozeUntil, setCustomSnoozeUntil] = useState(() => datetimeLocalValue(snoozeAt(60)));
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
   return (
     <li key={conversation.id}>
       <Link
@@ -65,10 +87,29 @@ function ConversationNavigationLink({
           <summary className="icon-button ml-auto flex h-7 w-7 cursor-pointer list-none items-center justify-center text-xs" aria-label={`Conversation actions for ${conversation.name}`}>•••</summary>
           <div className="absolute right-0 z-30 mt-1 w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
             {lifecycleState === "active" ? <>
-              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, "snoozed")}>Snooze for 1 hour</button>
-              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, "settled")}>Settle to Archive</button>
+              <button className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" aria-expanded={snoozeOpen} onClick={() => setSnoozeOpen((open) => !open)}>Snooze <span className="text-[var(--muted)]">›</span></button>
+              {snoozeOpen ? <div className="absolute left-full top-0 ml-1 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
+                  {[
+                    ["In 1 hour", snoozeAt(60)],
+                    ["In 3 hours", snoozeAt(180)],
+                    ["This evening", snoozeAtLocal(18)],
+                    ["Tomorrow", snoozeAtLocal(9, 1)],
+                    ["Next week", snoozeAtLocal(9, 7)],
+                  ].map(([label, snoozedUntil]) => (
+                    <button key={label as string} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: snoozedUntil as string })}>{label as string}</button>
+                  ))}
+                  <form className="mt-1 border-t border-[var(--border)] px-2 pt-2" onSubmit={(event) => {
+                    event.preventDefault();
+                    onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: new Date(customSnoozeUntil).toISOString() });
+                  }}>
+                    <label className="block text-[10px] text-[var(--muted)]" htmlFor={`snooze-${conversation.id}`}>Custom…</label>
+                    <input id={`snooze-${conversation.id}`} aria-label={`Snooze ${conversation.name} until`} className="mt-1 w-full rounded border border-[var(--border)] bg-transparent px-1 py-1 text-[11px]" type="datetime-local" min={datetimeLocalValue(new Date().toISOString())} value={customSnoozeUntil} onChange={(event) => setCustomSnoozeUntil(event.target.value)} required />
+                    <button className="my-1 w-full rounded px-1 py-1 text-left text-xs hover:bg-[var(--hover)]" type="submit" disabled={pendingLifecycle}>Snooze until this time</button>
+                  </form>
+                </div> : null}
+              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "settled" })}>Settle to Archive</button>
             </> : (
-              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, "active")}>Reopen Conversation</button>
+              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "active" })}>Reopen Conversation</button>
             )}
           </div>
         </details>
@@ -105,7 +146,10 @@ export function NavigationSidebar({
   onSoundChange?(sound: NotificationSound): void;
   onTestSound?(): void;
   workspaceUnread?: ReadonlyMap<string, number>;
-  onLifecycleChange?(conversationId: string, state: ConversationLifecycleState): void;
+  onLifecycleChange?(
+    conversationId: string,
+    input: { state: ConversationLifecycleState; snoozedUntil?: string },
+  ): void;
   pendingLifecycleConversationId?: string;
 }) {
   const [snoozedOpen, setSnoozedOpen] = useState(false);

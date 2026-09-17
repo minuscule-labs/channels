@@ -37,6 +37,34 @@ test("redirects an authenticated legacy Channel link to its Conversation", async
   await expect(page.getByLabel("Live updates live")).toBeVisible();
 });
 
+test("sidebar lifecycle controls offer snooze schedules and surface a blocked settlement", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
+  };
+  const conversation = conversations[0]!;
+  await request.post(`${fixtureBase}/agent-activity?phase=running`);
+  try {
+    await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`);
+    const row = page.getByRole("listitem").filter({ has: page.getByRole("link", { name: conversation.name, exact: true }) }).first();
+    await row.getByLabel(`Conversation actions for ${conversation.name}`).click();
+    await row.getByRole("button", { name: /^Snooze/ }).click();
+    await expect(page.getByText("In 1 hour", { exact: true })).toBeVisible();
+    await expect(page.getByText("In 3 hours", { exact: true })).toBeVisible();
+    await expect(page.getByText("This evening", { exact: true })).toBeVisible();
+    await expect(page.getByText("Tomorrow", { exact: true })).toBeVisible();
+    await expect(page.getByText("Next week", { exact: true })).toBeVisible();
+    await expect(page.getByLabel(`Snooze ${conversation.name} until`)).toBeVisible();
+    await row.getByRole("button", { name: "Settle to Archive", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("must be idle or stopped");
+  } finally {
+    await request.post(`${fixtureBase}/agent-activity?phase=idle`);
+  }
+});
+
 test("sends idempotently, refreshes rosters, and catches up after reconnect", async ({ page, request }) => {
   const workspacesResponse = await request.get(`${conversationsBase}/workspaces`);
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };

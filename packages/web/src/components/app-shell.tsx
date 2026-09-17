@@ -56,13 +56,14 @@ export function AppShell() {
     staleTime: 60_000,
   });
   const lifecycleAction = useMutation({
-    mutationFn: ({ conversationId, state }: { conversationId: string; state: "active" | "snoozed" | "settled" }) =>
-      localControl.updateConversationLifecycle(
-        conversationId,
-        state === "snoozed"
-          ? { state, snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }
-          : { state },
-      ),
+    mutationFn: ({ conversationId, state, snoozedUntil }: {
+      conversationId: string;
+      state: "active" | "snoozed" | "settled";
+      snoozedUntil?: string;
+    }) => localControl.updateConversationLifecycle(
+      conversationId,
+      state === "snoozed" ? { state, snoozedUntil } : { state },
+    ),
     onSuccess: (_lifecycle, { conversationId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
@@ -73,9 +74,12 @@ export function AppShell() {
     && member.status === "active"
     && (member.accessRole === "owner" || member.accessRole === "admin"),
   ) ?? false;
-  const runLifecycleChange = (conversationId: string, state: "active" | "snoozed" | "settled") => {
+  const runLifecycleChange = (
+    conversationId: string,
+    input: { state: "active" | "snoozed" | "settled"; snoozedUntil?: string },
+  ) => {
     lifecycleAction.reset();
-    lifecycleAction.mutate({ conversationId, state });
+    lifecycleAction.mutate({ conversationId, ...input });
   };
   const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
   const observedConversations = useMemo(() => {
