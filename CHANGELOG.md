@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.9
+
+- Restore compatibility with v0.0.5 local profiles that store the default Conversation id as `channelId`, without modifying owner data.
+
 ## 0.0.8
 
 - Stabilize the pinned Runtime’s owned Pi turn completion test under CI load.

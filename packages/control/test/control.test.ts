@@ -1129,9 +1129,18 @@ test("local product initializes once and reopens persistent collaboration data",
       humanIdentityId: first.humanIdentityId,
       workspaceId: first.workspaceId,
       conversationId: first.conversationId,
+      builderIdentityId: (await firstClient.listIdentities()).find(({ type }) => type === "agent")!.id,
     };
     await first.close();
     first = undefined;
+    // v0.0.5 used channelId; its database migration preserves that opaque id.
+    await writeFile(join(dataDirectory, "local-profile.json"), `${JSON.stringify({
+      version: 1,
+      currentHumanIdentityId: original.humanIdentityId,
+      workspaceId: original.workspaceId,
+      channelId: original.conversationId,
+      builderIdentityId: original.builderIdentityId,
+    }, null, 2)}\n`);
 
     reopened = await createLocalProductApp({
       dataDirectory,
@@ -1148,7 +1157,11 @@ test("local product initializes once and reopens persistent collaboration data",
       humanIdentityId: reopened.humanIdentityId,
       workspaceId: reopened.workspaceId,
       conversationId: reopened.conversationId,
-    }, original);
+    }, {
+      humanIdentityId: original.humanIdentityId,
+      workspaceId: original.workspaceId,
+      conversationId: original.conversationId,
+    });
     const reopenedClient = new ConversationClient(reopened.conversationsEndpoint, { serviceToken: reopened.conversationsServiceToken });
     assert.equal((await reopenedClient.listIdentities()).length, 2);
     assert.equal((await reopenedClient.listWorkspaces()).length, 1);
