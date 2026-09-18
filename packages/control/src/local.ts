@@ -150,15 +150,26 @@ function parseProfile(value: string): LocalProfile {
   const candidate = JSON.parse(value) as Record<string, unknown>;
   const browserFirst = candidate.version === PROFILE_VERSION
     && typeof candidate.currentHumanIdentityId === "string";
-  const legacy = candidate.version === LEGACY_PROFILE_VERSION
+  const legacyFields = candidate.version === LEGACY_PROFILE_VERSION
     && typeof candidate.currentHumanIdentityId === "string"
     && typeof candidate.workspaceId === "string"
-    && typeof candidate.conversationId === "string"
     && typeof candidate.builderIdentityId === "string";
-  if (!browserFirst && !legacy) {
-    throw new Error("Local MinuChannels profile is invalid or unsupported");
+  if (browserFirst) return candidate as unknown as BrowserFirstLocalProfile;
+  if (legacyFields && typeof candidate.conversationId === "string") {
+    return candidate as unknown as LegacyLocalProfile;
   }
-  return candidate as unknown as LocalProfile;
+  // v0.0.5 stored the same opaque resource id under channelId. The public
+  // database migration preserves that id, so normalize it without touching data.
+  if (legacyFields && typeof candidate.channelId === "string") {
+    return {
+      version: LEGACY_PROFILE_VERSION,
+      currentHumanIdentityId: candidate.currentHumanIdentityId as string,
+      workspaceId: candidate.workspaceId as string,
+      conversationId: candidate.channelId,
+      builderIdentityId: candidate.builderIdentityId as string,
+    };
+  }
+  throw new Error("Local MinuChannels profile is invalid or unsupported");
 }
 
 async function readProfile(path: string): Promise<LocalProfile | undefined> {
