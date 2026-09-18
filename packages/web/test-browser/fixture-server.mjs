@@ -22,6 +22,7 @@ const serviceToken = process.env.MINU_TEST_CHANNELS_SERVICE_TOKEN ?? "browser-fi
 let conversationServer = await createConversationHttpServer({ service, port: conversationsPort, serviceToken });
 const human = await service.createIdentity({ type: "human", displayName: "David Kennedy" });
 const agent = await service.createIdentity({ type: "agent", displayName: "Builder Agent" });
+const member = await service.createIdentity({ type: "human", displayName: "Workspace Member" });
 const workspace = await service.createWorkspace({ slug: "browser-test", name: "Browser Test" });
 await service.addWorkspaceMember(workspace.id, {
   identityId: human.id,
@@ -33,6 +34,10 @@ await service.addWorkspaceMember(workspace.id, {
   mentionHandle: "builder",
   roleLabel: "builder",
   profileOverride: "Implements features and verifies changes.",
+});
+await service.addWorkspaceMember(workspace.id, {
+  identityId: member.id,
+  mentionHandle: "member",
 });
 const conversation = await service.createConversation({
   workspaceId: workspace.id,
@@ -199,6 +204,7 @@ const localControl = await createLocalControlHttpServer({
 const controlServer = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${fixturePort}`);
   if (request.method === "GET" && url.pathname === "/control-launch") {
+    browserSessions.currentHumanIdentityId = url.searchParams.get("actor") === "member" ? member.id : human.id;
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     response.end(JSON.stringify({ launchUrl: browserSessions.issueLaunchUrl(
       localControl.endpoint,

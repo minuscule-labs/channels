@@ -8,9 +8,10 @@ async function launchAuthenticated(
   page: Page,
   request: APIRequestContext,
   destination: string,
+  actor: "owner" | "member" = "owner",
 ): Promise<void> {
   const response = await request.get(
-    `${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}`,
+    `${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}&actor=${actor}`,
   );
   expect(response.ok()).toBe(true);
   const { launchUrl } = await response.json() as { launchUrl: string };
@@ -35,6 +36,20 @@ test("redirects an authenticated legacy Channel link to its Conversation", async
 
   await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${conversationId}$`));
   await expect(page.getByLabel("Live updates live")).toBeVisible();
+});
+
+test("hides sidebar lifecycle controls from an active Workspace member", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
+  };
+  const conversation = conversations[0]!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`, "member");
+  await expect(page.getByRole("heading", { name: `#${conversation.name}` })).toBeVisible();
+  await expect(page.getByLabel(`Conversation actions for ${conversation.name}`)).toHaveCount(0);
 });
 
 test("sidebar lifecycle controls offer snooze schedules and surface a blocked settlement", async ({ page, request }) => {

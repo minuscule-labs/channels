@@ -159,6 +159,54 @@ test("Drizzle/libSQL preserves identities, Workspace memberships, aliases, and C
   }
 });
 
+test("Drizzle/libSQL preserves settled Conversation rosters during Workspace and identity updates", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-settled-roster-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  try {
+    const storage = await DrizzleLibSqlConversationStorage.open({ url });
+    const service = new ConversationService(storage);
+    const owner = await service.createIdentity({ type: "human", displayName: "Owner" });
+    const agent = await service.createIdentity({ type: "agent", displayName: "Builder" });
+    const workspace = await service.createWorkspace({ slug: "settled-roster", name: "Settled roster" });
+    await service.addWorkspaceMember(workspace.id, {
+      identityId: owner.id,
+      mentionHandle: "owner",
+      accessRole: "owner",
+    });
+    await service.addWorkspaceMember(workspace.id, {
+      identityId: agent.id,
+      mentionHandle: "builder",
+      roleLabel: "builder",
+    });
+    const conversation = await service.createConversation({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, agent.id],
+      actorIdentityId: owner.id,
+    });
+    await service.updateConversationLifecycle(conversation.id, {
+      actorIdentityId: owner.id,
+      state: "settled",
+    });
+    const archived = await service.getConversation(conversation.id);
+    await service.updateIdentity(agent.id, {
+      workspaceId: workspace.id,
+      actorIdentityId: owner.id,
+      displayName: "Renamed Builder",
+    });
+    await service.updateWorkspaceMember(workspace.id, agent.id, {
+      actorIdentityId: owner.id,
+      mentionHandle: "renamed-builder",
+      roleLabel: "renamed builder",
+    });
+    const stillArchived = await service.getConversation(conversation.id);
+    assert.equal(stillArchived.rosterRevision, archived.rosterRevision);
+    assert.deepEqual(stillArchived.participants, archived.participants);
+    await storage.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Drizzle/libSQL prevents concurrent removal of the last active Workspace owner", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-owners-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
