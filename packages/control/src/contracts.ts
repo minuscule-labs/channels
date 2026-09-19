@@ -240,9 +240,39 @@ export interface LocalConversationAgentsResponse {
   agents: LocalConversationAgent[];
 }
 
-export interface LocalOpenDiagnosticResponse {
+export type LocalTurnFailureDiagnosticOpenState = "available" | "stale" | "unavailable";
+
+/** Safe local projection of one durable Relay turn-failure record. */
+export interface LocalTurnFailureDiagnostic {
+  participant: {
+    identityId: string;
+    displayLabel: string;
+  };
+  causeCategory: "turn_timeout" | "runtime_request_timeout" | "runtime_offline" | "runtime_rejected" | "response_delivery_failed" | "unknown";
+  failedAt: string;
+  elapsedMs: number;
+  attemptCount: number;
+  deliveryOutcome: "pending" | "delivered" | "delivery_rejected" | "delivery_timed_out" | "cursor_commit_failed";
+  remediation: {
+    code: "retry_or_start_new_session" | "retry_request" | "reconnect_agent" | "open_runtime_diagnostic" | "check_connection_and_retry";
+    label: string;
+  };
+  openDiagnostic: {
+    state: LocalTurnFailureDiagnosticOpenState;
+    /** Short-lived, opaque, browser-session-scoped action token. */
+    token?: string;
+  };
+}
+
+export interface LocalConversationTurnFailuresResponse {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
-  status: "opened";
+  conversationId: string;
+  diagnostics: LocalTurnFailureDiagnostic[];
+}
+
+export interface LocalOpenTurnFailureDiagnosticResponse {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  status: "accepted" | "unavailable";
 }
 
 export type LocalBulkAgentLifecycleReason =

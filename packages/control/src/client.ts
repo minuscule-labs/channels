@@ -9,10 +9,11 @@ import type {
   LocalConversationAgentsResponse,
   LocalConversationWorkingFolders,
   LocalConversationWorkingFolderPreview,
+  LocalConversationTurnFailuresResponse,
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
-  LocalOpenDiagnosticResponse,
+  LocalOpenTurnFailureDiagnosticResponse,
   LocalRuntimeOptions,
   LocalWorkspaceAgentConfiguration,
   LocalWorkspaceConfigurationSummary,
@@ -79,6 +80,24 @@ export class LocalControlClient {
 
   async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
     return this.get<LocalConversationAgentsResponse>(`/local/conversations/${encodeURIComponent(conversationId)}/agents`);
+  }
+
+  async listConversationTurnFailures(conversationId: string, limit?: number): Promise<LocalConversationTurnFailuresResponse> {
+    const search = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+    return this.get<LocalConversationTurnFailuresResponse>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/turn-failures${search}`,
+    );
+  }
+
+  async openConversationTurnFailureDiagnostic(
+    conversationId: string,
+    token: string,
+  ): Promise<LocalOpenTurnFailureDiagnosticResponse> {
+    return this.request<LocalOpenTurnFailureDiagnosticResponse>(
+      `/local/conversations/${encodeURIComponent(conversationId)}/turn-failures/open-diagnostic`,
+      { method: "POST", body: JSON.stringify({ token }) },
+      this.lifecycleTimeoutMs,
+    );
   }
 
   async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
@@ -183,17 +202,6 @@ export class LocalControlClient {
       this.lifecycleTimeoutMs,
     );
     return response.agent;
-  }
-
-  async openConversationAgentDiagnostic(
-    conversationId: string,
-    identityId: string,
-  ): Promise<LocalOpenDiagnosticResponse> {
-    return this.request<LocalOpenDiagnosticResponse>(
-      `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/open-diagnostic`,
-      { method: "POST" },
-      this.lifecycleTimeoutMs,
-    );
   }
 
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {

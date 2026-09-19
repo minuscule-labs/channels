@@ -44,6 +44,50 @@ export type DeliveryDeadLetterReason =
   | "delivery_timed_out"
   | "cursor_commit_failed";
 
+export type TurnFailureCauseCategory =
+  | "turn_timeout"
+  | "runtime_request_timeout"
+  | "runtime_offline"
+  | "runtime_rejected"
+  | "response_delivery_failed"
+  | "unknown";
+
+export type TurnFailureDeliveryOutcome =
+  | "pending"
+  | "delivered"
+  | DeliveryDeadLetterReason;
+
+export type TurnFailureRemediationCode =
+  | "retry_or_start_new_session"
+  | "retry_request"
+  | "reconnect_agent"
+  | "open_runtime_diagnostic"
+  | "check_connection_and_retry";
+
+export interface TurnFailureDiagnosticInput {
+  conversationId: string;
+  participantId: string;
+  triggerMessageId: string;
+  triggerSequence: number;
+  bindingId?: string;
+  bindingGeneration?: number;
+  startedAt: string;
+  failedAt: string;
+  elapsedMs: number;
+  attemptCount: number;
+  causeCategory: TurnFailureCauseCategory;
+  remediationCode: TurnFailureRemediationCode;
+}
+
+export interface TurnFailureDeliveryInput {
+  conversationId: string;
+  participantId: string;
+  triggerMessageId: string;
+  triggerSequence: number;
+  outcome: Exclude<TurnFailureDeliveryOutcome, "pending">;
+  recordedAt: string;
+}
+
 export interface DeliveryDeadLetterInput {
   conversationId: string;
   participantId: string;
@@ -51,9 +95,13 @@ export interface DeliveryDeadLetterInput {
   triggerSequence: number;
   reason: DeliveryDeadLetterReason;
   recordedAt: string;
+  /** Require the matching pending/final diagnostic before advancing recovery. */
+  requiresTurnFailure?: boolean;
 }
 
 export interface RelayCursorStore extends ConversationCursorStore {
+  recordTurnFailure?(input: TurnFailureDiagnosticInput): Promise<void>;
+  commitTurnFailureDelivery?(input: TurnFailureDeliveryInput): Promise<void>;
   commitDeliveryDeadLetter?(input: DeliveryDeadLetterInput): Promise<void>;
 }
 
@@ -64,6 +112,8 @@ export interface AgentConversationBinding {
   wakePolicy?: WakePolicy;
   maxMessages?: number;
   maxTokens?: number;
+  /** Private binding snapshot used only for generation-gated local diagnostics. */
+  diagnosticBinding?: { id: string; generation: number };
   /** Private fencing check used to suppress work and responses after lease loss. */
   verifyLease?(): Promise<boolean>;
 }
@@ -98,14 +148,80 @@ export interface ConversationRuntimeRelayOptions {
     milliseconds: number,
   ): { cancel(): void };
   onAgentResponse?(binding: AgentConversationBinding, message: ConversationMessage): void;
+  onTurnFailureDiagnostic?(
+    binding: AgentConversationBinding,
+    event: {
+      outcome: "recorded" | "retrying" | "finalized";
+      causeCategory: TurnFailureCauseCategory;
+      deliveryOutcome: TurnFailureDeliveryOutcome;
+      elapsedMs: number;
+      attemptCount: number;
+    },
+  ): void;
   onError?(binding: AgentConversationBinding | undefined, error: Error): void;
 }
 
 class PermanentTurnError extends Error {}
-class PermanentDeliveryError extends Error {}
+export class RuntimeRejectedError extends Error {}
+export class RuntimeOfflineError extends Error {}
+export class RuntimeRequestTimeoutError extends Error {}
+export class ResponseDeliveryFailedError extends Error {}
 class CommittedResponseCursorError extends Error {}
 class RetryDeadlineExceededError extends Error {}
+export class TurnTimeoutError extends RetryDeadlineExceededError {}
 class FencedTurnError extends Error {}
+
+const FAILURE_CLASSIFICATION_PRECEDENCE: readonly TurnFailureCauseCategory[] = [
+  "response_delivery_failed",
+  "turn_timeout",
+  "runtime_request_timeout",
+  "runtime_offline",
+  "runtime_rejected",
+  "unknown",
+];
+
+/** Classifies trusted typed errors only; free-form messages are deliberately ignored. */
+export function classifyTerminalFailure(error: unknown): TurnFailureCauseCategory {
+  const found = new Set<TurnFailureCauseCategory>();
+  const seen = new Set<unknown>();
+  const visit = (candidate: unknown): void => {
+    if (candidate === null || candidate === undefined || seen.has(candidate)) return;
+    seen.add(candidate);
+    if (candidate instanceof ResponseDeliveryFailedError) found.add("response_delivery_failed");
+    if (candidate instanceof TurnTimeoutError) found.add("turn_timeout");
+    if (candidate instanceof RuntimeRequestTimeoutError) found.add("runtime_request_timeout");
+    if (candidate instanceof RuntimeOfflineError) found.add("runtime_offline");
+    if (candidate instanceof RuntimeRejectedError) found.add("runtime_rejected");
+    if (candidate instanceof AggregateError) candidate.errors.forEach(visit);
+    if (candidate instanceof Error && "cause" in candidate) visit(candidate.cause);
+  };
+  visit(error);
+  return FAILURE_CLASSIFICATION_PRECEDENCE.find((category) => found.has(category)) ?? "unknown";
+}
+
+function safeTurnOperatorError(error: unknown): Error {
+  switch (classifyTerminalFailure(error)) {
+    case "turn_timeout": return new Error("Timed out waiting for agent turn");
+    case "runtime_request_timeout": return new Error("Runtime request timed out");
+    case "runtime_offline": return new Error("Agent Runtime is offline");
+    case "runtime_rejected": return new Error("Runtime turn was rejected");
+    case "response_delivery_failed": return new Error("Conversation response delivery unavailable");
+    case "unknown": return new Error("Relay turn attempt unavailable");
+  }
+}
+
+export function remediationForFailure(
+  category: TurnFailureCauseCategory,
+): TurnFailureRemediationCode {
+  switch (category) {
+    case "turn_timeout": return "retry_or_start_new_session";
+    case "runtime_request_timeout": return "retry_request";
+    case "runtime_offline": return "reconnect_agent";
+    case "response_delivery_failed": return "check_connection_and_retry";
+    case "runtime_rejected":
+    case "unknown": return "open_runtime_diagnostic";
+  }
+}
 
 export type RelayAgentActivityPhase = "running" | "using_tools" | "responding" | "retrying" | "canceling";
 
@@ -137,6 +253,17 @@ interface BindingState {
   needsHeadScan: boolean;
   activeTrigger?: ConversationMessage;
   startedAt?: string;
+  startedMonotonicAt?: number;
+  failureDiagnostic?: {
+    startedAt: string;
+    failedAt: string;
+    causeCategory: TurnFailureCauseCategory;
+    remediationCode: TurnFailureRemediationCode;
+    elapsedMs: number;
+    attemptCount: number;
+    recorded: boolean;
+  };
+  lastFailurePersistenceDiagnosticAt?: number;
   phase?: RelayAgentActivityPhase;
   retryAttempt?: number;
   retryDeadline?: number;
@@ -315,7 +442,11 @@ const ACTIVITY_STREAM_DIAGNOSTIC_INTERVAL_MS = 30_000;
 const CATCH_UP_RETRY_BACKOFF_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 const CATCH_UP_DIAGNOSTIC_INTERVAL_MS = 30_000;
 const DEFAULT_CATCH_UP_PAGE_SIZE = 100;
-const DEFAULT_TURN_RETRY_BUDGET_MS = 2 * 60_000;
+// Pi allows a control turn to run for 30 minutes. Use that same deadline for
+// healthy Relay work; transient Runtime calls remain individually bounded below.
+const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_TURN_RETRY_BUDGET_MS = DEFAULT_TURN_TIMEOUT_MS;
+const DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS = 15_000;
 const MAX_RETRY_AFTER_MS = 30_000;
 
@@ -914,6 +1045,7 @@ export class ConversationRuntimeRelay {
     this.clearActivitySilence(state);
     state.activeTrigger = message;
     state.startedAt = new Date().toISOString();
+    state.startedMonotonicAt = this.monotonicNow();
     state.phase = "running";
     state.retryAttempt = undefined;
     try {
@@ -973,26 +1105,26 @@ export class ConversationRuntimeRelay {
         await this.handle(state, message, deadline);
         return;
       } catch (error) {
-        const normalized = error instanceof Error ? error : new Error(String(error));
-        this.options.onError?.(state.binding, normalized);
         if (!this.states.includes(state) || error instanceof FencedTurnError) return;
+        // A cancellation owns the outcome even when Runtime publishes a failed turn
+        // while its interrupt acknowledgement is pending; do not mirror that as error.
+        if (state.phase === "canceling") {
+          await this.completeCancellation(state, message, deadline);
+          return;
+        }
+        this.options.onError?.(state.binding, safeTurnOperatorError(error));
         if (error instanceof CommittedResponseCursorError) {
           await this.persistCommittedResponseCursor(state, message);
           return;
         }
-        if (error instanceof PermanentTurnError || error instanceof PermanentDeliveryError) {
-          await this.persistTerminalFailure(state, message);
+        if (error instanceof PermanentTurnError
+          || error instanceof RuntimeRejectedError
+          || error instanceof ResponseDeliveryFailedError) {
+          await this.persistTerminalFailure(state, message, error, attempts);
           return;
         }
-        // An interruption may have reached Runtime even if its acknowledgement or a
-        // subsequent turn read timed out. Keep reconciling its caller-stable turn rather
-        // than retrying interrupt or converting an ambiguous cancellation into failure.
-        if (state.phase === "canceling") {
-          await delay(1_000, this.controller?.signal);
-          continue;
-        }
         if (error instanceof RetryDeadlineExceededError || attempts >= 5) {
-          await this.persistTerminalFailure(state, message);
+          await this.persistTerminalFailure(state, message, error, attempts);
           return;
         }
         this.clearActivitySilence(state);
@@ -1003,7 +1135,7 @@ export class ConversationRuntimeRelay {
           await this.delayBeforeDeadline(backoffMs, deadline);
         } catch (delayError) {
           if (delayError instanceof RetryDeadlineExceededError) {
-            await this.persistTerminalFailure(state, message);
+            await this.persistTerminalFailure(state, message, delayError, attempts);
             return;
           }
           throw delayError;
@@ -1038,11 +1170,52 @@ export class ConversationRuntimeRelay {
     }
   }
 
-  private async persistTerminalFailure(state: BindingState, trigger: ConversationMessage): Promise<void> {
+  private async persistTerminalFailure(
+    state: BindingState,
+    trigger: ConversationMessage,
+    error: unknown,
+    attemptCount: number,
+  ): Promise<void> {
+    if (!state.failureDiagnostic) {
+      const causeCategory = classifyTerminalFailure(error);
+      state.failureDiagnostic = {
+        startedAt: state.startedAt ?? new Date().toISOString(),
+        failedAt: new Date().toISOString(),
+        causeCategory,
+        remediationCode: remediationForFailure(causeCategory),
+        elapsedMs: Math.max(0, Math.floor(
+          this.monotonicNow() - (state.startedMonotonicAt ?? this.monotonicNow()),
+        )),
+        attemptCount,
+        recorded: false,
+      };
+    }
+    const diagnostic = state.failureDiagnostic;
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
       const deadline = this.monotonicNow()
         + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS);
       try {
+        const record = this.options.cursorStore?.recordTurnFailure;
+        if (record) {
+          await this.awaitRuntime(record.call(this.options.cursorStore, {
+            conversationId: this.options.conversationId,
+            participantId: state.binding.participantId,
+            triggerMessageId: trigger.id,
+            triggerSequence: trigger.sequence,
+            bindingId: state.binding.diagnosticBinding?.id,
+            bindingGeneration: state.binding.diagnosticBinding?.generation,
+            startedAt: diagnostic.startedAt,
+            failedAt: diagnostic.failedAt,
+            elapsedMs: diagnostic.elapsedMs,
+            attemptCount: diagnostic.attemptCount,
+            causeCategory: diagnostic.causeCategory,
+            remediationCode: diagnostic.remediationCode,
+          }), "record private turn failure", undefined, deadline);
+        }
+        if (!diagnostic.recorded) {
+          diagnostic.recorded = true;
+          this.reportTurnFailureDiagnostic(state, "recorded", "pending");
+        }
         await this.commitResponse(state, {
           participantId: state.binding.participantId,
           body: "I couldn't complete this request because the Runtime turn failed. The agent remains available; retry or use New session if the problem continues.",
@@ -1050,13 +1223,43 @@ export class ConversationRuntimeRelay {
           triggerSequence: trigger.sequence,
         }, deadline, true);
         return;
-      } catch {
-        this.options.onError?.(
-          state.binding,
-          new Error("Terminal Conversation outcome unavailable"),
-        );
+      } catch (error) {
+        if (error instanceof CommittedResponseCursorError) {
+          await this.persistCommittedResponseCursor(state, trigger);
+          return;
+        }
+        const now = this.monotonicNow();
+        if (state.lastFailurePersistenceDiagnosticAt === undefined
+          || now - state.lastFailurePersistenceDiagnosticAt >= 30_000) {
+          state.lastFailurePersistenceDiagnosticAt = now;
+          this.reportTurnFailureDiagnostic(state, "retrying", "pending");
+          this.options.onError?.(
+            state.binding,
+            new Error("Terminal Conversation outcome unavailable"),
+          );
+        }
         await delay(1_000, this.controller?.signal);
       }
+    }
+  }
+
+  private reportTurnFailureDiagnostic(
+    state: BindingState,
+    outcome: "recorded" | "retrying" | "finalized",
+    deliveryOutcome: TurnFailureDeliveryOutcome,
+  ): void {
+    const diagnostic = state.failureDiagnostic;
+    if (!diagnostic) return;
+    try {
+      this.options.onTurnFailureDiagnostic?.(state.binding, {
+        outcome,
+        causeCategory: diagnostic.causeCategory,
+        deliveryOutcome,
+        elapsedMs: diagnostic.elapsedMs,
+        attemptCount: diagnostic.attemptCount,
+      });
+    } catch {
+      // Best-effort process mirrors must never alter durable failure handling.
     }
   }
 
@@ -1068,6 +1271,9 @@ export class ConversationRuntimeRelay {
     this.clearActivitySilence(state);
     state.activeTrigger = undefined;
     state.startedAt = undefined;
+    state.startedMonotonicAt = undefined;
+    state.failureDiagnostic = undefined;
+    state.lastFailurePersistenceDiagnosticAt = undefined;
     state.phase = undefined;
     state.retryAttempt = undefined;
     state.retryDeadline = undefined;
@@ -1140,8 +1346,14 @@ export class ConversationRuntimeRelay {
       state.runtimeTurnAccepted = true;
       if (this.isCanceling(state)) this.requestRuntimeInterrupt(state, binding.participantId);
       turn = await this.waitForTurn(binding, turnId, turn, deadline);
+      // Runtime can publish `failed` while the interrupt request is pending. The
+      // acknowledged cancellation owns the terminal outcome, not that transient status.
+      if (this.isCanceling(state)) {
+        await this.completeCancellation(state, trigger, deadline);
+        return;
+      }
       if (turn.status === "failed") {
-        throw new PermanentTurnError(`Agent ${binding.participantId} turn failed: ${turn.error ?? "unknown error"}`);
+        throw new RuntimeRejectedError(`Agent ${binding.participantId} turn was rejected`);
       }
       if (turn.status === "interrupted") state.interruptedTriggerId = trigger.id;
       response = turn.response;
@@ -1176,7 +1388,7 @@ export class ConversationRuntimeRelay {
         await this.awaitRuntime(
           binding.runtime.send(binding.sessionId, prompt),
           `send to ${binding.participantId}`,
-          this.options.turnTimeoutMs ?? 30 * 60_000,
+          this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
           deadline,
         );
       } catch (error) {
@@ -1310,28 +1522,50 @@ export class ConversationRuntimeRelay {
           );
           return undefined;
         }
-        if (permanent) throw new PermanentDeliveryError("Conversation response was rejected");
-        if (expired) throw new RetryDeadlineExceededError("Conversation response delivery deadline expired");
+        if (permanent) throw new ResponseDeliveryFailedError("Conversation response was rejected");
+        if (expired) throw new ResponseDeliveryFailedError("Conversation response delivery deadline expired");
         const retryAfterMs = error instanceof ConversationClientError ? error.retryAfterMs : undefined;
-        await this.delayBeforeDeadline(
-          retryAfterMs === undefined ? 1_000 : Math.min(retryAfterMs, MAX_RETRY_AFTER_MS),
-          deadline,
-        );
+        try {
+          await this.delayBeforeDeadline(
+            retryAfterMs === undefined ? 1_000 : Math.min(retryAfterMs, MAX_RETRY_AFTER_MS),
+            deadline,
+          );
+        } catch (delayError) {
+          if (delayError instanceof RetryDeadlineExceededError) {
+            throw new ResponseDeliveryFailedError("Conversation response delivery deadline expired", {
+              cause: delayError,
+            });
+          }
+          throw delayError;
+        }
         continue;
       }
       // postResponse atomically records the durable Conversation outcome and its public
       // cursor. Mirror that committed result into Relay's private recovery cursor only
       // after delivery succeeds; a retry uses the same idempotent response key.
       try {
-        await this.markProcessed(
-          state,
-          input.triggerSequence,
-          Math.max(
-            deadline,
-            this.monotonicNow()
-              + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS),
-          ),
+        const finalizationDeadline = Math.max(
+          deadline,
+          this.monotonicNow()
+            + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS),
         );
+        const finalize = state.failureDiagnostic
+          ? this.options.cursorStore?.commitTurnFailureDelivery
+          : undefined;
+        if (finalize) {
+          await this.awaitRuntime(finalize.call(this.options.cursorStore, {
+            conversationId: this.options.conversationId,
+            participantId: state.binding.participantId,
+            triggerMessageId: input.triggerMessageId,
+            triggerSequence: input.triggerSequence,
+            outcome: "delivered",
+            recordedAt: new Date().toISOString(),
+          }), "finalize private turn failure", undefined, finalizationDeadline);
+          state.lastProcessedSequence = Math.max(state.lastProcessedSequence, input.triggerSequence);
+          this.reportTurnFailureDiagnostic(state, "finalized", "delivered");
+        } else {
+          await this.markProcessed(state, input.triggerSequence, finalizationDeadline);
+        }
       } catch {
         throw new CommittedResponseCursorError("Committed response cursor could not be finalized");
       }
@@ -1357,8 +1591,10 @@ export class ConversationRuntimeRelay {
       triggerSequence: input.triggerSequence,
       reason,
       recordedAt: new Date().toISOString(),
+      requiresTurnFailure: state.failureDiagnostic !== undefined,
     }), "commit private delivery outcome", undefined, deadline);
     state.lastProcessedSequence = Math.max(state.lastProcessedSequence, input.triggerSequence);
+    this.reportTurnFailureDiagnostic(state, "finalized", reason);
   }
 
   private async mayDeliverResponse(state: BindingState): Promise<boolean> {
@@ -1393,7 +1629,7 @@ export class ConversationRuntimeRelay {
     retryDeadline: number,
   ): Promise<RuntimePortTurn> {
     let turn = initial;
-    const turnDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? 30 * 60_000);
+    const turnDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
     const deadline = Math.min(retryDeadline, turnDeadline);
     try {
       while (this.monotonicNow() < deadline) {
@@ -1410,18 +1646,18 @@ export class ConversationRuntimeRelay {
       }
     } catch (error) {
       if (error instanceof RetryDeadlineExceededError && turnDeadline < retryDeadline) {
-        throw new Error(`Timed out waiting for agent turn: ${binding.participantId}`);
+        throw new TurnTimeoutError("Timed out waiting for agent turn", { cause: error });
       }
       throw error;
     }
     if (retryDeadline <= turnDeadline) {
-      throw new RetryDeadlineExceededError("Agent turn retry deadline expired");
+      throw new TurnTimeoutError("Agent turn retry deadline expired");
     }
-    throw new Error(`Timed out waiting for agent turn: ${binding.participantId}`);
+    throw new TurnTimeoutError("Timed out waiting for agent turn");
   }
 
   private async waitUntilIdle(binding: AgentConversationBinding, retryDeadline: number): Promise<void> {
-    const idleDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? 30 * 60_000);
+    const idleDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
     const deadline = Math.min(retryDeadline, idleDeadline);
     try {
       while (this.monotonicNow() < deadline) {
@@ -1433,19 +1669,19 @@ export class ConversationRuntimeRelay {
           deadline,
         );
         if (status === "idle") return;
-        if (status === "offline") throw new Error(`Agent session is offline: ${binding.sessionId}`);
+        if (status === "offline") throw new RuntimeOfflineError("Agent Runtime is offline");
         await this.delayBeforeDeadline(this.options.turnPollIntervalMs ?? 250, deadline);
       }
     } catch (error) {
       if (error instanceof RetryDeadlineExceededError && idleDeadline < retryDeadline) {
-        throw new Error(`Timed out waiting for agent to become idle: ${binding.participantId}`);
+        throw new TurnTimeoutError("Timed out waiting for agent to become idle", { cause: error });
       }
       throw error;
     }
     if (retryDeadline <= idleDeadline) {
-      throw new RetryDeadlineExceededError("Agent idle retry deadline expired");
+      throw new TurnTimeoutError("Agent idle retry deadline expired");
     }
-    throw new Error(`Timed out waiting for agent to become idle: ${binding.participantId}`);
+    throw new TurnTimeoutError("Timed out waiting for agent to become idle");
   }
 
   private monotonicNow(): number {
@@ -1454,13 +1690,13 @@ export class ConversationRuntimeRelay {
 
   private assertBeforeDeadline(deadline: number): void {
     if (this.monotonicNow() >= deadline) {
-      throw new RetryDeadlineExceededError("Turn retry deadline expired");
+      throw new TurnTimeoutError("Turn retry deadline expired");
     }
   }
 
   private async delayBeforeDeadline(milliseconds: number, deadline: number): Promise<void> {
     const remaining = deadline - this.monotonicNow();
-    if (remaining <= 0) throw new RetryDeadlineExceededError("Turn retry deadline expired");
+    if (remaining <= 0) throw new TurnTimeoutError("Turn retry deadline expired");
     const boundedDelay = Math.min(milliseconds, remaining);
     if (!this.options.scheduleTurnRetryTimer) {
       await delay(boundedDelay, this.controller?.signal);
@@ -1489,20 +1725,20 @@ export class ConversationRuntimeRelay {
       });
     }
     if (this.monotonicNow() >= deadline) {
-      throw new RetryDeadlineExceededError("Turn retry deadline expired");
+      throw new TurnTimeoutError("Turn retry deadline expired");
     }
   }
 
   private async awaitRuntime<T>(
     operation: Promise<T>,
     label: string,
-    timeoutMs = this.options.runtimeRequestTimeoutMs ?? 15_000,
+    timeoutMs = this.options.runtimeRequestTimeoutMs ?? DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS,
     deadline?: number,
   ): Promise<T> {
     const signal = this.controller?.signal;
     const remaining = deadline === undefined ? undefined : deadline - this.monotonicNow();
     if (remaining !== undefined && remaining <= 0) {
-      throw new RetryDeadlineExceededError(`Operation deadline expired: ${label}`);
+      throw new TurnTimeoutError(`Operation deadline expired: ${label}`);
     }
     const effectiveTimeout = remaining === undefined ? timeoutMs : Math.min(timeoutMs, remaining);
     const deadlineLimited = remaining !== undefined && remaining <= timeoutMs;
@@ -1516,8 +1752,8 @@ export class ConversationRuntimeRelay {
         callback();
       };
       const timer = setTimeout(() => finish(() => reject(deadlineLimited
-        ? new RetryDeadlineExceededError(`Operation deadline expired: ${label}`)
-        : new Error(`Runtime request timed out: ${label}`))), effectiveTimeout);
+        ? new TurnTimeoutError(`Operation deadline expired: ${label}`)
+        : new RuntimeRequestTimeoutError(`Runtime request timed out: ${label}`))), effectiveTimeout);
       const abort = () => finish(() => reject(new Error(`Runtime request cancelled: ${label}`)));
       signal?.addEventListener("abort", abort, { once: true });
       operation.then(

@@ -625,7 +625,6 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
 
 test("accepts authenticated local session actions with opaque diagnostic responses", async (context) => {
   let cancelCalls = 0;
-  let diagnosticCalls = 0;
   const reconnectActors: string[] = [];
   const sessions = new LocalControlBrowserSessions({
     browserUrl: "http://127.0.0.1:5174/",
@@ -640,7 +639,6 @@ test("accepts authenticated local session actions with opaque diagnostic respons
       async startConversationAgent() {}, async replaceConversationAgent() {}, async stopConversationAgent() {},
       async reconnectConversationAgent(_conversationId, _identityId, actorIdentityId) { reconnectActors.push(actorIdentityId); },
       async cancelCurrentConversationAgent() { cancelCalls += 1; },
-      async openConversationAgentDiagnostic() { diagnosticCalls += 1; },
       activity() {
         return {
           phase: "canceling", triggerMessageId: "message-37", triggerSequence: 37,
@@ -678,15 +676,91 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   assert.equal(reconnected.status, 200);
   assert.deepEqual(reconnectActors, ["human-1"]);
 
-  const diagnosticEndpoint = `/local/conversations/${conversation.id}/agents/agent-running/open-diagnostic`;
-  assert.equal((await fetch(`${server.endpoint}${diagnosticEndpoint}`, { method: "POST" })).status, 401);
-  const opened = await fetch(`${server.endpoint}${diagnosticEndpoint}`, {
-    method: "POST",
-    headers: { cookie, origin: sessions.browserOrigin },
+  const ungatedDiagnosticEndpoint = `/local/conversations/${conversation.id}/agents/agent-running/open-diagnostic`;
+  assert.equal((await fetch(`${server.endpoint}${ungatedDiagnosticEndpoint}`, {
+    method: "POST", headers: { cookie, origin: sessions.browserOrigin },
+  })).status, 405);
+});
+
+test("serves bounded, private turn-failure projections without Conversation inference", async (context) => {
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/",
+    currentHumanIdentityId: "human-1",
   });
-  assert.equal(opened.status, 202);
-  assert.deepEqual(await opened.json(), { protocolVersion: 17, status: "opened" });
-  assert.equal(diagnosticCalls, 1);
+  const limits: number[] = [];
+  const control = new LocalControlService({
+    conversations: { async getConversation() { return conversation; } },
+    bindings: { async listConversationBindings() { return []; } },
+    runtimes: {},
+    lifecycle: {
+      available: false,
+      async startConversationAgent() {}, async replaceConversationAgent() {}, async stopConversationAgent() {},
+      async cancelCurrentConversationAgent() {},
+      async listConversationTurnFailures(conversationId, actorIdentityId, _scope, limit) {
+        if (conversationId !== conversation.id || actorIdentityId !== "human-1") {
+          throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+        }
+        limits.push(limit);
+        return {
+          protocolVersion: 17,
+          conversationId,
+          diagnostics: [{
+            participant: { identityId: "agent-running", displayLabel: "Builder" },
+            causeCategory: "runtime_offline",
+            failedAt: "2026-08-28T00:00:00.000Z",
+            elapsedMs: 42,
+            attemptCount: 1,
+            deliveryOutcome: "delivered",
+            remediation: { code: "reconnect_agent", label: "Reconnect agent" },
+            openDiagnostic: { state: "unavailable" },
+          }],
+        };
+      },
+      async openConversationTurnFailureDiagnostic(_conversationId, _actorIdentityId, _scope, token) {
+        return { protocolVersion: 17, status: token === "valid-token" ? "accepted" as const : "unavailable" as const };
+      },
+    },
+  });
+  const server = await createLocalControlHttpServer({
+    service: control,
+    port: 0,
+    allowedOrigins: [sessions.browserOrigin],
+    browserSessions: sessions,
+  });
+  context.after(() => server.close());
+  const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+  const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+  const headers = { cookie, origin: sessions.browserOrigin };
+  const path = `/local/conversations/${conversation.id}/turn-failures`;
+
+  assert.equal((await fetch(`${server.endpoint}${path}`)).status, 401);
+  const response = await fetch(`${server.endpoint}${path}`, { headers });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const body = await response.json() as { diagnostics: Array<Record<string, unknown>> };
+  assert.equal(body.diagnostics.length, 1);
+  assert.deepEqual(limits, [20]);
+  assert.doesNotMatch(JSON.stringify(body), /triggerMessageId|bindingId|bindingGeneration|runtimeSessionId|SECRET/i);
+
+  assert.equal((await fetch(`${server.endpoint}${path}?limit=100`, { headers })).status, 200);
+  assert.deepEqual(limits, [20, 100]);
+  for (const limit of ["0", "101", "1.5", "1e1", "0x10", "hello", " "]) {
+    assert.equal((await fetch(`${server.endpoint}${path}?limit=${encodeURIComponent(limit)}`, { headers })).status, 400);
+  }
+  const missing = await fetch(`${server.endpoint}/local/conversations/missing/turn-failures`, { headers });
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await missing.json(), { error: "Not found" });
+
+  const accepted = await fetch(`${server.endpoint}${path}/open-diagnostic`, {
+    method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ token: "valid-token" }),
+  });
+  assert.equal(accepted.status, 202);
+  assert.deepEqual(await accepted.json(), { protocolVersion: 17, status: "accepted" });
+  const unavailable = await fetch(`${server.endpoint}${path}/open-diagnostic`, {
+    method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ token: "invalid-token" }),
+  });
+  assert.equal(unavailable.status, 202);
+  assert.deepEqual(await unavailable.json(), { protocolVersion: 17, status: "unavailable" });
 });
 
 test("authenticated control responses allowlist activity and sanitize lifecycle and status failures", async (context) => {
@@ -708,7 +782,6 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
       stopConversationAgent: fail,
       reconnectConversationAgent: fail,
       cancelCurrentConversationAgent: fail,
-      openConversationAgentDiagnostic: fail,
       activity() {
         if (!exposeActivity) return undefined;
         return {
@@ -758,7 +831,7 @@ test("authenticated control responses allowlist activity and sanitize lifecycle 
   assert.doesNotMatch(JSON.stringify(uncertainBody), new RegExp(secret));
   assert.equal((uncertainBody as { agents: Array<{ state: string }> }).agents[0]?.state, "uncertain");
 
-  for (const action of ["start", "reconnect", "replace", "stop", "cancel-current", "open-diagnostic"]) {
+  for (const action of ["start", "reconnect", "replace", "stop", "cancel-current"]) {
     const response = await fetch(
       `${server.endpoint}${agentsPath}/agent-running/${action}`,
       { method: "POST", headers },
@@ -1773,6 +1846,68 @@ test("agent host scopes, verifies, bounds, and sanitizes opaque diagnostic openi
     { action: "agent.diagnostic.opened", outcome: "rejected", reason: "unavailable" },
     { action: "agent.diagnostic.opened", outcome: "rejected", reason: "forbidden" },
   ]);
+});
+
+test("turn-failure diagnostic tokens are opaque, session-scoped, and binding-generation-gated", async () => {
+  const secret = "SECRET_RUNTIME_SESSION_TRIGGER_BINDING";
+  const store = new InMemoryRelayBindingStore();
+  await store.putBinding({
+    id: `${secret}-binding`, workspaceAgentConfigId: "config-safe", workspaceId: "workspace-safe",
+    conversationId: "conversation-safe", agentIdentityId: "agent-safe", runtimeAdapter: "private-adapter",
+    runtimeSessionId: `${secret}-session`, generation: 1, state: "connected", wakePolicy: "mentions",
+    createdAt: "2026-08-28T00:00:00.000Z", updatedAt: "2026-08-28T00:00:00.000Z",
+  });
+  await store.recordTurnFailure({
+    conversationId: "conversation-safe", participantId: "agent-safe", triggerMessageId: `${secret}-trigger`,
+    triggerSequence: 9, bindingId: `${secret}-binding`, bindingGeneration: 1,
+    startedAt: "2026-08-28T00:00:00.000Z", failedAt: "2026-08-28T00:00:01.000Z", elapsedMs: 1_000,
+    attemptCount: 1, causeCategory: "runtime_rejected", remediationCode: "open_runtime_diagnostic",
+  });
+  let opens = 0;
+  const host = new LocalAgentHost({
+    client: {} as ConversationClient,
+    store,
+    runtimes: {
+      "private-adapter": {
+        async status() { return "idle" as const; },
+        async sessionCapabilities() {
+          return { version: 1 as const, safeActivityEvents: true, interrupt: true, reconnectExisting: true, interactiveAttach: false, openDiagnostic: true, liveSkillVerification: false };
+        },
+        async openDiagnostic() { opens += 1; },
+      },
+    },
+  });
+  const internals = host as unknown as {
+    authorizeTurnFailureDiagnostics(): Promise<{ participants: Array<{ id: string; displayName: string }> }>;
+    baseContext(): Promise<{ conversation: { workspaceId: string }; bindings: Array<Record<string, unknown>> }>;
+    isAttached(): boolean;
+  };
+  internals.authorizeTurnFailureDiagnostics = async () => ({ participants: [{ id: "agent-safe", displayName: "Safe Agent" }] });
+  internals.isAttached = () => true;
+  internals.baseContext = async () => ({
+    conversation: { workspaceId: "workspace-safe" },
+    bindings: [{ id: `${secret}-binding`, generation: 1, agentIdentityId: "agent-safe", runtimeAdapter: "private-adapter", runtimeSessionId: `${secret}-session`, state: "connected" }],
+  });
+
+  const listed = await host.listConversationTurnFailures("conversation-safe", "owner-safe", "browser-session-a", 20);
+  assert.equal(listed.diagnostics[0]?.openDiagnostic.state, "available");
+  assert.doesNotMatch(JSON.stringify(listed), new RegExp(secret));
+  const token = listed.diagnostics[0]?.openDiagnostic.token;
+  assert.ok(token);
+  assert.deepEqual(await host.openConversationTurnFailureDiagnostic("conversation-safe", "owner-safe", "browser-session-a", token), {
+    protocolVersion: 17, status: "accepted",
+  });
+  assert.equal(opens, 1);
+
+  const scoped = await host.listConversationTurnFailures("conversation-safe", "owner-safe", "browser-session-a", 20);
+  assert.deepEqual(await host.openConversationTurnFailureDiagnostic(
+    "conversation-safe", "owner-safe", "browser-session-b", scoped.diagnostics[0]?.openDiagnostic.token ?? "",
+  ), { protocolVersion: 17, status: "unavailable" });
+  assert.equal(opens, 1);
+
+  await store.replaceBindingSession(`${secret}-binding`, 1, "private-adapter", `${secret}-replacement`, "2026-08-28T00:00:02.000Z");
+  const stale = await host.listConversationTurnFailures("conversation-safe", "owner-safe", "browser-session-a", 20);
+  assert.deepEqual(stale.diagnostics[0]?.openDiagnostic, { state: "stale" });
 });
 
 test("one binding queue drain does not hold the shared Relay ownership lock", async () => {

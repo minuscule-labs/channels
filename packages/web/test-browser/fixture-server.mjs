@@ -88,6 +88,8 @@ let agentActivity;
 let runtimeReachable = true;
 let runtimeCapabilityMode = "available";
 let diagnosticOpenCount = 0;
+let turnFailuresVisible = false;
+let turnFailureTokenVersion = 0;
 const fixtureRuntime = {
   async status() { return runtimeReachable ? (agentActivity ? "working" : "idle") : "offline"; },
   async sessionCapabilities() {
@@ -185,9 +187,32 @@ const localControl = await createLocalControlHttpServer({
         if (conversationId !== conversation.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
         agentActivity = { ...agentActivity, phase: "canceling" };
       },
-      async openConversationAgentDiagnostic(conversationId, identityId) {
-        if (conversationId !== conversation.id || identityId !== agent.id) throw new Error("Unknown fixture agent");
+      async listConversationTurnFailures(conversationId) {
+        if (!turnFailuresVisible || conversationId !== conversation.id) {
+          return { protocolVersion: 17, conversationId, diagnostics: [] };
+        }
+        turnFailureTokenVersion += 1;
+        return {
+          protocolVersion: 17,
+          conversationId,
+          diagnostics: [{
+            participant: { identityId: agent.id, displayLabel: "Builder Agent" },
+            causeCategory: "runtime_request_timeout",
+            failedAt: "2026-09-18T13:00:00.000Z",
+            elapsedMs: 2_400,
+            attemptCount: 2,
+            deliveryOutcome: "delivered",
+            remediation: { code: "retry_request", label: "Retry request" },
+            openDiagnostic: runtimeReachable ? { state: "available", token: `fixture-turn-failure-token-${turnFailureTokenVersion}` } : { state: "unavailable" },
+          }],
+        };
+      },
+      async openConversationTurnFailureDiagnostic(conversationId, _actorIdentityId, _scope, token) {
+        if (!turnFailuresVisible || conversationId !== conversation.id || token !== `fixture-turn-failure-token-${turnFailureTokenVersion}` || !runtimeReachable) {
+          return { protocolVersion: 17, status: "unavailable" };
+        }
         await fixtureRuntime.openDiagnostic();
+        return { protocolVersion: 17, status: "accepted" };
       },
       activity(conversationId, identityId) {
         return conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
@@ -254,6 +279,11 @@ const controlServer = createServer(async (request, response) => {
   }
   if (request.method === "POST" && url.pathname === "/detach-agent") {
     attachedAgents.delete(`${conversation.id}:${agent.id}`);
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/turn-failures") {
+    turnFailuresVisible = url.searchParams.get("value") !== "false";
     response.writeHead(204).end();
     return;
   }

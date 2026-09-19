@@ -15,6 +15,7 @@ import { EditConversationParticipantsDialog } from "./conversation-administratio
 import { ConversationComposer } from "./conversation-composer";
 import { ConversationTimeline } from "./conversation-timeline";
 import { MemberRoster } from "./member-roster";
+import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 import { Drawer } from "./ui/drawer";
 
 export function ConversationPage() {
@@ -118,10 +119,13 @@ export function ConversationPage() {
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
   });
-  const diagnosticAction = useMutation({
-    mutationFn: async (target: { conversationId: string; identityId: string }) => {
-      await localControl.openConversationAgentDiagnostic(target.conversationId, target.identityId);
-      return target;
+  const turnFailureDiagnosticAction = useMutation({
+    mutationFn: async ({ key, token }: { key: string; token: string }) => ({
+      key,
+      response: await localControl.openConversationTurnFailureDiagnostic(conversationId, token),
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationTurnFailures(conversationId) });
     },
   });
   const bulkAgentAction = useMutation({
@@ -178,6 +182,13 @@ export function ConversationPage() {
   );
   const canOpenDiagnostics = currentMembership?.status === "active"
     && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
+  const turnFailures = useQuery({
+    queryKey: queryKeys.localConversationTurnFailures(conversationId),
+    queryFn: () => localControl.listConversationTurnFailures(conversationId),
+    enabled: canOpenDiagnostics,
+    retry: false,
+    refetchInterval: 10_000,
+  });
   const settled = lifecycle.data?.state === "settled";
   const lifecycleLabel = lifecycle.data?.state === "snoozed" ? "Snoozed"
     : lifecycle.data?.state === "settled" ? "Archived"
@@ -291,16 +302,6 @@ export function ConversationPage() {
               onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
               onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
-              onOpenAgentDiagnostic={canOpenDiagnostics
-                ? (identityId) => diagnosticAction.mutateAsync({ conversationId, identityId })
-                : undefined}
-              openedDiagnosticIdentityId={diagnosticAction.data?.conversationId === conversationId
-                ? diagnosticAction.data.identityId
-                : undefined}
-              pendingDiagnosticIdentityId={diagnosticAction.isPending
-                && diagnosticAction.variables.conversationId === conversationId
-                ? diagnosticAction.variables.identityId
-                : undefined}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
               onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
               pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
@@ -316,10 +317,22 @@ export function ConversationPage() {
             This Conversation is archived and read-only. Reopen it to send messages, edit participants, or manage agents.
           </div>
         ) : null}
-        {agentAction.error || diagnosticAction.error || bulkAgentAction.error || lifecycleAction.error ? (
+        {agentAction.error || turnFailureDiagnosticAction.error || bulkAgentAction.error || lifecycleAction.error ? (
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
-            {(agentAction.error ?? diagnosticAction.error ?? bulkAgentAction.error ?? lifecycleAction.error)?.message}
+            {(agentAction.error ?? turnFailureDiagnosticAction.error ?? bulkAgentAction.error ?? lifecycleAction.error)?.message}
           </div>
+        ) : null}
+        {canOpenDiagnostics ? (
+          <TurnFailureDiagnostics
+            diagnostics={turnFailures.data?.diagnostics}
+            isLoading={turnFailures.isLoading}
+            unavailable={turnFailures.isError}
+            pendingKey={turnFailureDiagnosticAction.isPending ? turnFailureDiagnosticAction.variables.key : undefined}
+            action={turnFailureDiagnosticAction.data
+              ? { key: turnFailureDiagnosticAction.data.key, status: turnFailureDiagnosticAction.data.response.status }
+              : undefined}
+            onOpen={(key, token) => turnFailureDiagnosticAction.mutate({ key, token })}
+          />
         ) : null}
         <div className="relative min-h-0 flex-1">
           <div
@@ -378,16 +391,6 @@ export function ConversationPage() {
           onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
           onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
-          onOpenAgentDiagnostic={canOpenDiagnostics
-            ? (identityId) => diagnosticAction.mutateAsync({ conversationId, identityId })
-            : undefined}
-          openedDiagnosticIdentityId={diagnosticAction.data?.conversationId === conversationId
-            ? diagnosticAction.data.identityId
-            : undefined}
-          pendingDiagnosticIdentityId={diagnosticAction.isPending
-            && diagnosticAction.variables.conversationId === conversationId
-            ? diagnosticAction.variables.identityId
-            : undefined}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
           onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
           pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}

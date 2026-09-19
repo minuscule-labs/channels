@@ -52,6 +52,34 @@ test("hides sidebar lifecycle controls from an active Workspace member", async (
   await expect(page.getByLabel(`Conversation actions for ${conversation.name}`)).toHaveCount(0);
 });
 
+test("shows owner-only safe turn failures and opens a token-gated diagnostic", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
+  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
+  };
+  const conversation = conversations.find(({ name }) => name === "browser-collaboration")!;
+  await request.post(`${fixtureBase}/turn-failures?value=true`);
+  try {
+    const before = (await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number }).count;
+    await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`);
+    const failures = page.getByLabel("Recent turn failures");
+    await expect(failures).toContainText("Runtime request timed out");
+    await expect(failures).toContainText("Builder Agent");
+    await expect(failures).toContainText("2 attempts");
+    await expect(failures).toContainText("Recommended: Retry request");
+    await failures.getByRole("button", { name: "Open diagnostic", exact: true }).click();
+    await expect(failures.getByRole("button", { name: "Diagnostic opened", exact: true })).toBeVisible();
+    expect((await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number }).count).toBe(before + 1);
+    expect(await failures.innerText()).not.toMatch(/trigger|binding|session|fixture-turn-failure-token/i);
+
+    await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`, "member");
+    await expect(page.getByLabel("Recent turn failures")).toHaveCount(0);
+  } finally {
+    await request.post(`${fixtureBase}/turn-failures?value=false`);
+  }
+});
+
 test("sidebar lifecycle controls offer snooze schedules and surface a blocked settlement", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
@@ -65,15 +93,18 @@ test("sidebar lifecycle controls offer snooze schedules and surface a blocked se
   try {
     await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`);
     const row = page.getByRole("listitem").filter({ has: page.getByRole("link", { name: conversation.name, exact: true }) }).first();
-    await row.getByLabel(`Conversation actions for ${conversation.name}`).click();
-    await row.getByRole("button", { name: /^Snooze/ }).click();
+    const actions = row.getByLabel(`Conversation actions for ${conversation.name}`);
+    await actions.click();
+    const snooze = page.getByRole("button", { name: /^Snooze/ });
+    expect((await snooze.boundingBox())!.x).toBeGreaterThan((await actions.boundingBox())!.x);
+    await snooze.click();
     await expect(page.getByText("In 1 hour", { exact: true })).toBeVisible();
     await expect(page.getByText("In 3 hours", { exact: true })).toBeVisible();
     await expect(page.getByText(/^(This|Tomorrow) evening$/)).toBeVisible();
     await expect(page.getByText("Tomorrow", { exact: true })).toBeVisible();
     await expect(page.getByText("Next week", { exact: true })).toBeVisible();
     await expect(page.getByLabel(`Snooze ${conversation.name} until`)).toBeVisible();
-    await row.getByRole("button", { name: "Settle to Archive", exact: true }).click();
+    await page.getByRole("button", { name: "Settled", exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("must be idle or stopped");
   } finally {
     await request.post(`${fixtureBase}/agent-activity?phase=idle`);
@@ -260,7 +291,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
 
   const sound = page.getByLabel("Notification sound").first();
   await sound.selectOption("mentions");
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
   await request.post(`${fixtureBase}/peer-message?duplicate=true&body=Agent%20reply`);
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount), { timeout: 10_000 }).toBe(2);
 
@@ -323,11 +354,11 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
   await page.getByLabel("Selected Workspace").first().selectOption(primary.id);
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
   await page.getByLabel("Notification sound").first().selectOption("all");
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 
   await request.post(`${fixtureBase}/disconnect?workspace=inactive`);
   await expect(page.getByLabel("Selected Workspace").first().locator(`option[value="${secondary.id}"]`)).toContainText("1 unread", { timeout: 10_000 });
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
   await request.post(`${fixtureBase}/peer-message?workspace=inactive&body=Subsequent%20live`);
   await expect(page.getByLabel("Selected Workspace").first().locator(`option[value="${secondary.id}"]`)).toContainText("2 unread", { timeout: 10_000 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
@@ -389,7 +420,7 @@ test("advances the durable read cursor only when a real visible timeline is near
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await page.getByLabel("Notification sound").first().selectOption("mentions");
-  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(1);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
   await request.post(`${fixtureBase}/peer-message?count=35&body=Scroll%20fixture`);
   await expect(page.getByText("Scroll fixture 35", { exact: true })).toBeVisible();
   const cursorKey = `minu-channels:last-read:${humanId}:${conversationId}`;
@@ -458,7 +489,7 @@ test("summarizes Conversation-wide agent activity below the composer", async ({ 
   await expect(strip).toHaveCount(0, { timeout: 10_000 });
 });
 
-test("reconnects an existing reachable session and exposes only safe diagnostics", async ({ page, request }) => {
+test("reconnects an existing reachable session and exposes only safe diagnostic capabilities", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
   const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
@@ -469,10 +500,6 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   page.on("request", (outgoing) => {
     if (/\/(reconnect|replace)$/.test(new URL(outgoing.url()).pathname)) lifecycleRequests.push(new URL(outgoing.url()).pathname);
   });
-  const unauthorizedDiagnostic = await request.post(
-    `${controlBase}/local/conversations/${conversationId}/agents/agent-private/open-diagnostic`,
-  );
-  expect(unauthorizedDiagnostic.status()).toBe(401);
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await request.post(`${fixtureBase}/detach-agent`);
   await expect(page.getByTitle("Runtime: Disconnected")).toBeVisible({ timeout: 10_000 });
@@ -488,10 +515,6 @@ test("reconnects an existing reachable session and exposes only safe diagnostics
   await expect(page.locator("dt", { hasText: "Interrupt" }).locator("+ dd")).toHaveText("Available");
   await expect(page.locator("dt", { hasText: "Reconnect existing" }).locator("+ dd")).toHaveText("Available");
   await expect(page.locator("dt", { hasText: "Open diagnostic" }).locator("+ dd")).toHaveText("Available");
-  await page.getByRole("button", { name: "Open diagnostic", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Diagnostic opened", exact: true })).toBeVisible();
-  const diagnosticOpens = await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number };
-  expect(diagnosticOpens.count).toBe(1);
   expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp|SECRET_DIAGNOSTIC/);
 
   await request.post(`${fixtureBase}/runtime-capabilities?mode=failed`);
@@ -1114,10 +1137,10 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
 
   const row = page.getByRole("listitem").filter({ has: page.getByRole("link", { name, exact: true }) });
   await row.getByLabel(`Conversation actions for ${name}`).click();
-  await row.getByRole("button", { name: /^Snooze/ }).click();
+  await page.getByRole("button", { name: /^Snooze/ }).click();
   const lifecycleRequest = page.waitForRequest((request) => request.method() === "PATCH"
     && request.url().endsWith(`/local/conversations/${conversationId}/lifecycle`));
-  await row.getByRole("button", { name: "Next week", exact: true }).click();
+  await page.getByRole("button", { name: "Next week", exact: true }).click();
   const snoozePayload = (await lifecycleRequest).postDataJSON() as { snoozedUntil: string };
   const nextWeek = new Date(snoozePayload.snoozedUntil);
   expect(nextWeek.getDay()).toBe(1);
@@ -1126,16 +1149,16 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
   await expect(snoozed).toBeVisible();
   await snoozed.click();
   await row.getByLabel(`Conversation actions for ${name}`).click();
-  await row.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
+  await page.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
   await expect(page.getByText("Active", { exact: true })).toBeVisible();
 
   await row.getByLabel(`Conversation actions for ${name}`).click();
-  await row.getByRole("button", { name: "Settle to Archive", exact: true }).click();
+  await page.getByRole("button", { name: "Settled", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("archived and read-only");
   await expect(page.getByLabel("Conversation message")).toBeDisabled();
-  const archive = page.getByRole("button", { name: "Archive", exact: true });
-  await expect(archive).toBeVisible();
-  await archive.click();
+  const settled = page.getByRole("button", { name: "Settled", exact: true });
+  await expect(settled).toBeVisible();
+  await settled.click();
   await expect(row.getByRole("link", { name, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Reopen", exact: true }).click();
   await expect(page.getByText("Active", { exact: true })).toBeVisible();

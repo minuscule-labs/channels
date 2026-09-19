@@ -57,6 +57,59 @@ export const agentHostCursors = sqliteTable("agent_host_cursors", {
   uniqueIndex("agent_host_cursors_conversation_route_unique").on(table.conversationId, table.participantId),
 ]);
 
+export const turnFailureDiagnostics = sqliteTable("turn_failure_diagnostics", {
+  conversationId: text("conversation_id").notNull(),
+  participantId: text("participant_id").notNull(),
+  triggerMessageId: text("trigger_message_id").notNull(),
+  triggerSequence: integer("trigger_sequence").notNull(),
+  bindingId: text("binding_id"),
+  bindingGeneration: integer("binding_generation"),
+  startedAt: text("started_at").notNull(),
+  failedAt: text("failed_at").notNull(),
+  elapsedMs: integer("elapsed_ms").notNull(),
+  attemptCount: integer("attempt_count").notNull(),
+  causeCategory: text("cause_category", {
+    enum: [
+      "turn_timeout",
+      "runtime_request_timeout",
+      "runtime_offline",
+      "runtime_rejected",
+      "response_delivery_failed",
+      "unknown",
+    ],
+  }).notNull(),
+  deliveryOutcome: text("delivery_outcome", {
+    enum: ["pending", "delivered", "delivery_rejected", "delivery_timed_out", "cursor_commit_failed"],
+  }).notNull(),
+  remediationCode: text("remediation_code", {
+    enum: [
+      "retry_or_start_new_session",
+      "retry_request",
+      "reconnect_agent",
+      "open_runtime_diagnostic",
+      "check_connection_and_retry",
+    ],
+  }).notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("turn_failure_diagnostics_trigger_unique")
+    .on(table.conversationId, table.participantId, table.triggerMessageId),
+  index("turn_failure_diagnostics_retention_idx")
+    .on(table.conversationId, table.failedAt, table.triggerSequence, table.participantId),
+]);
+
+/** Private recovery marker for a pending diagnostic evicted from the 100-row safe projection. */
+export const turnFailureFinalizationTombstones = sqliteTable("turn_failure_finalization_tombstones", {
+  conversationId: text("conversation_id").notNull(),
+  participantId: text("participant_id").notNull(),
+  triggerMessageId: text("trigger_message_id").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("turn_failure_finalization_tombstones_trigger_unique")
+    .on(table.conversationId, table.participantId, table.triggerMessageId),
+]);
+
 export const deliveryDeadLetters = sqliteTable("delivery_dead_letters", {
   conversationId: text("conversation_id").notNull(),
   participantId: text("participant_id").notNull(),

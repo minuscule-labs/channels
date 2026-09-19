@@ -1,7 +1,8 @@
 import type { ConversationLifecycleState, ConversationMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
+import * as Popover from "@radix-ui/react-popover";
 import { useState } from "react";
-import { Archive, Bell, Bot, ChevronDown, Clock3, Hash, MessageSquare, X } from "lucide-react";
+import { Archive, Bell, Bot, ChevronDown, Clock3, EllipsisVertical, Hash, MessageSquare, X } from "lucide-react";
 import type { NotificationSound } from "../lib/conversation-notifications";
 import { CreateConversationDialog } from "./conversation-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
@@ -72,6 +73,7 @@ function ConversationNavigationLink({
   const active = conversation.id === activeConversationId;
   const unreadState = unread?.get(conversation.id);
   const [customSnoozeUntil, setCustomSnoozeUntil] = useState(() => datetimeLocalValue(snoozeAt(60)));
+  const [menuOpen, setMenuOpen] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   const evening = upcomingEvening();
   const snoozePresets: ReadonlyArray<readonly [string, string]> = [
@@ -82,12 +84,12 @@ function ConversationNavigationLink({
     ["Next week", nextMondayMorning()],
   ];
   return (
-    <li key={conversation.id}>
+    <li key={conversation.id} className="relative">
       <Link
         to="/app/workspaces/$workspaceId/conversations/$conversationId"
         params={{ workspaceId, conversationId: conversation.id }}
         onClick={onNavigate}
-        className={`flex min-h-10 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
+        className={`flex min-h-10 items-center gap-2 rounded-md py-1 pl-2.5 pr-10 text-sm transition-colors ${
           active
             ? "bg-[var(--selected)] text-[var(--text)]"
             : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
@@ -106,30 +108,49 @@ function ConversationNavigationLink({
         ) : null}
       </Link>
       {onLifecycleChange ? (
-        <details className="relative -mt-8 ml-auto mr-1 w-7" onClick={(event) => event.stopPropagation()}>
-          <summary className="icon-button ml-auto flex h-7 w-7 cursor-pointer list-none items-center justify-center text-xs" aria-label={`Conversation actions for ${conversation.name}`}>•••</summary>
-          <div className="absolute right-0 z-30 mt-1 w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
-            {lifecycleState === "active" ? <>
-              <button className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" aria-expanded={snoozeOpen} onClick={() => setSnoozeOpen((open) => !open)}>Snooze <span className="text-[var(--muted)]">›</span></button>
-              {snoozeOpen ? <div className="absolute left-full top-0 ml-1 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-lg">
-                  {snoozePresets.map(([label, snoozedUntil]) => (
-                    <button key={label as string} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: snoozedUntil as string })}>{label as string}</button>
-                  ))}
-                  <form className="mt-1 border-t border-[var(--border)] px-2 pt-2" onSubmit={(event) => {
-                    event.preventDefault();
-                    onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: new Date(customSnoozeUntil).toISOString() });
-                  }}>
-                    <label className="block text-[10px] text-[var(--muted)]" htmlFor={`snooze-${conversation.id}`}>Custom…</label>
-                    <input id={`snooze-${conversation.id}`} aria-label={`Snooze ${conversation.name} until`} className="mt-1 w-full rounded border border-[var(--border)] bg-transparent px-1 py-1 text-[11px]" type="datetime-local" min={datetimeLocalValue(new Date().toISOString())} value={customSnoozeUntil} onChange={(event) => setCustomSnoozeUntil(event.target.value)} required />
-                    <button className="my-1 w-full rounded px-1 py-1 text-left text-xs hover:bg-[var(--hover)]" type="submit" disabled={pendingLifecycle}>Snooze until this time</button>
-                  </form>
-                </div> : null}
-              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "settled" })}>Settle to Archive</button>
-            </> : (
-              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "active" })}>Reopen Conversation</button>
-            )}
-          </div>
-        </details>
+        <Popover.Root open={menuOpen} onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (!open) setSnoozeOpen(false);
+        }}>
+          <Popover.Trigger asChild>
+            <button
+              className="absolute inset-y-0 right-1 flex w-8 items-center justify-center rounded-md text-xs text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
+              type="button"
+              aria-label={`Conversation actions for ${conversation.name}`}
+            >
+              <EllipsisVertical className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content side="right" align="start" sideOffset={4} collisionPadding={12} className="z-[60] w-40 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
+              {lifecycleState === "active" ? <>
+                <Popover.Root open={snoozeOpen} onOpenChange={setSnoozeOpen}>
+                  <Popover.Trigger asChild>
+                    <button className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button">Snooze <span className="text-[var(--muted)]">›</span></button>
+                  </Popover.Trigger>
+                  <Popover.Portal>
+                    <Popover.Content side="right" align="start" sideOffset={4} collisionPadding={12} className="z-[61] w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
+                      {snoozePresets.map(([label, snoozedUntil]) => (
+                        <button key={label as string} className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: snoozedUntil as string })}>{label as string}</button>
+                      ))}
+                      <form className="mt-1 border-t border-[var(--border)] px-2 pt-2" onSubmit={(event) => {
+                        event.preventDefault();
+                        onLifecycleChange(conversation.id, { state: "snoozed", snoozedUntil: new Date(customSnoozeUntil).toISOString() });
+                      }}>
+                        <label className="block text-[10px] text-[var(--muted)]" htmlFor={`snooze-${conversation.id}`}>Custom…</label>
+                        <input id={`snooze-${conversation.id}`} aria-label={`Snooze ${conversation.name} until`} className="mt-1 w-full rounded border border-[var(--border)] bg-transparent px-1 py-1 text-[11px]" type="datetime-local" min={datetimeLocalValue(new Date().toISOString())} value={customSnoozeUntil} onChange={(event) => setCustomSnoozeUntil(event.target.value)} required />
+                        <button className="my-1 w-full rounded px-1 py-1 text-left text-xs hover:bg-[var(--hover)]" type="submit" disabled={pendingLifecycle}>Snooze until this time</button>
+                      </form>
+                    </Popover.Content>
+                  </Popover.Portal>
+                </Popover.Root>
+                <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "settled" })}>Settled</button>
+              </> : (
+                <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "active" })}>Reopen Conversation</button>
+              )}
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root>
       ) : null}
     </li>
   );
@@ -146,7 +167,6 @@ export function NavigationSidebar({
   onClose,
   sound = "off",
   onSoundChange,
-  onTestSound,
   workspaceUnread = new Map(),
   onLifecycleChange,
   pendingLifecycleConversationId,
@@ -161,7 +181,6 @@ export function NavigationSidebar({
   onClose?(): void;
   sound?: NotificationSound;
   onSoundChange?(sound: NotificationSound): void;
-  onTestSound?(): void;
   workspaceUnread?: ReadonlyMap<string, number>;
   onLifecycleChange?(
     conversationId: string,
@@ -203,88 +222,103 @@ export function NavigationSidebar({
         {items.length === 0 ? (
           <p className="px-2 py-6 text-sm text-[var(--muted)]">No Workspaces yet.</p>
         ) : null}
-        <div className="space-y-5">
-          {items.map(({ workspace, conversations, loading, lifecycle, unread }) => (
-            <section key={workspace.id}>
-              <div className="mb-1 flex items-end justify-between gap-2 px-2">
-                <div className="min-w-0">
-                  <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Workspace</p>
-                  <h2 className="truncate text-sm font-semibold text-[var(--text)]" title={workspace.name}>
-                    {workspace.name}
-                  </h2>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="status-dot" data-status={workspace.status} title={workspace.status} />
-                  <CreateConversationDialog workspace={workspace} onNavigate={onNavigate} />
-                  <WorkspaceSettingsDialog workspace={workspace} />
-                </div>
-              </div>
-              <Link
-                to="/app/workspaces/$workspaceId/agents"
-                params={{ workspaceId: workspace.id }}
-                onClick={onNavigate}
-                className={`mb-1 flex min-h-9 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
-                  activeAgentsWorkspaceId === workspace.id
-                    ? "bg-[var(--selected)] text-[var(--text)]"
-                    : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
-                }`}
-                aria-current={activeAgentsWorkspaceId === workspace.id ? "page" : undefined}
-              >
-                <Bot className="h-3.5 w-3.5 shrink-0" />
-                <span>Agents</span>
-              </Link>
-              {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
-              {(() => {
-                const active = conversations.filter((conversation) => (lifecycle?.get(conversation.id) ?? "active") === "active");
-                const snoozed = conversations.filter((conversation) => lifecycle?.get(conversation.id) === "snoozed");
-                const settled = conversations.filter((conversation) => lifecycle?.get(conversation.id) === "settled");
-                const link = (conversation: ConversationMetadata) => (
-                  <ConversationNavigationLink
-                    key={conversation.id}
-                    conversation={conversation}
-                    workspaceId={workspace.id}
-                    activeConversationId={activeConversationId}
-                    unread={unread}
-                    lifecycleState={lifecycle?.get(conversation.id) ?? "active"}
-                    onLifecycleChange={onLifecycleChange}
-                    pendingLifecycle={pendingLifecycleConversationId === conversation.id}
-                    onNavigate={onNavigate}
-                  />
-                );
-                return <>
-                  <ul className="space-y-1">{active.map(link)}</ul>
-                  {(snoozed.length > 0 || settled.length > 0) ? (
-                    <div className="mt-4 border-t border-[var(--border)] pt-2">
-                      {snoozed.length > 0 ? <>
-                        <button
-                          type="button"
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--hover)]"
-                          aria-expanded={snoozedOpen}
-                          onClick={() => setSnoozedOpen((open) => !open)}
-                        >
-                          <Clock3 className="h-3.5 w-3.5" /> Snoozed
-                          <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${snoozedOpen ? "rotate-180" : ""}`} />
-                        </button>
-                        {snoozedOpen ? <ul className="space-y-1">{snoozed.map(link)}</ul> : null}
-                      </> : null}
-                      {settled.length > 0 ? <>
-                        <button
-                          type="button"
-                          className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--muted)] hover:bg-[var(--hover)]"
-                          aria-expanded={archiveOpen}
-                          onClick={() => setArchiveOpen((open) => !open)}
-                        >
-                          <Archive className="h-3.5 w-3.5" /> Archive
-                          <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${archiveOpen ? "rotate-180" : ""}`} />
-                        </button>
-                        {archiveOpen ? <ul className="space-y-1">{settled.map(link)}</ul> : null}
-                      </> : null}
+        <div className="flex min-h-full flex-col">
+          <div className="space-y-5">
+            {items.map(({ workspace, conversations, loading, lifecycle, unread }) => {
+              const active = conversations.filter((conversation) => (lifecycle?.get(conversation.id) ?? "active") === "active");
+              return (
+                <section key={workspace.id}>
+                  <div className="mb-1 flex items-end justify-between gap-2 px-2">
+                    <div className="min-w-0">
+                      <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Workspace</p>
+                      <h2 className="truncate text-sm font-semibold text-[var(--text)]" title={workspace.name}>
+                        {workspace.name}
+                      </h2>
                     </div>
-                  ) : null}
-                </>;
-              })()}
-            </section>
-          ))}
+                    <div className="flex items-center gap-1.5">
+                      <span className="status-dot" data-status={workspace.status} title={workspace.status} />
+                      <CreateConversationDialog workspace={workspace} onNavigate={onNavigate} />
+                      <WorkspaceSettingsDialog workspace={workspace} />
+                    </div>
+                  </div>
+                  <Link
+                    to="/app/workspaces/$workspaceId/agents"
+                    params={{ workspaceId: workspace.id }}
+                    onClick={onNavigate}
+                    className={`mb-1 flex min-h-9 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
+                      activeAgentsWorkspaceId === workspace.id
+                        ? "bg-[var(--selected)] text-[var(--text)]"
+                        : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
+                    }`}
+                    aria-current={activeAgentsWorkspaceId === workspace.id ? "page" : undefined}
+                  >
+                    <Bot className="h-3.5 w-3.5 shrink-0" />
+                    <span>Agents</span>
+                  </Link>
+                  {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
+                  <ul className="space-y-1">{active.map((conversation) => (
+                    <ConversationNavigationLink
+                      key={conversation.id}
+                      conversation={conversation}
+                      workspaceId={workspace.id}
+                      activeConversationId={activeConversationId}
+                      unread={unread}
+                      lifecycleState={lifecycle?.get(conversation.id) ?? "active"}
+                      onLifecycleChange={onLifecycleChange}
+                      pendingLifecycle={pendingLifecycleConversationId === conversation.id}
+                      onNavigate={onNavigate}
+                    />
+                  ))}</ul>
+                </section>
+              );
+            })}
+          </div>
+          <div className="mt-auto space-y-5 pt-4">
+            {items.map(({ workspace, conversations, lifecycle, unread }) => {
+              const snoozed = conversations.filter((conversation) => lifecycle?.get(conversation.id) === "snoozed");
+              const settled = conversations.filter((conversation) => lifecycle?.get(conversation.id) === "settled");
+              if (snoozed.length === 0 && settled.length === 0) return null;
+              const link = (conversation: ConversationMetadata) => (
+                <ConversationNavigationLink
+                  key={conversation.id}
+                  conversation={conversation}
+                  workspaceId={workspace.id}
+                  activeConversationId={activeConversationId}
+                  unread={unread}
+                  lifecycleState={lifecycle?.get(conversation.id) ?? "active"}
+                  onLifecycleChange={onLifecycleChange}
+                  pendingLifecycle={pendingLifecycleConversationId === conversation.id}
+                  onNavigate={onNavigate}
+                />
+              );
+              return <section key={workspace.id} className="border-t border-[var(--border)] pt-2">
+                {snoozed.length > 0 ? <>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--hover)]"
+                    aria-expanded={snoozedOpen}
+                    onClick={() => setSnoozedOpen((open) => !open)}
+                  >
+                    <Clock3 className="h-3.5 w-3.5" /> Snoozed
+                    <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${snoozedOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {snoozedOpen ? <ul className="space-y-1">{snoozed.map(link)}</ul> : null}
+                </> : null}
+                {settled.length > 0 ? <>
+                  <button
+                    type="button"
+                    className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--muted)] hover:bg-[var(--hover)]"
+                    aria-expanded={archiveOpen}
+                    onClick={() => setArchiveOpen((open) => !open)}
+                  >
+                    <Archive className="h-3.5 w-3.5" /> Settled
+                    <ChevronDown className={`ml-auto h-3.5 w-3.5 transition-transform ${archiveOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {archiveOpen ? <ul className="space-y-1">{settled.map(link)}</ul> : null}
+                </> : null}
+              </section>;
+            })}
+          </div>
         </div>
       </nav>
       {onSoundChange ? (
@@ -303,7 +337,6 @@ export function NavigationSidebar({
               <option value="all">All new messages</option>
             </select>
           </label>
-          {sound !== "off" && onTestSound ? <button className="button-secondary mt-2 w-full" type="button" onClick={onTestSound}>Test sound</button> : null}
         </div>
       ) : null}
     </aside>

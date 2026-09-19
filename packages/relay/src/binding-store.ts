@@ -5,6 +5,11 @@ import type {
   DeliveryDeadLetterInput,
   DeliveryDeadLetterReason,
   RelayCursorStore,
+  TurnFailureCauseCategory,
+  TurnFailureDeliveryInput,
+  TurnFailureDeliveryOutcome,
+  TurnFailureDiagnosticInput,
+  TurnFailureRemediationCode,
   WakePolicy,
 } from "./relay.ts";
 
@@ -65,6 +70,24 @@ export interface DeliveryDeadLetterRecord {
   triggerMessageId: string;
   triggerSequence: number;
   reason: DeliveryDeadLetterReason;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TurnFailureDiagnosticRecord {
+  conversationId: string;
+  participantId: string;
+  triggerMessageId: string;
+  triggerSequence: number;
+  bindingId?: string;
+  bindingGeneration?: number;
+  startedAt: string;
+  failedAt: string;
+  elapsedMs: number;
+  attemptCount: number;
+  causeCategory: TurnFailureCauseCategory;
+  deliveryOutcome: TurnFailureDeliveryOutcome;
+  remediationCode: TurnFailureRemediationCode;
   createdAt: string;
   updatedAt: string;
 }
@@ -133,6 +156,9 @@ export interface RelayBindingStore extends RelayCursorStore {
     expectedGeneration: number,
     updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined>;
+  recordTurnFailure(input: TurnFailureDiagnosticInput): Promise<void>;
+  commitTurnFailureDelivery(input: TurnFailureDeliveryInput): Promise<void>;
+  listTurnFailures(conversationId: string, limit: number): Promise<TurnFailureDiagnosticRecord[]>;
   commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void>;
   listDeliveryDeadLetters(conversationId: string, participantId: string): Promise<DeliveryDeadLetterRecord[]>;
   close?(): Promise<void> | void;
@@ -195,6 +221,9 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
   private readonly bindings = new Map<string, ConversationAgentBindingRecord>();
   private readonly cursors = new Map<string, number>();
+  private readonly turnFailures = new Map<string, TurnFailureDiagnosticRecord>();
+  /** Private recovery marker for a pending record evicted from the safe 100-row projection. */
+  private readonly turnFailureFinalizationTombstones = new Set<string>();
   private readonly deliveryDeadLetters = new Map<string, DeliveryDeadLetterRecord>();
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
@@ -400,6 +429,53 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, sequence));
   }
 
+  async recordTurnFailure(input: TurnFailureDiagnosticInput): Promise<void> {
+    const key = JSON.stringify([input.conversationId, input.participantId, input.triggerMessageId]);
+    if (!this.turnFailures.has(key)) {
+      this.turnFailures.set(key, {
+        ...input,
+        deliveryOutcome: "pending",
+        createdAt: input.failedAt,
+        updatedAt: input.failedAt,
+      });
+    }
+    const retained = [...this.turnFailures.entries()]
+      .filter(([, record]) => record.conversationId === input.conversationId)
+      .sort(([, left], [, right]) => right.failedAt.localeCompare(left.failedAt)
+        || right.triggerSequence - left.triggerSequence
+        || left.participantId.localeCompare(right.participantId));
+    for (const [expiredKey, expired] of retained.slice(100)) {
+      this.turnFailures.delete(expiredKey);
+      if (expired.deliveryOutcome === "pending") this.turnFailureFinalizationTombstones.add(expiredKey);
+    }
+  }
+
+  async commitTurnFailureDelivery(input: TurnFailureDeliveryInput): Promise<void> {
+    const key = JSON.stringify([input.conversationId, input.participantId, input.triggerMessageId]);
+    const diagnostic = this.turnFailures.get(key);
+    const cursorKey = `${input.conversationId}:${input.participantId}`;
+    if (!diagnostic && !this.turnFailureFinalizationTombstones.has(key)
+      && (this.cursors.get(cursorKey) ?? 0) < input.triggerSequence) {
+      throw new Error("Matching turn-failure diagnostic is unavailable");
+    }
+    if (diagnostic?.deliveryOutcome === "pending") {
+      diagnostic.deliveryOutcome = input.outcome;
+      diagnostic.updatedAt = input.recordedAt;
+    }
+    this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, input.triggerSequence));
+    this.turnFailureFinalizationTombstones.delete(key);
+  }
+
+  async listTurnFailures(conversationId: string, limit: number): Promise<TurnFailureDiagnosticRecord[]> {
+    return [...this.turnFailures.values()]
+      .filter((record) => record.conversationId === conversationId)
+      .sort((left, right) => right.failedAt.localeCompare(left.failedAt)
+        || right.triggerSequence - left.triggerSequence
+        || left.participantId.localeCompare(right.participantId))
+      .slice(0, limit)
+      .map((record) => ({ ...record }));
+  }
+
   async commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void> {
     const key = JSON.stringify([input.conversationId, input.participantId, input.triggerMessageId]);
     const existing = this.deliveryDeadLetters.get(key);
@@ -412,11 +488,21 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       createdAt: input.recordedAt,
       updatedAt: input.recordedAt,
     });
+    const diagnostic = this.turnFailures.get(key);
     const cursorKey = `${input.conversationId}:${input.participantId}`;
+    if (input.requiresTurnFailure && !diagnostic && !this.turnFailureFinalizationTombstones.has(key)
+      && (this.cursors.get(cursorKey) ?? 0) < input.triggerSequence) {
+      throw new Error("Matching turn-failure diagnostic is unavailable");
+    }
+    if (diagnostic?.deliveryOutcome === "pending") {
+      diagnostic.deliveryOutcome = input.reason;
+      diagnostic.updatedAt = input.recordedAt;
+    }
     this.cursors.set(
       cursorKey,
       Math.max(this.cursors.get(cursorKey) ?? 0, input.triggerSequence),
     );
+    this.turnFailureFinalizationTombstones.delete(key);
   }
 
   async listDeliveryDeadLetters(
@@ -909,6 +995,7 @@ export async function restoreConversationBindings(
       sessionId: connected.runtimeSessionId,
       runtime,
       wakePolicy: connected.wakePolicy,
+      diagnosticBinding: { id: connected.id, generation: connected.generation },
       verifyLease: async () => {
         const checkedAt = now();
         return options.store.renewBindingLease(

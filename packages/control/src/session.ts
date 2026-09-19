@@ -69,6 +69,8 @@ interface BrowserSessionRecord {
 
 export interface LocalControlBrowserSession {
   identityId: string;
+  /** Opaque server-only session scope for short-lived local action tokens. */
+  scope: string;
 }
 
 export interface LocalControlLaunchExchange {
@@ -212,7 +214,7 @@ export class LocalControlBrowserSessions {
       this.audit({ action: "session.rejected", outcome: "rejected", reason: "expired" });
       return undefined;
     }
-    return { identityId: record.identityId };
+    return { identityId: record.identityId, scope: key };
   }
 
   authorize(cookieHeader: string | undefined): boolean {

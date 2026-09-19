@@ -157,13 +157,19 @@ export function AppShell() {
     try {
       const context = audioContext.current;
       if (!context) return;
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      gain.gain.value = 0.04;
-      oscillator.frequency.value = 660;
-      oscillator.connect(gain).connect(context.destination);
-      oscillator.start();
-      oscillator.stop(context.currentTime + 0.12);
+      // A clear but brief rising two-note chime.
+      for (const { frequency, delay, duration, volume } of [
+        { frequency: 523.25, delay: 0, duration: 0.14, volume: 0.08 },
+        { frequency: 659.25, delay: 0.12, duration: 0.2, volume: 0.065 },
+      ]) {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        gain.gain.value = volume;
+        oscillator.frequency.value = frequency;
+        oscillator.connect(gain).connect(context.destination);
+        oscillator.start(context.currentTime + delay);
+        oscillator.stop(context.currentTime + delay + duration);
+      }
     } catch {
       // Sound is optional; visual unread state remains authoritative.
     }
@@ -173,7 +179,9 @@ export function AppShell() {
     if (!identityId) return;
     setSound(value);
     writeSound(localStorage, identityId, value);
-    if (value !== "off" && activateAudio()) playSound();
+    // Create/resume within this user gesture so future notifications may play,
+    // without treating a preference change as a notification itself.
+    if (value !== "off") activateAudio();
   };
 
   useEffect(() => setNavigationOpen(false), [pathname]);
@@ -348,7 +356,6 @@ export function AppShell() {
           workspaceUnread={workspaceUnread}
           sound={sound}
           onSoundChange={currentSession.isSuccess ? changeSound : undefined}
-          onTestSound={() => { if (activateAudio()) playSound(); }}
           onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
           pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
         />
@@ -380,7 +387,6 @@ export function AppShell() {
             workspaceUnread={workspaceUnread}
             sound={sound}
             onSoundChange={currentSession.isSuccess ? changeSound : undefined}
-            onTestSound={() => { if (activateAudio()) playSound(); }}
             onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
             pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
             onNavigate={() => setNavigationOpen(false)}

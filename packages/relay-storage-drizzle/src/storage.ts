@@ -8,10 +8,13 @@ import type {
   LocalWorkspaceConfig,
   RelayBindingStore,
   RuntimeModelRef,
+  TurnFailureDeliveryInput,
+  TurnFailureDiagnosticInput,
+  TurnFailureDiagnosticRecord,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { validateConversationWorkingFolders } from "@minu/channels-relay";
-import { and, asc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { dirname, resolve } from "node:path";
@@ -418,6 +421,127 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     });
   }
 
+  async recordTurnFailure(input: TurnFailureDiagnosticInput): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      await transaction.insert(schema.turnFailureDiagnostics).values({
+        ...input,
+        bindingId: input.bindingId ?? null,
+        bindingGeneration: input.bindingGeneration ?? null,
+        deliveryOutcome: "pending",
+        createdAt: input.failedAt,
+        updatedAt: input.failedAt,
+      }).onConflictDoNothing({
+        target: [
+          schema.turnFailureDiagnostics.conversationId,
+          schema.turnFailureDiagnostics.participantId,
+          schema.turnFailureDiagnostics.triggerMessageId,
+        ],
+      });
+      await transaction.run(sql`
+        INSERT INTO ${schema.turnFailureFinalizationTombstones} (
+          conversation_id, participant_id, trigger_message_id, created_at
+        )
+        SELECT conversation_id, participant_id, trigger_message_id, ${input.failedAt}
+        FROM ${schema.turnFailureDiagnostics}
+        WHERE ${schema.turnFailureDiagnostics.conversationId} = ${input.conversationId}
+          AND ${schema.turnFailureDiagnostics.deliveryOutcome} = 'pending'
+          AND rowid NOT IN (
+            SELECT rowid FROM ${schema.turnFailureDiagnostics}
+            WHERE ${schema.turnFailureDiagnostics.conversationId} = ${input.conversationId}
+            ORDER BY ${schema.turnFailureDiagnostics.failedAt} DESC,
+              ${schema.turnFailureDiagnostics.triggerSequence} DESC,
+              ${schema.turnFailureDiagnostics.participantId} ASC
+            LIMIT 100
+          )
+        ON CONFLICT(conversation_id, participant_id, trigger_message_id) DO NOTHING
+      `);
+      await transaction.run(sql`
+        DELETE FROM ${schema.turnFailureDiagnostics}
+        WHERE ${schema.turnFailureDiagnostics.conversationId} = ${input.conversationId}
+          AND rowid NOT IN (
+            SELECT rowid FROM ${schema.turnFailureDiagnostics}
+            WHERE ${schema.turnFailureDiagnostics.conversationId} = ${input.conversationId}
+            ORDER BY ${schema.turnFailureDiagnostics.failedAt} DESC,
+              ${schema.turnFailureDiagnostics.triggerSequence} DESC,
+              ${schema.turnFailureDiagnostics.participantId} ASC
+            LIMIT 100
+          )
+      `);
+    });
+  }
+
+  async commitTurnFailureDelivery(input: TurnFailureDeliveryInput): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      const matching = await transaction.select({
+        deliveryOutcome: schema.turnFailureDiagnostics.deliveryOutcome,
+      }).from(schema.turnFailureDiagnostics).where(and(
+        eq(schema.turnFailureDiagnostics.conversationId, input.conversationId),
+        eq(schema.turnFailureDiagnostics.participantId, input.participantId),
+        eq(schema.turnFailureDiagnostics.triggerMessageId, input.triggerMessageId),
+      )).limit(1);
+      const tombstone = matching[0] ? [] : await transaction.select({
+        createdAt: schema.turnFailureFinalizationTombstones.createdAt,
+      }).from(schema.turnFailureFinalizationTombstones).where(and(
+        eq(schema.turnFailureFinalizationTombstones.conversationId, input.conversationId),
+        eq(schema.turnFailureFinalizationTombstones.participantId, input.participantId),
+        eq(schema.turnFailureFinalizationTombstones.triggerMessageId, input.triggerMessageId),
+      )).limit(1);
+      const cursor = await transaction.select({
+        lastProcessedSequence: schema.agentHostCursors.lastProcessedSequence,
+      }).from(schema.agentHostCursors).where(and(
+        eq(schema.agentHostCursors.conversationId, input.conversationId),
+        eq(schema.agentHostCursors.participantId, input.participantId),
+      )).limit(1);
+      if (!matching[0] && !tombstone[0] && (cursor[0]?.lastProcessedSequence ?? 0) < input.triggerSequence) {
+        throw new Error("Matching turn-failure diagnostic is unavailable");
+      }
+      await transaction.update(schema.turnFailureDiagnostics).set({
+        deliveryOutcome: input.outcome,
+        updatedAt: input.recordedAt,
+      }).where(and(
+        eq(schema.turnFailureDiagnostics.conversationId, input.conversationId),
+        eq(schema.turnFailureDiagnostics.participantId, input.participantId),
+        eq(schema.turnFailureDiagnostics.triggerMessageId, input.triggerMessageId),
+        eq(schema.turnFailureDiagnostics.deliveryOutcome, "pending"),
+      ));
+      await transaction.insert(schema.agentHostCursors).values({
+        conversationId: input.conversationId,
+        participantId: input.participantId,
+        lastProcessedSequence: input.triggerSequence,
+        updatedAt: input.recordedAt,
+      }).onConflictDoUpdate({
+        target: [schema.agentHostCursors.conversationId, schema.agentHostCursors.participantId],
+        set: {
+          lastProcessedSequence: sql`max(${schema.agentHostCursors.lastProcessedSequence}, ${input.triggerSequence})`,
+          updatedAt: input.recordedAt,
+        },
+      });
+      if (tombstone[0]) {
+        await transaction.delete(schema.turnFailureFinalizationTombstones).where(and(
+          eq(schema.turnFailureFinalizationTombstones.conversationId, input.conversationId),
+          eq(schema.turnFailureFinalizationTombstones.participantId, input.participantId),
+          eq(schema.turnFailureFinalizationTombstones.triggerMessageId, input.triggerMessageId),
+        ));
+      }
+    });
+  }
+
+  async listTurnFailures(conversationId: string, limit: number): Promise<TurnFailureDiagnosticRecord[]> {
+    const rows = await this.database.select().from(schema.turnFailureDiagnostics)
+      .where(eq(schema.turnFailureDiagnostics.conversationId, conversationId))
+      .orderBy(
+        desc(schema.turnFailureDiagnostics.failedAt),
+        desc(schema.turnFailureDiagnostics.triggerSequence),
+        asc(schema.turnFailureDiagnostics.participantId),
+      )
+      .limit(limit);
+    return rows.map((row) => ({
+      ...row,
+      bindingId: row.bindingId ?? undefined,
+      bindingGeneration: row.bindingGeneration ?? undefined,
+    }));
+  }
+
   async commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void> {
     await this.database.transaction(async (transaction) => {
       await transaction.insert(schema.deliveryDeadLetters).values({
@@ -435,6 +559,39 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
           schema.deliveryDeadLetters.triggerMessageId,
         ],
       });
+      const matching = input.requiresTurnFailure ? await transaction.select({
+        deliveryOutcome: schema.turnFailureDiagnostics.deliveryOutcome,
+      }).from(schema.turnFailureDiagnostics).where(and(
+        eq(schema.turnFailureDiagnostics.conversationId, input.conversationId),
+        eq(schema.turnFailureDiagnostics.participantId, input.participantId),
+        eq(schema.turnFailureDiagnostics.triggerMessageId, input.triggerMessageId),
+      )).limit(1) : [];
+      const tombstone = input.requiresTurnFailure && !matching[0] ? await transaction.select({
+        createdAt: schema.turnFailureFinalizationTombstones.createdAt,
+      }).from(schema.turnFailureFinalizationTombstones).where(and(
+        eq(schema.turnFailureFinalizationTombstones.conversationId, input.conversationId),
+        eq(schema.turnFailureFinalizationTombstones.participantId, input.participantId),
+        eq(schema.turnFailureFinalizationTombstones.triggerMessageId, input.triggerMessageId),
+      )).limit(1) : [];
+      const cursor = await transaction.select({
+        lastProcessedSequence: schema.agentHostCursors.lastProcessedSequence,
+      }).from(schema.agentHostCursors).where(and(
+        eq(schema.agentHostCursors.conversationId, input.conversationId),
+        eq(schema.agentHostCursors.participantId, input.participantId),
+      )).limit(1);
+      if (input.requiresTurnFailure && !matching[0] && !tombstone[0]
+        && (cursor[0]?.lastProcessedSequence ?? 0) < input.triggerSequence) {
+        throw new Error("Matching turn-failure diagnostic is unavailable");
+      }
+      await transaction.update(schema.turnFailureDiagnostics).set({
+        deliveryOutcome: input.reason,
+        updatedAt: input.recordedAt,
+      }).where(and(
+        eq(schema.turnFailureDiagnostics.conversationId, input.conversationId),
+        eq(schema.turnFailureDiagnostics.participantId, input.participantId),
+        eq(schema.turnFailureDiagnostics.triggerMessageId, input.triggerMessageId),
+        eq(schema.turnFailureDiagnostics.deliveryOutcome, "pending"),
+      ));
       await transaction.insert(schema.agentHostCursors).values({
         conversationId: input.conversationId,
         participantId: input.participantId,
@@ -447,6 +604,13 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
           updatedAt: input.recordedAt,
         },
       });
+      if (tombstone[0]) {
+        await transaction.delete(schema.turnFailureFinalizationTombstones).where(and(
+          eq(schema.turnFailureFinalizationTombstones.conversationId, input.conversationId),
+          eq(schema.turnFailureFinalizationTombstones.participantId, input.participantId),
+          eq(schema.turnFailureFinalizationTombstones.triggerMessageId, input.triggerMessageId),
+        ));
+      }
     });
   }
 

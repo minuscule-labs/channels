@@ -6,6 +6,7 @@ import test from "node:test";
 import type {
   ConversationAgentBindingRecord,
   ConversationWorkingFolder,
+  TurnFailureDiagnosticInput,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
@@ -77,6 +78,121 @@ test("private Conversation working folders are ordered, isolated, atomic, and su
     assert.deepEqual(await reopened.getConversationWorkingFolders("workspace-a", "conversation-a"), []);
   } finally {
     await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("turn-failure diagnostics are idempotent, terminal, retained, and durable", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-failures-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const storage = await DrizzleLibSqlRelayStorage.open({ url });
+  const diagnostic = (sequence: number): TurnFailureDiagnosticInput => ({
+    conversationId: "conversation-a",
+    participantId: sequence % 2 === 0 ? "agent-a" : "agent-b",
+    triggerMessageId: `message-${sequence}`,
+    triggerSequence: sequence,
+    bindingId: `binding-${sequence}`,
+    bindingGeneration: 3,
+    startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0, sequence)).toISOString(),
+    failedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 1, sequence)).toISOString(),
+    elapsedMs: 1_000,
+    attemptCount: 2,
+    causeCategory: "runtime_offline",
+    remediationCode: "reconnect_agent",
+  });
+  try {
+    await storage.recordTurnFailure(diagnostic(1));
+    await storage.recordTurnFailure({
+      ...diagnostic(1),
+      causeCategory: "unknown",
+      remediationCode: "open_runtime_diagnostic",
+      failedAt: "2027-01-01T00:00:00.000Z",
+    });
+    await storage.commitTurnFailureDelivery({
+      conversationId: "conversation-a",
+      participantId: "agent-b",
+      triggerMessageId: "message-1",
+      triggerSequence: 1,
+      outcome: "delivered",
+      recordedAt: "2026-01-01T00:00:02.000Z",
+    });
+    await storage.commitDeliveryDeadLetter({
+      conversationId: "conversation-a",
+      participantId: "agent-b",
+      triggerMessageId: "message-1",
+      triggerSequence: 1,
+      reason: "cursor_commit_failed",
+      recordedAt: "2026-01-01T00:00:03.000Z",
+    });
+    const first = await storage.listTurnFailures("conversation-a", 20);
+    assert.equal(first[0]?.causeCategory, "runtime_offline");
+    assert.equal(first[0]?.deliveryOutcome, "delivered");
+    assert.equal(first[0]?.bindingId, "binding-1");
+
+    for (let sequence = 2; sequence <= 102; sequence += 1) {
+      await storage.recordTurnFailure(diagnostic(sequence));
+    }
+    const retained = await storage.listTurnFailures("conversation-a", 100);
+    assert.equal(retained.length, 100);
+    assert.equal(retained[0]?.triggerSequence, 102);
+    assert.equal(retained.at(-1)?.triggerSequence, 3);
+    assert.equal(await storage.getCursor("conversation-a", "agent-b"), 1);
+  } finally {
+    await storage.close();
+  }
+
+  const reopened = await DrizzleLibSqlRelayStorage.open({ url });
+  try {
+    const retained = await reopened.listTurnFailures("conversation-a", 100);
+    assert.equal(retained.length, 100);
+    assert.equal(retained[0]?.triggerMessageId, "message-102");
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retention tombstones let an evicted pending failure finalize private recovery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-retention-"));
+  const storage = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(directory, "relay.db")) });
+  const diagnostic = (sequence: number): TurnFailureDiagnosticInput => ({
+    conversationId: "conversation-a",
+    participantId: sequence % 2 ? "agent-a" : "agent-b",
+    triggerMessageId: `message-${sequence}`,
+    triggerSequence: sequence,
+    startedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, sequence)).toISOString(),
+    failedAt: new Date(Date.UTC(2026, 0, 1, 0, 1, sequence)).toISOString(),
+    elapsedMs: 1,
+    attemptCount: 1,
+    causeCategory: "unknown",
+    remediationCode: "open_runtime_diagnostic",
+  });
+  try {
+    for (let sequence = 1; sequence <= 101; sequence += 1) await storage.recordTurnFailure(diagnostic(sequence));
+    assert.equal((await storage.listTurnFailures("conversation-a", 100)).some(({ triggerSequence }) => triggerSequence === 1), false);
+    await storage.commitTurnFailureDelivery({
+      conversationId: "conversation-a", participantId: "agent-a", triggerMessageId: "message-1", triggerSequence: 1,
+      outcome: "delivered", recordedAt: "2026-01-01T00:02:00.000Z",
+    });
+    assert.equal(await storage.getCursor("conversation-a", "agent-a"), 1);
+    // A committed transaction may be observed as a timeout by Relay; replay must converge.
+    await storage.commitTurnFailureDelivery({
+      conversationId: "conversation-a", participantId: "agent-a", triggerMessageId: "message-1", triggerSequence: 1,
+      outcome: "delivered", recordedAt: "2026-01-01T00:02:00.500Z",
+    });
+
+    await storage.recordTurnFailure(diagnostic(102));
+    assert.equal((await storage.listTurnFailures("conversation-a", 100)).some(({ triggerSequence }) => triggerSequence === 2), false);
+    await storage.commitDeliveryDeadLetter({
+      conversationId: "conversation-a", participantId: "agent-b", triggerMessageId: "message-2", triggerSequence: 2,
+      reason: "delivery_rejected", recordedAt: "2026-01-01T00:02:01.000Z", requiresTurnFailure: true,
+    });
+    assert.equal(await storage.getCursor("conversation-a", "agent-b"), 2);
+    await storage.commitDeliveryDeadLetter({
+      conversationId: "conversation-a", participantId: "agent-b", triggerMessageId: "message-2", triggerSequence: 2,
+      reason: "delivery_rejected", recordedAt: "2026-01-01T00:02:01.500Z", requiresTurnFailure: true,
+    });  } finally {
+    await storage.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

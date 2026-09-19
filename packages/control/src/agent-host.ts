@@ -11,9 +11,12 @@ import {
   type RestoredConversationBindings,
   type RestoreBindingOutcome,
   type RelayAgentActivity,
+  type TurnFailureCauseCategory,
+  type TurnFailureDeliveryOutcome,
+  type TurnFailureDiagnosticRecord,
   type WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,7 +25,10 @@ import type { LocalControlRuntimePort } from "./server.ts";
 import type {
   LocalAgentRuntimeOptions,
   LocalBulkAgentLifecycleResult,
+  LocalConversationTurnFailuresResponse,
+  LocalOpenTurnFailureDiagnosticResponse,
   LocalReasoningLevel,
+  LocalTurnFailureDiagnostic,
 } from "./contracts.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 
@@ -61,12 +67,28 @@ class BulkSnapshotChangedError extends Error {}
 type AttachmentResult = "attached" | RestoreBindingOutcome | "failed";
 
 export interface LocalAgentHostDiagnosticEvent {
-  category: "binding_restore" | "binding_lease";
-  outcome: "attached" | "reattached" | "retrying" | "offline" | "uncertain" | "conflict" | "invalid" | "failed";
+  category: "binding_restore" | "binding_lease" | "turn_failure";
+  outcome: "attached" | "reattached" | "retrying" | "offline" | "uncertain" | "conflict" | "invalid" | "failed" | "recorded" | "finalized";
   conversationId: string;
   agentIdentityId: string;
   timestamp: string;
   attempt?: number;
+  causeCategory?: TurnFailureCauseCategory;
+  deliveryOutcome?: TurnFailureDeliveryOutcome;
+  elapsedMs?: number;
+  attemptCount?: number;
+}
+
+const TURN_FAILURE_DIAGNOSTIC_TOKEN_TTL_MS = 60_000;
+
+interface TurnFailureDiagnosticActionToken {
+  sessionScope: string;
+  conversationId: string;
+  participantId: string;
+  triggerMessageId: string;
+  bindingId: string;
+  bindingGeneration: number;
+  expiresAt: number;
 }
 
 interface BindingRecovery {
@@ -137,6 +159,16 @@ function supportsOpenDiagnostic(value: unknown): boolean {
   return candidate.version === 1
     && fields.every((field) => typeof candidate[field] === "boolean")
     && candidate.openDiagnostic === true;
+}
+
+function remediationLabel(code: TurnFailureDiagnosticRecord["remediationCode"]): string {
+  switch (code) {
+    case "retry_or_start_new_session": return "Retry or start a new session";
+    case "retry_request": return "Retry request";
+    case "reconnect_agent": return "Reconnect agent";
+    case "open_runtime_diagnostic": return "Open Runtime diagnostic";
+    case "check_connection_and_retry": return "Check connection and retry";
+  }
 }
 
 function launchFailureMessage(error: unknown, fallback: string): string {
@@ -224,6 +256,7 @@ export class LocalAgentHost {
   private readonly conversationAdmissionFences = new Map<string, number>();
   private readonly startingBindings = new Set<string>();
   private readonly recoveryBackoffMs: readonly number[];
+  private readonly turnFailureDiagnosticTokens = new Map<string, TurnFailureDiagnosticActionToken>();
   private readonly startedSessions = new Map<string, {
     bindingId: string;
     runtime: LocalManagedRuntimePort;
@@ -724,10 +757,85 @@ export class LocalAgentHost {
     });
   }
 
+  async listConversationTurnFailures(
+    conversationId: string,
+    actorIdentityId: string,
+    browserSessionScope: string,
+    limit: number,
+  ): Promise<LocalConversationTurnFailuresResponse> {
+    const conversation = await this.authorizeTurnFailureDiagnostics(conversationId, actorIdentityId);
+    const records = await this.options.store.listTurnFailures(conversationId, limit);
+    const participants = new Map(conversation.participants.map((participant) => [participant.id, participant]));
+    const diagnostics = await Promise.all(records.map(async (record): Promise<LocalTurnFailureDiagnostic> => {
+      const participant = participants.get(record.participantId);
+      const displayLabel = participant?.displayName ?? (participant?.handle ? `@${participant.handle}` : record.participantId);
+      return {
+        participant: { identityId: record.participantId, displayLabel },
+        causeCategory: record.causeCategory,
+        failedAt: record.failedAt,
+        elapsedMs: record.elapsedMs,
+        attemptCount: record.attemptCount,
+        deliveryOutcome: record.deliveryOutcome,
+        remediation: {
+          code: record.remediationCode,
+          label: remediationLabel(record.remediationCode),
+        },
+        openDiagnostic: await this.turnFailureDiagnosticAvailability(record, browserSessionScope),
+      };
+    }));
+    return {
+      protocolVersion: 17,
+      conversationId,
+      diagnostics,
+    };
+  }
+
+  async openConversationTurnFailureDiagnostic(
+    conversationId: string,
+    actorIdentityId: string,
+    browserSessionScope: string,
+    token: string,
+  ): Promise<LocalOpenTurnFailureDiagnosticResponse> {
+    const key = createHash("sha256").update(token).digest("hex");
+    const action = this.turnFailureDiagnosticTokens.get(key);
+    if (!action || action.expiresAt <= this.now().getTime()
+      || action.conversationId !== conversationId || action.sessionScope !== browserSessionScope) {
+      this.turnFailureDiagnosticTokens.delete(key);
+      return { protocolVersion: 17, status: "unavailable" };
+    }
+    this.turnFailureDiagnosticTokens.delete(key);
+    try {
+      await this.authorizeTurnFailureDiagnostics(conversationId, actorIdentityId);
+      const record = (await this.options.store.listTurnFailures(conversationId, 100)).find((candidate) =>
+        candidate.participantId === action.participantId && candidate.triggerMessageId === action.triggerMessageId);
+      if (!record || record.bindingId !== action.bindingId || record.bindingGeneration !== action.bindingGeneration) {
+        return { protocolVersion: 17, status: "unavailable" };
+      }
+      await this.openConversationAgentDiagnosticForBinding(
+        conversationId,
+        action.participantId,
+        actorIdentityId,
+        { id: action.bindingId, generation: action.bindingGeneration },
+      );
+      return { protocolVersion: 17, status: "accepted" };
+    } catch {
+      return { protocolVersion: 17, status: "unavailable" };
+    }
+  }
+
   async openConversationAgentDiagnostic(
     conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
+  ): Promise<void> {
+    await this.openConversationAgentDiagnosticForBinding(conversationId, agentIdentityId, actorIdentityId);
+  }
+
+  private async openConversationAgentDiagnosticForBinding(
+    conversationId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation">,
   ): Promise<void> {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
@@ -738,7 +846,10 @@ export class LocalAgentHost {
         const matches = context.bindings.filter(
           ({ agentIdentityId: candidate }) => candidate === agentIdentityId,
         );
-        if (matches.length !== 1 || matches[0]!.state !== "connected") {
+        if (matches.length !== 1 || matches[0]!.state !== "connected"
+          || (expectedBinding && (matches[0]!.id !== expectedBinding.id
+            || matches[0]!.generation !== expectedBinding.generation
+            || !this.isAttached(conversationId, agentIdentityId)))) {
           throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 409, "unavailable");
         }
         const binding = matches[0]!;
@@ -1064,6 +1175,74 @@ export class LocalAgentHost {
     return results;
   }
 
+  private async authorizeTurnFailureDiagnostics(conversationId: string, actorIdentityId: string) {
+    try {
+      const conversation = await this.options.client.getConversation(conversationId);
+      const [workspace, members, actor] = await Promise.all([
+        this.options.client.getWorkspace(conversation.workspaceId),
+        this.options.client.listWorkspaceMembers(conversation.workspaceId),
+        this.options.client.getIdentity(actorIdentityId),
+      ]);
+      const membership = members.find(({ identityId }) => identityId === actorIdentityId);
+      if (workspace.status !== "active" || actor.type !== "human" || actor.status !== "active"
+        || membership?.status !== "active"
+        || (membership.accessRole !== "owner" && membership.accessRole !== "admin")) {
+        throw new Error("not authorized");
+      }
+      return conversation;
+    } catch {
+      throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    }
+  }
+
+  private async turnFailureDiagnosticAvailability(
+    record: TurnFailureDiagnosticRecord,
+    browserSessionScope: string,
+  ): Promise<LocalTurnFailureDiagnostic["openDiagnostic"]> {
+    if (!record.bindingId || record.bindingGeneration === undefined) return { state: "unavailable" };
+    let binding: ConversationAgentBindingRecord | undefined;
+    try {
+      binding = await this.options.store.getBinding(record.bindingId);
+    } catch {
+      return { state: "unavailable" };
+    }
+    if (!binding || binding.conversationId !== record.conversationId || binding.agentIdentityId !== record.participantId
+      || binding.generation !== record.bindingGeneration) return { state: "stale" };
+    if (binding.state !== "connected" || !this.isAttached(record.conversationId, record.participantId)) {
+      return { state: "unavailable" };
+    }
+    const runtime = this.options.runtimes[binding.runtimeAdapter];
+    if (!runtime?.sessionCapabilities || !runtime.openDiagnostic) return { state: "unavailable" };
+    try {
+      const [status, capabilities] = await Promise.all([
+        this.runtimeStatus(runtime, binding.runtimeSessionId),
+        this.withTimeout(runtime.sessionCapabilities(binding.runtimeSessionId), 2_000, "Runtime capability query timed out"),
+      ]);
+      if (status === "offline" || !supportsOpenDiagnostic(capabilities)) return { state: "unavailable" };
+    } catch {
+      return { state: "unavailable" };
+    }
+    const token = randomBytes(32).toString("base64url");
+    this.pruneTurnFailureDiagnosticTokens();
+    this.turnFailureDiagnosticTokens.set(createHash("sha256").update(token).digest("hex"), {
+      sessionScope: browserSessionScope,
+      conversationId: record.conversationId,
+      participantId: record.participantId,
+      triggerMessageId: record.triggerMessageId,
+      bindingId: record.bindingId,
+      bindingGeneration: record.bindingGeneration,
+      expiresAt: this.now().getTime() + TURN_FAILURE_DIAGNOSTIC_TOKEN_TTL_MS,
+    });
+    return { state: "available", token };
+  }
+
+  private pruneTurnFailureDiagnosticTokens(): void {
+    const now = this.now().getTime();
+    for (const [key, token] of this.turnFailureDiagnosticTokens) {
+      if (token.expiresAt <= now) this.turnFailureDiagnosticTokens.delete(key);
+    }
+  }
+
   private async baseContext(
     conversationId: string,
     agentIdentityId: string,
@@ -1321,6 +1500,16 @@ export class LocalAgentHost {
               conversationId,
               bindings: [binding],
               cursorStore: this.options.store,
+              onTurnFailureDiagnostic: (attachedBinding, event) => this.diagnostic({
+                category: "turn_failure",
+                outcome: event.outcome,
+                conversationId,
+                agentIdentityId: attachedBinding.participantId,
+                causeCategory: event.causeCategory,
+                deliveryOutcome: event.deliveryOutcome,
+                elapsedMs: event.elapsedMs,
+                attemptCount: event.attemptCount,
+              }),
               onError: (_binding, error) => this.options.onError?.(error),
             }),
             readiness: "starting",

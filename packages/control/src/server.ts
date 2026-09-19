@@ -60,10 +60,11 @@ import {
   type LocalConversationAgent,
   type LocalConversationAgentsResponse,
   type LocalConversationWorkingFolders,
+  type LocalConversationTurnFailuresResponse,
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalLiveCapabilityState,
-  type LocalOpenDiagnosticResponse,
+  type LocalOpenTurnFailureDiagnosticResponse,
   type LocalRuntimeOptions,
   type LocalWakePolicy,
   type ProvisionLocalWorkspaceResult,
@@ -155,11 +156,18 @@ export interface LocalControlAgentLifecyclePort {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
-  openConversationAgentDiagnostic?(
+  listConversationTurnFailures?(
     conversationId: string,
-    agentIdentityId: string,
     actorIdentityId: string,
-  ): Promise<void>;
+    browserSessionScope: string,
+    limit: number,
+  ): Promise<LocalConversationTurnFailuresResponse>;
+  openConversationTurnFailureDiagnostic?(
+    conversationId: string,
+    actorIdentityId: string,
+    browserSessionScope: string,
+    token: string,
+  ): Promise<LocalOpenTurnFailureDiagnosticResponse>;
   activity?(conversationId: string, agentIdentityId: string): LocalAgentActivity | undefined;
 }
 
@@ -633,16 +641,33 @@ export class LocalControlService {
     return this.conversationAgent(conversationId, identityId);
   }
 
-  async openConversationAgentDiagnostic(
+  async listConversationTurnFailures(
     conversationId: string,
-    identityId: string,
     actorIdentityId: string,
-  ): Promise<LocalOpenDiagnosticResponse> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.openConversationAgentDiagnostic) {
-      throw new LocalConfigurationRequestError("Agent diagnostic unavailable", 404, "unavailable");
+    browserSessionScope: string,
+    limit: number,
+  ): Promise<LocalConversationTurnFailuresResponse> {
+    if (!this.options.lifecycle?.listConversationTurnFailures) {
+      throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
     }
-    await this.options.lifecycle.openConversationAgentDiagnostic(conversationId, identityId, actorIdentityId);
-    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, status: "opened" };
+    return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, browserSessionScope, limit);
+  }
+
+  async openConversationTurnFailureDiagnostic(
+    conversationId: string,
+    actorIdentityId: string,
+    browserSessionScope: string,
+    token: string,
+  ): Promise<LocalOpenTurnFailureDiagnosticResponse> {
+    if (!this.options.lifecycle?.openConversationTurnFailureDiagnostic) {
+      return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, status: "unavailable" };
+    }
+    return this.options.lifecycle.openConversationTurnFailureDiagnostic(
+      conversationId,
+      actorIdentityId,
+      browserSessionScope,
+      token,
+    );
   }
 
   private async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
@@ -1000,8 +1025,9 @@ export async function createLocalControlHttpServer(
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
     const isAllowedPost = request.method === "POST" && (
-      /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current|open-diagnostic)$/.test(requestPath)
+      /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/turn-failures\/open-diagnostic$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
@@ -1057,6 +1083,36 @@ export async function createLocalControlHttpServer(
       }
       if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
+        return;
+      }
+      const turnFailuresMatch = path.match(/^\/local\/conversations\/([^/]+)\/turn-failures$/);
+      if (turnFailuresMatch && browserSession && request.method === "GET") {
+        const rawLimit = url.searchParams.get("limit");
+        const limit = rawLimit === null ? 20 : /^[1-9]\d*$/.test(rawLimit) ? Number(rawLimit) : Number.NaN;
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+          json(response, 400, { error: "limit must be an integer from 1 through 100" }, origin);
+          return;
+        }
+        json(response, 200, await options.service.listConversationTurnFailures(
+          decodeURIComponent(turnFailuresMatch[1]!),
+          browserSession.identityId,
+          browserSession.scope,
+          limit,
+        ), origin);
+        return;
+      }
+      const openTurnFailureDiagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/turn-failures\/open-diagnostic$/);
+      if (openTurnFailureDiagnosticMatch && browserSession && request.method === "POST") {
+        const input = await readJson(request);
+        const token = input && typeof input === "object" && typeof (input as { token?: unknown }).token === "string"
+          ? (input as { token: string }).token
+          : "";
+        json(response, 202, await options.service.openConversationTurnFailureDiagnostic(
+          decodeURIComponent(openTurnFailureDiagnosticMatch[1]!),
+          browserSession.identityId,
+          browserSession.scope,
+          token,
+        ), origin);
         return;
       }
       const conversationLifecycleMatch = path.match(/^\/local\/conversations\/([^/]+)\/lifecycle$/);
@@ -1251,16 +1307,6 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
         );
         json(response, 202, { agent }, origin);
-        return;
-      }
-      const agentDiagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/open-diagnostic$/);
-      if (agentDiagnosticMatch && browserSession && request.method === "POST") {
-        const result = await options.service.openConversationAgentDiagnostic(
-          decodeURIComponent(agentDiagnosticMatch[1]!),
-          decodeURIComponent(agentDiagnosticMatch[2]!),
-          browserSession.identityId,
-        );
-        json(response, 202, result, origin);
         return;
       }
       const match = path.match(/^\/local\/conversations\/([^/]+)\/agents$/);

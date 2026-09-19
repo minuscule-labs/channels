@@ -64,6 +64,13 @@
       "when": 1799107200000,
       "tag": "0008_channel_conversations",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1799193600000,
+      "tag": "0009_turn_failure_diagnostics",
+      "breakpoints": true
     }
   ]
 }

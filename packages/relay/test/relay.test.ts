@@ -17,6 +17,12 @@ import {
 } from "../src/binding-store.ts";
 import {
   ConversationRuntimeRelay,
+  ResponseDeliveryFailedError,
+  RuntimeOfflineError,
+  RuntimeRejectedError,
+  RuntimeRequestTimeoutError,
+  TurnTimeoutError,
+  classifyTerminalFailure,
   type AgentRuntimePort,
   type RuntimePortMessage,
   type RuntimePortTurn,
@@ -1252,7 +1258,60 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
     await waitUntil(async () => errors.length === 1);
     assert.match(errors[0]!.message, /Timed out waiting for agent turn/);
     assert.equal(runtime.startCount, 1);
-    assert.equal((await client.listMessages(conversation.id)).length, 1);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
+    assert.match((await client.listMessages(conversation.id))[1]!.body, /Runtime turn failed/);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("the default turn deadline permits healthy work beyond the short fault budget", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const timestamp = new Date().toISOString();
+  let now = 0;
+  let started = false;
+  let polls = 0;
+  const runtime: AgentRuntimePort = {
+    async send() {}, async messages() { return []; }, async status() { return "idle"; },
+    async turn(_sessionId, turnId) {
+      if (!started) return undefined;
+      polls += 1;
+      if (polls === 1) {
+        // Cross the previous two-minute default without a Runtime request fault.
+        now = 2 * 60_000 + 1;
+        return { id: turnId, input: "long work", status: "running", createdAt: timestamp, updatedAt: timestamp };
+      }
+      return {
+        id: turnId,
+        input: "long work",
+        status: "completed",
+        response: { role: "assistant", content: "Completed long work" },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+    },
+    async startTurn(_sessionId, turnId) {
+      started = true;
+      return { id: turnId, input: "long work", status: "running", createdAt: timestamp, updatedAt: timestamp };
+    },
+  };
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    monotonicNow: () => now,
+    turnPollIntervalMs: 1,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a long work" });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).some(({ body }) => body === "Completed long work"));
+    assert.equal(polls, 2);
   } finally {
     await relay.stop();
     await server.close();
@@ -1452,6 +1511,19 @@ test("Relay activity exposes retrying phase and the next attempt", async () => {
   } finally { await relay.stop(); await server.close(); }
 });
 
+test("typed terminal failure classification is precedence ordered and ignores raw text", () => {
+  assert.equal(classifyTerminalFailure(new Error("runtime offline timeout rejected")), "unknown");
+  assert.equal(classifyTerminalFailure(new RuntimeRejectedError("rejected")), "runtime_rejected");
+  assert.equal(classifyTerminalFailure(new RuntimeOfflineError("offline")), "runtime_offline");
+  assert.equal(classifyTerminalFailure(new RuntimeRequestTimeoutError("request")), "runtime_request_timeout");
+  assert.equal(classifyTerminalFailure(new TurnTimeoutError("turn")), "turn_timeout");
+  assert.equal(classifyTerminalFailure(new AggregateError([
+    new RuntimeOfflineError("offline"),
+    new ResponseDeliveryFailedError("delivery"),
+    new TurnTimeoutError("turn"),
+  ])), "response_delivery_failed");
+});
+
 test("terminal Runtime failure is recorded visibly before the cursor advances", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -1466,19 +1538,138 @@ test("terminal Runtime failure is recorded visibly before the cursor advances", 
   const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
   ] });
+  const recoveryStore = new InMemoryRelayBindingStore();
   const relay = new ConversationRuntimeRelay({
     client, conversationId: conversation.id,
-    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
-    cursorStore: server.service.storage,
+    bindings: [{
+      participantId: "agent-a",
+      sessionId: "session-a",
+      runtime,
+      diagnosticBinding: { id: "binding-private", generation: 7 },
+    }],
+    cursorStore: recoveryStore,
   });
   try {
     await relay.start();
     const trigger = await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a fail" });
-    await waitUntil(async () => (await server.service.storage.getCursor(conversation.id, "agent-a")) === trigger.sequence);
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
+    const diagnostics = await recoveryStore.listTurnFailures(conversation.id, 20);
+    assert.equal(diagnostics.length, 1);
+    assert.deepEqual({
+      ...diagnostics[0],
+      conversationId: "<conversation>",
+      triggerMessageId: "<trigger>",
+      startedAt: "<time>",
+      failedAt: "<time>",
+      createdAt: "<time>",
+      updatedAt: "<time>",
+      elapsedMs: "<elapsed>",
+    }, {
+      conversationId: "<conversation>",
+      participantId: "agent-a",
+      triggerMessageId: "<trigger>",
+      triggerSequence: trigger.sequence,
+      bindingId: "binding-private",
+      bindingGeneration: 7,
+      startedAt: "<time>",
+      failedAt: "<time>",
+      elapsedMs: "<elapsed>",
+      attemptCount: 1,
+      causeCategory: "runtime_rejected",
+      deliveryOutcome: "delivered",
+      remediationCode: "open_runtime_diagnostic",
+      createdAt: "<time>",
+      updatedAt: "<time>",
+    });
+    assert.doesNotMatch(JSON.stringify(diagnostics), /provider failed/);
     const messages = await client.listMessages(conversation.id);
     assert.match(messages[1]!.body, /Runtime turn failed/);
     assert.match(messages[1]!.body, /use New session/);
     assert.doesNotMatch(messages[1]!.body, /start fresh/i);
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("a committed generic failure reconciles cursor errors into the same diagnostic", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  class CursorRecoveryStore extends InMemoryRelayBindingStore {
+    override async commitTurnFailureDelivery(): Promise<void> {
+      throw new Error("private cursor commit failed");
+    }
+  }
+  const recoveryStore = new CursorRecoveryStore();
+  const timestamp = new Date().toISOString();
+  const runtime: AgentRuntimePort = {
+    async send() {}, async messages() { return []; }, async status() { return "idle"; },
+    async turn() { return undefined; },
+    async startTurn(_sessionId, turnId, input) {
+      return { id: turnId, input, status: "failed", createdAt: timestamp, updatedAt: timestamp };
+    },
+  };
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: recoveryStore,
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a fail" });
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
+    const diagnostics = await recoveryStore.listTurnFailures(conversation.id, 20);
+    assert.equal(diagnostics[0]?.deliveryOutcome, "cursor_commit_failed");
+    assert.equal((await client.listMessages(conversation.id)).filter(({ body }) => body.includes("Runtime turn failed")).length, 1);
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("terminal delivery waits for durable diagnostics and redacts storage and Runtime errors", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  class RecoveringFailureStore extends InMemoryRelayBindingStore {
+    attempts = 0;
+    override async recordTurnFailure(input: Parameters<InMemoryRelayBindingStore["recordTurnFailure"]>[0]): Promise<void> {
+      this.attempts += 1;
+      if (this.attempts === 1) throw new Error("secret database path /private/relay.db");
+      await super.recordTurnFailure(input);
+    }
+  }
+  const recoveryStore = new RecoveringFailureStore();
+  const runtime: AgentRuntimePort = {
+    async send() { throw new Error("provider token sk-secret must not escape"); },
+    async messages() { return []; },
+    async status() { return "idle"; },
+  };
+  const errors: Error[] = [];
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-secret", runtime }],
+    cursorStore: recoveryStore,
+    onError: (_binding, error) => errors.push(error),
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: "user",
+      body: "@agent-a fail privately",
+    });
+    await waitUntil(async () => recoveryStore.attempts === 1);
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
+    assert.equal(await recoveryStore.getCursor(conversation.id, "agent-a"), 0);
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence, 2_000);
+    const serialized = JSON.stringify({
+      errors: errors.map(({ message }) => message),
+      diagnostics: await recoveryStore.listTurnFailures(conversation.id, 20),
+      messages: await client.listMessages(conversation.id),
+    });
+    assert.doesNotMatch(serialized, /sk-secret|private\/relay\.db|session-secret/);
+    assert.equal((await recoveryStore.listTurnFailures(conversation.id, 20))[0]?.causeCategory, "unknown");
   } finally { await relay.stop(); await server.close(); }
 });
 
@@ -1599,6 +1790,12 @@ test("permanent response delivery rejection records one private dead letter and 
       updatedAt: "<time>",
     });
     assert.doesNotMatch(JSON.stringify(deadLetters), /private response body|response validation failed/);
+    const diagnostics = await recoveryStore.listTurnFailures(conversation.id, 20);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0]?.causeCategory, "response_delivery_failed");
+    assert.equal(diagnostics[0]?.deliveryOutcome, "delivery_rejected");
+    assert.equal(diagnostics[0]?.remediationCode, "check_connection_and_retry");
+    assert.doesNotMatch(JSON.stringify(diagnostics), /private response body|response validation failed/);
   } finally { await relay.stop(); await server.close(); }
 });
 
@@ -2429,6 +2626,66 @@ test("a delayed session interrupt cannot reach the next queued turn", async () =
     releaseInterrupt();
     await waitUntil(async () => starts === 2);
     assert.equal((await client.listMessages(conversation.id)).some((message) => message.body === "Current request was canceled by @user."), true);
+  } finally { await relay.stop(); await server.close(); }
+});
+
+test("an acknowledged interruption wins over a failed Runtime turn without recording failure", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const store = new InMemoryRelayBindingStore();
+  const errors: Error[] = [];
+  let turnId: string | undefined;
+  let started = false;
+  let interruptIssued = false;
+  let turnReads = 0;
+  let releaseInterrupt!: () => void;
+  const timestamp = new Date().toISOString();
+  const runtime: AgentRuntimePort = {
+    async send() { throw new Error("legacy send must not be used"); },
+    async messages() { return []; },
+    async status() { return started ? "working" : "idle"; },
+    async startTurn(_sessionId, id, input) {
+      started = true;
+      turnId = id;
+      return { id, input, status: "running", createdAt: timestamp, updatedAt: timestamp };
+    },
+    async turn(_sessionId, id) {
+      if (!turnId || id !== turnId) return undefined;
+      turnReads += 1;
+      return interruptIssued
+        ? { id, input: "canceled work", status: "failed", error: "private runtime failure", createdAt: timestamp, updatedAt: timestamp }
+        : { id, input: "canceled work", status: "running", createdAt: timestamp, updatedAt: timestamp };
+    },
+    interrupt() {
+      interruptIssued = true;
+      return new Promise<void>((resolve) => { releaseInterrupt = resolve; });
+    },
+  };
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: store,
+    turnPollIntervalMs: 5,
+    onError: (_binding, error) => errors.push(error),
+  });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a cancel this" });
+    await waitUntil(async () => Boolean(turnId) && turnReads > 0);
+    await relay.cancelCurrent("agent-a", "user");
+    await waitUntil(async () => typeof releaseInterrupt === "function");
+    releaseInterrupt();
+    await waitUntil(async () => (await client.listMessages(conversation.id)).some(
+      ({ body }) => body === "Current request was canceled by @user.",
+    ));
+    const messages = await client.listMessages(conversation.id);
+    assert.equal(messages.some(({ body }) => body.includes("Runtime turn failed")), false);
+    assert.deepEqual(await store.listTurnFailures(conversation.id, 20), []);
+    assert.deepEqual(errors, []);
   } finally { await relay.stop(); await server.close(); }
 });
 
