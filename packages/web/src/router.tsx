@@ -1,11 +1,31 @@
-import { createRootRoute, createRoute, createRouter, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent, useNavigate, useParams } from "@tanstack/react-router";
+import { Suspense, useEffect } from "react";
 import { MessageSquare } from "lucide-react";
-import { AgentCreatePage, AgentDetailPage, AgentManagementPage } from "./components/agent-management-page";
+import type * as AgentManagementModule from "./components/agent-management-page";
 import { AppShell } from "./components/app-shell";
 import { ConversationPage } from "./components/conversation-page";
 
 const rootRoute = createRootRoute({ component: AppShell });
+const loadAgentManagement = () => import("./components/agent-management-page") as Promise<typeof AgentManagementModule>;
+const LazyAgentManagementPage = lazyRouteComponent(loadAgentManagement, "AgentManagementPage");
+const LazyAgentCreatePage = lazyRouteComponent(loadAgentManagement, "AgentCreatePage");
+const LazyAgentDetailPage = lazyRouteComponent(loadAgentManagement, "AgentDetailPage");
+
+function AgentRoutePending() {
+  return <div className="grid min-h-0 flex-1 place-items-center p-6 text-sm text-[var(--muted)]">Loading agent management…</div>;
+}
+
+function AgentManagementPage() {
+  return <Suspense fallback={<AgentRoutePending />}><LazyAgentManagementPage /></Suspense>;
+}
+
+function AgentCreatePage() {
+  return <Suspense fallback={<AgentRoutePending />}><LazyAgentCreatePage /></Suspense>;
+}
+
+function AgentDetailPage() {
+  return <Suspense fallback={<AgentRoutePending />}><LazyAgentDetailPage /></Suspense>;
+}
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -25,18 +45,21 @@ const agentManagementRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/agents",
   component: AgentManagementPage,
+  pendingComponent: AgentRoutePending,
 });
 
 const agentCreateRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/agents/new",
   component: AgentCreatePage,
+  pendingComponent: AgentRoutePending,
 });
 
 const agentDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/agents/$agentId",
   component: AgentDetailPage,
+  pendingComponent: AgentRoutePending,
 });
 
 const conversationRoute = createRoute({

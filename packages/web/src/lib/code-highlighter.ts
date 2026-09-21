@@ -1,26 +1,44 @@
-import { createHighlighter } from "@tanstack/highlight/core";
-import { css } from "@tanstack/highlight/languages/css";
-import { diff } from "@tanstack/highlight/languages/diff";
-import { dockerfile } from "@tanstack/highlight/languages/dockerfile";
-import { html } from "@tanstack/highlight/languages/html";
-import { http } from "@tanstack/highlight/languages/http";
-import { js } from "@tanstack/highlight/languages/js";
-import { json } from "@tanstack/highlight/languages/json";
-import { jsx } from "@tanstack/highlight/languages/jsx";
-import { markdown } from "@tanstack/highlight/languages/markdown";
-import { python } from "@tanstack/highlight/languages/python";
-import { shell } from "@tanstack/highlight/languages/shell";
-import { sql } from "@tanstack/highlight/languages/sql";
-import { toml } from "@tanstack/highlight/languages/toml";
-import { ts } from "@tanstack/highlight/languages/ts";
-import { tsx } from "@tanstack/highlight/languages/tsx";
-import { yaml } from "@tanstack/highlight/languages/yaml";
+import { createHighlighter, type LanguageDefinition } from "@tanstack/highlight/core";
 import { rehypeHighlightCodeBlocks } from "@tanstack/highlight/rehype";
+import type { SupportedFenceLanguage } from "./code-fences";
 
-export const codeHighlighter = createHighlighter({
-  languages: [css, diff, dockerfile, html, http, js, json, jsx, markdown, python, shell, sql, toml, ts, tsx, yaml],
-});
+type LanguageLoader = () => Promise<LanguageDefinition>;
 
-export function rehypeHighlight() {
-  return rehypeHighlightCodeBlocks({ highlighter: codeHighlighter });
+const languageLoaders: Readonly<Record<SupportedFenceLanguage, LanguageLoader>> = {
+  css: () => import("@tanstack/highlight/languages/css").then(({ css }) => css),
+  diff: () => import("@tanstack/highlight/languages/diff").then(({ diff }) => diff),
+  dockerfile: () => import("@tanstack/highlight/languages/dockerfile").then(({ dockerfile }) => dockerfile),
+  html: () => import("@tanstack/highlight/languages/html").then(({ html }) => html),
+  http: () => import("@tanstack/highlight/languages/http").then(({ http }) => http),
+  js: () => import("@tanstack/highlight/languages/js").then(({ js }) => js),
+  json: () => import("@tanstack/highlight/languages/json").then(({ json }) => json),
+  jsx: () => import("@tanstack/highlight/languages/jsx").then(({ jsx }) => jsx),
+  markdown: () => import("@tanstack/highlight/languages/markdown").then(({ markdown }) => markdown),
+  python: () => import("@tanstack/highlight/languages/python").then(({ python }) => python),
+  shell: () => import("@tanstack/highlight/languages/shell").then(({ shell }) => shell),
+  sql: () => import("@tanstack/highlight/languages/sql").then(({ sql }) => sql),
+  toml: () => import("@tanstack/highlight/languages/toml").then(({ toml }) => toml),
+  ts: () => import("@tanstack/highlight/languages/ts").then(({ ts }) => ts),
+  tsx: () => import("@tanstack/highlight/languages/tsx").then(({ tsx }) => tsx),
+  yaml: () => import("@tanstack/highlight/languages/yaml").then(({ yaml }) => yaml),
+};
+
+export type RehypeHighlightPlugin = () => ReturnType<typeof rehypeHighlightCodeBlocks>;
+
+const plugins = new Map<string, Promise<RehypeHighlightPlugin>>();
+
+/** Builds and caches a code-block plugin for exactly the requested grammar set. */
+export function loadRehypeHighlight(
+  requestedLanguages: readonly SupportedFenceLanguage[],
+): Promise<RehypeHighlightPlugin> {
+  const languages = [...new Set(requestedLanguages)].sort();
+  const key = languages.join(",");
+  const existing = plugins.get(key);
+  if (existing) return existing;
+
+  const plugin = Promise.all(languages.map((language) => languageLoaders[language]())).then((loadedLanguages) =>
+    () => rehypeHighlightCodeBlocks({ highlighter: createHighlighter({ languages: loadedLanguages }) }),
+  );
+  plugins.set(key, plugin);
+  return plugin;
 }

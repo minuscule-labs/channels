@@ -1,8 +1,9 @@
 import { Check, Copy } from "lucide-react";
-import { Children, isValidElement, useEffect, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { rehypeHighlight } from "../lib/code-highlighter";
+import { canonicalFenceLanguage, fencedCodeLanguages } from "../lib/code-fences";
+import type { RehypeHighlightPlugin } from "../lib/code-highlighter";
 
 function textContent(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -15,10 +16,22 @@ type CodeBlockProps = ComponentPropsWithoutRef<"pre"> & {
   node?: unknown;
 };
 
+function codeLanguage(children: ReactNode): string {
+  const code = Children.toArray(children).find(isValidElement<{ className?: string }>);
+  const className = code?.props.className;
+  const language = typeof className === "string"
+    ? className.split(/\s+/).find((value) => value.startsWith("language-"))?.slice("language-".length)
+    : undefined;
+  return canonicalFenceLanguage(language);
+}
+
 function CodeBlock({ children, className, "data-language": language, node: _node, ...properties }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const code = Children.toArray(children).map(textContent).join("");
+  const displayLanguage = canonicalFenceLanguage(language) === "plaintext"
+    ? codeLanguage(children)
+    : canonicalFenceLanguage(language);
 
   useEffect(() => () => clearTimeout(resetTimer.current), []);
 
@@ -37,7 +50,7 @@ function CodeBlock({ children, className, "data-language": language, node: _node
     <div className="group/code my-2 max-w-full overflow-hidden rounded-md border border-[var(--border)] bg-[var(--panel-muted)]">
       <div className="flex min-h-8 items-center justify-between border-b border-[var(--border-subtle)] px-2.5">
         <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[var(--muted)]">
-          {language === "plaintext" ? "Code" : language}
+          {displayLanguage === "plaintext" ? "Code" : displayLanguage}
         </span>
         <button
           type="button"
@@ -51,7 +64,7 @@ function CodeBlock({ children, className, "data-language": language, node: _node
       </div>
       <pre
         {...properties}
-        data-language={language}
+        data-language={displayLanguage}
         className={`${className ?? ""} max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[inherit]`}
       >
         {children}
@@ -61,11 +74,32 @@ function CodeBlock({ children, className, "data-language": language, node: _node
 }
 
 export function MessageMarkdown({ body }: { body: string }) {
+  const languages = useMemo(() => fencedCodeLanguages(body), [body]);
+  const languageKey = languages.join(",");
+  const [rehypeHighlight, setRehypeHighlight] = useState<RehypeHighlightPlugin>();
+
+  useEffect(() => {
+    let cancelled = false;
+    if (languages.length === 0) {
+      setRehypeHighlight(undefined);
+      return () => { cancelled = true; };
+    }
+    void import("../lib/code-highlighter")
+      .then(({ loadRehypeHighlight }) => loadRehypeHighlight(languages))
+      .then((plugin) => {
+        if (!cancelled) setRehypeHighlight(() => plugin);
+      })
+      .catch(() => {
+        if (!cancelled) setRehypeHighlight(undefined);
+      });
+    return () => { cancelled = true; };
+  }, [languageKey]);
+
   return (
     <div className="message-markdown break-words text-sm leading-6">
       <Markdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={rehypeHighlight ? [rehypeHighlight] : []}
         skipHtml
         components={{
           a: ({ children, ...properties }) => (
