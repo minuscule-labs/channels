@@ -1,14 +1,16 @@
 # Web bundle performance backlog
 
-**Status:** Deferred follow-up; not a release blocker.
+**Status:** Initial demand-loading slice implemented; not a release blocker.
 
 ## Baseline
 
-A production Vite build currently emits one eager JavaScript entry bundle:
+The pre-change production Vite build emitted one eager JavaScript entry bundle:
 
 | Asset | Minified | Gzip |
 | --- | ---: | ---: |
-| `index-*.js` | ~715 KiB | ~219 KiB |
+| `index-*.js` (before demand loading) | ~715 KiB | ~219 KiB |
+
+The initial demand-loading slice changes the entry bundle to **~667 KiB minified / ~206 KiB gzip**. It defers the agent-management page (~28 KiB / ~7 KiB gzip), highlighting runtime (~10 KiB / ~4 KiB gzip), and individual grammar modules until needed. Run `pnpm web:report` for a repeatable per-asset minified/gzip report.
 
 Vite warns because the minified entry exceeds its default 500 KiB warning threshold. The bundle remains acceptable for the current local-first alpha, and the release smoke path does not fail because of it.
 
@@ -25,18 +27,16 @@ A source-map attribution of the current build identifies the largest approximate
 
 These numbers are directional source-map attribution rather than a performance budget.
 
-## Why it is one bundle
+## Implemented demand loading
 
-`src/router.tsx` statically imports the Conversation and agent-management pages, so all routes enter the initial application chunk. `src/components/message-markdown.tsx` statically imports `src/lib/code-highlighter.ts`; that module registers CSS, diff, Dockerfile, HTML, HTTP, JavaScript/TypeScript, JSON, Markdown, Python, shell, SQL, TOML, and YAML grammars eagerly.
+- `src/router.tsx` uses one shared TanStack Router lazy import for the agent-management list, create, and detail routes. Its loader preserves Router-friendly pending/error and stale-module recovery behavior.
+- `MessageMarkdown` detects fenced code blocks without importing the highlighting package. Plain Markdown and unknown/unlabeled fences stay safe plaintext and do not request syntax highlighting.
+- A supported fenced language dynamically loads the highlighter plus only its needed grammar modules. Supported aliases normalize to CSS, diff, Dockerfile, HTML, HTTP, JavaScript/TypeScript, JSON, Markdown, Python, shell, SQL, TOML, and YAML grammars.
+- Unit and browser coverage verify aliases/fallbacks, no initial highlighter request, and deferred highlighting of a TypeScript message.
 
-## Next implementation slice
+## Follow-up
 
-1. Establish a repeatable production bundle report and record the before/after gzip sizes.
-2. Convert agent-management routes to route-level lazy imports, preserving loading, error, and browser-navigation behavior.
-3. Load syntax highlighting only for messages containing fenced code blocks, and register only the grammars required by supported languages.
-4. Re-measure initial Conversation load, route navigation, and code-block rendering before considering `manualChunks`.
-
-`manualChunks` alone may improve cache boundaries but does not reduce total downloaded bytes. Prefer demand-driven loading first.
+Re-measure real initial Conversation load and route navigation on supported machines before considering `manualChunks`. `manualChunks` alone may improve cache boundaries but does not reduce total downloaded bytes.
 
 ## Guardrails
 

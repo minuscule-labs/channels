@@ -244,6 +244,7 @@ export function NavigationSidebar({
                   <Link
                     to="/app/workspaces/$workspaceId/agents"
                     params={{ workspaceId: workspace.id }}
+                    preload="intent"
                     onClick={onNavigate}
                     className={`mb-1 flex min-h-9 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
                       activeAgentsWorkspaceId === workspace.id
