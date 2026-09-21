@@ -18,6 +18,10 @@ export interface RuntimeModelRef {
   id: string;
 }
 
+export const DEFAULT_HANDOFF_SUMMARY_TOKENS = 4_000;
+export const DEFAULT_RECENT_CONTEXT_TOKENS = 8_000;
+export const DEFAULT_RECENT_CONTEXT_MESSAGES = 50;
+
 export interface LocalWorkspaceConfig {
   workspaceId: string;
   rootUri: string;
@@ -38,6 +42,12 @@ export interface WorkspaceAgentConfig {
   modelId?: string;
   reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   skillIds?: string[];
+  /** Maximum ephemeral Conversation-derived handoff brief for a newly created Runtime session. */
+  handoffSummaryTokens?: number;
+  /** Maximum recent Conversation context sent on each Runtime turn. */
+  recentContextTokens?: number;
+  /** Maximum number of recent Conversation messages considered for each Runtime turn. */
+  recentContextMessages?: number;
   status: "active" | "disabled";
   createdAt: string;
   updatedAt: string;
@@ -591,6 +601,9 @@ export class LocalRelayDirectory {
     modelId?: string | null;
     reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
     skillIds?: string[];
+    handoffSummaryTokens?: number | null;
+    recentContextTokens?: number | null;
+    recentContextMessages?: number | null;
     status?: "active" | "disabled";
   }): Promise<WorkspaceAgentConfig> {
     const [identity, members, workspaceConfig] = await Promise.all([
@@ -622,6 +635,15 @@ export class LocalRelayDirectory {
       ? existing?.reasoningLevel
       : input.reasoningLevel ?? undefined;
     const skillIds = input.skillIds === undefined ? existing?.skillIds : [...input.skillIds];
+    const handoffSummaryTokens = input.handoffSummaryTokens === undefined
+      ? existing?.handoffSummaryTokens
+      : input.handoffSummaryTokens ?? undefined;
+    const recentContextTokens = input.recentContextTokens === undefined
+      ? existing?.recentContextTokens
+      : input.recentContextTokens ?? undefined;
+    const recentContextMessages = input.recentContextMessages === undefined
+      ? existing?.recentContextMessages
+      : input.recentContextMessages ?? undefined;
     if (personaPrompt !== undefined && !personaPrompt.trim()) {
       throw new Error("Persona prompt must not be empty");
     }
@@ -645,6 +667,9 @@ export class LocalRelayDirectory {
       modelId,
       reasoningLevel,
       skillIds,
+      handoffSummaryTokens,
+      recentContextTokens,
+      recentContextMessages,
       status: input.status ?? existing?.status ?? "active",
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
@@ -995,6 +1020,8 @@ export async function restoreConversationBindings(
       sessionId: connected.runtimeSessionId,
       runtime,
       wakePolicy: connected.wakePolicy,
+      maxMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
+      maxTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
       diagnosticBinding: { id: connected.id, generation: connected.generation },
       verifyLease: async () => {
         const checkedAt = now();

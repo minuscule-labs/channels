@@ -71,6 +71,13 @@
       "when": 1799193600000,
       "tag": "0009_turn_failure_diagnostics",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1799280000000,
+      "tag": "0010_agent_session_context",
+      "breakpoints": true
     }
   ]
 }

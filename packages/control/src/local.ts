@@ -476,6 +476,7 @@ export async function createLocalProductApp(
       webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },
+      autoResumeOfflineAgents: true,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,
     });

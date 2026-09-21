@@ -1,5 +1,8 @@
 import { ConversationClient } from "@minu/channels-core/client";
 import {
+  DEFAULT_HANDOFF_SUMMARY_TOKENS,
+  DEFAULT_RECENT_CONTEXT_MESSAGES,
+  DEFAULT_RECENT_CONTEXT_TOKENS,
   LocalRelayDirectory,
   type ConversationWorkingFolder,
   type RelayBindingStore,
@@ -29,6 +32,9 @@ const MAX_MODEL_PROVIDER_BYTES = 100;
 const MAX_MODEL_ID_BYTES = 300;
 const MAX_SKILL_ID_BYTES = 200;
 const MAX_CHANNEL_WORKING_FOLDERS = 16;
+const MAX_HANDOFF_SUMMARY_TOKENS = 8_000;
+const MAX_RECENT_CONTEXT_TOKENS = 16_000;
+const MAX_RECENT_CONTEXT_MESSAGES = 100;
 
 export class LocalConfigurationRequestError extends Error {
   constructor(
@@ -117,6 +123,23 @@ function optionalNullableString(
 ): string | null | undefined {
   if (value === undefined || value === null) return value;
   return requiredString(value, label, maxBytes);
+}
+
+function optionalNullableInteger(
+  value: unknown,
+  label: string,
+  minimum: number,
+  maximum: number,
+): number | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new LocalConfigurationRequestError(
+      `${label} must be an integer between ${minimum} and ${maximum}`,
+      400,
+      "invalid",
+    );
+  }
+  return value;
 }
 
 function localWorkingFolderInput(value: unknown): {
@@ -320,6 +343,9 @@ export class LocalAgentHostConfiguration {
       ...(config.modelId ? { modelId: config.modelId } : {}),
       ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel } : {}),
       ...(config.skillIds ? { skillIds: [...config.skillIds] } : {}),
+      handoffSummaryTokens: config.handoffSummaryTokens ?? DEFAULT_HANDOFF_SUMMARY_TOKENS,
+      recentContextTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
+      recentContextMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
       status: config.status,
       changesApplyToNewSessions: true,
     };
@@ -578,7 +604,8 @@ export class LocalAgentHostConfiguration {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Agent configuration");
       rejectUnknown(input, [
-        "personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "skillIds", "status",
+        "personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "skillIds",
+        "handoffSummaryTokens", "recentContextTokens", "recentContextMessages", "status",
       ]);
       if (Object.keys(input).length === 0) {
         throw new LocalConfigurationRequestError("Agent configuration update is empty", 400, "invalid");
@@ -642,6 +669,24 @@ export class LocalAgentHostConfiguration {
           throw new LocalConfigurationRequestError("skillIds must be unique", 400, "invalid");
         }
       }
+      const handoffSummaryTokens = optionalNullableInteger(
+        input.handoffSummaryTokens,
+        "handoffSummaryTokens",
+        0,
+        MAX_HANDOFF_SUMMARY_TOKENS,
+      );
+      const recentContextTokens = optionalNullableInteger(
+        input.recentContextTokens,
+        "recentContextTokens",
+        1_000,
+        MAX_RECENT_CONTEXT_TOKENS,
+      );
+      const recentContextMessages = optionalNullableInteger(
+        input.recentContextMessages,
+        "recentContextMessages",
+        1,
+        MAX_RECENT_CONTEXT_MESSAGES,
+      );
       const resolvedSkillIds = skillIds ?? existingConfig?.skillIds;
       if (resolvedSkillIds !== undefined) {
         if (!resolvedAdapter) {
@@ -666,6 +711,9 @@ export class LocalAgentHostConfiguration {
         modelId,
         reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null | undefined,
         skillIds,
+        handoffSummaryTokens,
+        recentContextTokens,
+        recentContextMessages,
         status,
       });
       this.audit({

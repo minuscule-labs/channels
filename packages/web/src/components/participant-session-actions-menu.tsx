@@ -165,7 +165,7 @@ export function ParticipantSessionActionsMenu({
           </Dialog.Title>
           <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
             {replacing
-              ? "The private Runtime transcript will reset using the current configuration. Pending work through the current Conversation head will be discarded. Conversation history and filesystem effects remain, and later turns receive at most 20 recent Conversation messages."
+              ? "The private Runtime transcript will reset using the current configuration. A temporary handoff is created from public Conversation history when available; it is not stored as memory. Pending work through the current Conversation head will be discarded. Conversation history and filesystem effects remain; future turns receive the configured recent context."
               : "Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back."}
           </Dialog.Description>
           {error ? <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{error}</p> : null}

@@ -16,12 +16,13 @@ import { ConversationComposer } from "./conversation-composer";
 import { ConversationTimeline } from "./conversation-timeline";
 import { MemberRoster } from "./member-roster";
 import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
-import { Drawer } from "./ui/drawer";
+import { Drawer, DrawerCloseButton } from "./ui/drawer";
 
 export function ConversationPage() {
   const { workspaceId, conversationId } = useParams({ from: "/app/workspaces/$workspaceId/conversations/$conversationId" });
   const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
   const [pendingBulkTargets, setPendingBulkTargets] = useState<ReadonlySet<string>>();
@@ -276,6 +277,42 @@ export function ConversationPage() {
           {canOpenDiagnostics && lifecycle.data && lifecycle.data.state !== "active" ? (
             <button className="button-secondary" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("active")}>Reopen</button>
           ) : null}
+          {canOpenDiagnostics && turnFailures.data?.diagnostics.length ? (
+            <Drawer
+              open={diagnosticsOpen}
+              onOpenChange={setDiagnosticsOpen}
+              side="right"
+              title="Diagnostics"
+              description="Owner-only Runtime turn-failure diagnostics for this Conversation."
+              trigger={(
+                <button className="button-secondary" type="button" aria-label={`Issues: ${turnFailures.data.diagnostics.length}`}>
+                  <AlertCircle className="h-3.5 w-3.5" /> Issues <span className="rounded-full bg-[var(--border)] px-1.5 text-[10px]">{turnFailures.data.diagnostics.length}</span>
+                </button>
+              )}
+            >
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+                  <div>
+                    <h2 className="text-sm font-semibold">Diagnostics</h2>
+                    <p className="text-xs text-[var(--muted)]">Recent Runtime turn failures</p>
+                  </div>
+                  <DrawerCloseButton label="Close diagnostics" />
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <TurnFailureDiagnostics
+                    diagnostics={turnFailures.data.diagnostics}
+                    isLoading={turnFailures.isLoading}
+                    unavailable={turnFailures.isError}
+                    pendingKey={turnFailureDiagnosticAction.isPending ? turnFailureDiagnosticAction.variables.key : undefined}
+                    action={turnFailureDiagnosticAction.data
+                      ? { key: turnFailureDiagnosticAction.data.key, status: turnFailureDiagnosticAction.data.response.status }
+                      : undefined}
+                    onOpen={(key, token) => turnFailureDiagnosticAction.mutate({ key, token })}
+                  />
+                </div>
+              </div>
+            </Drawer>
+          ) : null}
           <Drawer
             open={rosterOpen}
             onOpenChange={setRosterOpen}
@@ -321,18 +358,6 @@ export function ConversationPage() {
           <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
             {(agentAction.error ?? turnFailureDiagnosticAction.error ?? bulkAgentAction.error ?? lifecycleAction.error)?.message}
           </div>
-        ) : null}
-        {canOpenDiagnostics ? (
-          <TurnFailureDiagnostics
-            diagnostics={turnFailures.data?.diagnostics}
-            isLoading={turnFailures.isLoading}
-            unavailable={turnFailures.isError}
-            pendingKey={turnFailureDiagnosticAction.isPending ? turnFailureDiagnosticAction.variables.key : undefined}
-            action={turnFailureDiagnosticAction.data
-              ? { key: turnFailureDiagnosticAction.data.key, status: turnFailureDiagnosticAction.data.response.status }
-              : undefined}
-            onOpen={(key, token) => turnFailureDiagnosticAction.mutate({ key, token })}
-          />
         ) : null}
         <div className="relative min-h-0 flex-1">
           <div

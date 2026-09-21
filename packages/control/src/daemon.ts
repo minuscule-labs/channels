@@ -36,6 +36,8 @@ export interface LocalControlDaemonOptions {
   runtimes?: Readonly<Record<string, LocalManagedRuntimePort>>;
   statusTimeoutMs?: number;
   stopStartedSessionsOnClose?: boolean;
+  /** Replace stale offline managed sessions during startup for a local product owner. */
+  autoResumeOfflineAgents?: boolean;
   launchCodeTtlMs?: number;
   sessionTtlMs?: number;
   now?: () => Date;
@@ -92,6 +94,7 @@ export async function createLocalControlDaemon(
       runtimes: options.runtimes ?? {},
       now: options.now,
       stopStartedSessionsOnClose: options.stopStartedSessionsOnClose,
+      autoResumeActorIdentityId: options.autoResumeOfflineAgents ? options.currentHumanIdentityId : undefined,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,
     });

@@ -70,6 +70,9 @@ function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): Wor
     modelId: row.modelId ?? undefined,
     reasoningLevel: row.reasoningLevel ?? undefined,
     skillIds: parsedSkillIds as string[] | undefined,
+    handoffSummaryTokens: row.handoffSummaryTokens ?? undefined,
+    recentContextTokens: row.recentContextTokens ?? undefined,
+    recentContextMessages: row.recentContextMessages ?? undefined,
   };
 }
 
@@ -210,6 +213,9 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         modelId: config.modelId ?? null,
         reasoningLevel: config.reasoningLevel ?? null,
         skillIds: config.skillIds ? JSON.stringify(config.skillIds) : null,
+        handoffSummaryTokens: config.handoffSummaryTokens ?? null,
+        recentContextTokens: config.recentContextTokens ?? null,
+        recentContextMessages: config.recentContextMessages ?? null,
         status: config.status,
         updatedAt: config.updatedAt,
       },

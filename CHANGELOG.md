@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.10
+
+- Add durable, owner/admin-only turn-failure diagnostics with short-lived, generation-fenced Runtime diagnostic actions; failures remain redacted from public Conversation history.
+- Move owner/admin failure review into an Issues drawer, simplify Conversation lifecycle controls, and rename archived lifecycle presentation to Settled.
+- Restore active managed agents on local startup: surviving sessions reconnect, while confirmed offline sessions receive fresh idle replacements without reviving explicitly stopped or disabled agents.
+- Give replacement Pi sessions a temporary, public-Conversation-derived handoff; configure its 4K-token maximum plus 8K/50-message recent Conversation context per Workspace agent. Handoffs are not persisted as memory.
+- Align healthy Relay turn deadlines with Pi while keeping short Runtime-operation timeouts and bounded retries.
+- Add private Relay migration `0010_agent_session_context` for agent context-limit preferences.
+- Document deferred web bundle optimization, idle-session sleep/wake, and Runtime session-history work.
+
 ## 0.0.9
 
 - Restore compatibility with v0.0.5 local profiles that store the default Conversation id as `channelId`, without modifying owner data.

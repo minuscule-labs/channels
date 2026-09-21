@@ -19,7 +19,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 - Product-isolated local storage, recovery, locking, and checksum-verified updates
 - A self-contained release package with the web app, migrations, and pinned Runtime
 
-See [Product boundary](docs/product-boundary.md) for what belongs to the MVP and what remains future work.
+See [Product boundary](docs/product-boundary.md) for what belongs to the MVP and what remains future work. See the [web bundle performance backlog](docs/web-performance.md) for the deferred client-load optimization plan.
 
 ## Install a release
 

@@ -63,7 +63,10 @@ test("shows owner-only safe turn failures and opens a token-gated diagnostic", a
   try {
     const before = (await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number }).count;
     await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`);
-    const failures = page.getByLabel("Recent turn failures");
+    await expect(page.getByLabel("Recent turn failures")).toHaveCount(0);
+    await page.getByRole("button", { name: "Issues: 1" }).click();
+    const diagnostics = page.getByRole("dialog", { name: "Diagnostics" });
+    const failures = diagnostics.getByLabel("Recent turn failures");
     await expect(failures).toContainText("Runtime request timed out");
     await expect(failures).toContainText("Builder Agent");
     await expect(failures).toContainText("2 attempts");
@@ -972,7 +975,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "New session", exact: true }).click();
   let lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
-  await expect(lifecycleDialog).toContainText("at most 20 recent Conversation messages");
+  await expect(lifecycleDialog).toContainText("A temporary handoff is created from public Conversation history when available; it is not stored as memory.");
   await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
   await expect(lifecycleDialog.getByRole("alert")).toHaveText("Replacement temporarily unavailable");

@@ -145,6 +145,9 @@ function AgentLaunchProfileForm({
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [reasoningLevel, setReasoningLevel] = useState("");
   const [personaPrompt, setPersonaPrompt] = useState("");
+  const [handoffSummaryTokens, setHandoffSummaryTokens] = useState("4000");
+  const [recentContextTokens, setRecentContextTokens] = useState("8000");
+  const [recentContextMessages, setRecentContextMessages] = useState("50");
   const [skillIds, setSkillIds] = useState<string[] | null>(null);
   const [enabledModelKeys, setEnabledModelKeys] = useState<string[] | null>(null);
   const [status, setStatus] = useState<"active" | "disabled">(
@@ -190,6 +193,9 @@ function AgentLaunchProfileForm({
       setSelectedModelKey(savedModelKey);
       setReasoningLevel(savedConfiguration.reasoningLevel ?? "");
       setPersonaPrompt(savedPersonaPrompt);
+      setHandoffSummaryTokens(String(savedConfiguration.handoffSummaryTokens));
+      setRecentContextTokens(String(savedConfiguration.recentContextTokens));
+      setRecentContextMessages(String(savedConfiguration.recentContextMessages));
       setStatus(savedConfiguration.status);
     } else if (!agent.configured) {
       setStatus(agent.status === "disabled" ? "disabled" : "active");
@@ -214,6 +220,18 @@ function AgentLaunchProfileForm({
   const skillsChanged = skillIds !== null && configuredRuntimeOptions.data !== undefined
     && JSON.stringify([...skillIds].sort()) !== JSON.stringify([...savedSkillIds].sort());
   const personaChanged = configurationReady && personaPrompt !== savedPersonaPrompt;
+  const handoffSummaryChanged = configurationReady
+    && Number(handoffSummaryTokens) !== (savedConfiguration?.handoffSummaryTokens ?? 4_000);
+  const recentContextTokensChanged = configurationReady
+    && Number(recentContextTokens) !== (savedConfiguration?.recentContextTokens ?? 8_000);
+  const recentContextMessagesChanged = configurationReady
+    && Number(recentContextMessages) !== (savedConfiguration?.recentContextMessages ?? 50);
+  const contextLimitsValid = Number.isSafeInteger(Number(handoffSummaryTokens))
+    && Number(handoffSummaryTokens) >= 0 && Number(handoffSummaryTokens) <= 8_000
+    && Number.isSafeInteger(Number(recentContextTokens))
+    && Number(recentContextTokens) >= 1_000 && Number(recentContextTokens) <= 16_000
+    && Number.isSafeInteger(Number(recentContextMessages))
+    && Number(recentContextMessages) >= 1 && Number(recentContextMessages) <= 100;
   const modelChanged = configurationReady
     && (selectedProvider !== (savedConfiguration?.modelProvider ?? "")
       || selectedModelKey !== savedModelKey);
@@ -248,8 +266,9 @@ function AgentLaunchProfileForm({
     }
   }, [reasoningLevel, runtimeAdapterChanged, runtimeOptions.data, savedConfiguration, selectedModelKey, selectedProvider]);
   const hasUpdate = configurationReady && Boolean(
-    runtimeAdapterChanged || modelChanged || reasoningChanged || personaChanged || statusChanged || skillsChanged,
-  );
+    runtimeAdapterChanged || modelChanged || reasoningChanged || personaChanged || statusChanged || skillsChanged
+      || handoffSummaryChanged || recentContextTokensChanged || recentContextMessagesChanged,
+  ) && contextLimitsValid;
   const modelPolicyMutation = useMutation({
     mutationFn: () => localControl.updateAgentRuntimeModelPolicy(workspaceId, agent.identityId, {
       enabledModels: configuredRuntimeOptions.data?.models
@@ -297,6 +316,9 @@ function AgentLaunchProfileForm({
         || null) as UpdateLocalWorkspaceAgentConfigurationInput["reasoningLevel"];
     }
     if (personaChanged) input.personaPrompt = personaPrompt.trim() ? personaPrompt : null;
+    if (handoffSummaryChanged) input.handoffSummaryTokens = Number(handoffSummaryTokens);
+    if (recentContextTokensChanged) input.recentContextTokens = Number(recentContextTokens);
+    if (recentContextMessagesChanged) input.recentContextMessages = Number(recentContextMessages);
     if (runtimeAdapterChanged && runtimeAdapter.trim() && replacementRuntimeOptions.data) {
       input.skillIds = skillIds ?? replacementRuntimeOptions.data.skills.map(({ id }) => id);
     } else if (skillsChanged && skillIds) input.skillIds = skillIds;
@@ -369,6 +391,22 @@ function AgentLaunchProfileForm({
               <span className="mt-1 block text-[10px] text-[var(--muted)]">Instructions are managed by a private reference. Enter text to replace them.</span>
             ) : null}
           </label>
+          <fieldset className="mt-4">
+            <legend className="text-xs font-medium">Fresh-session context</legend>
+            <p className="mt-1 text-[10px] leading-4 text-[var(--muted)]">A replacement creates a temporary handoff from public Conversation history; it is not stored as memory. Recent context is sent with each future turn.</p>
+            <div className="mt-2 grid gap-3 sm:grid-cols-3">
+              <label className="block text-xs font-medium">Handoff tokens
+                <input type="number" min={0} max={8000} step={1} value={handoffSummaryTokens} onChange={(event) => setHandoffSummaryTokens(event.target.value)} className="settings-input mt-1.5" />
+              </label>
+              <label className="block text-xs font-medium">Recent context tokens
+                <input type="number" min={1000} max={16000} step={1} value={recentContextTokens} onChange={(event) => setRecentContextTokens(event.target.value)} className="settings-input mt-1.5" />
+              </label>
+              <label className="block text-xs font-medium">Recent messages
+                <input type="number" min={1} max={100} step={1} value={recentContextMessages} onChange={(event) => setRecentContextMessages(event.target.value)} className="settings-input mt-1.5" />
+              </label>
+            </div>
+            {!contextLimitsValid ? <p className="mt-1 text-[10px] text-[var(--danger)]">Use 0–8,000 handoff tokens, 1,000–16,000 recent-context tokens, and 1–100 messages.</p> : null}
+          </fieldset>
         </div>
       ) : null}
       {activeTab === "runtime" ? <div role="tabpanel">

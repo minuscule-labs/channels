@@ -102,6 +102,12 @@ export interface LocalWorkspaceAgentConfiguration {
   modelId?: string;
   reasoningLevel?: LocalReasoningLevel;
   skillIds?: string[];
+  /** Maximum ephemeral, Conversation-derived handoff brief included when a fresh Runtime session starts. */
+  handoffSummaryTokens: number;
+  /** Maximum recent Conversation context included on each Runtime turn. */
+  recentContextTokens: number;
+  /** Maximum recent Conversation messages considered on each Runtime turn. */
+  recentContextMessages: number;
   status: "active" | "disabled";
   changesApplyToNewSessions: true;
 }
@@ -148,6 +154,9 @@ export interface UpdateLocalWorkspaceAgentConfigurationInput {
   modelId?: string | null;
   reasoningLevel?: LocalReasoningLevel | null;
   skillIds?: string[];
+  handoffSummaryTokens?: number | null;
+  recentContextTokens?: number | null;
+  recentContextMessages?: number | null;
   status?: "active" | "disabled";
 }
 

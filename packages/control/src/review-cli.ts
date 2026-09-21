@@ -227,7 +227,9 @@ async function main(): Promise<void> {
     console.log(`  Control:  ${app.controlEndpoint}`);
     console.log(`  Handles:  ${persistent ? "@you, @builder" : "@you, @builder, @reviewer"}`);
     console.log(managedRuntime
-      ? "  Agent:    click Start for @builder, then mention it for a live Pi response"
+      ? persistent
+        ? "  Agent:    previously active agents resume idle; click Start for a new agent, then mention it for a live Pi response"
+        : "  Agent:    click Start for @builder, then mention it for a live Pi response"
       : "  Agent:    @mention @builder for a simulated Relay response");
     console.log("  Context:  unaddressed messages do not wake agents");
     console.log(persistent
@@ -236,7 +238,9 @@ async function main(): Promise<void> {
     if (persistent && "initialized" in app) {
       console.log(`  Setup:    ${app.initialized ? "created a fresh local Workspace" : "reopened existing local data"}`);
     }
-    console.log(`  Runtime:  ${managedRuntime ? "live Pi (starts only on explicit click)" : "deterministic simulation"}`);
+    console.log(`  Runtime:  ${managedRuntime
+      ? persistent ? "live Pi (resumes previously active sessions on startup)" : "live Pi (starts only on explicit click)"
+      : "deterministic simulation"}`);
     if (values["no-open"]) {
       console.log("\nOpen this one-time URL within 60 seconds:");
       console.log(launchUrl);

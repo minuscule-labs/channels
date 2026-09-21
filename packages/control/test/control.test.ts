@@ -1522,6 +1522,9 @@ test("private configuration keeps lists redacted and returns agent details only 
       modelProvider: "openai-private",
       modelId: "gpt-private",
       reasoningLevel: "high",
+      handoffSummaryTokens: 4_000,
+      recentContextTokens: 8_000,
+      recentContextMessages: 50,
       status: "active",
       changesApplyToNewSessions: true,
     });
@@ -2151,6 +2154,69 @@ test("new Conversation sessions use a validated primary working folder and advis
   }
 });
 
+test("local startup replaces an offline managed binding with an attached idle session", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-auto-resume-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new ManagedFakeRuntime();
+  let initialHost: LocalAgentHost | undefined;
+  let resumedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "auto-resume", name: "Auto Resume" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "auto-resume",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    initialHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await initialHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    const stale = (await store.listConversationBindings(conversation.id))[0]!;
+    await runtime.stop(stale.runtimeSessionId);
+    await initialHost.close();
+    initialHost = undefined;
+
+    resumedHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      autoResumeActorIdentityId: owner.id,
+    });
+    await resumedHost.restore();
+
+    const resumed = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(runtime.starts.length, 2);
+    assert.equal(resumed.id, stale.id);
+    assert.equal(resumed.generation, stale.generation + 1);
+    assert.notEqual(resumed.runtimeSessionId, stale.runtimeSessionId);
+    assert.equal(await runtime.status(resumed.runtimeSessionId), "idle");
+    assert.equal(resumedHost.isAttached(conversation.id, agent.id), true);
+  } finally {
+    await initialHost?.close().catch(() => undefined);
+    await resumedHost?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("agent host starts isolated Conversation sessions with private roots and personas", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-host-source-")));
   const conversationServer = await createConversationHttpServer({ port: 0 });
@@ -2357,21 +2423,23 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     await restoredHost.replaceConversationAgent(conversationA.id, agent.id, owner.id);
     let binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.generation, 2);
-    assert.equal(binding.runtimeSessionId, "managed-session-3");
+    assert.equal(binding.runtimeSessionId, "managed-session-4");
+    assert.match(runtime.starts[2]?.config.systemPrompt ?? "", /ephemeral handoff/);
+    assert.match(runtime.prompts.get("managed-session-3")?.[0] ?? "", /Public Conversation transcript/);
     assert.equal(await runtime.status("managed-session-1"), "offline");
     await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder replaced session work",
     });
     await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 9);
-    assert.match((await client.listMessages(conversationA.id))[8]?.body ?? "", /managed-session-3/);
+    assert.match((await client.listMessages(conversationA.id))[8]?.body ?? "", /managed-session-4/);
 
-    runtime.setStatus("managed-session-3", "working");
+    runtime.setStatus("managed-session-4", "working");
     await restoredHost.stopConversationAgent(conversationA.id, agent.id, owner.id);
     binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.state, "disabled");
     assert.equal(binding.generation, 3);
-    assert.equal(await runtime.status("managed-session-3"), "offline");
+    assert.equal(await runtime.status("managed-session-4"), "offline");
     await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder stopped work must not run",
@@ -2383,18 +2451,18 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.state, "connected");
     assert.equal(binding.generation, 4);
-    assert.equal(binding.runtimeSessionId, "managed-session-4");
+    assert.equal(binding.runtimeSessionId, "managed-session-6");
     await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder restarted work only",
     });
     await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 12);
-    assert.match((await client.listMessages(conversationA.id))[11]?.body ?? "", /managed-session-4/);
+    assert.match((await client.listMessages(conversationA.id))[11]?.body ?? "", /managed-session-6/);
     assert.equal(await store.getCursor(conversationA.id, agent.id), 11);
 
     await (restoredHost as unknown as { retireBinding(conversationId: string, identityId: string): Promise<void> })
       .retireBinding(conversationA.id, agent.id);
-    const neverResolvingStatus = runtime.holdStatus("managed-session-4");
+    const neverResolvingStatus = runtime.holdStatus("managed-session-6");
     const timeoutStartedAt = Date.now();
     await assert.rejects(
       restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
@@ -2405,11 +2473,11 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     const unreachableBinding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(unreachableBinding.state, "connected");
     assert.equal(unreachableBinding.generation, 4);
-    assert.equal(unreachableBinding.runtimeSessionId, "managed-session-4");
-    assert.equal(runtime.starts.length, 4);
+    assert.equal(unreachableBinding.runtimeSessionId, "managed-session-6");
+    assert.equal(runtime.starts.length, 6);
     assert.equal(restoredHost.isAttached(conversationA.id, agent.id), false);
 
-    runtime.setStatus("managed-session-4", "offline");
+    runtime.setStatus("managed-session-6", "offline");
     await assert.rejects(
       restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
       /use New session instead/,
@@ -2435,8 +2503,8 @@ test("agent host starts isolated Conversation sessions with private roots and pe
       { action: "agent.session.reconnected", outcome: "rejected" },
     ]);
 
-    runtime.setStatus("managed-session-4", "idle");
-    const heldShutdownReconnect = runtime.holdStatus("managed-session-4");
+    runtime.setStatus("managed-session-6", "idle");
+    const heldShutdownReconnect = runtime.holdStatus("managed-session-6");
     const reconnectDuringShutdown = restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id);
     await heldShutdownReconnect.entered;
     let shutdownFinished = false;
@@ -2455,7 +2523,7 @@ test("agent host starts isolated Conversation sessions with private roots and pe
 
     const startsBeforeRecoveryFences = runtime.starts.length;
     const stopsBeforeRecoveryFences = runtime.stops.length;
-    runtime.failNextStatus("managed-session-4", new Error("transient shutdown recovery failure"));
+    runtime.failNextStatus("managed-session-6", new Error("transient shutdown recovery failure"));
     const shutdownRecoveryHost = new LocalAgentHost({
       client,
       store,
@@ -2467,7 +2535,7 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
     assert.equal(shutdownRecoveryHost.isAttached(conversationA.id, agent.id), false);
 
-    runtime.failNextStatus("managed-session-4", new Error("transient generation recovery failure"));
+    runtime.failNextStatus("managed-session-6", new Error("transient generation recovery failure"));
     const generationRecoveryHost = new LocalAgentHost({
       client,
       store,
@@ -2776,6 +2844,9 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
       identityId: agent.id,
       instructions: { source: "inline", text: "DAEMON PRIVATE PERSONA" },
       runtimeAdapter: "pi-owned-private",
+      handoffSummaryTokens: 4_000,
+      recentContextTokens: 8_000,
+      recentContextMessages: 50,
       status: "active",
       changesApplyToNewSessions: true,
     });
