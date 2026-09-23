@@ -1183,6 +1183,27 @@ test("shows required browser onboarding when no Workspace exists", async ({ page
   }
 });
 
+test("loads syntax highlighting only when a fenced code message arrives", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspaceId = workspaces[0]!.id;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
+    conversations: Array<{ id: string }>;
+  };
+  const conversationId = conversations[0]!.id;
+  const loadedModules: string[] = [];
+  page.on("request", (outgoing) => loadedModules.push(outgoing.url()));
+
+  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  expect(loadedModules.some((url) => url.includes("code-highlighter"))).toBe(false);
+
+  await request.post(`${fixtureBase}/peer-message?body=${encodeURIComponent("```ts\nconst answer: number = 42;\n```")}`);
+  await expect(page.locator(".th-token.th-keyword")).toBeVisible();
+  expect(loadedModules.some((url) => url.includes("code-highlighter"))).toBe(true);
+});
+
 test("keeps messaging available when Runtime status is unavailable", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
