@@ -26,7 +26,7 @@ export interface LocalWebServerOptions {
   host?: "127.0.0.1" | "::1";
   port?: number;
   conversationsServiceToken: string;
-  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string; renewalCookie?: string } | undefined;
   isQuiescing?(): boolean;
 }
 
@@ -64,7 +64,10 @@ function proxy(
       ...headers,
     },
   }, (upstreamResponse) => {
-    response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+    // Preserve a renewed browser credential instead of letting an upstream response clear it.
+    const responseHeaders = { ...upstreamResponse.headers };
+    if (response.hasHeader("set-cookie")) responseHeaders["set-cookie"] = [String(response.getHeader("set-cookie"))];
+    response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
     upstreamResponse.pipe(response);
   });
   upstream.once("error", (error) => {
@@ -186,6 +189,7 @@ export async function createLocalWebServer(
           response.end(`${JSON.stringify({ error: "Local browser session required" })}\n`);
           return;
         }
+        if (session.renewalCookie) response.setHeader("set-cookie", session.renewalCookie);
         proxy(request, response, target, {
           authorization: `Bearer ${options.conversationsServiceToken}`,
           "x-minu-actor-id": session.identityId,

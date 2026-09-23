@@ -82,7 +82,7 @@ export interface LocalProductApp {
   humanIdentityId: string;
   initialized: boolean;
   issueBrowserLaunchUrl(): string;
-  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string; renewalCookie?: string } | undefined;
   workSnapshot(): LocalAgentHostWorkSnapshot;
   waitForQuiesced(): Promise<LocalAgentHostWorkSnapshot>;
   close(): Promise<void>;
@@ -473,6 +473,7 @@ export async function createLocalProductApp(
       conversationsServiceToken: conversationsServer.serviceToken,
       relayDatabasePath,
       relayMigrationsFolder,
+      sessionKeyPath: join(dataDirectory, "browser-session.key"),
       webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },
