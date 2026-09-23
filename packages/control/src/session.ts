@@ -1,8 +1,9 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { isLocalConversationsHostname } from "./local-host.ts";
 
 const DEFAULT_LAUNCH_CODE_TTL_MS = 60_000;
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1_000;
+const PERSISTENT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const SESSION_COOKIE = "minu_local_session";
 
 export type LocalControlAuditAction =
@@ -52,6 +53,8 @@ export interface LocalControlBrowserSessionsOptions {
   currentHumanIdentityId: string;
   launchCodeTtlMs?: number;
   sessionTtlMs?: number;
+  /** Owner-private installation key; when provided, sessions survive daemon restarts. */
+  sessionKey?: Buffer;
   now?: () => Date;
   onAudit?(event: LocalControlAuditEvent): void;
 }
@@ -71,6 +74,8 @@ export interface LocalControlBrowserSession {
   identityId: string;
   /** Opaque server-only session scope for short-lived local action tokens. */
   scope: string;
+  /** Sent only when a persistent session is halfway to its inactivity deadline. */
+  renewalCookie?: string;
 }
 
 export interface LocalControlLaunchExchange {
@@ -125,6 +130,7 @@ export class LocalControlBrowserSessions {
   private readonly now: () => Date;
   private readonly launchCodes = new Map<string, LaunchCodeRecord>();
   private readonly sessions = new Map<string, BrowserSessionRecord>();
+  private readonly sessionKey?: Buffer;
 
   constructor(private readonly options: LocalControlBrowserSessionsOptions) {
     this.browserUrl = loopbackBrowserUrl(options.browserUrl);
@@ -137,7 +143,12 @@ export class LocalControlBrowserSessions {
       options.launchCodeTtlMs ?? DEFAULT_LAUNCH_CODE_TTL_MS,
       "launchCodeTtlMs",
     );
-    this.sessionTtlMs = positiveInteger(options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS, "sessionTtlMs");
+    this.sessionTtlMs = positiveInteger(
+      options.sessionTtlMs ?? (options.sessionKey ? PERSISTENT_SESSION_TTL_MS : DEFAULT_SESSION_TTL_MS),
+      "sessionTtlMs",
+    );
+    if (options.sessionKey && options.sessionKey.length !== 32) throw new Error("sessionKey must be 32 bytes");
+    this.sessionKey = options.sessionKey;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -185,14 +196,16 @@ export class LocalControlBrowserSessions {
       this.audit({ action: "launch.rejected", outcome: "rejected", reason: "expired" });
       return undefined;
     }
-    const sessionToken = secret();
-    this.sessions.set(hash(sessionToken), {
+    const sessionToken = this.sessionKey
+      ? this.signedToken(secret(), this.now().getTime() + this.sessionTtlMs)
+      : secret();
+    if (!this.sessionKey) this.sessions.set(hash(sessionToken), {
       expiresAt: this.now().getTime() + this.sessionTtlMs,
       identityId: this.currentHumanIdentityId,
     });
     this.audit({ action: "launch.redeemed", outcome: "accepted" });
     return {
-      cookie: `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.ceil(this.sessionTtlMs / 1_000)}`,
+      cookie: this.cookie(sessionToken),
       redirectUrl: record.redirectUrl,
     };
   }
@@ -203,6 +216,7 @@ export class LocalControlBrowserSessions {
       this.audit({ action: "session.rejected", outcome: "rejected", reason: "missing" });
       return undefined;
     }
+    if (this.sessionKey) return this.authenticateSigned(token);
     const key = hash(token);
     const record = this.sessions.get(key);
     if (!record) {
@@ -215,6 +229,44 @@ export class LocalControlBrowserSessions {
       return undefined;
     }
     return { identityId: record.identityId, scope: key };
+  }
+
+  private cookie(token: string): string {
+    return `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.ceil(this.sessionTtlMs / 1_000)}`;
+  }
+
+  private signedToken(scope: string, expiresAt: number): string {
+    const payload = Buffer.from(JSON.stringify({ identityId: this.currentHumanIdentityId, scope, expiresAt })).toString("base64url");
+    const signature = createHmac("sha256", this.sessionKey!).update(`v1.${payload}`).digest("base64url");
+    return `v1.${payload}.${signature}`;
+  }
+
+  private authenticateSigned(token: string): LocalControlBrowserSession | undefined {
+    const reject = (reason: "invalid" | "expired"): undefined => {
+      this.audit({ action: "session.rejected", outcome: "rejected", reason });
+      return undefined;
+    };
+    const parts = token.split(".");
+    if (parts.length !== 3 || parts[0] !== "v1" || !parts[1] || !parts[2] || parts[1].length > 1024) return reject("invalid");
+    const expected = createHmac("sha256", this.sessionKey!).update(`v1.${parts[1]}`).digest();
+    const signature = Buffer.from(parts[2], "base64url");
+    if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) return reject("invalid");
+    let payload: unknown;
+    try { payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")); }
+    catch { return reject("invalid"); }
+    if (!payload || typeof payload !== "object") return reject("invalid");
+    const { identityId, scope, expiresAt } = payload as Record<string, unknown>;
+    if (identityId !== this.currentHumanIdentityId || typeof scope !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(scope)
+      || typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt)) return reject("invalid");
+    const now = this.now().getTime();
+    if (expiresAt <= now) return reject("expired");
+    return {
+      identityId,
+      scope: hash(scope),
+      ...(expiresAt - now <= this.sessionTtlMs / 2
+        ? { renewalCookie: this.cookie(this.signedToken(scope, now + this.sessionTtlMs)) }
+        : {}),
+    };
   }
 
   authorize(cookieHeader: string | undefined): boolean {
