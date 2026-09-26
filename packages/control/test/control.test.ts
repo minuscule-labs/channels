@@ -27,6 +27,7 @@ import {
 } from "../src/local-paths.ts";
 import { createLocalWebServer } from "../src/local-web-server.ts";
 import { createLocalReviewApp } from "../src/review.ts";
+import { loadBrowserSessionKey } from "../src/session-key.ts";
 import {
   createLocalControlHttpServer,
   LocalControlBrowserSessions,
@@ -623,6 +624,63 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   assert.doesNotMatch(JSON.stringify(audit), /minu_local_session|code=|runtime-session-secret/);
 });
 
+test("persistent browser sessions survive restart, renew after inactivity, and reject invalid keys and identities", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-browser-key-"));
+  try {
+    const path = join(directory, "browser-session.key");
+    const key = await loadBrowserSessionKey(path);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.deepEqual(await loadBrowserSessionKey(path), key);
+    let time = new Date("2026-08-28T00:00:00.000Z");
+    const sessions = (sessionKey: Buffer, identityId = "human-1") => new LocalControlBrowserSessions({
+      browserUrl: "http://minu-channels.localhost:47412/",
+      currentHumanIdentityId: identityId,
+      sessionKey,
+      sessionTtlMs: 4_000,
+      now: () => time,
+    });
+    const first = sessions(key);
+    const exchange = first.exchangeLaunchCode(new URL(first.issueLaunchUrl("http://127.0.0.1:47411")).searchParams.get("code")!)!;
+    const cookie = exchange.cookie.split(";", 1)[0]!;
+    const restarted = sessions(await loadBrowserSessionKey(path));
+    assert.equal(restarted.authenticate(cookie)?.identityId, "human-1");
+    assert.equal(restarted.authenticate(cookie)?.renewalCookie, undefined);
+    assert.equal(sessions(Buffer.alloc(32)).authenticate(cookie), undefined);
+    assert.equal(sessions(key, "other-human").authenticate(cookie), undefined);
+    assert.equal(restarted.authenticate(`${cookie}tampered`), undefined);
+    time = new Date("2026-08-28T00:00:03.000Z");
+    const renewal = restarted.authenticate(cookie)?.renewalCookie;
+    assert.match(renewal ?? "", /Max-Age=4/);
+    assert.equal(restarted.authenticate(cookie)?.scope, restarted.authenticate(renewal!.split(";", 1)[0])?.scope);
+    time = new Date("2026-08-28T00:00:05.000Z");
+    assert.equal(restarted.authenticate(cookie), undefined);
+    assert.equal(sessions(key).authenticate(renewal!.split(";", 1)[0])?.identityId, "human-1");
+    await rm(path);
+    await symlink(join(directory, "missing"), path);
+    await assert.rejects(loadBrowserSessionKey(path));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("renews the persistent cookie on authenticated control requests", async (context) => {
+  const { control } = service();
+  let time = new Date("2026-08-28T00:00:00.000Z");
+  const sessions = new LocalControlBrowserSessions({
+    browserUrl: "http://127.0.0.1:5174/", currentHumanIdentityId: "human-1",
+    sessionKey: Buffer.alloc(32, 7), sessionTtlMs: 4_000, now: () => time,
+  });
+  const server = await createLocalControlHttpServer({
+    service: control, port: 0, allowedOrigins: [sessions.browserOrigin], browserSessions: sessions,
+  });
+  context.after(() => server.close());
+  const bootstrap = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+  const cookie = bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!;
+  time = new Date("2026-08-28T00:00:03.000Z");
+  const renewed = await fetch(`${server.endpoint}/local/session`, { headers: { cookie } });
+  assert.equal(renewed.status, 200);
+  assert.ok(renewed.headers.get("set-cookie"));
+  assert.notEqual(renewed.headers.get("set-cookie")!.split(";", 1)[0], cookie);
+});
+
 test("accepts authenticated local session actions with opaque diagnostic responses", async (context) => {
   let cancelCalls = 0;
   const reconnectActors: string[] = [];
@@ -1042,7 +1100,10 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     webDirectory,
     port: 0,
     conversationsServiceToken: "web-test-token",
-    authenticateBrowser: () => browserAuthenticated ? { identityId: "human-web-test" } : undefined,
+    authenticateBrowser: () => browserAuthenticated ? {
+      identityId: "human-web-test",
+      renewalCookie: "minu_local_session=renewed; HttpOnly; SameSite=Strict; Path=/; Max-Age=4",
+    } : undefined,
     isQuiescing: () => quiescing,
   });
   try {
@@ -1055,7 +1116,9 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     const asset = await fetch(`${web.endpoint}/assets/app.js`);
     assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
     assert.match(await asset.text(), /console\.log/);
-    const conversationsResponse = await (await fetch(`${web.endpoint}/identities`)).json() as { source: string };
+    const proxied = await fetch(`${web.endpoint}/identities`);
+    assert.match(proxied.headers.get("set-cookie") ?? "", /minu_local_session=renewed/);
+    const conversationsResponse = await proxied.json() as { source: string };
     assert.equal(conversationsResponse.source, "conversations");
     browserAuthenticated = false;
     assert.equal((await fetch(`${web.endpoint}/identities`)).status, 401);
@@ -1188,6 +1251,9 @@ test("local product initializes once and reopens persistent collaboration data",
     assert.deepEqual((await firstClient.listWorkspaces()).map(({ name }) => name), ["Chosen Workspace"]);
     assert.equal((await firstClient.listWorkspaceConversations(first.workspaceId!)).length, 1);
     assert.deepEqual(await firstClient.listMessages(first.conversationId!), []);
+    const bootstrap = await fetch(first.issueBrowserLaunchUrl(), { redirect: "manual" });
+    const originalCookie = bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!;
+    assert.equal((await stat(join(dataDirectory, "browser-session.key"))).mode & 0o777, 0o600);
     assert.equal((await stat(join(dataDirectory, "run", "instance.lock"))).mode & 0o777, 0o700);
     await assert.rejects(createLocalProductApp({
       dataDirectory,
@@ -1226,6 +1292,10 @@ test("local product initializes once and reopens persistent collaboration data",
       runtime,
     });
     assert.equal(reopened.initialized, false);
+    assert.equal(reopened.authenticateBrowser(originalCookie)?.identityId, original.humanIdentityId);
+    const existingSession = await fetch(`${reopened.controlEndpoint}/local/session`, { headers: { cookie: originalCookie } });
+    assert.equal(existingSession.status, 200);
+    assert.equal((await existingSession.json() as { identityId: string }).identityId, original.humanIdentityId);
     assert.deepEqual({
       humanIdentityId: reopened.humanIdentityId,
       workspaceId: reopened.workspaceId,

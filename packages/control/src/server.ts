@@ -1066,6 +1066,7 @@ export async function createLocalControlHttpServer(
         json(response, 401, { error: "Local browser session required" }, origin);
         return;
       }
+      if (browserSession?.renewalCookie) response.setHeader("set-cookie", browserSession.renewalCookie);
       if (path === "/local/session" && request.method === "GET") {
         if (!browserSession) {
           json(response, 404, { error: "Browser session binding unavailable" }, origin);

@@ -23,6 +23,7 @@ import {
   LocalControlBrowserSessions,
   type LocalControlAuditEvent,
 } from "./session.ts";
+import { loadBrowserSessionKey } from "./session-key.ts";
 
 export interface LocalControlDaemonOptions {
   currentHumanIdentityId: string;
@@ -40,6 +41,8 @@ export interface LocalControlDaemonOptions {
   autoResumeOfflineAgents?: boolean;
   launchCodeTtlMs?: number;
   sessionTtlMs?: number;
+  /** Only the persistent product opts in; review daemons remain ephemeral. */
+  sessionKeyPath?: string;
   now?: () => Date;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
@@ -48,7 +51,7 @@ export interface LocalControlDaemonOptions {
 export interface LocalControlDaemon {
   endpoint: string;
   issueBrowserLaunchUrl(destinationPath?: string): string;
-  authenticateBrowser(cookieHeader: string | undefined): { identityId: string } | undefined;
+  authenticateBrowser(cookieHeader: string | undefined): { identityId: string; renewalCookie?: string } | undefined;
   workSnapshot(): LocalAgentHostWorkSnapshot;
   waitForQuiesced(): Promise<LocalAgentHostWorkSnapshot>;
   close(): Promise<void>;
@@ -82,6 +85,7 @@ export async function createLocalControlDaemon(
       currentHumanIdentityId: options.currentHumanIdentityId,
       launchCodeTtlMs: options.launchCodeTtlMs,
       sessionTtlMs: options.sessionTtlMs,
+      sessionKey: options.sessionKeyPath ? await loadBrowserSessionKey(options.sessionKeyPath) : undefined,
       now: options.now,
       onAudit: options.onAudit,
     });

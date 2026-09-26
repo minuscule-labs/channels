@@ -28,7 +28,7 @@ minu-channels run
 
 The background lifecycle is currently supported on macOS. `start` installs or refreshes a data-directory-scoped user LaunchAgent and starts it without enabling login startup. `open` starts it if needed and obtains a fresh authenticated browser launch through owner-private state. Use `stop`, `restart`, and `status` for normal lifecycle. An ordinary `restart` refuses while an agent turn is active; `restart --when-idle` stops admitting new turns, waits for turns already active at the boundary, and leaves queued or newly arriving Conversation work durable for processing after restart. It never silently stops or replaces Runtime sessions. Opt into login startup with `enable-login`, reverse it with `disable-login`, and unregister it with `remove-service`. Service removal preserves all product data. Use `minu-channels run` for explicit foreground operation; bare `minu-channels` remains a compatibility alias and Linux remains foreground-capable.
 
-Choose the first Workspace source folder in browser onboarding. Passing an absolute Workspace path remains available as a non-interactive shortcut. Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Conversations and control ports default to `47410` and `47411`. Use the printed bootstrap URL rather than opening the web URL directly. Use `--data-dir` to create an independent installation.
+Choose the first Workspace source folder in browser onboarding. Passing an absolute Workspace path remains available as a non-interactive shortcut. Use `--no-open` to print the one-time browser URL instead of opening it automatically. The product advertises `http://minu-channels.localhost:47412/` while binding only to `127.0.0.1`; internal Conversations and control ports default to `47410` and `47411`. Use the printed bootstrap URL for the first browser login; afterward the web URL works while the browser cookie remains valid. Use `--data-dir` to create an independent installation.
 
 Installing from a release tarball is supported. Installing directly from a Git branch or repository checkout is not a release installation because it may require source build tools and sibling repositories.
 
@@ -54,7 +54,7 @@ minu-channels --version        # must print 0.0.6
 minu-channels doctor
 minu-channels start            # install/refresh and start the user LaunchAgent
 minu-channels status
-minu-channels open             # open a fresh authenticated browser session
+minu-channels open             # authenticate the browser once (or after 30 days away)
 ```
 
 `start` does **not** enable launch at login. Opt in only when wanted:
@@ -62,6 +62,8 @@ minu-channels open             # open a fresh authenticated browser session
 ```bash
 minu-channels enable-login
 ```
+
+With login enabled the service starts on sign-in and stays available after sleep/wake. The persistent browser cookie survives ordinary service restarts and renews with use; you do not need to rerun `open` every few hours. It expires after 30 days without use, or if browser cookies or the owner-only `browser-session.key` in the data directory are removed. `open` is the recovery command in those cases.
 
 The service uses the existing default data at `~/.minu/channels`; passing `--data-dir` selects an independent instance. Do not run foreground `minu-channels run` against the same data directory while the service is active. Use `minu-channels stop` before returning to foreground operation.
 
