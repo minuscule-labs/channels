@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.0.11
+
+- Keep the local product browser session across service restarts with an owner-private signing key; renew it during use and require a new login only after 30 days of inactivity or credential removal.
+- Leave disposable review/control sessions short-lived and in memory. Document macOS login-startup setup for an always-available background service.
+
 ## 0.0.10
 
 - Add durable, owner/admin-only turn-failure diagnostics with short-lived, generation-fenced Runtime diagnostic actions; failures remain redacted from public Conversation history.
