@@ -16,14 +16,22 @@ describe("agent response markdown", () => {
     assert.match(html, /rel="noreferrer noopener"/);
   });
 
-  it("highlights fenced code and provides a copy control", () => {
+  it("renders fenced code safely with a copy control before highlighting is loaded", () => {
     const html = renderToStaticMarkup(
       <MessageMarkdown body={'Inline `value`\n\n```ts\nconst answer: number = 42;\n```'} />,
     );
-    assert.match(html, /class="th-token th-keyword"/);
+    assert.doesNotMatch(html, /class="th-token th-keyword"/);
     assert.match(html, /data-language="ts"/);
     assert.match(html, /aria-label="Copy code"/);
     assert.equal(html.match(/aria-label="Copy code"/g)?.length, 1);
+  });
+
+  it("safely treats prototype-related fence labels as plaintext", () => {
+    const html = renderToStaticMarkup(
+      <MessageMarkdown body={'```__proto__\nplain text\n```\n\n```constructor\nmore plain text\n```'} />,
+    );
+    assert.match(html, /data-language="plaintext"/);
+    assert.match(html, /plain text/);
   });
 
   it("escapes code in unknown languages", () => {
