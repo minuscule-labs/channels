@@ -12,6 +12,27 @@ describe("fenced code language selection", () => {
     assert.equal(canonicalFenceLanguage("unknown"), "plaintext");
   });
 
+  it("finds fenced code nested in blockquotes and list items", () => {
+    const markdown = [
+      "> ```typescript",
+      "> const answer = 42;",
+      "> ```",
+      "",
+      "- A list item",
+      "",
+      "    ~~~yml",
+      "    key: value",
+      "    ~~~",
+    ].join("\n");
+    assert.deepEqual(fencedCodeLanguages(markdown), ["ts", "yaml"]);
+  });
+
+  it("treats prototype-related labels as unknown languages", () => {
+    assert.equal(canonicalFenceLanguage("__proto__"), "plaintext");
+    assert.equal(canonicalFenceLanguage("constructor"), "plaintext");
+    assert.deepEqual(fencedCodeLanguages("```__proto__\nplain\n```\n\n```constructor\nplain\n```"), []);
+  });
+
   it("does not mistake a closing fence for a requested grammar", () => {
     assert.deepEqual(fencedCodeLanguages("```ts\nconst answer = 42;\n```"), ["ts"]);
   });

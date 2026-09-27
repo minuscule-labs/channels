@@ -29,10 +29,10 @@ These numbers are directional source-map attribution rather than a performance b
 
 ## Implemented demand loading
 
-- `src/router.tsx` uses one shared TanStack Router lazy import for the agent-management list, create, and detail routes. Its loader preserves Router-friendly pending/error and stale-module recovery behavior.
-- `MessageMarkdown` detects fenced code blocks without importing the highlighting package. Plain Markdown and unknown/unlabeled fences stay safe plaintext and do not request syntax highlighting.
-- A supported fenced language dynamically loads the highlighter plus only its needed grammar modules. Supported aliases normalize to CSS, diff, Dockerfile, HTML, HTTP, JavaScript/TypeScript, JSON, Markdown, Python, shell, SQL, TOML, and YAML grammars.
-- Unit and browser coverage verify aliases/fallbacks, no initial highlighter request, and deferred highlighting of a TypeScript message.
+- `src/router.tsx` shares one dynamic import for the agent-management list, create, and detail routes. The route wrapper exposes TanStack Router's intent-preload hook, starts preloading without blocking navigation, and renders an immediate loading state while keeping the app shell mounted. A failed chunk shows a route-local recovery message; **Reload and retry** starts a fresh module load at the current route.
+- `MessageMarkdown` uses a cheap fence-marker check before parsing Markdown code nodes, so ordinary messages avoid the additional discovery parse and never import the highlighting package. Unknown/unlabeled fences stay safe plaintext.
+- A supported fenced language dynamically loads the highlighter plus only its needed grammar modules. Language selection uses the same Markdown parsing rules as rendering, including fences nested in blockquotes and lists. Supported aliases normalize to CSS, diff, Dockerfile, HTML, HTTP, JavaScript/TypeScript, JSON, Markdown, Python, shell, SQL, TOML, and YAML grammars.
+- Unit and browser coverage verify safe prototype-like labels, alias/fallback behavior, nested fences, intent preload, failed-chunk recovery, no initial highlighter request, and deferred highlighting.
 
 ## Follow-up
 

@@ -26,6 +26,14 @@ describe("agent response markdown", () => {
     assert.equal(html.match(/aria-label="Copy code"/g)?.length, 1);
   });
 
+  it("safely treats prototype-related fence labels as plaintext", () => {
+    const html = renderToStaticMarkup(
+      <MessageMarkdown body={'```__proto__\nplain text\n```\n\n```constructor\nmore plain text\n```'} />,
+    );
+    assert.match(html, /data-language="plaintext"/);
+    assert.match(html, /plain text/);
+  });
+
   it("escapes code in unknown languages", () => {
     const html = renderToStaticMarkup(
       <MessageMarkdown body={'```unknown\n<script>alert("unsafe")</script>\n```'} />,
