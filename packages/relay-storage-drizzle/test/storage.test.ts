@@ -197,6 +197,120 @@ test("retention tombstones let an evicted pending failure finalize private recov
   }
 });
 
+test("managed session history is transactionally versioned, owner-scoped, and reconciled after reopen", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-session-history-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const first = await DrizzleLibSqlRelayStorage.open({ url });
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  const config: WorkspaceAgentConfig = {
+    id: "config-history",
+    workspaceId: "workspace-history",
+    agentIdentityId: "agent-history",
+    status: "active",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const ownerId = await first.getOrCreateRuntimeOwnerId();
+  const binding: ConversationAgentBindingRecord = {
+    id: "binding-history",
+    workspaceAgentConfigId: config.id,
+    workspaceId: config.workspaceId,
+    conversationId: "conversation-history",
+    agentIdentityId: config.agentIdentityId,
+    runtimeAdapter: "pi",
+    runtimeSessionId: "managed-session-a",
+    runtimeOwnerId: ownerId,
+    generation: 1,
+    state: "connected",
+    wakePolicy: "mentions",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  try {
+    await first.putAgentConfig(config);
+    await first.putBinding(binding, { origin: "started", conversationSequence: 12 });
+    const replaced = await first.replaceBindingSession(
+      binding.id,
+      1,
+      "pi",
+      "managed-session-b",
+      "2026-01-01T00:00:01.000Z",
+      ownerId,
+      { origin: "started", conversationSequence: 18 },
+    );
+    assert.equal(replaced?.generation, 2);
+    assert.equal(replaced?.runtimeSessionId, "managed-session-b");
+    assert.equal(replaced?.runtimeOwnerId, ownerId);
+    await assert.rejects(first.replaceBindingSession(
+      binding.id,
+      2,
+      "pi",
+      "managed-session-a",
+      "2026-01-01T00:00:01.500Z",
+      ownerId,
+    ), /cleanup is still pending/);
+    assert.equal((await first.getBinding(binding.id))?.runtimeSessionId, "managed-session-b");
+    assert.equal((await first.getBinding(binding.id))?.generation, 2);
+
+    const history = await first.listSessionHistory(binding.conversationId, binding.agentIdentityId);
+    assert.equal(history.length, 2);
+    assert.deepEqual(history.map(({ managedSessionId, state, cleanupStatus, mapping }) => ({
+      managedSessionId,
+      state,
+      cleanupStatus,
+      mapping,
+    })), [
+      { managedSessionId: "managed-session-a", state: "retired", cleanupStatus: "pending", mapping: "managed" },
+      { managedSessionId: "managed-session-b", state: "active", cleanupStatus: "not_required", mapping: "managed" },
+    ]);
+    assert.equal(history[0]?.conversationSequenceAtActivation, 12);
+    assert.equal(history[0]?.conversationSequenceAtRetirement, undefined);
+    assert.equal(history[0]?.retentionStatus, "destroy_pending");
+    assert.equal(history[1]?.retentionStatus, "retained");
+    assert.deepEqual((await first.listPendingSessionCleanups(100)).map(({ managedSessionId, runtimeOwnerId }) => ({
+      managedSessionId,
+      runtimeOwnerId,
+    })), [{ managedSessionId: "managed-session-a", runtimeOwnerId: ownerId }]);
+
+    await first.recordSessionCleanupAttempt({
+      bindingId: binding.id,
+      bindingGeneration: 1,
+      outcome: "succeeded",
+      attemptedAt: "2026-01-01T00:00:02.000Z",
+      observedRuntimeStatus: "offline",
+      retentionOutcome: "destroyed",
+    });
+    assert.equal((await first.listPendingSessionCleanups(100)).length, 0);
+  } finally {
+    await first.close();
+  }
+
+  const reopened = await DrizzleLibSqlRelayStorage.open({ url });
+  try {
+    assert.equal(await reopened.getOrCreateRuntimeOwnerId(), ownerId);
+    const history = await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId);
+    assert.equal(history[0]?.cleanupStatus, "succeeded");
+    assert.equal(history[0]?.cleanupAttemptCount, 1);
+    assert.equal(history[0]?.retentionStatus, "destroyed");
+    assert.equal(history[1]?.state, "active");
+    const disabled = await reopened.disableBinding(
+      binding.id,
+      2,
+      "2026-01-01T00:00:03.000Z",
+    );
+    assert.equal(disabled?.generation, 3);
+    const disabledHistory = await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId);
+    assert.equal(disabledHistory[1]?.cleanupStatus, "pending");
+    assert.equal(disabledHistory[1]?.retentionStatus, "destroy_pending");
+    await reopened.deleteBinding(binding.id);
+    assert.equal(await reopened.getBinding(binding.id), undefined);
+    assert.equal((await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId)).length, 2);
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("private relay storage preserves configs and arbitrates binding leases across reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-relay-storage-"));
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));

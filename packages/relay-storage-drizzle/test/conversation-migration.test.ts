@@ -27,6 +27,15 @@ test("production Conversation migration upgrades populated v0.0.6 Relay state", 
     const storage = await DrizzleLibSqlRelayStorage.open({ url: fixture.url });
     try {
       assert.equal((await storage.getBinding("binding_upgrade"))?.conversationId, channelId);
+      const history = await storage.listSessionHistory(channelId, "agent_upgrade");
+      assert.equal(history.length, 1);
+      assert.equal(history[0]?.mapping, "legacy_unmapped");
+      assert.equal(history[0]?.state, "active");
+      assert.equal(history[0]?.origin, "migrated");
+      assert.equal(history[0]?.managedSessionId, undefined);
+      assert.equal(history[0]?.runtimeOwnerId, undefined);
+      assert.equal(history[0]?.legacyRuntimeSessionRef, "session_upgrade");
+      assert.equal(history[0]?.conversationSequenceAtActivation, undefined);
       assert.deepEqual(await storage.getConversationWorkingFolders("workspace_upgrade", channelId), [{
         workspaceId: "workspace_upgrade", conversationId: channelId, relativePath: "apps/web", position: 0, primary: true,
       }]);

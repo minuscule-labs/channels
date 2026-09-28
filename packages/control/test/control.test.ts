@@ -194,6 +194,94 @@ class ManagedFakeRuntime {
   }
 }
 
+class OwnerScopedRuntimeFake extends ManagedFakeRuntime {
+  readonly suspensions: string[] = [];
+  readonly destructions: string[] = [];
+  readonly resumes: string[] = [];
+  readonly listings: string[] = [];
+  private readonly owners = new Map<string, string>();
+  private readonly unavailableSessions = new Set<string>();
+  private readonly destroyHolds = new Map<string, {
+    entered: Promise<void>;
+    enter(): void;
+    release: Promise<void>;
+    complete(): void;
+  }>();
+  private readonly suspendFailures = new Map<string, Error[]>();
+
+  async startManaged(config: ManagedRuntimeStartConfig, ownerId: string): Promise<{ id: string; ownerId: string }> {
+    const session = await this.start(config);
+    this.owners.set(session.id, ownerId);
+    return { id: session.id, ownerId };
+  }
+
+  async listManagedSessions(ownerId: string) {
+    this.listings.push(ownerId);
+    const sessions = [];
+    for (const [id, sessionOwnerId] of this.owners) {
+      if (sessionOwnerId !== ownerId) continue;
+      sessions.push({
+        id,
+        ownerId,
+        state: this.unavailableSessions.has(id)
+          ? "unavailable" as const
+          : await this.status(id) === "offline" ? "suspended" as const : "active" as const,
+      });
+    }
+    return sessions;
+  }
+
+  async resume(managedSessionId: string, ownerId: string): Promise<{ id: string; ownerId: string }> {
+    if (this.owners.get(managedSessionId) !== ownerId) throw new Error("owner mismatch");
+    this.resumes.push(managedSessionId);
+    this.setStatus(managedSessionId, "idle");
+    return { id: managedSessionId, ownerId };
+  }
+
+  async suspend(managedSessionId: string, ownerId: string): Promise<void> {
+    if (this.owners.get(managedSessionId) !== ownerId) throw new Error("owner mismatch");
+    const failures = this.suspendFailures.get(managedSessionId);
+    const failure = failures?.shift();
+    if (failures?.length === 0) this.suspendFailures.delete(managedSessionId);
+    if (failure) throw failure;
+    this.suspensions.push(managedSessionId);
+    this.setStatus(managedSessionId, "offline");
+  }
+
+  async destroy(managedSessionId: string, ownerId: string): Promise<void> {
+    const held = this.destroyHolds.get(managedSessionId);
+    if (held) {
+      held.enter();
+      await held.release;
+      this.destroyHolds.delete(managedSessionId);
+    }
+    await this.suspend(managedSessionId, ownerId);
+    this.destructions.push(managedSessionId);
+    this.owners.delete(managedSessionId);
+  }
+
+  holdDestroy(sessionId: string) {
+    let enter!: () => void;
+    let complete!: () => void;
+    const held = {
+      entered: new Promise<void>((resolve) => { enter = resolve; }),
+      enter: () => enter(),
+      release: new Promise<void>((resolve) => { complete = resolve; }),
+      complete: () => complete(),
+    };
+    this.destroyHolds.set(sessionId, held);
+    return { entered: held.entered, release: held.complete };
+  }
+
+  markUnavailable(sessionId: string): void {
+    this.unavailableSessions.add(sessionId);
+  }
+
+  failNextSuspend(sessionId: string, error = new Error("simulated suspend failure")): void {
+    this.suspendFailures.set(sessionId, [...(this.suspendFailures.get(sessionId) ?? []), error]);
+  }
+}
+
 async function waitUntil(assertion: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -241,7 +329,7 @@ test("projects private bindings into presentation-safe Conversation agent status
 
   const publicJson = JSON.stringify(result);
   assert.doesNotMatch(publicJson, /runtime-session-secret|private-adapter|replacement-session-secret/);
-  assert.doesNotMatch(publicJson, /runtimeSessionId|runtimeAdapter|leaseOwner/);
+  assert.doesNotMatch(publicJson, /runtimeSessionId|runtimeOwnerId|managedSessionId|legacyRuntimeSessionRef|runtimeAdapter|leaseOwner/);
 });
 
 test("projects an in-progress managed start distinctly from an offline Runtime", async () => {
@@ -798,7 +886,7 @@ test("serves bounded, private turn-failure projections without Conversation infe
   const body = await response.json() as { diagnostics: Array<Record<string, unknown>> };
   assert.equal(body.diagnostics.length, 1);
   assert.deepEqual(limits, [20]);
-  assert.doesNotMatch(JSON.stringify(body), /triggerMessageId|bindingId|bindingGeneration|runtimeSessionId|SECRET/i);
+  assert.doesNotMatch(JSON.stringify(body), /triggerMessageId|bindingId|bindingGeneration|runtimeSessionId|runtimeOwnerId|managedSessionId|legacyRuntimeSessionRef|SECRET/i);
 
   assert.equal((await fetch(`${server.endpoint}${path}?limit=100`, { headers })).status, 200);
   assert.deepEqual(limits, [20, 100]);
@@ -2287,6 +2375,123 @@ test("local startup replaces an offline managed binding with an attached idle se
   }
 });
 
+test("managed Runtime history resumes by owner scope and retries retired-session cleanup", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-managed-history-source-")));
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-managed-history-data-"));
+  const databaseUrl = localRelayLibSqlUrl(join(dataDirectory, "relay.db"));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  let store = await DrizzleLibSqlRelayStorage.open({ url: databaseUrl });
+  const runtime = new OwnerScopedRuntimeFake();
+  let initialHost: LocalAgentHost | undefined;
+  let resumedHost: LocalAgentHost | undefined;
+  let reconciledHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "managed-history", name: "Managed History" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+
+    initialHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await initialHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    const first = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.ok(first.runtimeOwnerId);
+    assert.equal((await store.listSessionHistory(conversation.id, agent.id))[0]?.mapping, "managed");
+    await runtime.suspend(first.runtimeSessionId, first.runtimeOwnerId!);
+    await initialHost.close();
+    initialHost = undefined;
+
+    resumedHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      autoResumeActorIdentityId: owner.id,
+    });
+    await resumedHost.restore();
+    const resumed = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(resumed.runtimeSessionId, first.runtimeSessionId);
+    assert.equal(resumed.runtimeOwnerId, first.runtimeOwnerId);
+    assert.equal(resumed.generation, first.generation);
+    assert.deepEqual(runtime.resumes, [first.runtimeSessionId]);
+    assert.ok(runtime.listings.every((ownerId) => ownerId === first.runtimeOwnerId));
+    assert.equal(resumedHost.isAttached(conversation.id, agent.id), true);
+
+    runtime.failNextSuspend(first.runtimeSessionId);
+    await resumedHost.replaceConversationAgent(conversation.id, agent.id, owner.id);
+    const replacement = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(replacement.generation, first.generation + 1);
+    assert.notEqual(replacement.runtimeSessionId, first.runtimeSessionId);
+    let history = await store.listSessionHistory(conversation.id, agent.id);
+    assert.deepEqual(history.map(({ state, cleanupStatus, mapping }) => ({ state, cleanupStatus, mapping })), [
+      { state: "retired", cleanupStatus: "failed", mapping: "managed" },
+      { state: "active", cleanupStatus: "not_required", mapping: "managed" },
+    ]);
+
+    await resumedHost.close();
+    resumedHost = undefined;
+    await store.close();
+    store = await DrizzleLibSqlRelayStorage.open({ url: databaseUrl });
+    runtime.markUnavailable(first.runtimeSessionId);
+    reconciledHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    const destroyGate = runtime.holdDestroy(first.runtimeSessionId);
+    const restoring = reconciledHost.restore();
+    let restoreTimeout: ReturnType<typeof setTimeout> | undefined;
+    const restoredBeforeCleanup = await Promise.race([
+      restoring.then(() => true),
+      new Promise<boolean>((resolve) => {
+        restoreTimeout = setTimeout(() => resolve(false), 5_000);
+        restoreTimeout.unref();
+      }),
+    ]);
+    if (restoreTimeout) clearTimeout(restoreTimeout);
+    destroyGate.release();
+    await destroyGate.entered;
+    await restoring;
+    assert.equal(restoredBeforeCleanup, true, "startup binding restore must not wait for Runtime cleanup");
+    await waitUntil(async () =>
+      (await store.listSessionHistory(conversation.id, agent.id))[0]?.cleanupStatus === "succeeded");
+    const current = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(current.runtimeSessionId, replacement.runtimeSessionId);
+    assert.equal(current.runtimeOwnerId, first.runtimeOwnerId);
+    assert.equal(current.generation, replacement.generation);
+    assert.ok(runtime.listings.every((ownerId) => ownerId === first.runtimeOwnerId));
+    history = await store.listSessionHistory(conversation.id, agent.id);
+    assert.equal(history[0]?.cleanupStatus, "succeeded");
+    assert.equal(history[0]?.retentionStatus, "destroyed");
+    assert.equal(history[0]?.cleanupAttemptCount, 2);
+    assert.equal(runtime.destructions.filter((sessionId) => sessionId === first.runtimeSessionId).length, 1);
+
+    await reconciledHost.stopConversationAgent(conversation.id, agent.id, owner.id);
+    history = await store.listSessionHistory(conversation.id, agent.id);
+    assert.equal(history[1]?.state, "retired");
+    assert.equal(history[1]?.retentionStatus, "destroyed");
+    assert.ok(runtime.destructions.includes(replacement.runtimeSessionId));
+  } finally {
+    await Promise.all([
+      initialHost?.close().catch(() => undefined),
+      resumedHost?.close().catch(() => undefined),
+      reconciledHost?.close().catch(() => undefined),
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+      rm(dataDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
 test("agent host starts isolated Conversation sessions with private roots and personas", async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-agent-host-source-")));
   const conversationServer = await createConversationHttpServer({ port: 0 });
@@ -2356,6 +2561,9 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     );
     await host.startConversationAgent(conversationA.id, agent.id, owner.id);
     await host.startConversationAgent(conversationB.id, agent.id, owner.id);
+    const firstHistory = await store.listSessionHistory(conversationA.id, agent.id);
+    assert.equal(firstHistory[0]?.mapping, "legacy_unmapped");
+    assert.equal(firstHistory[0]?.origin, "started");
     assert.deepEqual(runtime.starts.map(({ config }) => config), [
       {
         cwd: sourceDirectory,

@@ -1,6 +1,12 @@
 import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+export const localRuntimeOwners = sqliteTable("local_runtime_owners", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull().unique(),
+  createdAt: text("created_at").notNull(),
+});
+
 export const localWorkspaceConfigs = sqliteTable("local_workspace_config", {
   workspaceId: text("workspace_id").primaryKey(),
   rootUri: text("root_uri").notNull(),
@@ -130,6 +136,63 @@ export const deliveryDeadLetters = sqliteTable("delivery_dead_letters", {
     .on(table.conversationId, table.participantId, table.triggerSequence),
 ]);
 
+export const conversationAgentSessionHistory = sqliteTable("conversation_agent_session_history", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  agentIdentityId: text("agent_identity_id").notNull(),
+  workspaceAgentConfigId: text("workspace_agent_config_id").notNull(),
+  bindingId: text("binding_id").notNull(),
+  bindingGeneration: integer("binding_generation").notNull(),
+  runtimeAdapter: text("runtime_adapter").notNull(),
+  managedSessionId: text("managed_session_id"),
+  runtimeOwnerId: text("runtime_owner_id"),
+  legacyRuntimeSessionRef: text("legacy_runtime_session_ref"),
+  mapping: text("mapping", { enum: ["managed", "legacy_unmapped"] }).notNull(),
+  state: text("state", { enum: ["active", "retired"] }).notNull(),
+  origin: text("origin", {
+    enum: ["started", "resumed", "forked", "restored", "attached", "migrated"],
+  }).notNull(),
+  conversationSequenceAtActivation: integer("conversation_sequence_at_activation"),
+  conversationSequenceAtRetirement: integer("conversation_sequence_at_retirement"),
+  activatedAt: text("activated_at").notNull(),
+  retiredAt: text("retired_at"),
+  retirementReason: text("retirement_reason", {
+    enum: ["replaced", "stopped", "disabled", "conversation_retired", "recovered"],
+  }),
+  cleanupAction: text("cleanup_action", { enum: ["none", "suspend", "destroy"] }).notNull(),
+  cleanupStatus: text("cleanup_status", {
+    enum: ["not_required", "pending", "succeeded", "failed", "unknown"],
+  }).notNull(),
+  retentionStatus: text("retention_status", {
+    enum: ["retained", "destroy_pending", "destroyed"],
+  }).notNull(),
+  cleanupAttemptCount: integer("cleanup_attempt_count").notNull(),
+  lastCleanupAttemptAt: text("last_cleanup_attempt_at"),
+  lastObservedRuntimeStatus: text("last_observed_runtime_status", {
+    enum: ["idle", "working", "offline", "unknown"],
+  }),
+  lastVerifiedAt: text("last_verified_at"),
+  lastCleanupErrorCategory: text("last_cleanup_error_category", {
+    enum: ["runtime_unavailable", "session_unavailable", "operation_unsupported", "operation_failed"],
+  }),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("conversation_agent_session_history_binding_generation_unique")
+    .on(table.bindingId, table.bindingGeneration),
+  uniqueIndex("conversation_agent_session_history_active_route_unique")
+    .on(table.workspaceId, table.conversationId, table.agentIdentityId)
+    .where(sql`${table.state} = 'active'`),
+  uniqueIndex("conversation_agent_session_history_active_managed_session_unique")
+    .on(table.runtimeAdapter, table.runtimeOwnerId, table.managedSessionId)
+    .where(sql`${table.mapping} = 'managed' AND ${table.state} = 'active'`),
+  index("conversation_agent_session_history_route_idx")
+    .on(table.conversationId, table.agentIdentityId, table.activatedAt),
+  index("conversation_agent_session_history_cleanup_idx")
+    .on(table.cleanupStatus, table.updatedAt),
+]);
+
 export const conversationAgentBindings = sqliteTable("conversation_agent_bindings", {
   id: text("id").primaryKey(),
   workspaceAgentConfigId: text("workspace_agent_config_id").notNull()
@@ -140,6 +203,7 @@ export const conversationAgentBindings = sqliteTable("conversation_agent_binding
   executionEnvironmentId: text("execution_environment_id"),
   runtimeAdapter: text("runtime_adapter").notNull(),
   runtimeSessionId: text("runtime_session_id").notNull(),
+  runtimeOwnerId: text("runtime_owner_id"),
   generation: integer("generation").notNull(),
   state: text("state", { enum: ["connected", "offline", "replacing", "disabled"] }).notNull(),
   wakePolicy: text("wake_policy", {

@@ -1,10 +1,10 @@
 # Runtime session history and recovery
 
-**Status:** Proposed future work; not part of the current MVP implementation scope.
+**Status:** Phase 1 implemented and verified. MinuRuntime's owner-scoped managed-session lifecycle is merged in PR #7; this work adds private Channels history and cleanup reconciliation. Historical resume/fork UI and MinuSessionStore integration remain out of scope.
 
 ## BLUF
 
-MinuChannels should retain a private lifecycle record for every Runtime session activation instead of storing only the session currently bound to a Conversation agent. The current binding remains the authoritative routing pointer. Session history preserves retired native session ids for cleanup, diagnostics, later resume or fork operations, and optional recovery through MinuSessionStore.
+MinuChannels should retain a private lifecycle record for every Runtime session activation instead of storing only the session currently bound to a Conversation agent. The current binding remains the authoritative routing pointer and stores a stable Runtime-managed session ID plus the installation's stable owner scope. New history does not store harness-native IDs. Unmappable legacy references remain explicitly `legacy_unmapped` and are never passed to owner-scoped managed-session operations.
 
 Conversation messages remain the canonical shared transcript. Runtime session history is restricted execution metadata, not collaboration data, and MinuChannels must not copy harness transcripts or S3 objects into its database.
 
@@ -23,11 +23,11 @@ current binding ──────────────► current Runtime se
 
 ## Motivation
 
-`conversation_agent_bindings` currently stores the native `runtimeSessionId` required to route work. **New session** replaces that value and increments the binding generation. The old Runtime is then stopped on a best-effort basis.
+`conversation_agent_bindings` stores the session reference required to route work. For Runtime-managed sessions, that value is a stable managed ID scoped by a persistent opaque Runtime owner ID; the harness-native ID stays private to the adapter and can change on resume. **New session** replaces the managed ID and increments the binding generation. A private activation history preserves the old reference and makes cleanup durable.
 
 That is sufficient for current routing, but it has three limitations:
 
-1. Replacing a binding overwrites the only durable reference to the previous native session before cleanup is guaranteed to finish.
+1. Replacing a binding overwrites the only durable reference to the previous managed session before cleanup is guaranteed to finish.
 2. A crash or failed stop can leave an owned Runtime process without enough durable metadata for later cleanup.
 3. MinuChannels cannot later offer session inspection, resume, fork, or archive-assisted restoration because it no longer knows which native sessions belonged to the Conversation agent.
 
@@ -35,13 +35,14 @@ A durable history closes these gaps without changing the public Conversation mod
 
 ## Goals
 
-- Preserve each native Runtime session id that has been activated for a Conversation agent.
+- Preserve each stable Runtime-managed session ID and owner scope activated for a Conversation agent.
+- Preserve exact legacy binding references only as `legacy_unmapped`; never infer a managed identity from a legacy ID.
 - Keep the current binding as the fast, authoritative routing pointer.
 - Record binding generations so stale output remains fenced after replacement or recovery.
 - Make failed or interrupted retirement discoverable and retryable.
-- Support repeated activation of the same native session without rewriting history.
+- Support repeated activation of the same managed session without rewriting prior history.
 - Preserve enough lineage to add explicit resume, fork, and restore actions later.
-- Correlate a native session with MinuSessionStore without coupling Channels to S3 layout or credentials.
+- Leave a future path to correlate sessions with MinuSessionStore without coupling Channels to S3 layout or credentials.
 - Keep all Runtime identifiers and recovery metadata private to the agent host.
 
 ## Non-goals
@@ -50,19 +51,22 @@ A durable history closes these gaps without changing the public Conversation mod
 - Copying native harness transcripts into the Channels database.
 - Replacing MinuSessionStore as the owner of snapshots, checksums, object versions, retention, or S3 restoration.
 - Making an old harness session override the canonical Conversation transcript.
-- Automatically resuming an old session because the current session is offline.
+- Automatically reactivating a retired history entry. Opt-in startup resume of the existing current managed binding is a separate lifecycle operation.
 - Exposing native session ids, archive locations, local paths, or provider errors through public Conversation APIs, SSE, or audit values.
 - Requiring caller-selected native session ids such as `minu-channels-<uuid>`.
 
 ## Terms
 
-- **Native session id:** The identifier assigned or accepted by a harness, such as a Pi session id or Codex thread id.
-- **Runtime session:** A harness-owned execution context identified by Runtime adapter plus native session id.
+- **Runtime-managed session ID:** A stable opaque Runtime-generated ID that remains stable across suspend/resume and is used as the Channels routing reference.
+- **Runtime owner ID:** A stable opaque scope for the owning MinuChannels installation; it is required for managed-session enumeration, suspend, resume, and destroy.
+- **Native session id:** A private identifier assigned or accepted by a harness, such as a Pi worker session id or Codex thread id. It may change on resume and is not the durable identity.
+- **Runtime session:** A harness-owned execution context addressed by Runtime adapter, owner ID, and Runtime-managed session ID. Native IDs remain adapter-private.
+- **Legacy unmapped reference:** An exact pre-managed binding value retained privately when Channels cannot prove a managed-ID/owner mapping. It is not a managed ID.
 - **Binding:** The current `(workspaceId, conversationId, agentIdentityId)` routing record.
 - **Activation:** One binding generation during which a Runtime session was selected for that Conversation agent.
-- **Retirement:** Ending an activation and, for an owned live process, attempting to stop that process. Retirement does not delete the persisted native harness transcript.
-- **Resume:** Reopen the same persisted native session when the adapter and harness support it.
-- **Fork:** Create a new native session from an older session while preserving lineage.
+- **Retirement:** Ending an activation and reconciling the requested owner-scoped worker cleanup. Runtime metadata destruction does not delete the persisted native harness transcript.
+- **Resume:** Reopen the same persisted logical session under the same managed ID and owner scope; the native worker ID may change.
+- **Fork:** Create a new managed session from an older session while preserving lineage.
 - **Restore:** Recover native session material from an archive so an adapter can subsequently resume or fork it.
 
 ## Core invariants
@@ -71,27 +75,27 @@ A durable history closes these gaps without changing the public Conversation mod
 2. A binding generation identifies exactly one activation.
 3. Only the current binding generation may emit output into the Conversation.
 4. Retiring or restoring a session never rewinds, edits, or replaces the Conversation transcript.
-5. The native key is scoped by Runtime adapter and, when available, a stable harness/source installation id.
-6. The same retired native session may be activated again, but each activation receives a new binding generation and history row.
-7. A native session must not be active in two Conversation-agent routes at once unless a future adapter explicitly proves that sharing is safe. No current adapter does.
+5. A managed identity is scoped by Runtime adapter and the non-null Runtime owner ID for the owning Channels installation; a harness/source installation ID is a separate future correlation value.
+6. The same retired managed session may be activated again, but each activation receives a new binding generation and history row.
+7. A managed session must not be active in two Conversation-agent routes at once unless a future adapter explicitly proves that sharing is safe. No current adapter does.
 8. Cleanup failure is durable state, not a log-only event.
-9. Direct resume and fork are explicit owner/admin actions and fail closed when support cannot be verified.
+9. Historical resume and fork are explicit owner/admin actions and fail closed when support cannot be verified.
 
-## Proposed data model
+## Phase 1 data model
 
 ### Existing current binding
 
 `conversation_agent_bindings` remains the current routing record and continues to contain:
 
 - Workspace, Conversation, and agent identity ids;
-- Runtime adapter and native Runtime session id;
+- Runtime adapter and session reference (stable managed ID plus owner scope for new Runtime-managed sessions; older unmapped references remain private and legacy);
 - generation, state, wake policy, lease, and verification fields.
 
 The binding is intentionally not the historical record. Relay should not scan history to discover where to send current work.
 
-### New activation-history table
+### Activation-history table
 
-A future migration should add a private table named along the lines of `conversation_agent_session_history`:
+Migration `0011_runtime_session_history` adds the private `conversation_agent_session_history` table and persists one stable owner ID in `local_runtime_owners`:
 
 | Field | Purpose |
 | --- | --- |
@@ -102,21 +106,25 @@ A future migration should add a private table named along the lines of `conversa
 | `workspace_agent_config_id` | Configuration owner at activation time. |
 | `binding_id` | Binding whose generation created this activation. |
 | `binding_generation` | Fencing generation for this activation. |
-| `runtime_adapter` | Adapter that understands the native id. |
-| `runtime_session_id` | Opaque native Pi session/Codex thread id. |
-| `runtime_installation_id` | Optional stable harness installation scope when Runtime can supply one. |
+| `runtime_adapter` | Runtime adapter that owns or resolves the session reference. |
+| `managed_session_id` | Stable Runtime-managed ID; non-null only for `mapping = managed`. |
+| `runtime_owner_id` | Stable MinuChannels installation owner scope; required for managed IDs. |
+| `legacy_runtime_session_ref` | Exact private pre-managed binding reference for `legacy_unmapped`; never treated as a managed ID. |
+| `mapping` | `managed` or `legacy_unmapped`; selects which operations are safe. |
 | `origin` | `started`, `resumed`, `forked`, `restored`, `attached`, or `migrated`. |
-| `source_history_id` | Optional lineage link for resume, fork, or restore. |
 | `conversation_sequence_at_activation` | Conversation head when the activation became current. |
-| `conversation_sequence_at_retirement` | Conversation head when it stopped being current, if known. |
+| `conversation_sequence_at_retirement` | Optional retirement boundary; Phase 1 leaves it unset, and historical recovery must not rely on it yet. |
 | `activated_at` | Activation timestamp. |
 | `retired_at` | Timestamp at which the activation stopped being current. |
 | `retirement_reason` | `replaced`, `stopped`, `disabled`, `conversation_retired`, `recovered`, or another bounded value. |
-| `cleanup_status` | `not_required`, `pending`, `succeeded`, `failed`, or `unknown`. |
-| `cleanup_attempt_count` | Bounded retry/diagnostic counter. |
+| `cleanup_action` | `none`, `suspend`, or explicit `destroy` of Runtime resume metadata. |
+| `cleanup_status` | Worker/Runtime cleanup state: `not_required`, `pending`, `succeeded`, `failed`, or `unknown`. |
+| `retention_status` | `retained`, `destroy_pending`, or `destroyed`; retained history protects resume material. |
+| `cleanup_attempt_count` | Retry counter; startup reconciliation retries failures at most five times. |
 | `last_cleanup_attempt_at` | Last cleanup attempt timestamp. |
 | `last_observed_runtime_status` | `idle`, `working`, `offline`, or `unknown`. |
 | `last_verified_at` | Last bounded status verification time. |
+| `last_cleanup_error_category` | Bounded internal category; raw provider errors are never stored. |
 | `created_at`, `updated_at` | Storage timestamps. |
 
 Errors must be reduced to bounded internal categories. Raw provider errors, credentials, paths, prompts, and transcript content do not belong in this table.
@@ -124,13 +132,14 @@ Errors must be reduced to bounded internal categories. Raw provider errors, cred
 Recommended constraints and indexes:
 
 - unique `(binding_id, binding_generation)`;
-- one unretired activation per `(workspace_id, conversation_id, agent_identity_id)`;
-- one unretired activation per scoped `(runtime_adapter, runtime_installation_id, runtime_session_id)`;
-- route-history index on `(conversation_id, agent_identity_id, activated_at)`;
-- cleanup index on `(cleanup_status, updated_at)`; and
-- lineage index on `source_history_id`.
+- one active activation per `(workspace_id, conversation_id, agent_identity_id)`;
+- one active managed activation per `(runtime_adapter, runtime_owner_id, managed_session_id)`;
+- route-history index on `(conversation_id, agent_identity_id, activated_at)`; and
+- cleanup index on `(cleanup_status, updated_at)`.
 
-SQLite nullable uniqueness needs deliberate handling. Until Runtime exposes a stable installation id, the local agent-host installation should supply a non-null local scope key rather than relying on `NULL` inside a uniqueness constraint.
+Managed history rows require non-null managed ID and owner scope. The local Relay database creates and preserves the opaque owner ID. Partial uniqueness applies only to active managed IDs so a retired session can later receive a new activation row. Legacy rows have neither owner nor managed ID and are excluded from managed operations.
+
+Phase 1 deliberately does not persist native IDs, source installation IDs, or lineage links; these are future archive/resume concerns, not routing identity.
 
 ### Optional later normalization
 
@@ -138,7 +147,7 @@ The first implementation may keep one row per activation. If multiple archive pr
 
 ```text
 runtime_sessions
-  one row per adapter + installation + native session id
+  one row per adapter + Runtime owner ID + managed session ID
 
 conversation_agent_session_activations
   one row per binding generation using a runtime_sessions row
@@ -151,61 +160,59 @@ Do not introduce that split before it solves a concrete integration need. The li
 ### Start first session
 
 1. Resolve and validate the Workspace agent configuration.
-2. Start the Runtime and receive its native session id.
-3. In one private-store transaction:
-   - create the current binding at generation 1; and
-   - insert the matching active history row.
-4. Advance the Relay cursor to the intended Conversation boundary.
+2. Start the Runtime with `startManaged(config, ownerId)` and receive its stable managed-session ID. The owner ID is generated and persisted by the local Relay store; the native harness ID remains private to Runtime.
+3. Snapshot the Conversation head and advance the Relay cursor to that boundary.
+4. In one private-store transaction, create the current binding at generation 1 and insert its matching active history row.
 5. Lease, verify, and attach the binding.
-6. If persistence fails after Runtime startup, best-effort stop the unbound owned Runtime and emit a bounded internal diagnostic.
+6. If persistence fails after Runtime startup, best-effort destroy the unbound managed Runtime; when a binding/history row exists, persist cleanup outcome for retry.
 
 ### Replace with New session
 
 1. Require the existing binding to be idle and verify the expected binding generation.
 2. Start the replacement Runtime.
 3. In one private-store transaction:
-   - mark the old activation retired with cleanup `pending`;
-   - compare-and-swap the binding to the new native id and increment its generation; and
+   - mark the old activation retired with cleanup `pending` and retention `destroy_pending` because **New session** explicitly discards its Runtime resume metadata;
+   - compare-and-swap the binding to the new managed-session ID and increment its generation; and
    - insert the new active history row.
 4. Attach and verify the new generation.
-5. Stop the old owned Runtime.
-6. Mark old-session cleanup `succeeded` or `failed` without changing the new current binding.
+5. Destroy the old Runtime-managed registration through its exact owner scope. Runtime destruction preserves the harness transcript.
+6. Mark old-session cleanup `succeeded` and retention `destroyed`, or leave it durably retryable on failure, without changing the new current binding.
 
-A crash after step 3 leaves a durable pending-cleanup record. Startup reconciliation can safely finish the retirement instead of losing the old native session id.
+A crash after step 3 leaves a durable `destroy_pending` record with the old managed ID and owner scope. Startup reconciliation can safely finish destruction without changing the new current binding.
 
 ### Stop or retire an agent
 
 1. Fence new work by incrementing/disabling the current binding according to the existing lifecycle contract.
-2. Retire the active history row and mark cleanup pending when Channels owns a reachable process.
-3. Attempt bounded Runtime stop.
-4. Persist the cleanup result.
-
-Stopping a process must not be represented as deleting the persisted harness session. A stopped Pi worker, for example, may still have a resumable session file or a Session Store archive.
+2. Retire the active history row transactionally and mark cleanup `pending` plus retention `destroy_pending` for explicit Stop.
+3. Attempt owner-scoped Runtime `destroy`; this removes Runtime resume metadata but preserves the persisted harness transcript.
+4. Persist the cleanup and retention result. A failed destroy remains `destroy_pending` for bounded retry.
 
 ### Startup reconciliation
 
-On agent-host startup:
+On agent-host startup, queue a bounded cleanup batch in the background so current-binding restoration and the local control server are not held behind retirement work:
 
 - restore only the current bindings through the existing lease and generation rules;
 - scan a bounded batch of `pending` or retryable `failed` cleanup records;
-- verify status with adapter timeouts;
-- stop only sessions known to be owned and safe to stop;
-- treat confirmed offline sessions as cleanup-complete for process retirement; and
-- retain history even when the native process or local session material is unavailable.
+- verify owner scope with adapter timeouts;
+- suspend retained sessions and destroy only rows already marked `destroy_pending`;
+- retry owner-scoped destroy when an explicit destroy intent lists an unavailable session, including Runtime metadata left mid-destroy by a crash;
+- treat a confirmed absent or suspended session as worker-cleanup complete, marking retention destroyed only after explicit destroy intent is reconciled;
+- retry bounded cleanup failures without changing the current binding; and
+- retain history even when Runtime metadata or resume material is unavailable.
 
 Reconciliation must never reactivate a historical session automatically.
 
 ## Resume, fork, and restore
 
-History enables these actions but does not by itself implement them. MinuRuntime will need explicit adapter contracts.
+History enables historical recovery actions but does not by itself implement them. Phase 1 uses MinuRuntime's owner-scoped managed-session contract for starts, current-session resume, retirement, and cleanup; historical-session fork/restore actions remain future work.
 
 ### Runtime contract direction
 
 A future harness-neutral contract should distinguish:
 
 - reconnecting to an already running process;
-- resuming a persisted native session;
-- forking a persisted native session; and
+- resuming a persisted logical session under the same managed ID and owner scope;
+- forking a persisted session into a new managed ID; and
 - importing or opening restored native session material.
 
 Illustrative API only:
@@ -213,8 +220,8 @@ Illustrative API only:
 ```ts
 interface RuntimeSessionRef {
   runtime: string;
-  sessionId: string;
-  installationId?: string;
+  managedSessionId: string;
+  runtimeOwnerId: string;
 }
 
 interface AgentRuntime {
@@ -223,14 +230,14 @@ interface AgentRuntime {
 }
 ```
 
-The final Runtime design must define adapter capabilities, ownership, idempotency, startup failure behavior, and whether resume returns the same native id while fork returns a new one. An absent method or failed capability check means unavailable, not unsupported by inference.
+MinuRuntime now defines owner-scoped `startManaged`, `listManagedSessions`, `resume`, `suspend`, and `destroy`. Resume returns the same managed ID even when the native worker ID changes. Historical-session fork remains future work. An absent method or failed owner-scope check means unavailable, not permission to fall back to an unscoped managed operation.
 
 ### Conservative recovery policy
 
 - Prefer **fork** when the Conversation has advanced since the old activation retired.
 - Permit direct **resume** only after explicit confirmation and an adapter verification that the native session is available.
 - Before activation, require current Conversation-agent work to be idle or stopped.
-- Create a new binding generation even when direct resume reuses the same native id.
+- Create a new binding generation even when direct resume reuses the same managed ID. Retirement-sequence capture remains a Phase 1 limitation.
 - Set `source_history_id` on the new activation.
 - Advance the Relay cursor to the current Conversation head so historical messages are not replayed as new work.
 - Provide a bounded handoff/current-context brief when the old harness context may be stale.
@@ -240,11 +247,13 @@ The Conversation transcript wins if harness context and Conversation state disag
 
 ## MinuSessionStore integration
 
-MinuSessionStore currently catalogs native sessions by owner, source installation, harness, and external session id, and stores immutable raw snapshots separately. Channels history can correlate with that catalog using:
+MinuSessionStore currently catalogs native sessions by owner, source installation, harness, and external session id, and stores immutable raw snapshots separately. A future Channels integration may correlate with that catalog using:
 
 - Runtime adapter/harness;
-- native session id (`externalId` in Session Store); and
-- source installation id when available.
+- a verified native session reference made available through a narrow Runtime capability; and
+- source installation id when available. This is separate from the Runtime owner scope.
+
+Phase 1 does not store native IDs or source-installation IDs and does not query MinuSessionStore.
 
 Channels should integrate through an authenticated local capability or narrow service interface, not by reading Session Store tables or constructing S3 keys directly.
 
@@ -278,7 +287,7 @@ Session history is internal execution state under the existing product boundary.
 
 ## Retention and deletion
 
-Lifecycle metadata is small and should initially be retained for the lifetime of its Workspace or Conversation. Runtime transcript retention remains a harness and MinuSessionStore concern.
+Lifecycle metadata is small and should initially be retained for the lifetime of its Workspace or Conversation. Retained history is never orphan-cleaned or deleted by Phase 1; only explicit `destroy_pending` intent removes Runtime resume metadata. Runtime transcript retention remains a harness and MinuSessionStore concern.
 
 Future deletion policy must distinguish:
 
@@ -289,21 +298,31 @@ Future deletion policy must distinguish:
 
 No Channels action should cascade into archive deletion without a separate, explicit, provider-owned confirmation flow.
 
+## Delivery order and prerequisite
+
+1. **Runtime managed-session proof — complete:** stable managed IDs, exact owner scope, same-ID resume, suspend, and metadata-only destruction are implemented in MinuRuntime PR #7.
+2. **History Phase 1 — implemented and verified:** private transactional activation/retirement records, managed-ID and owner persistence, explicit `legacy_unmapped` migration, and durable cleanup reconciliation. Restore UI and MinuSessionStore integration remain out of scope.
+3. **Opt-in idle sleep/wake — deferred:** begin only after Phase 1 history persistence and cleanup behavior are verified; Workspaces remain opted out initially.
+
+Do not use legacy native references as managed IDs or pass them to owner-scoped Runtime operations. Cleanup that destroys Runtime metadata must be represented as durable `destroy_pending` intent, distinct from history retention or transcript deletion.
+
 ## Rollout plan
 
 ### Phase 1 — Durable lifecycle history
 
-- Add activation-history persistence and migrations.
-- Transactionally dual-write binding changes and history.
-- Add pending-retirement reconciliation.
+- Add private activation-history persistence and migrations.
+- Transactionally dual-write binding creation, replacement, and retirement with history.
+- Persist a stable local Runtime owner scope and use stable managed IDs for Pi production sessions; adapters without the managed contract remain explicitly `legacy_unmapped`.
+- Mark old unmappable references `legacy_unmapped`, preserving their exact private value without inferring owner scope.
+- Reconcile pending suspend/destroy work in a bounded startup batch, without changing current bindings.
 - Keep all existing UI and public contracts unchanged.
 
-### Phase 2 — Runtime resume and fork
+### Phase 2 — Historical resume and fork
 
-- Define and version MinuRuntime capabilities and methods.
-- Implement Pi support first if its native session contract remains stable.
-- Implement native Codex support independently when a Codex Runtime adapter exists.
-- Add owner/admin local actions with generation fencing and confirmation.
+- Build on the owner-scoped MinuRuntime lifecycle contract proven in PR #7 and used by Phase 1.
+- Add owner/admin actions for retired history with generation fencing and confirmation.
+- Implement historical Pi recovery first if its native session contract remains stable.
+- Implement Codex support independently when a Codex Runtime adapter exists.
 
 ### Phase 3 — MinuSessionStore bridge
 
@@ -319,9 +338,9 @@ No Channels action should cascade into archive deletion without a separate, expl
 
 ## Migration and compatibility
 
-The Phase 1 migration should create one `migrated` active history row for every existing non-disabled current binding. Unknown activation sequence or verification data remains null/unknown; it must not be invented.
+Migration `0011_runtime_session_history` creates one `migrated` history row per existing binding. It marks every pre-managed reference `legacy_unmapped`, copies that exact value only to the private `legacy_runtime_session_ref`, and leaves managed ID and owner scope null. Unknown activation sequence, ownership, and verification data remains null; no mapping is invented. Legacy rows are excluded from managed-session listing, resume, suspend, and destroy.
 
-During a staged rollout, existing `runtime_adapter` and `runtime_session_id` binding columns remain the routing source of truth. History writes must occur in the same storage transaction as binding creation, replacement, or retirement. If the storage adapter cannot provide that transaction, it is not ready for the feature.
+For new Runtime-managed sessions, `runtime_session_id` in the current binding is the stable managed ID and `runtime_owner_id` records the local installation scope. History writes occur in the same SQLite transaction as binding creation, replacement, disablement, or deletion. The database keeps history after current binding deletion; only the current binding routes Relay work.
 
 Older binaries must not run against a schema they cannot safely maintain. Normal product migration backup and compatibility rules continue to apply.
 
@@ -331,13 +350,14 @@ At minimum, automated tests must prove:
 
 - first start creates exactly one current binding and matching generation-1 history row;
 - concurrent replacement attempts allow only one generation transition;
-- replacement retains the previous native session id before attempting stop;
-- stop failure remains durably retryable after process restart;
+- replacement retains the previous managed ID and owner scope before attempting owner-scoped destroy;
+- stop/destroy failure remains durably retryable after process restart;
 - successful reconciliation never changes the current binding;
-- reactivating the same retired native session creates a new generation and history row;
+- resuming the existing managed binding preserves its managed ID and owner scope; historical reactivation creates a distinct generation/history row;
 - stale generations cannot deliver messages after resume, fork, or restore;
 - unsupported adapter operations fail without mutating the binding;
-- migration backfills current bindings without exposing private ids;
+- migration preserves unmappable legacy references as `legacy_unmapped` without inferring managed IDs or owner scope;
+- private history and native/runtime identifiers are absent from public APIs, SSE, and audit values;
 - sanitized APIs and audit events contain no native ids, source ids, paths, transcript data, archive keys, or raw errors; and
 - archive restore failure cannot create a partially active binding.
 
@@ -355,10 +375,10 @@ A genuine integration proof should cover:
 
 Resolve these only when the corresponding phase is promoted:
 
-1. Which stable installation identifier should MinuRuntime expose, and how should it align with MinuSessionStore's source installation id?
+1. Which optional source-installation identifier should be used for MinuSessionStore correlation? It remains distinct from the already-required Runtime owner ID.
 2. Should direct resume be allowed after any Conversation divergence, or should divergence always require fork?
 3. Does restored native material keep its original native id or receive a new import id per adapter?
-4. What bounded retry policy should pending cleanup use before requiring explicit operator action?
+4. What operator action should be available after the bounded five-attempt cleanup retry budget is exhausted?
 5. Should launch-profile snapshots be retained for display/reproducibility, or should recovered sessions always use current Workspace-agent configuration?
 6. When should the one-table activation model be normalized into separate Runtime-session identity and activation tables?
 7. What explicit user flow governs deletion of local session material or archived S3 versions?

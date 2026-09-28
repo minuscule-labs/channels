@@ -1,4 +1,5 @@
 import { createResourceId, type ConversationClient } from "@minu/channels-core";
+import { randomUUID } from "node:crypto";
 import type {
   AgentConversationBinding,
   AgentRuntimePort,
@@ -63,7 +64,10 @@ export interface ConversationAgentBindingRecord {
   agentIdentityId: string;
   executionEnvironmentId?: string;
   runtimeAdapter: string;
+  /** Runtime-managed stable id when runtimeOwnerId is present; otherwise a legacy adapter id. */
   runtimeSessionId: string;
+  /** Stable opaque owner scope for Runtime-managed sessions. */
+  runtimeOwnerId?: string;
   generation: number;
   state: ConversationAgentBindingState;
   wakePolicy: WakePolicy;
@@ -72,6 +76,63 @@ export interface ConversationAgentBindingRecord {
   lastVerifiedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export type RuntimeSessionHistoryMapping = "managed" | "legacy_unmapped";
+export type RuntimeSessionHistoryState = "active" | "retired";
+export type RuntimeSessionHistoryOrigin = "started" | "resumed" | "forked" | "restored" | "attached" | "migrated";
+export type RuntimeSessionRetirementReason = "replaced" | "stopped" | "disabled" | "conversation_retired" | "recovered";
+export type RuntimeSessionCleanupAction = "none" | "suspend" | "destroy";
+export type RuntimeSessionCleanupStatus = "not_required" | "pending" | "succeeded" | "failed" | "unknown";
+export type RuntimeSessionRetentionStatus = "retained" | "destroy_pending" | "destroyed";
+export type RuntimeSessionCleanupErrorCategory =
+  | "runtime_unavailable"
+  | "session_unavailable"
+  | "operation_unsupported"
+  | "operation_failed";
+
+/** Private activation metadata. Legacy native ids are intentionally not copied into this history. */
+export interface RuntimeSessionHistoryRecord {
+  id: string;
+  workspaceId: string;
+  conversationId: string;
+  agentIdentityId: string;
+  workspaceAgentConfigId: string;
+  bindingId: string;
+  bindingGeneration: number;
+  runtimeAdapter: string;
+  managedSessionId?: string;
+  runtimeOwnerId?: string;
+  /** Exact legacy binding reference; never passed to owner-scoped Runtime-managed operations. */
+  legacyRuntimeSessionRef?: string;
+  mapping: RuntimeSessionHistoryMapping;
+  state: RuntimeSessionHistoryState;
+  origin: RuntimeSessionHistoryOrigin;
+  conversationSequenceAtActivation?: number;
+  conversationSequenceAtRetirement?: number;
+  activatedAt: string;
+  retiredAt?: string;
+  retirementReason?: RuntimeSessionRetirementReason;
+  cleanupAction: RuntimeSessionCleanupAction;
+  cleanupStatus: RuntimeSessionCleanupStatus;
+  retentionStatus: RuntimeSessionRetentionStatus;
+  cleanupAttemptCount: number;
+  lastCleanupAttemptAt?: string;
+  lastObservedRuntimeStatus?: "idle" | "working" | "offline" | "unknown";
+  lastVerifiedAt?: string;
+  lastCleanupErrorCategory?: RuntimeSessionCleanupErrorCategory;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeSessionCleanupAttempt {
+  bindingId: string;
+  bindingGeneration: number;
+  outcome: "succeeded" | "failed";
+  attemptedAt: string;
+  observedRuntimeStatus: "idle" | "working" | "offline" | "unknown";
+  errorCategory?: RuntimeSessionCleanupErrorCategory;
+  retentionOutcome?: "retained" | "destroyed";
 }
 
 export interface DeliveryDeadLetterRecord {
@@ -127,9 +188,16 @@ export interface RelayBindingStore extends RelayCursorStore {
     agentIdentityId: string,
   ): Promise<WorkspaceAgentConfig | undefined>;
   listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]>;
-  putBinding(binding: ConversationAgentBindingRecord): Promise<ConversationAgentBindingRecord>;
+  getOrCreateRuntimeOwnerId(): Promise<string>;
+  putBinding(
+    binding: ConversationAgentBindingRecord,
+    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+  ): Promise<ConversationAgentBindingRecord>;
   getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined>;
   deleteBinding(bindingId: string): Promise<void>;
+  listSessionHistory(conversationId: string, agentIdentityId?: string): Promise<RuntimeSessionHistoryRecord[]>;
+  listPendingSessionCleanups(limit: number): Promise<RuntimeSessionHistoryRecord[]>;
+  recordSessionCleanupAttempt(input: RuntimeSessionCleanupAttempt): Promise<void>;
   listConversationBindings(conversationId: string): Promise<ConversationAgentBindingRecord[]>;
   listWorkspaceBindings(workspaceId: string): Promise<ConversationAgentBindingRecord[]>;
   acquireBindingLease(
@@ -160,6 +228,8 @@ export interface RelayBindingStore extends RelayCursorStore {
     runtimeAdapter: string,
     runtimeSessionId: string,
     updatedAt: string,
+    runtimeOwnerId?: string,
+    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
   ): Promise<ConversationAgentBindingRecord | undefined>;
   disableBinding(
     bindingId: string,
@@ -172,6 +242,12 @@ export interface RelayBindingStore extends RelayCursorStore {
   commitDeliveryDeadLetter(input: DeliveryDeadLetterInput): Promise<void>;
   listDeliveryDeadLetters(conversationId: string, participantId: string): Promise<DeliveryDeadLetterRecord[]>;
   close?(): Promise<void> | void;
+}
+
+function validateRuntimeOwnerScope(runtimeOwnerId: string | undefined): void {
+  if (runtimeOwnerId !== undefined && !runtimeOwnerId.trim()) {
+    throw new Error("Runtime owner scope must not be empty");
+  }
 }
 
 function copyWorkspaceConfig(config: LocalWorkspaceConfig): LocalWorkspaceConfig {
@@ -230,6 +306,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   private readonly conversationWorkingFolders = new Map<string, ConversationWorkingFolder[]>();
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
   private readonly bindings = new Map<string, ConversationAgentBindingRecord>();
+  private readonly sessionHistory = new Map<string, RuntimeSessionHistoryRecord>();
+  private runtimeOwnerId: string | undefined;
   private readonly cursors = new Map<string, number>();
   private readonly turnFailures = new Map<string, TurnFailureDiagnosticRecord>();
   /** Private recovery marker for a pending record evicted from the safe 100-row projection. */
@@ -300,7 +378,16 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       .map((config) => ({ ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined }));
   }
 
-  async putBinding(binding: ConversationAgentBindingRecord): Promise<ConversationAgentBindingRecord> {
+  async getOrCreateRuntimeOwnerId(): Promise<string> {
+    this.runtimeOwnerId ??= randomUUID();
+    return this.runtimeOwnerId;
+  }
+
+  async putBinding(
+    binding: ConversationAgentBindingRecord,
+    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+  ): Promise<ConversationAgentBindingRecord> {
+    validateRuntimeOwnerScope(binding.runtimeOwnerId);
     if (this.bindings.has(binding.id)) throw new Error("Conversation agent binding id already exists");
     const duplicate = [...this.bindings.values()].find(
       (candidate) => candidate.id !== binding.id
@@ -316,8 +403,75 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
         && candidate.state !== "disabled",
     );
     if (sessionOwner) throw new Error("Runtime session is already bound");
+    this.assertManagedSessionReusable(binding);
     this.bindings.set(binding.id, copyBinding(binding));
+    this.createSessionActivation(binding, activation);
     return copyBinding(binding);
+  }
+
+  private assertManagedSessionReusable(binding: ConversationAgentBindingRecord): void {
+    if (binding.runtimeOwnerId === undefined) return;
+    const retired = [...this.sessionHistory.values()].find((record) =>
+      record.mapping === "managed"
+      && record.state === "retired"
+      && record.runtimeAdapter === binding.runtimeAdapter
+      && record.runtimeOwnerId === binding.runtimeOwnerId
+      && record.managedSessionId === binding.runtimeSessionId
+      && (record.retentionStatus !== "retained"
+        || record.cleanupStatus === "pending"
+        || record.cleanupStatus === "failed"));
+    if (retired) throw new Error("Managed session cleanup is still pending");
+  }
+
+  private createSessionActivation(
+    binding: ConversationAgentBindingRecord,
+    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+  ): void {
+    const managed = binding.runtimeOwnerId !== undefined;
+    const record: RuntimeSessionHistoryRecord = {
+      id: randomUUID(),
+      workspaceId: binding.workspaceId,
+      conversationId: binding.conversationId,
+      agentIdentityId: binding.agentIdentityId,
+      workspaceAgentConfigId: binding.workspaceAgentConfigId,
+      bindingId: binding.id,
+      bindingGeneration: binding.generation,
+      runtimeAdapter: binding.runtimeAdapter,
+      managedSessionId: managed ? binding.runtimeSessionId : undefined,
+      runtimeOwnerId: managed ? binding.runtimeOwnerId : undefined,
+      legacyRuntimeSessionRef: managed ? undefined : binding.runtimeSessionId,
+      mapping: managed ? "managed" : "legacy_unmapped",
+      state: "active",
+      origin: activation?.origin ?? (managed ? "started" : "migrated"),
+      conversationSequenceAtActivation: activation?.conversationSequence,
+      activatedAt: binding.updatedAt,
+      cleanupAction: "none",
+      cleanupStatus: managed ? "not_required" : "unknown",
+      retentionStatus: "retained",
+      cleanupAttemptCount: 0,
+      createdAt: binding.updatedAt,
+      updatedAt: binding.updatedAt,
+    };
+    this.sessionHistory.set(`${binding.id}\0${binding.generation}`, record);
+  }
+
+  private retireSessionActivation(
+    binding: ConversationAgentBindingRecord,
+    timestamp: string,
+    reason: RuntimeSessionRetirementReason,
+  ): void {
+    const record = this.sessionHistory.get(`${binding.id}\0${binding.generation}`);
+    if (!record || record.state !== "active") return;
+    record.state = "retired";
+    record.retiredAt = timestamp;
+    record.retirementReason = reason;
+    const destructionRequested = reason === "replaced" || reason === "stopped";
+    record.cleanupAction = record.mapping === "managed"
+      ? destructionRequested ? "destroy" : "suspend"
+      : "none";
+    record.cleanupStatus = record.mapping === "managed" ? "pending" : "unknown";
+    if (record.mapping === "managed" && destructionRequested) record.retentionStatus = "destroy_pending";
+    record.updatedAt = timestamp;
   }
 
   async getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined> {
@@ -326,7 +480,46 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   }
 
   async deleteBinding(bindingId: string): Promise<void> {
+    const binding = this.bindings.get(bindingId);
+    if (binding) this.retireSessionActivation(binding, new Date().toISOString(), "recovered");
     this.bindings.delete(bindingId);
+  }
+
+  async listSessionHistory(
+    conversationId: string,
+    agentIdentityId?: string,
+  ): Promise<RuntimeSessionHistoryRecord[]> {
+    return [...this.sessionHistory.values()]
+      .filter((record) => record.conversationId === conversationId
+        && (!agentIdentityId || record.agentIdentityId === agentIdentityId))
+      .sort((left, right) => left.activatedAt.localeCompare(right.activatedAt))
+      .map((record) => ({ ...record }));
+  }
+
+  async listPendingSessionCleanups(limit: number): Promise<RuntimeSessionHistoryRecord[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new RangeError("Session cleanup limit must be between 1 and 100");
+    }
+    return [...this.sessionHistory.values()]
+      .filter((record) => record.state === "retired" && record.cleanupAction !== "none"
+        && (record.cleanupStatus === "pending"
+          || (record.cleanupStatus === "failed" && record.cleanupAttemptCount < 5)))
+      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
+      .slice(0, limit)
+      .map((record) => ({ ...record }));
+  }
+
+  async recordSessionCleanupAttempt(input: RuntimeSessionCleanupAttempt): Promise<void> {
+    const record = this.sessionHistory.get(`${input.bindingId}\0${input.bindingGeneration}`);
+    if (!record || record.state !== "retired" || record.cleanupAction === "none") return;
+    record.cleanupAttemptCount += 1;
+    record.lastCleanupAttemptAt = input.attemptedAt;
+    record.lastObservedRuntimeStatus = input.observedRuntimeStatus;
+    record.cleanupStatus = input.outcome;
+    if (input.retentionOutcome) record.retentionStatus = input.retentionOutcome;
+    record.lastCleanupErrorCategory = input.outcome === "failed" ? input.errorCategory : undefined;
+    record.lastVerifiedAt = input.attemptedAt;
+    record.updatedAt = input.attemptedAt;
   }
 
   async listConversationBindings(conversationId: string): Promise<ConversationAgentBindingRecord[]> {
@@ -408,9 +601,12 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     runtimeAdapter: string,
     runtimeSessionId: string,
     updatedAt: string,
+    runtimeOwnerId?: string,
+    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
+    validateRuntimeOwnerScope(runtimeOwnerId);
     const sessionOwner = [...this.bindings.values()].find(
       (candidate) => candidate.id !== bindingId
         && candidate.runtimeAdapter === runtimeAdapter
@@ -418,15 +614,29 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
         && candidate.state !== "disabled",
     );
     if (sessionOwner) throw new Error("Runtime session is already bound");
+    if (runtimeOwnerId && binding.runtimeOwnerId === runtimeOwnerId
+      && binding.runtimeAdapter === runtimeAdapter
+      && binding.runtimeSessionId === runtimeSessionId) {
+      throw new Error("A managed session cannot be replaced by its current identity");
+    }
+    this.assertManagedSessionReusable({
+      ...binding,
+      runtimeAdapter,
+      runtimeSessionId,
+      runtimeOwnerId,
+    });
+    this.retireSessionActivation(binding, updatedAt, "replaced");
     binding.runtimeAdapter = runtimeAdapter;
     binding.runtimeSessionId = runtimeSessionId;
+    binding.runtimeOwnerId = runtimeOwnerId;
     binding.generation += 1;
+    binding.updatedAt = updatedAt;
+    this.createSessionActivation(binding, activation);
     // Remain visibly uncertain until the new session is leased, verified, and attached.
     binding.state = "replacing";
     delete binding.leaseOwner;
     delete binding.leaseExpiresAt;
     delete binding.lastVerifiedAt;
-    binding.updatedAt = updatedAt;
     return copyBinding(binding);
   }
 
@@ -532,6 +742,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
+    this.retireSessionActivation(binding, updatedAt, "stopped");
     binding.generation += 1;
     binding.state = "disabled";
     delete binding.leaseOwner;
@@ -681,11 +892,15 @@ export class LocalRelayDirectory {
     agentIdentityId: string;
     runtimeAdapter: string;
     runtimeSessionId: string;
+    runtimeOwnerId?: string;
+    conversationSequenceAtActivation?: number;
+    origin?: RuntimeSessionHistoryOrigin;
     wakePolicy?: WakePolicy;
   }): Promise<ConversationAgentBindingRecord> {
     if (!input.runtimeAdapter.trim() || !input.runtimeSessionId.trim()) {
       throw new Error("Runtime adapter and session id are required");
     }
+    validateRuntimeOwnerScope(input.runtimeOwnerId);
     const conversation = await this.client.getConversation(input.conversationId);
     const participant = conversation.participants.find(({ id }) => id === input.agentIdentityId);
     if (!participant || (participant.type !== "agent" && participant.type !== "service")) {
@@ -710,11 +925,15 @@ export class LocalRelayDirectory {
       agentIdentityId: input.agentIdentityId,
       runtimeAdapter: input.runtimeAdapter,
       runtimeSessionId: input.runtimeSessionId,
+      runtimeOwnerId: input.runtimeOwnerId,
       generation: 1,
       state: "connected",
       wakePolicy: input.wakePolicy ?? "mentions",
       createdAt: timestamp,
       updatedAt: timestamp,
+    }, {
+      origin: input.origin ?? (input.runtimeOwnerId ? "started" : "attached"),
+      conversationSequence: input.conversationSequenceAtActivation,
     });
   }
 
@@ -723,6 +942,9 @@ export class LocalRelayDirectory {
     expectedGeneration: number;
     runtimeAdapter: string;
     runtimeSessionId: string;
+    runtimeOwnerId?: string;
+    conversationSequenceAtActivation?: number;
+    origin?: RuntimeSessionHistoryOrigin;
   }): Promise<ConversationAgentBindingRecord> {
     const replaced = await this.store.replaceBindingSession(
       input.bindingId,
@@ -730,6 +952,11 @@ export class LocalRelayDirectory {
       input.runtimeAdapter,
       input.runtimeSessionId,
       this.now().toISOString(),
+      input.runtimeOwnerId,
+      {
+        origin: input.origin ?? (input.runtimeOwnerId ? "started" : "attached"),
+        conversationSequence: input.conversationSequenceAtActivation,
+      },
     );
     if (!replaced) throw new Error("Binding generation changed; reload before replacing the session");
     return replaced;
@@ -962,6 +1189,55 @@ export async function restoreConversationBindings(
       outcomes.set(leased.id, "runtime_unavailable");
       await release();
       continue;
+    }
+    if (leased.runtimeOwnerId !== undefined) {
+      if (!leased.runtimeOwnerId.trim()) {
+        outcomes.set(leased.id, "invalid_binding");
+        await release();
+        continue;
+      }
+      if (!runtime.listManagedSessions) {
+        outcomes.set(leased.id, "runtime_unavailable");
+        await release();
+        continue;
+      }
+      let managedSessions: Awaited<ReturnType<NonNullable<AgentRuntimePort["listManagedSessions"]>>>;
+      let listingTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        managedSessions = await Promise.race([
+          runtime.listManagedSessions(leased.runtimeOwnerId),
+          new Promise<never>((_resolve, reject) => {
+            listingTimer = setTimeout(() => reject(new Error("Runtime session listing timed out")), statusTimeoutMs);
+            listingTimer.unref();
+          }),
+        ]);
+      } catch {
+        outcomes.set(leased.id, "runtime_uncertain");
+        await release();
+        continue;
+      } finally {
+        if (listingTimer) clearTimeout(listingTimer);
+      }
+      const ownedSession = managedSessions.find((session) =>
+        session.id === leased.runtimeSessionId && session.ownerId === leased.runtimeOwnerId);
+      if (!ownedSession) {
+        outcomes.set(leased.id, "runtime_offline");
+        await options.store.updateBindingState(
+          leased.id,
+          leased.generation,
+          options.leaseOwner,
+          "offline",
+          leased.lastVerifiedAt,
+          now().toISOString(),
+        );
+        await release();
+        continue;
+      }
+      if (ownedSession.state === "unavailable") {
+        outcomes.set(leased.id, "runtime_uncertain");
+        await release();
+        continue;
+      }
     }
     let status: "idle" | "working" | "offline" | "uncertain";
     try {
