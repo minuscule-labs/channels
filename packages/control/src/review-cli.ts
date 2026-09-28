@@ -45,6 +45,10 @@ async function loadPiRuntime(specifier?: string): Promise<LocalReviewManagedRunt
     || typeof runtime.messages !== "function") {
     throw new Error("Pi Runtime module does not provide managed execution capabilities");
   }
+  if (typeof runtime.startManaged !== "function" || typeof runtime.listManagedSessions !== "function"
+    || typeof runtime.resume !== "function" || typeof runtime.suspend !== "function" || typeof runtime.destroy !== "function") {
+    throw new Error("Pi Runtime module does not provide owner-scoped managed-session lifecycle capabilities");
+  }
   return {
     adapter: "pi",
     runtime,

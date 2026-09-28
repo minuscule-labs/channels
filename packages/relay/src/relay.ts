@@ -23,7 +23,21 @@ export interface RuntimeActivityEvent {
   observedAt: string;
 }
 
+export interface ManagedRuntimeSessionRef {
+  id: string;
+  ownerId: string;
+}
+
+export interface ManagedRuntimeSessionSummary {
+  id: string;
+  ownerId: string;
+  state: "active" | "suspended" | "unavailable";
+}
+
 export interface AgentRuntimePort {
+  /** Owner-scoped operations for Runtime-managed sessions; absent on legacy adapters. */
+  listManagedSessions?(ownerId: string): Promise<ManagedRuntimeSessionSummary[]>;
+  resume?(managedSessionId: string, ownerId: string): Promise<ManagedRuntimeSessionRef>;
   send(sessionId: string, input: string): Promise<void>;
   startTurn?(sessionId: string, turnId: string, input: string): Promise<RuntimePortTurn>;
   turn?(sessionId: string, turnId: string): Promise<RuntimePortTurn | undefined>;

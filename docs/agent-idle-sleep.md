@@ -1,6 +1,6 @@
 # Idle agent sleep and wake
 
-**Status:** Proposed fast follow; documentation only
+**Status:** Deferred follow-up. MinuRuntime PR #7 provides the Pi managed-session primitives; Channels automatic idle sleep and lazy wake are not implemented.
 
 ## Decision
 
@@ -8,7 +8,7 @@ MinuChannels should automatically sleep eligible, Runtime-owned agent sessions a
 
 Sleep is a process-lifecycle optimization, not a model-cost control. An idle Pi worker currently makes no model calls and uses effectively no CPU, but it still holds processes, listeners, file descriptors, registrations, and memory. The feature should preserve the agent's transcript, Conversation cursor, binding generation, and identity while removing those live resources.
 
-This is intentionally deferred under the [product boundary](product-boundary.md) MVP guardrail. It should be implemented only after the Runtime can durably suspend and resume an owned session without turning sleep into **New session**.
+This remains deferred under the [product boundary](product-boundary.md) MVP guardrail. Runtime can now suspend and resume owned Pi sessions, but Channels must first merge and verify session history, then implement and prove the cross-layer sleep/wake state machine before exposing a policy.
 
 ## User model
 
@@ -76,23 +76,23 @@ The idle clock starts when a session is first attached or when its most recent t
 
 ## Required Runtime contract
 
-The current Pi adapter can stop an owned worker, but it cannot relaunch that worker against the same session through the Runtime API. MinuRuntime must provide a durable owned-session lifecycle before Channels enables automatic sleep.
+MinuRuntime PR #7 now implements owner-scoped `startManaged`, `listManagedSessions`, `suspend`, `resume`, and `destroy` for Pi. Resume reopens the verified transcript under the same stable Runtime-managed ID; Pi's native worker ID may change. Suspend and destroy are idle-only, and destroy removes Runtime resume metadata without deleting the transcript.
 
-The exact API may evolve, but the contract must support:
+The existing API separates managed-session inventory from live worker status. A managed summary reports `active`, `suspended`, or `unavailable`; `active` alone does not prove that a session is idle. Sleep eligibility must also positively verify the normal Runtime status as `idle`, with failures and `unavailable` treated as uncertain and fail-closed.
+
+The relevant contract is:
 
 ```ts
-type ManagedSessionState =
-  | "active_idle"
-  | "active_working"
-  | "suspended"
-  | "missing"
-  | "uncertain";
+type ManagedSessionState = "active" | "suspended" | "unavailable";
+type AgentStatus = "idle" | "working" | "offline";
 
 interface SuspendableManagedRuntime {
-  managedSessionState(sessionId: string): Promise<ManagedSessionState>;
-  suspend(sessionId: string): Promise<void>;
-  resume(sessionId: string): Promise<{ id: string }>;
-  destroy(sessionId: string): Promise<void>;
+  startManaged(config: AgentStartConfig, ownerId: string): Promise<ManagedAgentSession>;
+  listManagedSessions(ownerId: string): Promise<ManagedSessionSummary[]>;
+  status(sessionId: string): Promise<AgentStatus>;
+  suspend(sessionId: string, ownerId: string): Promise<void>;
+  resume(sessionId: string, ownerId: string): Promise<ManagedAgentSession>;
+  destroy(sessionId: string, ownerId: string): Promise<void>;
 }
 ```
 
@@ -107,7 +107,7 @@ Required semantics:
 - Resume descriptors and registrations remain owner-only and never contain provider credentials.
 - The adapter records an opaque installation owner reference so Channels can enumerate and clean up only sessions it owns.
 
-For Pi, the likely implementation is to persist a restricted launch manifest and resume the recorded session file with Pi's explicit session option. The Runtime adapter—not Channels—owns the transcript path and process arguments. Channels stores only the existing opaque Runtime session id.
+The Pi adapter persists an owner-private launch manifest and resumes the validated session file itself. Runtime owns transcript paths, native IDs, and process arguments; Channels stores only the managed ID and owner scope. Current tests cover same-transcript resume, owner scoping, idle-only lifecycle operations, and recovery across worker/controller restarts.
 
 ## Binding and storage model
 
@@ -181,9 +181,9 @@ Service quiesce waits for any already accepted sleep/wake transition, then leave
 
 ## Conversation lifecycle interaction
 
-Snooze and Archive continue to require idle or stopped agents and continue to fence managed-agent admission. Once an owned idle binding is retired for a successful Snooze or Archive transition, MinuChannels may immediately sleep it regardless of the normal timeout.
+Snooze and Archive continue to require idle or stopped agents and continue to fence managed-agent admission. An eligible session may be suspended immediately instead of waiting for its normal timeout.
 
-Reopening a Conversation does not eagerly wake its agents. It restores eligibility for lazy wake; the next addressed message wakes the preserved session. This is consistent with the current rule that reopen does not start or replace Runtime sessions.
+To wake it after a Conversation reopens, the private current binding must remain durably routable in a sleeping/lazy-wake state. Do not retire it into history-only state and then silently reactivate it: historical activation recovery is a separate explicit action. Reopening alone does not resume a worker; it only makes the lazy route eligible for a later addressed message. The exact lifecycle integration must be settled before implementation.
 
 ## Explicit lifecycle actions
 
@@ -241,12 +241,12 @@ Useful local metrics are counts of awake/sleeping workers, wake latency, transit
 
 ## Delivery sequence
 
-### Phase 1 — Runtime primitives
+### Phase 1 — Runtime primitives — complete
 
-- Add suspend/resume/destroy and managed-session-state capabilities to MinuRuntime.
-- Persist private owner-scoped resume manifests.
-- Prove that Pi resumes the same transcript and session id after a full worker exit.
-- Add idempotency and crash-recovery tests.
+- MinuRuntime PR #7 adds owner-scoped managed start/list/suspend/resume/destroy for Pi.
+- Runtime persists private owner-scoped launch manifests and validates the transcript before resume.
+- Tests prove the same managed ID and transcript survive worker exit; Pi's native worker ID may change.
+- Suspend/resume/destroy idempotency, busy-session fencing, and lifecycle recovery have automated coverage.
 
 ### Phase 2 — Agent-host state machine
 
@@ -285,10 +285,10 @@ Useful local metrics are counts of awake/sleeping workers, wake latency, transit
 
 ## Open validation questions
 
-These questions must be answered with a Runtime proof before implementation is enabled:
+Runtime PR #7 proves that the managed ID and transcript identity survive worker exit; Pi's native worker ID may change. The following cross-layer questions remain before enabling sleep:
 
-- Does Pi preserve the exact session id when resumed from its session file in RPC mode?
-- Which launch inputs must be replayed so resumed skills, extensions, model selection, and system-prompt behavior are identical without duplicating prompt text?
-- Can Runtime make suspend atomic enough to distinguish a completed suspension from a worker that exited before its resume manifest was committed?
+- Do all supported Pi versions restore the required launch behavior (skills, extensions, model, reasoning, and prompt composition) without duplicating append-only prompt text?
+- Can Channels' admission fence, durable `sleeping` transition, Runtime suspend, and crash recovery be made atomic enough that uncertainty never causes a second worker or lost message?
+- How should Snooze/Archive preserve a lazily routable current binding without treating it as automatic historical-session recovery?
 - What wake-latency budget is acceptable on supported machines and models?
 - Should a future hosted agent host use the same timeout policy, or delegate worker scale-to-zero to its execution platform?

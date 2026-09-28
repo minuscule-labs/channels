@@ -45,10 +45,14 @@ export interface ManagedRuntimeStartConfig {
 
 export interface ManagedRuntimeSession {
   id: string;
+  ownerId?: string;
 }
 
 export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partial<Omit<AgentRuntimePort, "status">> {
   start?(config: ManagedRuntimeStartConfig): Promise<ManagedRuntimeSession>;
+  startManaged?(config: ManagedRuntimeStartConfig, ownerId: string): Promise<ManagedRuntimeSession & { ownerId: string }>;
+  suspend?(managedSessionId: string, ownerId: string): Promise<void>;
+  destroy?(managedSessionId: string, ownerId: string): Promise<void>;
   capabilities?(config?: { cwd?: string }): Promise<{
     models: Array<Omit<LocalAgentRuntimeOptions["models"][number], "enabled">>;
     reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
@@ -153,6 +157,22 @@ function executableRuntime(runtime: LocalManagedRuntimePort | undefined): runtim
 
 function launchableRuntime(runtime: LocalManagedRuntimePort | undefined): runtime is AgentRuntimePort & LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">> {
   return executableRuntime(runtime) && typeof runtime.start === "function";
+}
+
+async function startRuntimeSession(
+  runtime: LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">>,
+  config: ManagedRuntimeStartConfig,
+  ownerId: string,
+): Promise<{ session: ManagedRuntimeSession; runtimeOwnerId?: string }> {
+  if (!ownerId.trim()) throw new Error("Runtime owner scope must not be empty");
+  if (runtime.startManaged) {
+    const session = await runtime.startManaged(config, ownerId);
+    if (!session.id.trim() || session.ownerId !== ownerId) {
+      throw new Error("Runtime returned a managed session outside its requested owner scope");
+    }
+    return { session, runtimeOwnerId: ownerId };
+  }
+  return { session: await runtime.start(config) };
 }
 
 function supportsOpenDiagnostic(value: unknown): boolean {
@@ -300,7 +320,10 @@ export class LocalAgentHost {
     bindingId: string;
     runtime: LocalManagedRuntimePort;
     sessionId: string;
+    runtimeOwnerId?: string;
+    generation: number;
   }>();
+  private sessionCleanupTask: Promise<void> | undefined;
   private quiescing = false;
   private quiesced = false;
   private closed = false;
@@ -389,7 +412,13 @@ export class LocalAgentHost {
   }
 
   async restore(): Promise<void> {
-    if (!this.available || this.closed) return;
+    if (this.closed) return;
+    if (!this.sessionCleanupTask) {
+      this.sessionCleanupTask = this.reconcilePendingSessionCleanup()
+        .catch((error) => this.options.onError?.(error instanceof Error ? error : new Error(String(error))))
+        .finally(() => { this.sessionCleanupTask = undefined; });
+    }
+    if (!this.available) return;
     const workspaces = await this.options.client.listWorkspaces();
     const bindingGroups = await Promise.all(
       workspaces.map((workspace) => this.options.store.listWorkspaceBindings(workspace.id)),
@@ -478,10 +507,12 @@ export class LocalAgentHost {
           );
         }
         const launch = await this.resolveWorkingFolderLaunch(workspaceConfig, conversationId);
+        const runtimeOwnerId = await this.options.store.getOrCreateRuntimeOwnerId();
         let session: ManagedRuntimeSession | undefined;
+        let sessionOwnerId: string | undefined;
         let bindingId: string | undefined;
         try {
-          session = await runtime.start({
+          const started = await startRuntimeSession(runtime, {
             cwd: launch.cwd,
             appendSystemPrompt: this.appendWorkingFolderGuidance(agentConfig.personaPrompt, launch.workingFolderGuidance),
             ...(agentConfig.modelProvider && agentConfig.modelId
@@ -489,18 +520,20 @@ export class LocalAgentHost {
               : {}),
             ...(agentConfig.reasoningLevel ? { reasoningLevel: agentConfig.reasoningLevel } : {}),
             ...(agentConfig.skillIds !== undefined ? { skillIds: [...agentConfig.skillIds] } : {}),
-          });
+          }, runtimeOwnerId);
+          session = started.session;
+          sessionOwnerId = started.runtimeOwnerId;
           const messages = await this.options.client.listMessages(conversationId);
-          await this.options.store.setCursor(
-            conversationId,
-            agentIdentityId,
-            messages.at(-1)?.sequence ?? 0,
-          );
+          const conversationSequence = messages.at(-1)?.sequence ?? 0;
+          await this.options.store.setCursor(conversationId, agentIdentityId, conversationSequence);
           const binding = await this.directory.bindAgent({
             conversationId,
             agentIdentityId,
             runtimeAdapter: agentConfig.runtimeAdapter,
             runtimeSessionId: session.id,
+            runtimeOwnerId: sessionOwnerId,
+            conversationSequenceAtActivation: conversationSequence,
+            origin: "started",
           });
           bindingId = binding.id;
           if (await this.attachBinding(conversationId, binding.id) !== "attached") {
@@ -510,6 +543,8 @@ export class LocalAgentHost {
             bindingId: binding.id,
             runtime,
             sessionId: session.id,
+            runtimeOwnerId: sessionOwnerId,
+            generation: binding.generation,
           });
         } catch (error) {
           if (bindingId) {
@@ -520,7 +555,16 @@ export class LocalAgentHost {
               );
             });
           }
-          if (session && runtime.stop) await runtime.stop(session.id).catch(() => undefined);
+          if (session) {
+            await this.stopRuntimeBestEffort(
+              runtime,
+              session.id,
+              sessionOwnerId,
+              bindingId,
+              bindingId ? 1 : undefined,
+              bindingId ? "suspend" : "destroy",
+            );
+          }
           if (error instanceof LocalConfigurationRequestError) throw error;
           throw new LocalConfigurationRequestError(
             launchFailureMessage(error, "Agent session could not be started"),
@@ -567,8 +611,10 @@ export class LocalAgentHost {
   ): Promise<void> {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let session: ManagedRuntimeSession | undefined;
+      let sessionOwnerId: string | undefined;
       let runtime: (AgentRuntimePort & LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">>) | undefined;
       let committed = false;
+      let previousBinding: ConversationAgentBindingRecord | undefined;
       let previousRuntime: LocalManagedRuntimePort | undefined;
       let previousSessionId: string | undefined;
       let workspaceId: string | undefined;
@@ -594,6 +640,7 @@ export class LocalAgentHost {
           || previous.state !== expectedBinding.state)) {
           throw new BulkSnapshotChangedError("Agent binding changed after bulk acceptance");
         }
+        previousBinding = previous;
         previousRuntime = this.options.runtimes[previous.runtimeAdapter];
         previousSessionId = previous.runtimeSessionId;
         await this.assertBindingsIdle([previous], previous.id);
@@ -607,7 +654,8 @@ export class LocalAgentHost {
             conversationId,
             context.agentConfig,
           ).catch(() => undefined);
-        session = await runtime.start({
+        const runtimeOwnerId = await this.options.store.getOrCreateRuntimeOwnerId();
+        const started = await startRuntimeSession(runtime, {
           cwd: context.cwd,
           appendSystemPrompt: this.appendWorkingFolderGuidance(
             context.agentConfig.personaPrompt,
@@ -623,12 +671,19 @@ export class LocalAgentHost {
           ...(context.agentConfig.skillIds !== undefined
             ? { skillIds: [...context.agentConfig.skillIds] }
             : {}),
-        });
+        }, runtimeOwnerId);
+        session = started.session;
+        sessionOwnerId = started.runtimeOwnerId;
+        const messages = await this.options.client.listMessages(conversationId);
+        const conversationSequence = messages.at(-1)?.sequence ?? 0;
         const replaced = await this.directory.replaceSession({
           bindingId: previous.id,
           expectedGeneration: previous.generation,
           runtimeAdapter: context.agentConfig.runtimeAdapter!,
           runtimeSessionId: session.id,
+          runtimeOwnerId: sessionOwnerId,
+          conversationSequenceAtActivation: conversationSequence,
+          origin: "started",
         });
         committed = true;
         // The durable replacement now owns the new Runtime even if Relay reconciliation fails.
@@ -636,13 +691,10 @@ export class LocalAgentHost {
           bindingId: replaced.id,
           runtime,
           sessionId: session.id,
+          runtimeOwnerId: sessionOwnerId,
+          generation: replaced.generation,
         });
-        const messages = await this.options.client.listMessages(conversationId);
-        await this.options.store.setCursor(
-          conversationId,
-          agentIdentityId,
-          messages.at(-1)?.sequence ?? 0,
-        );
+        await this.options.store.setCursor(conversationId, agentIdentityId, conversationSequence);
         await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
         });
@@ -653,7 +705,14 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
-        await this.stopRuntimeBestEffort(previousRuntime, previousSessionId);
+        await this.stopRuntimeBestEffort(
+          previousRuntime,
+          previousSessionId,
+          previous.runtimeOwnerId,
+          previous.id,
+          previous.generation,
+          "destroy",
+        );
         this.startedSessions.delete(this.sessionKey(previous.id, previous.runtimeSessionId));
         this.audit({
           action: "agent.session.replaced",
@@ -664,13 +723,20 @@ export class LocalAgentHost {
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
-        if (!committed && session && runtime?.stop) {
-          await runtime.stop(session.id).catch(() => undefined);
+        if (!committed && session) {
+          await this.stopRuntimeBestEffort(runtime, session.id, sessionOwnerId, undefined, undefined, "destroy");
         }
         if (committed && previousSessionId) {
-          await this.stopRuntimeBestEffort(previousRuntime, previousSessionId);
+          await this.stopRuntimeBestEffort(
+            previousRuntime,
+            previousSessionId,
+            previousBinding?.runtimeOwnerId,
+            previousBinding?.id,
+            previousBinding?.generation,
+            "destroy",
+          );
           const records = await this.options.store.listConversationBindings(conversationId).catch(() => []);
-          const binding = records.find(({ agentIdentityId }) => agentIdentityId === agentIdentityId);
+          const binding = records.find((candidate) => candidate.agentIdentityId === agentIdentityId);
           if (binding) this.startedSessions.delete(this.sessionKey(binding.id, previousSessionId));
         }
         this.audit({
@@ -729,6 +795,9 @@ export class LocalAgentHost {
         }
         if (this.isAttached(conversationId, agentIdentityId)) {
           throw new LocalConfigurationRequestError("Agent session is already connected", 409, "unavailable");
+        }
+        if (binding.state === "offline" && binding.runtimeOwnerId) {
+          await this.resumeManagedBinding(binding);
         }
         if (await this.attachBinding(conversationId, binding.id) !== "attached") {
           const current = await this.options.store.getBinding(binding.id);
@@ -997,6 +1066,10 @@ export class LocalAgentHost {
         await this.stopRuntimeBestEffort(
           this.options.runtimes[target.runtimeAdapter],
           target.runtimeSessionId,
+          target.runtimeOwnerId,
+          target.id,
+          target.generation,
+          "destroy",
         );
         this.startedSessions.delete(this.sessionKey(target.id, target.runtimeSessionId));
         await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
@@ -1045,12 +1118,13 @@ export class LocalAgentHost {
       await relay.stop();
       await Promise.all([...restored.values()].map((binding) => binding.close()));
     }));
+    await this.sessionCleanupTask?.catch(() => undefined);
     if (this.options.stopStartedSessionsOnClose) {
       const sessions = [...this.startedSessions.values()];
       this.startedSessions.clear();
-      await Promise.allSettled(sessions.map(async ({ bindingId, runtime, sessionId }) => {
-        if (runtime.stop) await runtime.stop(sessionId);
+      await Promise.allSettled(sessions.map(async ({ bindingId, generation, runtime, sessionId, runtimeOwnerId }) => {
         await this.options.store.deleteBinding(bindingId);
+        await this.stopRuntimeBestEffort(runtime, sessionId, runtimeOwnerId, bindingId, generation);
       }));
     }
   }
@@ -1497,16 +1571,162 @@ export class LocalAgentHost {
     return this.withTimeout(runtime.status(sessionId), 2_000, "Runtime status timed out");
   }
 
+  private async resumeManagedBinding(binding: ConversationAgentBindingRecord): Promise<boolean> {
+    if (binding.runtimeOwnerId === undefined) return false;
+    if (!binding.runtimeOwnerId.trim()) throw new Error("Stored Runtime owner scope is invalid");
+    const runtime = this.options.runtimes[binding.runtimeAdapter];
+    if (!runtime?.listManagedSessions || !runtime.resume) return false;
+    const sessions = await this.withTimeout(
+      runtime.listManagedSessions(binding.runtimeOwnerId),
+      2_000,
+      "Managed Runtime listing timed out",
+    );
+    const existing = sessions.find((candidate) =>
+      candidate.id === binding.runtimeSessionId && candidate.ownerId === binding.runtimeOwnerId);
+    if (!existing || existing.state === "unavailable") return false;
+    const resumed = await this.withTimeout(
+      runtime.resume(binding.runtimeSessionId, binding.runtimeOwnerId),
+      30_000,
+      "Managed Runtime resume timed out",
+    );
+    if (resumed.id !== binding.runtimeSessionId || resumed.ownerId !== binding.runtimeOwnerId) {
+      throw new Error("Runtime resumed a different managed session or owner scope");
+    }
+    return true;
+  }
+
   private async stopRuntimeBestEffort(
     runtime: LocalManagedRuntimePort | undefined,
     sessionId: string,
+    runtimeOwnerId?: string,
+    bindingId?: string,
+    bindingGeneration?: number,
+    cleanupAction: "suspend" | "destroy" = "suspend",
   ): Promise<void> {
+    if (runtimeOwnerId !== undefined) {
+      let outcome: "succeeded" | "failed" = "failed";
+      let observedRuntimeStatus: "idle" | "working" | "offline" | "unknown" = "unknown";
+      let errorCategory: "runtime_unavailable" | "operation_unsupported" | "operation_failed" = "operation_failed";
+      try {
+        if (!runtimeOwnerId.trim()) {
+          errorCategory = "operation_unsupported";
+          throw new Error("Stored Runtime owner scope is invalid");
+        }
+        if (!runtime) {
+          errorCategory = "runtime_unavailable";
+          throw new Error("Managed Runtime adapter is unavailable");
+        }
+        if (cleanupAction === "destroy" ? !runtime.destroy : !runtime.suspend) {
+          errorCategory = "operation_unsupported";
+          throw new Error("Managed Runtime does not support the required owner-scoped cleanup operation");
+        }
+        const cleanup = cleanupAction === "destroy"
+          ? runtime.destroy!(sessionId, runtimeOwnerId)
+          : runtime.suspend!(sessionId, runtimeOwnerId);
+        await this.withTimeout(
+          cleanup,
+          15_000,
+          cleanupAction === "destroy" ? "Runtime destroy timed out" : "Runtime suspend timed out",
+        );
+        outcome = "succeeded";
+        observedRuntimeStatus = "offline";
+      } catch (error) {
+        this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+      if (bindingId && bindingGeneration !== undefined) {
+        await this.options.store.recordSessionCleanupAttempt({
+          bindingId,
+          bindingGeneration,
+          outcome,
+          attemptedAt: this.now().toISOString(),
+          observedRuntimeStatus,
+          ...(outcome === "failed" ? { errorCategory } : {}),
+          ...(outcome === "succeeded" && cleanupAction === "destroy"
+            ? { retentionOutcome: "destroyed" as const }
+            : {}),
+        }).catch((error) => this.options.onError?.(error instanceof Error ? error : new Error(String(error))));
+      }
+      return;
+    }
     if (!runtime?.stop) return;
     try {
       if ((await this.runtimeStatus(runtime, sessionId)) === "offline") return;
       await this.withTimeout(runtime.stop(sessionId), 15_000, "Runtime stop timed out");
     } catch (error) {
       this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  private async reconcilePendingSessionCleanup(): Promise<void> {
+    const pending = await this.options.store.listPendingSessionCleanups(100);
+    for (const record of pending) {
+      if (this.closed) return;
+      const attemptedAt = this.now().toISOString();
+      let outcome: "succeeded" | "failed" = "failed";
+      let observedRuntimeStatus: "idle" | "working" | "offline" | "unknown" = "unknown";
+      let errorCategory: "runtime_unavailable" | "session_unavailable" | "operation_unsupported" | "operation_failed" = "operation_failed";
+      try {
+        const runtime = this.options.runtimes[record.runtimeAdapter];
+        if (!runtime) {
+          errorCategory = "runtime_unavailable";
+          throw new Error("Managed Runtime adapter is unavailable");
+        }
+        if (!record.runtimeOwnerId || !record.managedSessionId) {
+          errorCategory = "session_unavailable";
+          throw new Error("Managed session cleanup record is incomplete");
+        }
+        if (!runtime.listManagedSessions) {
+          errorCategory = "operation_unsupported";
+          throw new Error("Managed Runtime listing is unavailable");
+        }
+        if (record.cleanupAction === "destroy" ? !runtime.destroy : !runtime.suspend) {
+          errorCategory = "operation_unsupported";
+          throw new Error("Managed Runtime cleanup operation is unavailable");
+        }
+        const sessions = await this.withTimeout(
+          runtime.listManagedSessions(record.runtimeOwnerId),
+          2_000,
+          "Managed Runtime listing timed out",
+        );
+        const session = sessions.find((candidate) =>
+          candidate.id === record.managedSessionId && candidate.ownerId === record.runtimeOwnerId);
+        if (!session) {
+          outcome = "succeeded";
+          observedRuntimeStatus = "offline";
+        } else if (session.state === "unavailable" && record.cleanupAction === "suspend") {
+          errorCategory = "session_unavailable";
+          throw new Error("Managed session is unavailable for suspend cleanup");
+        } else if (record.cleanupAction === "suspend" && session.state === "suspended") {
+          outcome = "succeeded";
+          observedRuntimeStatus = "offline";
+        } else {
+          // An explicit destroy intent may be retrying a Runtime manifest left in `destroying` by a crash.
+          // Runtime.destroy is owner-scoped and safe to retry even when listing labels it unavailable.
+          const cleanup = record.cleanupAction === "destroy"
+            ? runtime.destroy!(record.managedSessionId, record.runtimeOwnerId)
+            : runtime.suspend!(record.managedSessionId, record.runtimeOwnerId);
+          await this.withTimeout(
+            cleanup,
+            15_000,
+            record.cleanupAction === "destroy" ? "Managed Runtime destroy timed out" : "Managed Runtime suspend timed out",
+          );
+          outcome = "succeeded";
+          observedRuntimeStatus = "offline";
+        }
+      } catch (error) {
+        this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+      }
+      await this.options.store.recordSessionCleanupAttempt({
+        bindingId: record.bindingId,
+        bindingGeneration: record.bindingGeneration,
+        outcome,
+        attemptedAt,
+        observedRuntimeStatus,
+        ...(outcome === "failed" ? { errorCategory } : {}),
+        ...(outcome === "succeeded" && record.retentionStatus === "destroy_pending"
+          ? { retentionOutcome: "destroyed" as const }
+          : {}),
+      });
     }
   }
 
@@ -1535,6 +1755,12 @@ export class LocalAgentHost {
         .filter((binding) => binding.state === "offline")
         .map(async (binding) => {
           try {
+            if (binding.runtimeOwnerId && await this.resumeManagedBinding(binding)) {
+              if (await this.attachBinding(conversationId, binding.id) !== "attached") {
+                throw new Error("Resumed managed session could not be attached");
+              }
+              return;
+            }
             await this.replaceConversationAgent(
               conversationId,
               binding.agentIdentityId,
@@ -1542,7 +1768,7 @@ export class LocalAgentHost {
               binding,
             );
           } catch {
-            // Replacement emits a bounded audit result; startup remains available.
+            // Resume/replacement emits bounded diagnostics; startup remains available.
           }
         }));
     } catch {

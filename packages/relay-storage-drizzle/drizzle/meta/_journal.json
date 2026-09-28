@@ -78,6 +78,13 @@
       "when": 1799280000000,
       "tag": "0010_agent_session_context",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1799366400000,
+      "tag": "0011_runtime_session_history",
+      "breakpoints": true
     }
   ]
 }
