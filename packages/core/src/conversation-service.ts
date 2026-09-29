@@ -138,6 +138,19 @@ function messageTargets(conversation: Conversation, input: CreateMessageInput): 
 export class ConversationService {
   private readonly listeners = new Map<string, Set<EventListener>>();
   private readonly conversationOperations = new Map<string, Promise<unknown>>();
+  private readonly messageAdmissions = new Map<string, Promise<unknown>>();
+
+  /** Private in-process gate shared by message commits and a managed lifecycle Stop. */
+  async withConversationMessageAdmission<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    const prior = this.messageAdmissions.get(conversationId) ?? Promise.resolve();
+    const current = prior.catch(() => undefined).then(operation);
+    this.messageAdmissions.set(conversationId, current);
+    try {
+      return await current;
+    } finally {
+      if (this.messageAdmissions.get(conversationId) === current) this.messageAdmissions.delete(conversationId);
+    }
+  }
 
   private async serializeConversation<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
     const prior = this.conversationOperations.get(conversationId) ?? Promise.resolve();
@@ -841,10 +854,10 @@ export class ConversationService {
     input: CreateMessageInput,
     idempotencyKey?: string,
   ): Promise<ConversationMessage> {
-    return await this.serializeConversation(
+    return this.withConversationMessageAdmission(conversationId, () => this.serializeConversation(
       conversationId,
       () => this.createMessageOnce(conversationId, input, idempotencyKey),
-    );
+    ));
   }
 
   private async createMessageOnce(
@@ -915,10 +928,10 @@ export class ConversationService {
     conversationId: string,
     input: CreateResponseInput,
   ): Promise<ResponseResult> {
-    return await this.serializeConversation(
+    return this.withConversationMessageAdmission(conversationId, () => this.serializeConversation(
       conversationId,
       () => this.createResponseOnce(conversationId, input),
-    );
+    ));
   }
 
   private async createResponseOnce(

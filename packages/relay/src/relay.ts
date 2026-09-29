@@ -130,6 +130,11 @@ export interface AgentConversationBinding {
   diagnosticBinding?: { id: string; generation: number };
   /** Private fencing check used to suppress work and responses after lease loss. */
   verifyLease?(): Promise<boolean>;
+  /** Sleeping is private binding lifecycle state; the next eligible turn must wake first. */
+  isSleeping?: boolean;
+  ensureAwake?(): Promise<void | "missing">;
+  /** Persist idle-policy timing only after the turn has fully settled. */
+  onTurnSettled?(): Promise<void>;
 }
 
 export interface ConversationRuntimeRelayOptions {
@@ -161,6 +166,7 @@ export interface ConversationRuntimeRelayOptions {
     callback: () => void,
     milliseconds: number,
   ): { cancel(): void };
+  onBindingUnavailable?(binding: AgentConversationBinding): void;
   onAgentResponse?(binding: AgentConversationBinding, message: ConversationMessage): void;
   onTurnFailureDiagnostic?(
     binding: AgentConversationBinding,
@@ -184,6 +190,10 @@ class CommittedResponseCursorError extends Error {}
 class RetryDeadlineExceededError extends Error {}
 export class TurnTimeoutError extends RetryDeadlineExceededError {}
 class FencedTurnError extends Error {}
+class DeferredWakeError extends Error {}
+class MissingManagedSessionError extends Error {}
+
+const WAKE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 15_000, 30_000] as const;
 
 const FAILURE_CLASSIFICATION_PRECEDENCE: readonly TurnFailureCauseCategory[] = [
   "response_delivery_failed",
@@ -258,6 +268,13 @@ export interface RelayWorkSnapshot {
   quiescing: boolean;
 }
 
+/** Sanitized work state for one attached binding. */
+export interface RelayAgentWorkSnapshot {
+  activeTurns: number;
+  queuedTurns: number;
+  queuedTurnsExact: boolean;
+}
+
 interface BindingState {
   binding: AgentConversationBinding;
   lastProcessedSequence: number;
@@ -265,6 +282,11 @@ interface BindingState {
   observedHighWaterSequence: number;
   knownThroughSequence: number;
   needsHeadScan: boolean;
+  sleeping: boolean;
+  sleepTransition: boolean;
+  activityTimestampPersisted: boolean;
+  wakeRetryAttempt: number;
+  wakeUnavailable: boolean;
   activeTrigger?: ConversationMessage;
   startedAt?: string;
   startedMonotonicAt?: number;
@@ -500,6 +522,11 @@ export class ConversationRuntimeRelay {
       observedHighWaterSequence: 0,
       knownThroughSequence: 0,
       needsHeadScan: true,
+      sleeping: binding.isSleeping === true,
+      sleepTransition: false,
+      activityTimestampPersisted: true,
+      wakeRetryAttempt: 0,
+      wakeUnavailable: false,
       queuedTurns: 0,
       activitySilenceVersion: 0,
     }));
@@ -589,6 +616,28 @@ export class ConversationRuntimeRelay {
     };
   }
 
+  agentWorkSnapshot(participantId: string): RelayAgentWorkSnapshot | undefined {
+    const state = this.states.find((candidate) => candidate.binding.participantId === participantId);
+    if (!state) return undefined;
+    return {
+      activeTurns: Number(state.activeTrigger !== undefined),
+      queuedTurns: state.queuedTurns,
+      queuedTurnsExact: !state.needsHeadScan
+        && state.knownThroughSequence >= state.observedHighWaterSequence,
+    };
+  }
+
+  /** Raise Relay's catch-up watermark from an authoritative Conversation head read. */
+  observeConversationHead(participantId: string, headSequence: number): void {
+    if (!Number.isSafeInteger(headSequence) || headSequence < 0) {
+      throw new RangeError("Conversation head sequence must be a non-negative safe integer");
+    }
+    const state = this.states.find((candidate) => candidate.binding.participantId === participantId);
+    if (!state) return;
+    this.observeMessage(state, headSequence);
+    if (state.needsHeadScan || state.scanSequence < state.observedHighWaterSequence) this.startDrain(state);
+  }
+
   /** Stop admitting unstarted turns while allowing already-active turns to settle. */
   quiesce(): RelayWorkSnapshot {
     if (this.quiescing) return this.workSnapshot();
@@ -617,6 +666,11 @@ export class ConversationRuntimeRelay {
       observedHighWaterSequence: lastProcessedSequence,
       knownThroughSequence: lastProcessedSequence,
       needsHeadScan: true,
+      sleeping: binding.isSleeping === true,
+      sleepTransition: false,
+      activityTimestampPersisted: true,
+      wakeRetryAttempt: 0,
+      wakeUnavailable: false,
       queuedTurns: 0,
       activitySilenceVersion: 0,
     };
@@ -625,6 +679,52 @@ export class ConversationRuntimeRelay {
     this.states.push(state);
     if (!this.quiescing) this.startActivityEvents(state);
     if (this.task) this.startDrain(state);
+  }
+
+  /** Atomically close turn admission while the owner-scoped Runtime suspend is decided. */
+  async sleepIfIdle(participantId: string, suspend: () => Promise<boolean>): Promise<boolean> {
+    const state = this.states.find((candidate) => candidate.binding.participantId === participantId);
+    if (!state || this.quiescing || !this.task || state.sleeping || state.sleepTransition
+      || state.activeTrigger || state.queuedTurns > 0 || state.drainTask
+      || state.needsHeadScan || state.scanSequence < state.observedHighWaterSequence
+      || state.knownThroughSequence < state.observedHighWaterSequence
+      || !state.activityTimestampPersisted) return false;
+
+    state.sleepTransition = true;
+    this.clearActivitySilence(state);
+    state.activityController?.abort();
+    await state.activityTask?.catch(() => undefined);
+    state.activityController = undefined;
+    state.activityTask = undefined;
+    try {
+      const slept = await suspend();
+      if (slept) {
+        state.sleeping = true;
+        state.binding.isSleeping = true;
+      }
+      return slept;
+    } finally {
+      state.sleepTransition = false;
+      if (!state.sleeping && !this.quiescing) this.startActivityEvents(state);
+      this.startDrain(state);
+    }
+  }
+
+  /** Reconcile a durable sleeping binding whose Runtime worker survived a process restart. */
+  async reconcileSleepingIfIdle(participantId: string, suspend: () => Promise<boolean>): Promise<boolean> {
+    const state = this.states.find((candidate) => candidate.binding.participantId === participantId);
+    if (!state || this.quiescing || !this.task || !state.sleeping || state.sleepTransition
+      || state.activeTrigger || state.queuedTurns > 0 || state.drainTask
+      || state.needsHeadScan || state.scanSequence < state.observedHighWaterSequence
+      || state.knownThroughSequence < state.observedHighWaterSequence
+      || !state.activityTimestampPersisted) return false;
+    state.sleepTransition = true;
+    try {
+      return await suspend();
+    } finally {
+      state.sleepTransition = false;
+      this.startDrain(state);
+    }
   }
 
   /** Stop routing future messages to one binding and return after its existing queue settles. */
@@ -789,7 +889,7 @@ export class ConversationRuntimeRelay {
   }
 
   private startActivityEvents(state: BindingState): void {
-    if (!state.binding.runtime.activityEvents || state.activityTask) return;
+    if (state.sleeping || state.sleepTransition || !state.binding.runtime.activityEvents || state.activityTask) return;
     const controller = new AbortController();
     state.activityController = controller;
     state.activityTask = (async () => {
@@ -970,7 +1070,8 @@ export class ConversationRuntimeRelay {
   }
 
   private startDrain(state: BindingState): void {
-    if (this.quiescing || state.drainTask || !this.task || !this.states.includes(state)) return;
+    if (this.quiescing || state.sleepTransition || state.wakeUnavailable
+      || state.drainTask || !this.task || !this.states.includes(state)) return;
     state.drainController ??= new AbortController();
     if (state.drainController.signal.aborted) return;
     let task!: Promise<void>;
@@ -985,6 +1086,17 @@ export class ConversationRuntimeRelay {
         state.drainTask = undefined;
         // No await between clearing and rechecking: a concurrent event either sees the
         // active task or leaves a high-water mark that starts the next bounded pass.
+        if (state.wakeUnavailable) {
+          queueMicrotask(() => {
+            if (!this.states.includes(state)) return;
+            try {
+              this.options.onBindingUnavailable?.(state.binding);
+            } catch {
+              // Detachment notifications must not alter cursor or Relay state.
+            }
+          });
+          return;
+        }
         if (!this.quiescing && this.task && this.states.includes(state) && !state.drainController?.signal.aborted
           && (state.needsHeadScan
             || state.scanSequence < state.observedHighWaterSequence)) {
@@ -1046,7 +1158,22 @@ export class ConversationRuntimeRelay {
           && shouldWake(message, state.binding, this.roster?.participants ?? []);
         if (wake) {
           state.queuedTurns = Math.max(0, state.queuedTurns - 1);
-          await this.runTurn(state, message);
+          let completed = false;
+          while (!completed && !state.wakeUnavailable && !signal.aborted && this.states.includes(state)) {
+            completed = await this.runTurn(state, message);
+            if (!completed) {
+              state.queuedTurns += 1;
+              if (state.wakeUnavailable) return;
+              const backoffMs = WAKE_RETRY_BACKOFF_MS[
+                Math.min(state.wakeRetryAttempt - 1, WAKE_RETRY_BACKOFF_MS.length - 1)
+              ]!;
+              await this.waitForCatchUpRetry(signal, backoffMs);
+              if (!signal.aborted && this.states.includes(state)) {
+                state.queuedTurns = Math.max(0, state.queuedTurns - 1);
+              }
+            }
+          }
+          if (!completed) return;
         }
         state.scanSequence = Math.max(state.scanSequence, message.sequence);
       }
@@ -1055,20 +1182,40 @@ export class ConversationRuntimeRelay {
     }
   }
 
-  private async runTurn(state: BindingState, message: ConversationMessage): Promise<void> {
+  private async runTurn(state: BindingState, message: ConversationMessage): Promise<boolean> {
     this.clearActivitySilence(state);
     state.activeTrigger = message;
     state.startedAt = new Date().toISOString();
     state.startedMonotonicAt = this.monotonicNow();
     state.phase = "running";
     state.retryAttempt = undefined;
+    let completed = true;
     try {
       await this.handleWithRetry(state, message);
     } catch (error) {
-      this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
+      if (error instanceof DeferredWakeError) {
+        completed = false;
+        state.wakeRetryAttempt += 1;
+      } else if (error instanceof MissingManagedSessionError) {
+        completed = false;
+        state.wakeUnavailable = true;
+      } else {
+        this.options.onError?.(state.binding, error instanceof Error ? error : new Error(String(error)));
+      }
     } finally {
+      if (completed && state.binding.onTurnSettled) {
+        try {
+          await state.binding.onTurnSettled();
+          state.activityTimestampPersisted = true;
+        } catch {
+          state.activityTimestampPersisted = false;
+          this.options.onError?.(state.binding, new Error("Managed binding activity could not be persisted"));
+        }
+      }
       this.clearActive(state);
+      if (completed) state.wakeRetryAttempt = 0;
     }
+    return completed;
   }
 
   private reportCatchUpUnavailable(state: BindingState): void {
@@ -1119,6 +1266,7 @@ export class ConversationRuntimeRelay {
         await this.handle(state, message, deadline);
         return;
       } catch (error) {
+        if (error instanceof DeferredWakeError || error instanceof MissingManagedSessionError) throw error;
         if (!this.states.includes(state) || error instanceof FencedTurnError) return;
         // A cancellation owns the outcome even when Runtime publishes a failed turn
         // while its interrupt acknowledgement is pending; do not mirror that as error.
@@ -1305,12 +1453,33 @@ export class ConversationRuntimeRelay {
   ): Promise<void> {
     const { binding } = state;
     this.assertBeforeDeadline(deadline);
-    if (binding.verifyLease && !(await binding.verifyLease())) {
-      throw new FencedTurnError(`Agent binding lease was lost: ${binding.participantId}`);
+    if (binding.verifyLease) {
+      let leaseValid: boolean;
+      try {
+        leaseValid = await binding.verifyLease();
+      } catch {
+        if (state.sleeping || binding.isSleeping) {
+          throw new DeferredWakeError("Managed Runtime wake is pending");
+        }
+        throw new Error("Agent binding lease could not be verified");
+      }
+      if (!leaseValid) throw new FencedTurnError(`Agent binding lease was lost: ${binding.participantId}`);
     }
     if (!this.isActiveParticipant(binding.participantId)) {
       state.lastProcessedSequence = Math.max(state.lastProcessedSequence, trigger.sequence);
       return;
+    }
+    if (state.sleeping || binding.isSleeping) {
+      try {
+        if (!binding.ensureAwake) throw new Error("Managed Runtime wake is unavailable");
+        if (await binding.ensureAwake() === "missing") throw new MissingManagedSessionError();
+      } catch (error) {
+        if (error instanceof MissingManagedSessionError) throw error;
+        throw new DeferredWakeError("Managed Runtime wake is pending");
+      }
+      state.sleeping = false;
+      binding.isSleeping = false;
+      this.startActivityEvents(state);
     }
     const conversationMessages = await this.options.client.listMessages(this.options.conversationId, {
       beforeSequence: trigger.sequence + 1,

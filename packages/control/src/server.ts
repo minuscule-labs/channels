@@ -85,7 +85,7 @@ export interface LocalControlBindingRecord {
   agentIdentityId: string;
   runtimeAdapter: string;
   runtimeSessionId: string;
-  state: "connected" | "offline" | "replacing" | "disabled";
+  state: "connected" | "sleeping" | "waking" | "offline" | "replacing" | "disabled";
   wakePolicy: LocalWakePolicy;
   lastVerifiedAt?: string;
 }
@@ -142,6 +142,12 @@ export interface LocalControlAgentLifecyclePort {
     actorIdentityId: string,
   ): Promise<void>;
   isAttached?(conversationId: string, agentIdentityId: string): boolean;
+  refreshConversationWorkSnapshot?(conversationId: string): Promise<void>;
+  agentWorkSnapshot?(conversationId: string, agentIdentityId: string): {
+    activeTurns: number;
+    queuedTurns: number;
+    queuedTurnsExact: boolean;
+  } | undefined;
   isStarting?(conversationId: string, agentIdentityId: string): boolean;
   startAllConversationAgents?(
     conversationId: string,
@@ -227,6 +233,8 @@ export interface LocalControlConfigurationPort {
 
 export interface LocalControlServiceOptions {
   conversations: LocalControlConversationDirectory;
+  /** In-process Conversation service gate, held from head verification through lifecycle commit. */
+  withConversationMessageAdmission?<T>(conversationId: string, operation: () => Promise<T>): Promise<T>;
   bindings: LocalControlBindingDirectory;
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
   configuration?: LocalControlConfigurationPort;
@@ -351,39 +359,57 @@ export class LocalControlService {
       return lifecycle;
     }
 
+    if (!this.options.withConversationMessageAdmission) {
+      throw new LocalConfigurationRequestError("Conversation message admission coordination is unavailable", 409, "unavailable");
+    }
     const releaseFence = this.options.lifecycle?.fenceConversationAdmission?.(conversationId);
     let committed = false;
     try {
-      const agents = (await this.listConversationAgents(conversationId)).agents;
-      const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "idle"].includes(state));
-      if (unsafeAgents.length > 0) {
-        throw new LocalConfigurationRequestError(
-          "All managed Conversation agents must be idle or stopped before snoozing or settling",
-          409,
-          "unavailable",
-        );
-      }
-      for (const agent of agents.filter(({ state }) => state === "idle")) {
-        if (!this.options.lifecycle) {
-          throw new LocalConfigurationRequestError("Managed agent control is unavailable", 409, "unavailable");
+      return await this.options.withConversationMessageAdmission(conversationId, async () => {
+        try {
+          await this.options.lifecycle?.refreshConversationWorkSnapshot?.(conversationId);
+        } catch {
+          throw new LocalConfigurationRequestError(
+            "Conversation agent work could not be verified; retry",
+            409,
+            "unavailable",
+          );
         }
-        await this.options.lifecycle.stopConversationAgent(conversationId, agent.identityId, actorIdentityId);
-      }
-      const afterStop = await this.listConversationAgents(conversationId);
-      if (afterStop.agents.some(({ state }) => state !== "unbound" && state !== "disabled")) {
-        throw new LocalConfigurationRequestError(
-          "Conversation agents changed while lifecycle was being updated; retry",
-          409,
-          "unavailable",
-        );
-      }
-      const lifecycle = await this.options.conversations.updateConversationLifecycle(conversationId, {
-        actorIdentityId,
-        state: input.state,
-        ...(input.state === "snoozed" ? { snoozedUntil: input.snoozedUntil } : {}),
+        const agents = (await this.listConversationAgents(conversationId)).agents;
+        const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "idle"].includes(state));
+        if (unsafeAgents.length > 0 || agents.some((agent) => {
+          if (agent.state !== "idle" || this.options.lifecycle?.isAttached?.(conversationId, agent.identityId) !== true) return false;
+          const work = this.options.lifecycle.agentWorkSnapshot?.(conversationId, agent.identityId);
+          return !work || work.activeTurns !== 0 || work.queuedTurns !== 0 || !work.queuedTurnsExact;
+        })) {
+          throw new LocalConfigurationRequestError(
+            "All managed Conversation agents must be idle or stopped before snoozing or settling",
+            409,
+            "unavailable",
+          );
+        }
+        for (const agent of agents.filter(({ state }) => state === "idle")) {
+          if (!this.options.lifecycle) {
+            throw new LocalConfigurationRequestError("Managed agent control is unavailable", 409, "unavailable");
+          }
+          await this.options.lifecycle.stopConversationAgent(conversationId, agent.identityId, actorIdentityId);
+        }
+        const afterStop = await this.listConversationAgents(conversationId);
+        if (afterStop.agents.some(({ state }) => state !== "unbound" && state !== "disabled")) {
+          throw new LocalConfigurationRequestError(
+            "Conversation agents changed while lifecycle was being updated; retry",
+            409,
+            "unavailable",
+          );
+        }
+        const lifecycle = await this.options.conversations.updateConversationLifecycle!(conversationId, {
+          actorIdentityId,
+          state: input.state,
+          ...(input.state === "snoozed" ? { snoozedUntil: input.snoozedUntil } : {}),
+        });
+        committed = true;
+        return lifecycle;
       });
-      committed = true;
-      return lifecycle;
     } finally {
       // A persisted non-active lifecycle keeps the admission fence until an explicit reopen.
       if (!committed) releaseFence?.();
@@ -732,8 +758,45 @@ export class LocalControlService {
         },
       };
     }
-    if (binding.state === "replacing") {
+    if (binding.state === "replacing" || binding.state === "waking") {
       return { ...base, ...details, state: "uncertain", capabilities: disabledCapabilities };
+    }
+    if (binding.state === "sleeping") {
+      if (this.options.lifecycle?.isAttached?.(conversation.id, identityId) !== true) {
+        return { ...base, ...details, state: "uncertain", capabilities: disabledCapabilities };
+      }
+      const work = this.options.lifecycle.agentWorkSnapshot?.(conversation.id, identityId);
+      if (!work || work.activeTurns !== 0 || work.queuedTurns !== 0 || !work.queuedTurnsExact) {
+        return {
+          ...base,
+          ...details,
+          state: "uncertain",
+          diagnostics: {
+            connection: "connected",
+            queuedTurns: work?.queuedTurns ?? 0,
+            queuedTurnsExact: work?.queuedTurnsExact ?? false,
+            lastVerifiedAt: binding.lastVerifiedAt,
+            capabilities: notVerifiedLiveCapabilities,
+          },
+          capabilities: disabledCapabilities,
+        };
+      }
+      return {
+        ...base,
+        ...details,
+        state: "idle",
+        diagnostics: {
+          connection: "connected",
+          queuedTurns: 0,
+          queuedTurnsExact: true,
+          lastVerifiedAt: binding.lastVerifiedAt,
+          capabilities: notVerifiedLiveCapabilities,
+        },
+        capabilities: {
+          ...disabledCapabilities,
+          stop: Boolean(this.options.lifecycle?.available),
+        },
+      };
     }
     const runtime = this.options.runtimes[binding.runtimeAdapter];
     if (!runtime) {
@@ -844,6 +907,24 @@ export class LocalControlService {
             stop: Boolean(this.options.lifecycle?.available),
           },
         };
+      }
+      if (status === "idle" && attached === true) {
+        const work = this.options.lifecycle?.agentWorkSnapshot?.(conversation.id, identityId);
+        if (!work || work.activeTurns !== 0 || work.queuedTurns !== 0 || !work.queuedTurnsExact) {
+          return {
+            ...base,
+            ...details,
+            state: "uncertain",
+            diagnostics: {
+              connection: "connected",
+              queuedTurns: work?.queuedTurns ?? 0,
+              queuedTurnsExact: work?.queuedTurnsExact ?? false,
+              lastVerifiedAt: binding.lastVerifiedAt,
+              capabilities: diagnosticCapabilities,
+            },
+            capabilities: disabledCapabilities,
+          };
+        }
       }
       return {
         ...base,

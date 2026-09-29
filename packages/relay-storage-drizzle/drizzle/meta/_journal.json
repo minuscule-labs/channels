@@ -85,6 +85,13 @@
       "when": 1799366400000,
       "tag": "0011_runtime_session_history",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1799452800000,
+      "tag": "0012_agent_idle_sleep_wake",
+      "breakpoints": true
     }
   ]
 }

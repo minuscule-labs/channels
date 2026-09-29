@@ -197,6 +197,146 @@ test("retention tombstones let an evicted pending failure finalize private recov
   }
 });
 
+test("managed binding sleep and wake states use durable lease-fenced transitions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-sleep-state-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const first = await DrizzleLibSqlRelayStorage.open({ url });
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  const binding: ConversationAgentBindingRecord = {
+    id: "binding-sleep-state",
+    workspaceAgentConfigId: "config-sleep-state",
+    workspaceId: "workspace-sleep-state",
+    conversationId: "conversation-sleep-state",
+    agentIdentityId: "agent-sleep-state",
+    runtimeAdapter: "pi",
+    runtimeSessionId: "managed-sleep-state",
+    runtimeOwnerId: await first.getOrCreateRuntimeOwnerId(),
+    generation: 1,
+    state: "connected",
+    wakePolicy: "mentions",
+    lastActiveAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  try {
+    await first.putAgentConfig({
+      id: binding.workspaceAgentConfigId,
+      workspaceId: binding.workspaceId,
+      agentIdentityId: binding.agentIdentityId,
+      status: "active",
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await first.putBinding(binding);
+    assert.ok(await first.acquireBindingLease(
+      binding.id,
+      "relay-a",
+      timestamp,
+      "2026-01-01T00:00:10.000Z",
+    ));
+    const sleeping = await first.updateBindingState(
+      binding.id,
+      binding.generation,
+      "relay-a",
+      "sleeping",
+      timestamp,
+      "2026-01-01T00:00:01.000Z",
+      "connected",
+      { sleptAt: "2026-01-01T00:00:01.000Z", wakeRequestedAt: null },
+    );
+    assert.equal(sleeping?.state, "sleeping");
+    assert.equal(await first.updateBindingState(
+      binding.id,
+      binding.generation,
+      "relay-a",
+      "connected",
+      timestamp,
+      "2026-01-01T00:00:02.000Z",
+      "connected",
+    ), undefined);
+  } finally {
+    await first.close();
+  }
+
+  let reopened = await DrizzleLibSqlRelayStorage.open({ url });
+  try {
+    const sleeping = await reopened.getBinding(binding.id);
+    assert.equal(sleeping?.state, "sleeping");
+    assert.equal(sleeping?.sleptAt, "2026-01-01T00:00:01.000Z");
+    assert.equal(sleeping?.wakeRequestedAt, undefined);
+    assert.ok(await reopened.acquireBindingLease(
+      binding.id,
+      "relay-b",
+      "2026-01-01T00:00:11.000Z",
+      "2026-01-01T00:00:41.000Z",
+    ));
+    const waking = await reopened.updateBindingState(
+      binding.id,
+      binding.generation,
+      "relay-b",
+      "waking",
+      "2026-01-01T00:00:12.000Z",
+      "2026-01-01T00:00:12.000Z",
+      "sleeping",
+      { wakeRequestedAt: "2026-01-01T00:00:12.000Z" },
+    );
+    assert.equal(waking?.state, "waking");
+    const connected = await reopened.updateBindingState(
+      binding.id,
+      binding.generation,
+      "relay-b",
+      "connected",
+      "2026-01-01T00:00:13.000Z",
+      "2026-01-01T00:00:13.000Z",
+      "waking",
+      { lastActiveAt: "2026-01-01T00:00:13.000Z", wakeRequestedAt: null },
+    );
+    assert.equal(connected?.state, "connected");
+    assert.equal(connected?.sleptAt, "2026-01-01T00:00:01.000Z");
+    assert.equal(connected?.lastActiveAt, "2026-01-01T00:00:13.000Z");
+    assert.equal(connected?.wakeRequestedAt, undefined);
+
+    const missingAt = "2026-01-01T00:00:14.000Z";
+    const missing = await reopened.updateBindingState(
+      binding.id,
+      binding.generation,
+      "relay-b",
+      "offline",
+      missingAt,
+      missingAt,
+      "connected",
+      { managedSessionMissingAt: missingAt, wakeRequestedAt: null },
+    );
+    assert.equal(missing?.managedSessionMissingAt, missingAt);
+    await reopened.releaseBindingLease(binding.id, binding.generation, "relay-b");
+    await reopened.close();
+
+    reopened = await DrizzleLibSqlRelayStorage.open({ url });
+    const persistedMissing = await reopened.getBinding(binding.id);
+    assert.equal(persistedMissing?.state, "offline");
+    assert.equal(persistedMissing?.managedSessionMissingAt, missingAt);
+    assert.ok(await reopened.acquireBindingLease(
+      binding.id,
+      "relay-c",
+      "2026-01-01T00:00:15.000Z",
+      "2026-01-01T00:00:45.000Z",
+    ));
+    const verified = await reopened.updateBindingState(
+      binding.id,
+      binding.generation,
+      "relay-c",
+      "connected",
+      "2026-01-01T00:00:16.000Z",
+      "2026-01-01T00:00:16.000Z",
+      "offline",
+    );
+    assert.equal(verified?.managedSessionMissingAt, undefined, "verified reconnection clears the missing-session marker");
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("managed session history is transactionally versioned, owner-scoped, and reconciled after reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-relay-session-history-"));
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));

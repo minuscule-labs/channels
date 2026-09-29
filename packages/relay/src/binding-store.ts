@@ -23,6 +23,21 @@ export const DEFAULT_HANDOFF_SUMMARY_TOKENS = 4_000;
 export const DEFAULT_RECENT_CONTEXT_TOKENS = 8_000;
 export const DEFAULT_RECENT_CONTEXT_MESSAGES = 50;
 
+async function withRuntimeTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface LocalWorkspaceConfig {
   workspaceId: string;
   rootUri: string;
@@ -54,7 +69,7 @@ export interface WorkspaceAgentConfig {
   updatedAt: string;
 }
 
-export type ConversationAgentBindingState = "connected" | "offline" | "replacing" | "disabled";
+export type ConversationAgentBindingState = "connected" | "sleeping" | "waking" | "offline" | "replacing" | "disabled";
 
 export interface ConversationAgentBindingRecord {
   id: string;
@@ -74,6 +89,10 @@ export interface ConversationAgentBindingRecord {
   leaseOwner?: string;
   leaseExpiresAt?: string;
   lastVerifiedAt?: string;
+  lastActiveAt?: string;
+  sleptAt?: string;
+  wakeRequestedAt?: string;
+  managedSessionMissingAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -221,6 +240,13 @@ export interface RelayBindingStore extends RelayCursorStore {
     state: ConversationAgentBindingState,
     lastVerifiedAt: string | undefined,
     updatedAt: string,
+    expectedState?: ConversationAgentBindingState,
+    lifecycle?: {
+      lastActiveAt?: string | null;
+      sleptAt?: string | null;
+      wakeRequestedAt?: string | null;
+      managedSessionMissingAt?: string | null;
+    },
   ): Promise<ConversationAgentBindingRecord | undefined>;
   replaceBindingSession(
     bindingId: string,
@@ -583,14 +609,39 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     state: ConversationAgentBindingState,
     lastVerifiedAt: string | undefined,
     updatedAt: string,
+    expectedState?: ConversationAgentBindingState,
+    lifecycle?: {
+      lastActiveAt?: string | null;
+      sleptAt?: string | null;
+      wakeRequestedAt?: string | null;
+      managedSessionMissingAt?: string | null;
+    },
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== generation || binding.leaseOwner !== leaseOwner
+      || (expectedState !== undefined && binding.state !== expectedState)
       || !binding.leaseExpiresAt || binding.leaseExpiresAt <= updatedAt) {
       return undefined;
     }
     binding.state = state;
     if (lastVerifiedAt) binding.lastVerifiedAt = lastVerifiedAt;
+    if (lifecycle?.lastActiveAt !== undefined) {
+      if (lifecycle.lastActiveAt === null) delete binding.lastActiveAt;
+      else binding.lastActiveAt = lifecycle.lastActiveAt;
+    }
+    if (lifecycle?.sleptAt !== undefined) {
+      if (lifecycle.sleptAt === null) delete binding.sleptAt;
+      else binding.sleptAt = lifecycle.sleptAt;
+    }
+    if (lifecycle?.wakeRequestedAt !== undefined) {
+      if (lifecycle.wakeRequestedAt === null) delete binding.wakeRequestedAt;
+      else binding.wakeRequestedAt = lifecycle.wakeRequestedAt;
+    }
+    if (lifecycle?.managedSessionMissingAt !== undefined) {
+      if (lifecycle.managedSessionMissingAt === null) delete binding.managedSessionMissingAt;
+      else binding.managedSessionMissingAt = lifecycle.managedSessionMissingAt;
+    }
+    if (state === "connected") delete binding.managedSessionMissingAt;
     binding.updatedAt = updatedAt;
     return copyBinding(binding);
   }
@@ -630,6 +681,10 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     binding.runtimeSessionId = runtimeSessionId;
     binding.runtimeOwnerId = runtimeOwnerId;
     binding.generation += 1;
+    binding.lastActiveAt = updatedAt;
+    delete binding.sleptAt;
+    delete binding.wakeRequestedAt;
+    delete binding.managedSessionMissingAt;
     binding.updatedAt = updatedAt;
     this.createSessionActivation(binding, activation);
     // Remain visibly uncertain until the new session is leased, verified, and attached.
@@ -745,6 +800,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     this.retireSessionActivation(binding, updatedAt, "stopped");
     binding.generation += 1;
     binding.state = "disabled";
+    delete binding.wakeRequestedAt;
+    delete binding.managedSessionMissingAt;
     delete binding.leaseOwner;
     delete binding.leaseExpiresAt;
     delete binding.lastVerifiedAt;
@@ -929,6 +986,7 @@ export class LocalRelayDirectory {
       generation: 1,
       state: "connected",
       wakePolicy: input.wakePolicy ?? "mentions",
+      lastActiveAt: timestamp,
       createdAt: timestamp,
       updatedAt: timestamp,
     }, {
@@ -983,6 +1041,7 @@ export interface RestoreConversationBindingsOptions {
   runtimes: Readonly<Record<string, AgentRuntimePort>>;
   leaseDurationMs?: number;
   statusTimeoutMs?: number;
+  resumeTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -1009,14 +1068,27 @@ export class RestoredConversationBindings {
   async markConnected(): Promise<boolean> {
     if (this.closed) return false;
     const timestamp = this.now().toISOString();
-    const results = await Promise.all(this.records.map((record) =>
-      this.store.updateBindingState(
+    const results = await Promise.all(this.records.map((record) => record.state === "sleeping"
+      ? this.store.updateBindingState(
+        record.id,
+        record.generation,
+        this.leaseOwner,
+        "sleeping",
+        record.lastVerifiedAt,
+        timestamp,
+        "sleeping",
+      )
+      : this.store.updateBindingState(
         record.id,
         record.generation,
         this.leaseOwner,
         "connected",
         timestamp,
         timestamp,
+        record.state === "waking" ? "waking" : undefined,
+        record.state === "waking"
+          ? { lastActiveAt: timestamp, wakeRequestedAt: null }
+          : { lastActiveAt: timestamp },
       )));
     return results.every(Boolean);
   }
@@ -1103,6 +1175,10 @@ export async function restoreConversationBindings(
   if (!Number.isSafeInteger(statusTimeoutMs) || statusTimeoutMs < 1) {
     throw new RangeError("statusTimeoutMs must be a positive integer");
   }
+  const resumeTimeoutMs = options.resumeTimeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(resumeTimeoutMs) || resumeTimeoutMs < 1 || resumeTimeoutMs > 2_147_483_647) {
+    throw new RangeError("resumeTimeoutMs must be a supported positive timeout");
+  }
   const now = options.now ?? (() => new Date());
   const conversation = await options.client.getConversation(options.conversationId);
   const [candidates, workspaceMembers, workspaceConfig] = await Promise.all([
@@ -1169,6 +1245,13 @@ export async function restoreConversationBindings(
     provisionalRenewal.unref();
     provisionalRenewals.set(leased.id, { record: leased, timer: provisionalRenewal, inFlight });
     const release = async () => releaseProvisional(leased.id);
+    if (leased.runtimeOwnerId === undefined
+      && (leased.state === "sleeping" || leased.state === "waking")) {
+      // Never infer managed ownership for legacy bindings, even during recovery.
+      outcomes.set(leased.id, "invalid_binding");
+      await release();
+      continue;
+    }
     const [config, identity] = await Promise.all([
       options.store.getAgentConfig(leased.workspaceAgentConfigId),
       options.client.getIdentity(leased.agentIdentityId).catch(() => undefined),
@@ -1190,6 +1273,9 @@ export async function restoreConversationBindings(
       await release();
       continue;
     }
+    let managedSessionState: "active" | "suspended" | "unavailable" | undefined;
+    let interruptedWakeRecovered = false;
+    let recoveredWakeBinding: ConversationAgentBindingRecord | undefined;
     if (leased.runtimeOwnerId !== undefined) {
       if (!leased.runtimeOwnerId.trim()) {
         outcomes.set(leased.id, "invalid_binding");
@@ -1202,67 +1288,139 @@ export async function restoreConversationBindings(
         continue;
       }
       let managedSessions: Awaited<ReturnType<NonNullable<AgentRuntimePort["listManagedSessions"]>>>;
-      let listingTimer: ReturnType<typeof setTimeout> | undefined;
       try {
-        managedSessions = await Promise.race([
+        managedSessions = await withRuntimeTimeout(
           runtime.listManagedSessions(leased.runtimeOwnerId),
-          new Promise<never>((_resolve, reject) => {
-            listingTimer = setTimeout(() => reject(new Error("Runtime session listing timed out")), statusTimeoutMs);
-            listingTimer.unref();
-          }),
-        ]);
+          statusTimeoutMs,
+          "Runtime session listing",
+        );
       } catch {
         outcomes.set(leased.id, "runtime_uncertain");
         await release();
         continue;
-      } finally {
-        if (listingTimer) clearTimeout(listingTimer);
       }
       const ownedSession = managedSessions.find((session) =>
         session.id === leased.runtimeSessionId && session.ownerId === leased.runtimeOwnerId);
       if (!ownedSession) {
-        outcomes.set(leased.id, "runtime_offline");
-        await options.store.updateBindingState(
+        const verifiedAt = now().toISOString();
+        const offline = await options.store.updateBindingState(
           leased.id,
           leased.generation,
           options.leaseOwner,
           "offline",
-          leased.lastVerifiedAt,
-          now().toISOString(),
+          verifiedAt,
+          verifiedAt,
+          leased.state,
+          {
+            managedSessionMissingAt: verifiedAt,
+            ...((leased.state === "sleeping" || leased.state === "waking")
+              ? { wakeRequestedAt: null }
+              : {}),
+          },
         );
+        outcomes.set(leased.id, offline ? "runtime_offline" : "runtime_uncertain");
         await release();
         continue;
       }
-      if (ownedSession.state === "unavailable") {
+      managedSessionState = ownedSession.state;
+      if (managedSessionState === "unavailable") {
         outcomes.set(leased.id, "runtime_uncertain");
         await release();
         continue;
       }
-    }
-    let status: "idle" | "working" | "offline" | "uncertain";
-    try {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        status = await Promise.race([
-          runtime.status(leased.runtimeSessionId),
-          new Promise<"uncertain">((resolve) => {
-            timer = setTimeout(() => resolve("uncertain"), statusTimeoutMs);
-            timer.unref();
-          }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
+      if (leased.state === "waking") {
+        if (!runtime.resume) {
+          outcomes.set(leased.id, "runtime_unavailable");
+          await release();
+          continue;
+        }
+        let resumed: { id: string; ownerId: string } | undefined;
+        try {
+          // Resume is idempotent and serialized by Runtime. Calling it for an already-
+          // active worker also waits out any interrupted suspend/resume transition.
+          resumed = await withRuntimeTimeout(
+            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId),
+            resumeTimeoutMs,
+            "Runtime session resume",
+          );
+        } catch {
+          // A timed-out request may still complete inside Runtime; retain the sleeping fence.
+        }
+        if (resumed && (resumed.id !== leased.runtimeSessionId || resumed.ownerId !== leased.runtimeOwnerId)) {
+          outcomes.set(leased.id, "runtime_uncertain");
+          await release();
+          continue;
+        }
+        if (resumed) {
+          managedSessionState = "active";
+        } else {
+          const sleeping = await options.store.updateBindingState(
+            leased.id,
+            leased.generation,
+            options.leaseOwner,
+            "sleeping",
+            leased.lastVerifiedAt,
+            now().toISOString(),
+            "waking",
+            { wakeRequestedAt: null },
+          );
+          if (!sleeping) {
+            outcomes.set(leased.id, "runtime_uncertain");
+            await release();
+            continue;
+          }
+          // Reattach behind the sleeping fence so the next message retries the
+          // idempotent owner-scoped wake.
+          interruptedWakeRecovered = true;
+          recoveredWakeBinding = sleeping;
+          managedSessionState = ownedSession.state;
+        }
       }
-    } catch {
-      status = "uncertain";
+    }
+    let status: "idle" | "working" | "offline" | "uncertain" | "suspended";
+    if ((leased.state === "sleeping" || interruptedWakeRecovered) && managedSessionState === "suspended") {
+      // The owner-scoped listing is authoritative for a sleeping binding; a suspended
+      // Runtime session may correctly report offline to ordinary status queries.
+      status = "suspended";
+    } else {
+      try {
+        status = await withRuntimeTimeout(
+          runtime.status(leased.runtimeSessionId),
+          statusTimeoutMs,
+          "Runtime status query",
+        );
+      } catch {
+        status = "uncertain";
+      }
     }
     const verifiedAt = now().toISOString();
-    if (status === "uncertain") {
+    let remainsSleeping = leased.state === "sleeping" || interruptedWakeRecovered;
+    if (leased.state === "waking" && !interruptedWakeRecovered && status !== "idle") {
+      const sleeping = await options.store.updateBindingState(
+        leased.id,
+        leased.generation,
+        options.leaseOwner,
+        "sleeping",
+        leased.lastVerifiedAt,
+        verifiedAt,
+        "waking",
+        { wakeRequestedAt: null },
+      );
+      if (!sleeping) {
+        outcomes.set(leased.id, "runtime_uncertain");
+        await release();
+        continue;
+      }
+      recoveredWakeBinding = sleeping;
+      interruptedWakeRecovered = true;
+      remainsSleeping = true;
+    }
+    if (!remainsSleeping && status === "uncertain") {
       outcomes.set(leased.id, "runtime_uncertain");
       await release();
       continue;
     }
-    if (status === "offline") {
+    if (!remainsSleeping && status === "offline") {
       outcomes.set(leased.id, "runtime_offline");
       await options.store.updateBindingState(
         leased.id,
@@ -1275,8 +1433,8 @@ export async function restoreConversationBindings(
       await release();
       continue;
     }
-    const connected = options.markConnected === false
-      ? leased
+    const connected = options.markConnected === false || remainsSleeping
+      ? recoveredWakeBinding ?? leased
       : await options.store.updateBindingState(
         leased.id,
         leased.generation,
@@ -1284,6 +1442,10 @@ export async function restoreConversationBindings(
         "connected",
         verifiedAt,
         verifiedAt,
+        leased.state === "waking" ? "waking" : undefined,
+        leased.state === "waking"
+          ? { lastActiveAt: verifiedAt, wakeRequestedAt: null }
+          : { lastActiveAt: verifiedAt },
       );
     if (!connected) {
       await release();
@@ -1299,6 +1461,7 @@ export async function restoreConversationBindings(
       maxMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
       maxTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
       diagnosticBinding: { id: connected.id, generation: connected.generation },
+      isSleeping: remainsSleeping,
       verifyLease: async () => {
         const checkedAt = now();
         return options.store.renewBindingLease(
@@ -1309,6 +1472,113 @@ export async function restoreConversationBindings(
           new Date(checkedAt.getTime() + leaseDurationMs).toISOString(),
         );
       },
+      ensureAwake: connected.runtimeOwnerId ? async () => {
+        const latest = await options.store.getBinding(connected.id);
+        if (!latest || latest.generation !== connected.generation
+          || latest.runtimeSessionId !== connected.runtimeSessionId
+          || latest.runtimeOwnerId !== connected.runtimeOwnerId) {
+          throw new Error("Managed binding changed before wake");
+        }
+        if (latest.state !== "sleeping" && latest.state !== "waking") return;
+        const ownerId = latest.runtimeOwnerId;
+        if (!ownerId || !runtime.listManagedSessions) {
+          throw new Error("Managed session listing is unavailable");
+        }
+        const requestedAt = now().toISOString();
+        const waking = await options.store.updateBindingState(
+          latest.id,
+          latest.generation,
+          options.leaseOwner,
+          "waking",
+          latest.lastVerifiedAt,
+          requestedAt,
+          latest.state,
+          { wakeRequestedAt: latest.wakeRequestedAt ?? requestedAt },
+        );
+        if (!waking) throw new Error("Managed binding lease changed before wake");
+        try {
+          const sessions = await withRuntimeTimeout(
+            runtime.listManagedSessions(ownerId),
+            statusTimeoutMs,
+            "Runtime session listing",
+          );
+          const owned = sessions.find((session) =>
+            session.id === latest.runtimeSessionId && session.ownerId === latest.runtimeOwnerId);
+          if (!owned) {
+            const verifiedAt = now().toISOString();
+            const offline = await options.store.updateBindingState(
+              latest.id,
+              latest.generation,
+              options.leaseOwner,
+              "offline",
+              verifiedAt,
+              verifiedAt,
+              "waking",
+              { wakeRequestedAt: null, managedSessionMissingAt: verifiedAt },
+            );
+            if (!offline) throw new Error("Managed binding lease changed during missing-session recovery");
+            return "missing";
+          }
+          if (owned.state === "unavailable") {
+            throw new Error("Managed Runtime session is unavailable");
+          }
+          if (!runtime.resume) throw new Error("Managed Runtime resume is unavailable");
+          // Runtime serializes idempotent resume with suspend. This is required even
+          // when inventory says active because a timed-out suspend may still be settling.
+          const resumed = await withRuntimeTimeout(
+            runtime.resume(latest.runtimeSessionId, ownerId),
+            resumeTimeoutMs,
+            "Runtime session resume",
+          );
+          if (resumed.id !== latest.runtimeSessionId || resumed.ownerId !== ownerId) {
+            throw new Error("Runtime resumed a different managed session");
+          }
+          const status = await withRuntimeTimeout(
+            runtime.status(latest.runtimeSessionId),
+            statusTimeoutMs,
+            "Runtime status query",
+          );
+          if (status !== "idle") throw new Error("Managed Runtime session is not verified idle");
+          const verifiedAt = now().toISOString();
+          const awake = await options.store.updateBindingState(
+            latest.id,
+            latest.generation,
+            options.leaseOwner,
+            "connected",
+            verifiedAt,
+            verifiedAt,
+            "waking",
+            { lastActiveAt: verifiedAt, wakeRequestedAt: null },
+          );
+          if (!awake) throw new Error("Managed binding lease changed during wake");
+        } catch (error) {
+          await options.store.updateBindingState(
+            latest.id,
+            latest.generation,
+            options.leaseOwner,
+            "sleeping",
+            latest.lastVerifiedAt,
+            now().toISOString(),
+            "waking",
+            { wakeRequestedAt: null },
+          ).catch(() => undefined);
+          throw error;
+        }
+      } : undefined,
+      onTurnSettled: connected.runtimeOwnerId ? async () => {
+        const timestamp = now().toISOString();
+        const touched = await options.store.updateBindingState(
+          connected.id,
+          connected.generation,
+          options.leaseOwner,
+          "connected",
+          connected.lastVerifiedAt,
+          timestamp,
+          "connected",
+          { lastActiveAt: timestamp },
+        );
+        if (!touched) throw new Error("Could not persist managed binding activity");
+      } : undefined,
     });
     }
 
