@@ -137,6 +137,7 @@ const localControl = await createLocalControlHttpServer({
   browserSessions,
   service: new LocalControlService({
     conversations: service,
+    withConversationMessageAdmission: service.withConversationMessageAdmission.bind(service),
     bindings: {
       async listConversationBindings(conversationId) {
         const state = agentBindings.get(`${conversationId}:${agent.id}`);
@@ -164,6 +165,15 @@ const localControl = await createLocalControlHttpServer({
       },
       isAttached(conversationId, identityId) {
         return attachedAgents.has(`${conversationId}:${identityId}`);
+      },
+      agentWorkSnapshot(conversationId, identityId) {
+        if (!attachedAgents.has(`${conversationId}:${identityId}`)) return undefined;
+        const activity = conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
+        return {
+          activeTurns: activity ? 1 : 0,
+          queuedTurns: activity?.queuedTurns ?? 0,
+          queuedTurnsExact: activity?.queuedTurnsExact ?? true,
+        };
       },
       async replaceConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
