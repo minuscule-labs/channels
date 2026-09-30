@@ -57,6 +57,7 @@ function workspaceConfig(row: typeof schema.localWorkspaceConfigs.$inferSelect):
   return {
     ...row,
     notesFolderId: row.notesFolderId ?? undefined,
+    idleSleepTimeoutMs: row.idleSleepTimeoutMs ?? undefined,
     runtimeModelPolicies,
   };
 }
@@ -254,6 +255,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
     await this.database.insert(schema.localWorkspaceConfigs).values({
       ...config,
+      idleSleepTimeoutMs: config.idleSleepTimeoutMs ?? null,
       runtimeModelPolicies: config.runtimeModelPolicies
         ? JSON.stringify(config.runtimeModelPolicies)
         : null,
@@ -262,6 +264,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       set: {
         rootUri: config.rootUri,
         notesFolderId: config.notesFolderId ?? null,
+        idleSleepTimeoutMs: config.idleSleepTimeoutMs ?? null,
         runtimeModelPolicies: config.runtimeModelPolicies
           ? JSON.stringify(config.runtimeModelPolicies)
           : null,

@@ -120,6 +120,52 @@ function WorkspaceRootForm({
   );
 }
 
+const sleepOptions = [
+  { value: "off", label: "Off (default)" },
+  { value: "15", label: "15 minutes" },
+  { value: "30", label: "30 minutes" },
+  { value: "60", label: "1 hour" },
+  { value: "240", label: "4 hours" },
+  { value: "1440", label: "24 hours" },
+] as const;
+
+function WorkspaceIdleSleepForm({ workspaceId, summary }: {
+  workspaceId: string;
+  summary: LocalWorkspaceConfigurationSummary;
+}) {
+  const queryClient = useQueryClient();
+  const saved = summary.idleSleepTimeoutMs === undefined ? "off" : String(summary.idleSleepTimeoutMs / 60_000);
+  const [selected, setSelected] = useState(saved);
+  const mutation = useMutation({
+    mutationFn: () => localControl.updateWorkspaceConfiguration(workspaceId, {
+      idleSleepTimeoutMs: selected === "off" ? null : Number(selected) * 60_000,
+    }),
+    onSuccess: (next) => { queryClient.setQueryData(queryKeys.workspaceConfiguration(workspaceId), next); },
+  });
+  return (
+    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" onSubmit={(event) => {
+      event.preventDefault();
+      if (selected !== saved && !mutation.isPending) mutation.mutate();
+    }}>
+      <h3 className="text-sm font-semibold">Idle agent sleep</h3>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+        Opt in to suspending eligible managed agents after they are idle. An addressed message wakes the same session.
+        This saves process resources, not model tokens; busy and uncertain agents are never suspended.
+      </p>
+      <label className="mt-3 block text-xs font-medium" htmlFor={`workspace-sleep-${workspaceId}`}>Sleep after</label>
+      <select id={`workspace-sleep-${workspaceId}`} value={selected} onChange={(event) => setSelected(event.target.value)}
+        className="settings-input mt-1.5">
+        {sleepOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.isSuccess && selected === saved ? <span className="mr-auto text-xs text-[var(--success)]">Saved</span> : null}
+        <button className="button-primary" type="submit" disabled={selected === saved || mutation.isPending}>Save sleep policy</button>
+      </div>
+    </form>
+  );
+}
+
 export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace }) {
   const [open, setOpen] = useState(false);
   const session = useQuery({
@@ -188,6 +234,7 @@ export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace })
               <div className="space-y-4">
                 <WorkspaceNameForm workspace={workspace} actorIdentityId={session.data.identityId} />
                 <WorkspaceRootForm workspaceId={workspace.id} summary={configuration.data} />
+                <WorkspaceIdleSleepForm key={workspace.id} workspaceId={workspace.id} summary={configuration.data} />
               </div>
             ) : null}
           </div>

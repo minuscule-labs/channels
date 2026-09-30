@@ -311,6 +311,9 @@ export class LocalAgentHostConfiguration {
       workspaceId,
       rootConfigured: Boolean(workspaceConfig?.rootUri),
       notesFolderConfigured: Boolean(workspaceConfig?.notesFolderId),
+      ...(workspaceConfig?.idleSleepTimeoutMs !== undefined
+        ? { idleSleepTimeoutMs: workspaceConfig.idleSleepTimeoutMs }
+        : {}),
       agents,
     };
   }
@@ -564,10 +567,24 @@ export class LocalAgentHostConfiguration {
     try {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Workspace configuration");
-      rejectUnknown(input, ["rootUri", "notesFolderId"]);
-      const rootUri = await canonicalWorkspaceRoot(
-        requiredString(input.rootUri, "rootUri", MAX_ROOT_URI_BYTES),
-      );
+      rejectUnknown(input, ["rootUri", "notesFolderId", "idleSleepTimeoutMs"]);
+      if (Object.keys(input).length === 0) {
+        throw new LocalConfigurationRequestError("Workspace configuration update is empty", 400, "invalid");
+      }
+      const existing = await this.options.store.getWorkspaceConfig(workspaceId);
+      const rootUri = input.rootUri === undefined
+        ? existing?.rootUri
+        : await canonicalWorkspaceRoot(requiredString(input.rootUri, "rootUri", MAX_ROOT_URI_BYTES));
+      if (!rootUri) {
+        throw new LocalConfigurationRequestError("Workspace source folder is required", 409, "unavailable");
+      }
+      const idleSleepTimeoutMs = input.idleSleepTimeoutMs === undefined || input.idleSleepTimeoutMs === null
+        ? input.idleSleepTimeoutMs
+        : optionalNullableInteger(input.idleSleepTimeoutMs, "idleSleepTimeoutMs", 15 * 60_000, 24 * 60 * 60_000);
+      if (idleSleepTimeoutMs !== undefined && idleSleepTimeoutMs !== null
+        && ![15, 30, 60, 240, 1440].includes(idleSleepTimeoutMs / 60_000)) {
+        throw new LocalConfigurationRequestError("Unsupported idle sleep timeout", 400, "invalid");
+      }
       const notesFolderId = optionalNullableString(
         input.notesFolderId,
         "notesFolderId",
@@ -577,6 +594,7 @@ export class LocalAgentHostConfiguration {
         workspaceId,
         rootUri,
         notesFolderId,
+        idleSleepTimeoutMs,
       });
       for (const key of this.runtimeOptions.keys()) {
         if (key.startsWith(`${workspaceId}\0`)) this.runtimeOptions.delete(key);

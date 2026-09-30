@@ -1955,6 +1955,23 @@ test("private configuration keeps lists redacted and returns agent details only 
       { action: "agent.config.updated", outcome: "rejected", reason: "invalid" },
       { action: "agent.config.updated", outcome: "accepted", reason: undefined },
     ]);
+    assert.equal((await configuration.getWorkspaceConfiguration(workspace.id, owner.id)).idleSleepTimeoutMs, undefined);
+    await assert.rejects(configuration.updateWorkspaceConfiguration(workspace.id, member.id, {
+      idleSleepTimeoutMs: 15 * 60_000,
+    }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 403);
+    for (const idleSleepTimeoutMs of [1, 20 * 60_000, -1, 0]) {
+      await assert.rejects(configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
+        idleSleepTimeoutMs,
+      }), (error: unknown) => error instanceof LocalConfigurationRequestError && error.status === 400);
+    }
+    assert.equal((await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
+      idleSleepTimeoutMs: 15 * 60_000,
+    })).idleSleepTimeoutMs, 15 * 60_000);
+    assert.equal((await store.getWorkspaceConfig(workspace.id))?.rootUri.startsWith("file:"), true,
+      "policy-only updates must preserve the private source path");
+    assert.equal((await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, {
+      idleSleepTimeoutMs: null,
+    })).idleSleepTimeoutMs, undefined);
   } finally {
     await store.close();
     await conversationServer.close();
@@ -2614,6 +2631,74 @@ test("local startup replaces an offline managed binding with an attached idle se
       store.close(),
       conversationServer.close(),
       rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("Workspace policy opts an existing managed binding into sleep and can turn it off", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-workspace-sleep-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  let host: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "policy-sleep", name: "Policy Sleep" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id, name: "policy-sleep", participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test", modelProvider: "openai", modelId: "gpt-managed",
+    });
+    host = new LocalAgentHost({
+      client, store, runtimes: { "managed-test": runtime },
+      idleSleepCheckIntervalMs: 5,
+    });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.ok(binding.leaseOwner);
+    const now = new Date().toISOString();
+    assert.ok(await store.updateBindingState(binding.id, binding.generation, binding.leaseOwner,
+      "connected", now, now, "connected", { lastActiveAt: new Date(Date.now() - 16 * 60_000).toISOString() }));
+    await waitUntil(async () => host?.agentWorkSnapshot(conversation.id, agent.id)?.queuedTurnsExact === true);
+    const getBinding = store.getBinding.bind(store);
+    const getWorkspaceConfig = store.getWorkspaceConfig.bind(store);
+    let offBindingReads = 0;
+    let offPolicyReads = 0;
+    store.getBinding = async (id) => { offBindingReads += 1; return getBinding(id); };
+    store.getWorkspaceConfig = async (id) => { offPolicyReads += 1; return getWorkspaceConfig(id); };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    store.getBinding = getBinding;
+    store.getWorkspaceConfig = getWorkspaceConfig;
+    assert.ok(offPolicyReads > 0, "the scheduler must check for new Workspace opt-ins");
+    assert.equal(offBindingReads, 0, "an Off Workspace must not poll attached binding rows");
+    assert.equal((await store.getBinding(binding.id))?.state, "connected", "existing Workspaces stay off by default");
+    assert.deepEqual(runtime.suspensions, []);
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs: 15 * 60_000 });
+    await waitUntil(async () => (await store.getBinding(binding.id))?.state === "sleeping"
+      && runtime.suspensions.includes(binding.runtimeSessionId), 5_000);
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs: null });
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id, body: "@builder wake after policy turned off",
+    });
+    await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= trigger.sequence, 5_000);
+    assert.equal((await store.getBinding(binding.id))?.state, "connected");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await store.getBinding(binding.id))?.state, "connected", "turning policy off prevents a new sleep");
+  } finally {
+    await host?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(), conversationServer.close(), rm(sourceDirectory, { recursive: true, force: true }),
     ]);
   }
 });
@@ -3308,17 +3393,27 @@ test("startup reconciles an interrupted sleep only after the managed worker beco
       client.createIdentity({ type: "human", displayName: "Owner" }),
       client.createIdentity({ type: "agent", displayName: "Builder" }),
     ]);
-    const workspace = await client.createWorkspace({ slug: "sleep-recovery", name: "Sleep Recovery" });
-    await Promise.all([
-      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
-      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    const [blockedWorkspace, workspace] = await Promise.all([
+      client.createWorkspace({ slug: "sleep-recovery-blocked", name: "Blocked Policy" }),
+      client.createWorkspace({ slug: "sleep-recovery", name: "Sleep Recovery" }),
     ]);
-    const conversation = await client.createConversation({
-      workspaceId: workspace.id,
-      name: "sleep-recovery",
-      participantIds: [owner.id, agent.id],
-    });
+    await Promise.all([blockedWorkspace, workspace].flatMap((candidate) => [
+      client.addWorkspaceMember(candidate.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(candidate.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]));
+    const [blockedConversation, conversation] = await Promise.all([
+      client.createConversation({
+        workspaceId: blockedWorkspace.id, name: "blocked-policy", participantIds: [owner.id, agent.id],
+      }),
+      client.createConversation({
+        workspaceId: workspace.id, name: "sleep-recovery", participantIds: [owner.id, agent.id],
+      }),
+    ]);
     const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(blockedWorkspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(blockedWorkspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test", modelProvider: "openai", modelId: "gpt-managed",
+    });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
     await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
       runtimeAdapter: "managed-test",
@@ -3348,15 +3443,42 @@ test("startup reconciles an interrupted sleep only after the managed worker beco
       runtimes: { "managed-test": runtime },
       idleSleepCheckIntervalMs: 10,
     });
+    // Attach the unrelated connected Workspace first so its failing policy
+    // lookup precedes the interrupted sleeping binding in every idle pass.
+    await recoveringHost.startConversationAgent(blockedConversation.id, agent.id, owner.id);
     await recoveringHost.restore();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
     assert.equal((await store.getBinding(binding.id))?.state, "sleeping");
     assert.deepEqual(runtime.suspensions, [], "startup must not suspend work still running in Runtime");
     assert.deepEqual(runtime.resumes, []);
 
-    runtime.setStatus(binding.runtimeSessionId, "idle");
-    await waitUntil(async () => runtime.suspensions.length === 1, 5_000);
-    await waitUntil(async () => Boolean((await store.getBinding(binding.id))?.sleptAt));
+    const getWorkspaceConfig = store.getWorkspaceConfig.bind(store);
+    let blockedPolicyReads = 0;
+    let sleepingPolicyReads = 0;
+    store.getWorkspaceConfig = async (workspaceId) => {
+      if (workspaceId === blockedWorkspace.id) {
+        blockedPolicyReads += 1;
+        if (blockedPolicyReads === 1) throw new Error("Unrelated Workspace policy is temporarily unavailable");
+        // A stuck policy read must not hold up another Workspace's sleeping
+        // reconciliation or indefinitely delay host quiesce.
+        return new Promise<never>(() => {});
+      }
+      if (workspaceId === workspace.id) {
+        sleepingPolicyReads += 1;
+        throw new Error("Sleeping Workspace policy is temporarily unavailable");
+      }
+      return getWorkspaceConfig(workspaceId);
+    };
+    try {
+      await waitUntil(async () => blockedPolicyReads >= 2, 5_000);
+      runtime.setStatus(binding.runtimeSessionId, "idle");
+      await waitUntil(async () => runtime.suspensions.length === 1, 5_000);
+      await waitUntil(async () => Boolean((await store.getBinding(binding.id))?.sleptAt));
+      assert.ok(blockedPolicyReads >= 2, "a stuck policy read must time out ahead of sleeping reconciliation");
+      assert.equal(sleepingPolicyReads, 0, "an existing sleeping binding must reconcile without reading policy");
+    } finally {
+      store.getWorkspaceConfig = getWorkspaceConfig;
+    }
     const reconciled = await store.getBinding(binding.id);
     assert.equal(reconciled?.state, "sleeping");
     assert.ok(reconciled?.sleptAt);

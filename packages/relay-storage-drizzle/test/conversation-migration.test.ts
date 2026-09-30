@@ -28,6 +28,8 @@ test("production Conversation migration upgrades populated v0.0.6 Relay state", 
     try {
       assert.equal((await storage.getBinding("binding_upgrade"))?.conversationId, channelId);
       assert.equal((await storage.getBinding("binding_upgrade"))?.lastActiveAt, "2026-01-01T00:00:00.000Z");
+      assert.equal((await storage.getWorkspaceConfig("workspace_upgrade"))?.idleSleepTimeoutMs, undefined,
+        "upgraded Workspaces must not opt in automatically");
       const history = await storage.listSessionHistory(channelId, "agent_upgrade");
       assert.equal(history.length, 1);
       assert.equal(history[0]?.mapping, "legacy_unmapped");
