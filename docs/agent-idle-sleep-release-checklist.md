@@ -11,7 +11,7 @@ Scope: an **opt-in** Channels release. Deployment alone does not enable automati
 - [x] Regression coverage includes policy disable/wake, storage migration, queued work and restart, and unrelated failing/stalled Workspace policy reads.
 - [x] Commit the Workspace policy change separately from the Phase 2 core.
 - [ ] Review the final policy diff for unexpected privacy, ownership, cursor, lease, and migration changes. Resolve only concrete integration blockers; record deferred work separately.
-- [ ] Open the Phase 2 core PR, then the policy PR with an explicit stacked base until the core PR merges.
+- [x] Open [Phase 2 core PR #33](https://github.com/minuscule-labs/channels/pull/33) against `main` and [Workspace policy PR #34](https://github.com/minuscule-labs/channels/pull/34) stacked on the core branch. Retarget #34 to `main` after #33 merges.
 
 ## Verification and delivery
 
