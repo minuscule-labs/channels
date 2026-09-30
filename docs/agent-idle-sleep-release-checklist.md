@@ -17,7 +17,7 @@ Scope: an **opt-in** Channels release. Deployment alone does not enable automati
 
 - [x] Local `pnpm check`, `pnpm test` (179 passing), `pnpm web:check`, `pnpm web:test` (33 passing), and focused browser settings test passed on the policy branch.
 - [x] Local real-Pi smoke passed managed start, idle status, suspend, same-session resume, and destroy **without a model turn**.
-- [ ] Confirm CI on both PRs, including macOS/Ubuntu Node checks, Chromium browser tests on Ubuntu, and release-package build/smoke with the exact pinned Runtime commit. The current local Runtime checkout is not at the pinned commit, so local release packaging cannot be treated as validated.
+- [x] CI passed on both PRs: macOS/Ubuntu Node checks, Chromium browser tests on Ubuntu, and release-package build/smoke with the exact pinned Runtime commit ([core run](https://github.com/minuscule-labs/channels/actions/runs/36729020358), [policy run](https://github.com/minuscule-labs/channels/actions/runs/36729046268)). The current local Runtime checkout is not at the pinned commit, so local release packaging cannot be treated as validated.
 - [ ] Before recommending Workspace opt-in outside a controlled trial, exercise transcript continuation through a real Pi model turn in a disposable Workspace with appropriate credentials, cost approval, and cleanup.
 - [ ] Keep the deployed default Off. Document how owners/admins opt in and how turning Off affects an already-sleeping agent.
 
