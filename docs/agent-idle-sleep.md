@@ -1,6 +1,6 @@
 # Idle agent sleep and wake
 
-**Status:** Deferred follow-up. MinuRuntime PR #7 provides the Pi managed-session primitives; Channels automatic idle sleep and lazy wake are not implemented.
+**Status:** Phase 2 core implemented on `feat/runtime-managed-agent-sleep-wake`. The opt-in agent-host state machine, durable sleeping/waking state, lazy Relay wake, and restart reconciliation are covered by tests. Product policy/UI and orphan cleanup remain deferred; lifecycle transitions reject pending or uncertain wake work. Production hosts do not set the sleep timeout, so the feature is off by default.
 
 ## Decision
 
@@ -8,7 +8,7 @@ MinuChannels should automatically sleep eligible, Runtime-owned agent sessions a
 
 Sleep is a process-lifecycle optimization, not a model-cost control. An idle Pi worker currently makes no model calls and uses effectively no CPU, but it still holds processes, listeners, file descriptors, registrations, and memory. The feature should preserve the agent's transcript, Conversation cursor, binding generation, and identity while removing those live resources.
 
-This remains deferred under the [product boundary](product-boundary.md) MVP guardrail. Runtime can now suspend and resume owned Pi sessions, but Channels must first merge and verify session history, then implement and prove the cross-layer sleep/wake state machine before exposing a policy.
+This remains opt-in under the [product boundary](product-boundary.md) MVP guardrail. Runtime's owner-scoped suspend/resume and Channels session history are merged. Channels now has the core state machine, but no Workspace setting or production default enables it; resource measurements and a reliability review are still required before exposing policy.
 
 ## User model
 
@@ -45,7 +45,7 @@ Sleeping must not be presented as Offline or Stopped. An addressed message may w
 
 ### Initial rollout
 
-Ship the mechanism behind an opt-in Workspace policy first. After resume and recovery have proven reliable in normal use, make **30 minutes** the default for newly created Workspaces. Existing Workspaces remain opted out until an owner/admin selects a timeout.
+The current Phase 2 implementation accepts an internal `LocalAgentHost` timeout for controlled testing. The production daemon does not pass it, so all Workspaces remain opted out. A later policy phase may add Workspace defaults and per-agent overrides; only after resource measurements and reliability review should **30 minutes** become the default for new Workspaces.
 
 Supported policy values:
 
@@ -131,7 +131,7 @@ Add private timestamps sufficient for policy and diagnostics:
 
 All state transitions use binding id, generation, and lease-owner compare-and-swap. Sleep/wake does not increment the generation because it preserves the same logical Runtime session and transcript. **New session** continues to increment the generation and replace the Runtime session.
 
-The Conversation cursor remains unchanged while sleeping or waking. Messages remain authoritative in Conversations; a wake failure must not consume, skip, or dead-letter the triggering message merely because process startup failed.
+The Conversation cursor remains unchanged while sleeping or waking. Transient wake failures retry the same trigger without consuming, skipping, or dead-lettering it. If an owner-scoped Runtime inventory confirms the managed session is missing, mark the binding offline, pause automatic wake retries, and preserve the cursor for explicit recovery.
 
 ## Relay behavior
 
@@ -158,7 +158,7 @@ The Relay needs an atomic idle handoff so a timeout cannot race new work:
 5. Ask Runtime to suspend.
 6. Reopen lazy admission for wake detection.
 
-If persistence succeeds but suspension fails, reconciliation either completes suspension or returns the binding to `connected` after proving the worker is healthy. It must never launch a second worker to resolve uncertainty.
+The `sleeping` fence is persisted before suspend. If Runtime state is uncertain, Channels keeps lazy routing and reconciles later; an eligible message calls Runtime's idempotent, owner-scoped `resume` (which serializes against an in-flight suspend) before delivery. Confirmed absence from the exact owner-scoped inventory, whether discovered during wake or startup reconciliation, transitions any enabled managed binding to `offline`, persists that reason across restart, and prevents automatic replacement or cursor advancement. Recovery requires an explicit reconnect or **New session** action. Never launch a second worker or mark the binding connected based on a status check that can race suspend.
 
 ## Recovery and reconciliation
 
@@ -168,22 +168,22 @@ Agent-host startup reconciles durable binding state with Runtime managed-session
 | --- | --- | --- |
 | `sleeping` | `suspended` | Attach lazy wake routing; do not start a worker. |
 | `sleeping` | active and idle | Complete suspension. |
-| `sleeping` | active and working | Fence delivery, report uncertainty, and do not terminate active work automatically. |
-| `waking` | active and idle/working | Complete attachment and mark `connected`. |
-| `waking` | `suspended` | Retry the idempotent resume. |
+| `sleeping` | active and working | Keep the sleeping fence and lazy route; do not suspend or terminate; reconcile again after idleness. |
+| `waking` | active and idle | Complete attachment and mark `connected`. |
+| `waking` | active but not verified idle, or `suspended` | Return to the sleeping fence and retry owner-scoped wake before delivery. |
 | `connected` | `suspended` | Resume and reattach the same session; do not create a new one. |
 | any enabled state | `missing` | Mark `offline`; preserve the cursor and require recovery or explicit **New session**. |
 | `disabled` | active or suspended | Destroy it best-effort; never attach or wake it. |
 
-Recovery retains the existing lease and generation fencing rules. A host that loses its lease cannot sleep, wake, attach, or deliver output for that binding.
+Recovery retains the existing lease and generation fencing rules. The final sleeping attachment checks its expected state, generation, lease owner, and lease expiry before publishing the route. A host that loses its lease cannot sleep, wake, attach, or deliver output for that binding.
 
 Service quiesce waits for any already accepted sleep/wake transition, then leaves durable state for the next process to reconcile. It does not force active work to sleep.
 
 ## Conversation lifecycle interaction
 
-Snooze and Archive continue to require idle or stopped agents and continue to fence managed-agent admission. An eligible session may be suspended immediately instead of waiting for its normal timeout.
+Snooze and Archive keep their existing admission fence and stop idle bound agents before committing lifecycle state; this includes destroying a sleeping session's Runtime resume descriptor. While fenced, lifecycle checks share an in-process message-admission gate with the Conversation service from the authoritative head read through Stop and lifecycle commit; they require an exact, empty work snapshot for each attached idle agent, whether connected or sleeping. Already-committed messages whose events are delayed cannot be mistaken for an empty queue, and later message commits wait until the transition completes. If that gate is unavailable, Snooze/Archive fails closed. Phase 2 does not add immediate sleep as a Snooze/Archive optimization.
 
-To wake it after a Conversation reopens, the private current binding must remain durably routable in a sleeping/lazy-wake state. Do not retire it into history-only state and then silently reactivate it: historical activation recovery is a separate explicit action. Reopening alone does not resume a worker; it only makes the lazy route eligible for a later addressed message. The exact lifecycle integration must be settled before implementation.
+If future lifecycle behavior should preserve a lazily routable binding across Snooze or Archive, it needs an explicit design. Do not retire a binding into history-only state and then silently reactivate it. Reopening alone must not resume a worker; it may only make an explicitly preserved lazy route eligible for a later addressed message.
 
 ## Explicit lifecycle actions
 
@@ -195,7 +195,7 @@ To wake it after a Conversation reopens, the private current binding must remain
 
 ## Presentation and controls
 
-Add `sleeping` and transient `waking` to the presentation-safe local agent states. The browser may show:
+A distinct `sleeping`/`waking` presentation and Workspace controls are deferred to Phase 3. For now, the private local status projection treats attached sleeping or connected bindings as `idle` only when Relay confirms the queue is exactly empty; pending or uncertain work is not idle. Runtime details remain private. A later UI may show:
 
 - **Sleeping · wakes on mention** (or the applicable wake-policy label);
 - **Waking…** while resume is in progress;
@@ -237,7 +237,7 @@ Emit sanitized lifecycle events:
 - `agent.session.wake-failed`
 - `agent.session.orphan-cleaned`
 
-Useful local metrics are counts of awake/sleeping workers, wake latency, transition failures, and orphan cleanup outcomes. Diagnostics may include bounded reason codes such as `busy`, `lease_changed`, `resume_missing`, `runtime_timeout`, or `policy_disabled`, but not raw Runtime errors.
+Useful future metrics are counts of awake/sleeping workers, wake latency, transition failures, and orphan cleanup outcomes. Phase 2 currently reports only sanitized generic errors; structured lifecycle events and metrics remain deferred. Diagnostics may include bounded reason codes such as `busy`, `lease_changed`, `resume_missing`, `runtime_timeout`, or `policy_disabled`, but not raw Runtime errors.
 
 ## Delivery sequence
 
@@ -248,13 +248,14 @@ Useful local metrics are counts of awake/sleeping workers, wake latency, transit
 - Tests prove the same managed ID and transcript survive worker exit; Pi's native worker ID may change.
 - Suspend/resume/destroy idempotency, busy-session fencing, and lifecycle recovery have automated coverage.
 
-### Phase 2 — Agent-host state machine
+### Phase 2 — Agent-host state machine — core implemented
 
-- Add private storage migration for sleep states and timestamps.
-- Add generation/lease-fenced sleep and wake transitions.
-- Keep sleeping bindings lazily routable through Relay.
-- Reconcile interrupted transitions on startup.
-- Keep the policy disabled by default.
+- Added a private migration for `sleeping`/`waking` and lifecycle timestamps.
+- Added lease-, generation-, and expected-state-fenced sleep/wake transitions.
+- Relay closes per-binding admission during suspend and keeps eligible messages beyond the durable cursor until owner-scoped resume is verified.
+- Startup attaches suspended bindings lazily and reconciles interrupted sleep transitions without suspending a working session.
+- Failed wake attempts retry the same trigger without advancing its cursor.
+- The policy remains disabled in production; no Workspace setting or UI is included.
 
 ### Phase 3 — Policy and UI
 

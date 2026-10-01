@@ -51,6 +51,7 @@ export {
   type RuntimePortTurn,
   type RelayAgentActivity,
   type RelayAgentActivityPhase,
+  type RelayAgentWorkSnapshot,
   type RelayWorkSnapshot,
   type TurnFailureCauseCategory,
   type TurnFailureDeliveryInput,

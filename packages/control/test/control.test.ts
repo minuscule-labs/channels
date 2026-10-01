@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { ConversationClient } from "@minu/channels-core/client";
+import { ConversationClient, type ClientMessageListOptions, type ConversationEventOptions } from "@minu/channels-core/client";
 import { createConversationHttpServer } from "@minu/channels-core";
-import type { ConversationMetadata } from "@minu/channels-core/types";
+import type { ConversationEvent, ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
 import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import {
@@ -194,8 +194,68 @@ class ManagedFakeRuntime {
   }
 }
 
+class DelayedMessageEventConversationClient extends ConversationClient {
+  private catchUpRelease?: Promise<void>;
+  private delayedEvent?: {
+    entered: Promise<void>;
+    markEntered(): void;
+    released: Promise<void>;
+    release(): void;
+  };
+
+  delayNextMessageEvent(): { entered: Promise<void>; release(): void } {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const delayed = {
+      entered: new Promise<void>((resolve) => { markEntered = resolve; }),
+      markEntered: () => markEntered(),
+      released: new Promise<void>((resolve) => { release = resolve; }),
+      release: () => release(),
+    };
+    this.delayedEvent = delayed;
+    return { entered: delayed.entered, release: delayed.release };
+  }
+
+  holdCatchUp(): () => void {
+    let release!: () => void;
+    this.catchUpRelease = new Promise<void>((resolve) => { release = resolve; });
+    return () => {
+      this.catchUpRelease = undefined;
+      release();
+    };
+  }
+
+  override async listMessages(
+    conversationId: string,
+    options: ClientMessageListOptions = {},
+  ): Promise<ConversationMessage[]> {
+    if (options.afterSequence !== undefined) await this.catchUpRelease;
+    return super.listMessages(conversationId, options);
+  }
+
+  override events(
+    conversationId: string,
+    options: ConversationEventOptions = {},
+  ): AsyncIterable<ConversationEvent> {
+    const source = super.events(conversationId, options);
+    const client = this;
+    return (async function* () {
+      for await (const event of source) {
+        const delayed = client.delayedEvent;
+        if (event.type === "message.created" && delayed) {
+          client.delayedEvent = undefined;
+          delayed.markEntered();
+          await delayed.released;
+        }
+        yield event;
+      }
+    })();
+  }
+}
+
 class OwnerScopedRuntimeFake extends ManagedFakeRuntime {
   readonly suspensions: string[] = [];
+  readonly suspensionAttempts: string[] = [];
   readonly destructions: string[] = [];
   readonly resumes: string[] = [];
   readonly listings: string[] = [];
@@ -208,6 +268,13 @@ class OwnerScopedRuntimeFake extends ManagedFakeRuntime {
     complete(): void;
   }>();
   private readonly suspendFailures = new Map<string, Error[]>();
+  private readonly resumeFailures = new Map<string, Error[]>();
+  private readonly heldSuspensions = new Map<string, {
+    entered: Promise<void>;
+    enter(): void;
+    release: Promise<void>;
+    complete(): void;
+  }>();
 
   async startManaged(config: ManagedRuntimeStartConfig, ownerId: string): Promise<{ id: string; ownerId: string }> {
     const session = await this.start(config);
@@ -234,12 +301,23 @@ class OwnerScopedRuntimeFake extends ManagedFakeRuntime {
   async resume(managedSessionId: string, ownerId: string): Promise<{ id: string; ownerId: string }> {
     if (this.owners.get(managedSessionId) !== ownerId) throw new Error("owner mismatch");
     this.resumes.push(managedSessionId);
-    this.setStatus(managedSessionId, "idle");
+    const failures = this.resumeFailures.get(managedSessionId);
+    const failure = failures?.shift();
+    if (failures?.length === 0) this.resumeFailures.delete(managedSessionId);
+    if (failure) throw failure;
+    if (await this.status(managedSessionId) === "offline") this.setStatus(managedSessionId, "idle");
     return { id: managedSessionId, ownerId };
   }
 
   async suspend(managedSessionId: string, ownerId: string): Promise<void> {
     if (this.owners.get(managedSessionId) !== ownerId) throw new Error("owner mismatch");
+    this.suspensionAttempts.push(managedSessionId);
+    const held = this.heldSuspensions.get(managedSessionId);
+    if (held) {
+      held.enter();
+      await held.release;
+      this.heldSuspensions.delete(managedSessionId);
+    }
     const failures = this.suspendFailures.get(managedSessionId);
     const failure = failures?.shift();
     if (failures?.length === 0) this.suspendFailures.delete(managedSessionId);
@@ -260,6 +338,19 @@ class OwnerScopedRuntimeFake extends ManagedFakeRuntime {
     this.owners.delete(managedSessionId);
   }
 
+  holdSuspend(sessionId: string) {
+    let enter!: () => void;
+    let complete!: () => void;
+    const held = {
+      entered: new Promise<void>((resolve) => { enter = resolve; }),
+      enter: () => enter(),
+      release: new Promise<void>((resolve) => { complete = resolve; }),
+      complete: () => complete(),
+    };
+    this.heldSuspensions.set(sessionId, held);
+    return { entered: held.entered, release: held.complete };
+  }
+
   holdDestroy(sessionId: string) {
     let enter!: () => void;
     let complete!: () => void;
@@ -277,8 +368,16 @@ class OwnerScopedRuntimeFake extends ManagedFakeRuntime {
     this.unavailableSessions.add(sessionId);
   }
 
+  forgetManagedSession(sessionId: string): void {
+    this.owners.delete(sessionId);
+  }
+
   failNextSuspend(sessionId: string, error = new Error("simulated suspend failure")): void {
     this.suspendFailures.set(sessionId, [...(this.suspendFailures.get(sessionId) ?? []), error]);
+  }
+
+  failNextResume(sessionId: string, error = new Error("simulated resume failure")): void {
+    this.resumeFailures.set(sessionId, [...(this.resumeFailures.get(sessionId) ?? []), error]);
   }
 }
 
@@ -332,6 +431,120 @@ test("projects private bindings into presentation-safe Conversation agent status
   assert.doesNotMatch(publicJson, /runtimeSessionId|runtimeOwnerId|managedSessionId|legacyRuntimeSessionRef|runtimeAdapter|leaseOwner/);
 });
 
+test("projects sleeping bindings with pending work as uncertain and blocks Conversation lifecycle changes", async () => {
+  let statusCalls = 0;
+  let attached = true;
+  let work = { activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true };
+  let stopCalls = 0;
+  let lifecycleUpdates = 0;
+  const control = new LocalControlService({
+    withConversationMessageAdmission: async (_id, operation) => operation(),
+    conversations: {
+      async getConversation() { return conversation; },
+      async getConversationLifecycle() { return { state: "active" as const }; },
+      async updateConversationLifecycle(_conversationId, input) {
+        lifecycleUpdates += 1;
+        return { state: input.state };
+      },
+    },
+    bindings: {
+      async listConversationBindings() { return [{ ...records[0]!, state: "sleeping" as const }]; },
+    },
+    runtimes: {
+      "pi-private-adapter": { async status() { statusCalls += 1; return "offline" as const; } },
+    },
+    lifecycle: {
+      available: true,
+      async startConversationAgent() {},
+      async replaceConversationAgent() {},
+      async stopConversationAgent() { stopCalls += 1; },
+      async cancelCurrentConversationAgent() {},
+      isAttached() { return attached; },
+      agentWorkSnapshot() { return work; },
+    },
+  });
+  const result = await control.listConversationAgents(conversation.id);
+  const agent = result.agents.find(({ identityId }) => identityId === "agent-running");
+  assert.equal(agent?.state, "idle");
+  assert.equal(agent?.diagnostics?.connection, "connected");
+  assert.equal(statusCalls, 0);
+  assert.doesNotMatch(JSON.stringify(result), /runtime-session-secret|runtimeSessionId|runtimeOwnerId|managedSessionId/);
+
+  work = { activeTurns: 0, queuedTurns: 1, queuedTurnsExact: true };
+  const queued = await control.listConversationAgents(conversation.id);
+  const queuedAgent = queued.agents.find(({ identityId }) => identityId === "agent-running");
+  assert.equal(queuedAgent?.state, "uncertain");
+  assert.equal(queuedAgent?.diagnostics?.queuedTurns, 1);
+  assert.equal(queuedAgent?.diagnostics?.queuedTurnsExact, true);
+  for (const state of ["snoozed", "settled"] as const) {
+    await assert.rejects(control.updateConversationLifecycle(conversation.id, "human-1", {
+      state,
+      ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 60_000).toISOString() } : {}),
+    }), /All managed Conversation agents must be idle or stopped/);
+  }
+  assert.equal(stopCalls, 0, "pending wake work must not be stopped as an idle binding");
+  assert.equal(lifecycleUpdates, 0, "pending wake work must reject both Snooze and Archive");
+
+  work = { activeTurns: 0, queuedTurns: 0, queuedTurnsExact: false };
+  const unverified = await control.listConversationAgents(conversation.id);
+  const unverifiedAgent = unverified.agents.find(({ identityId }) => identityId === "agent-running");
+  assert.equal(unverifiedAgent?.state, "uncertain");
+  assert.equal(unverifiedAgent?.diagnostics?.queuedTurnsExact, false);
+  await assert.rejects(control.updateConversationLifecycle(conversation.id, "human-1", {
+    state: "settled",
+  }), /All managed Conversation agents must be idle or stopped/);
+  assert.equal(stopCalls, 0, "unknown queue state must also prevent lifecycle stops");
+
+  attached = false;
+  const unavailable = await control.listConversationAgents(conversation.id);
+  const sleepingAgent = unavailable.agents.find(({ identityId }) => identityId === "agent-running");
+  assert.equal(sleepingAgent?.state, "uncertain");
+  assert.equal(sleepingAgent?.diagnostics, undefined);
+  assert.equal(statusCalls, 0, "an unattached sleeping binding must not be probed as a live worker");
+  assert.doesNotMatch(JSON.stringify(unavailable), /runtime-session-secret|runtimeSessionId|runtimeOwnerId|managedSessionId/);
+});
+
+test("connected idle Runtime is not lifecycle-safe when attached Relay work is queued or unverified", async () => {
+  let work = { activeTurns: 0, queuedTurns: 1, queuedTurnsExact: true };
+  let stopped = 0;
+  const control = new LocalControlService({
+    withConversationMessageAdmission: async (_id, operation) => operation(),
+    conversations: {
+      async getConversation() { return conversation; },
+      async getConversationLifecycle() { return { state: "active" as const }; },
+      async updateConversationLifecycle() { throw new Error("Pending work must never change lifecycle"); },
+    },
+    bindings: { async listConversationBindings() { return [records[0]!]; } },
+    runtimes: { "pi-private-adapter": { async status() { return "idle" as const; } } },
+    lifecycle: {
+      available: true,
+      async startConversationAgent() {},
+      async replaceConversationAgent() {},
+      async stopConversationAgent() { stopped += 1; },
+      async cancelCurrentConversationAgent() {},
+      isAttached() { return true; },
+      agentWorkSnapshot() { return work; },
+    },
+  });
+  for (const next of [
+    { activeTurns: 0, queuedTurns: 1, queuedTurnsExact: true },
+    { activeTurns: 0, queuedTurns: 0, queuedTurnsExact: false },
+  ]) {
+    work = next;
+    const result = await control.listConversationAgents(conversation.id);
+    const agent = result.agents.find(({ identityId }) => identityId === "agent-running");
+    assert.equal(agent?.state, "uncertain");
+    assert.equal(agent?.diagnostics?.queuedTurns, next.queuedTurns);
+    assert.equal(agent?.diagnostics?.queuedTurnsExact, next.queuedTurnsExact);
+    await assert.rejects(control.updateConversationLifecycle(conversation.id, "human-1", {
+      state: "settled",
+    }), /All managed Conversation agents must be idle or stopped/);
+  }
+  assert.equal(stopped, 0);
+  assert.doesNotMatch(JSON.stringify(await control.listConversationAgents(conversation.id)),
+    /runtime-session-secret|runtimeSessionId|runtimeOwnerId|managedSessionId/);
+});
+
 test("projects an in-progress managed start distinctly from an offline Runtime", async () => {
   const control = new LocalControlService({
     conversations: { async getConversation() { return conversation; } },
@@ -364,6 +577,7 @@ test("Conversation snooze and settle fence admission and require managed agents 
   let cleared = 0;
   const updates: Array<{ state: string; snoozedUntil?: string }> = [];
   const control = new LocalControlService({
+    withConversationMessageAdmission: async (_id, operation) => operation(),
     conversations: {
       async getConversation() { return managedConversation; },
       async getConversationLifecycle() { return { state: "active" }; },
@@ -405,6 +619,35 @@ test("Conversation snooze and settle fence admission and require managed agents 
   }), /must be idle or stopped/);
   assert.equal(fenced, 1);
   assert.equal(updates.length, 2);
+});
+
+test("Snooze and Archive fail closed without an in-process Conversation message gate", async () => {
+  let stops = 0;
+  let updates = 0;
+  const control = new LocalControlService({
+    conversations: {
+      async getConversation() { return conversation; },
+      async getConversationLifecycle() { return { state: "active" as const }; },
+      async updateConversationLifecycle() { updates += 1; return { state: "settled" as const }; },
+    },
+    bindings: { async listConversationBindings() { return [records[0]!]; } },
+    runtimes: { "pi-private-adapter": { async status() { return "idle" as const; } } },
+    lifecycle: {
+      available: true,
+      async startConversationAgent() {},
+      async replaceConversationAgent() {},
+      async stopConversationAgent() { stops += 1; },
+      async cancelCurrentConversationAgent() {},
+    },
+  });
+  for (const state of ["snoozed", "settled"] as const) {
+    await assert.rejects(control.updateConversationLifecycle(conversation.id, "human-1", {
+      state,
+      ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 60_000).toISOString() } : {}),
+    }), /message admission coordination is unavailable/);
+  }
+  assert.equal(stops, 0);
+  assert.equal(updates, 0);
 });
 
 test("projects Relay activity and accepts cancellation without exposing Runtime details", async () => {
@@ -2367,6 +2610,783 @@ test("local startup replaces an offline managed binding with an attached idle se
   } finally {
     await initialHost?.close().catch(() => undefined);
     await resumedHost?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("opt-in idle sleep survives restart and lazy wake preserves the cursor after resume failure", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-idle-sleep-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  let sleepingHost: LocalAgentHost | undefined;
+  let restoredHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "idle-sleep", name: "Idle Sleep" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "idle-sleep",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+
+    sleepingHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      idleSleepTimeoutMs: 30,
+      idleSleepCheckIntervalMs: 5,
+      runtimeStatusTimeoutMs: 100,
+    });
+    await sleepingHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    const initial = (await store.listConversationBindings(conversation.id))[0]!;
+    runtime.setStatus(initial.runtimeSessionId, "working");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 80));
+    assert.deepEqual(runtime.suspensions, [], "a working Runtime session must never be suspended");
+
+    runtime.setStatus(initial.runtimeSessionId, "idle");
+    const heldSuspend = runtime.holdSuspend(initial.runtimeSessionId);
+    await waitUntil(async () => runtime.suspensionAttempts.length > 0, 5_000);
+    await heldSuspend.entered;
+    const firstTrigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder queued during suspend",
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+    assert.equal(runtime.prompts.get(initial.runtimeSessionId)?.length ?? 0, 0);
+    heldSuspend.release();
+    await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= firstTrigger.sequence, 5_000);
+    assert.equal((await store.getBinding(initial.id))?.state, "connected");
+    assert.deepEqual(runtime.suspensions, [initial.runtimeSessionId]);
+    await waitUntil(async () => (await store.getBinding(initial.id))?.state === "sleeping"
+      && runtime.suspensions.length >= 2, 5_000);
+    const beforeRestart = await store.getBinding(initial.id);
+    assert.ok(beforeRestart?.leaseOwner);
+    const interruptedWakeAt = new Date().toISOString();
+    assert.ok(await store.updateBindingState(
+      initial.id,
+      initial.generation,
+      beforeRestart.leaseOwner,
+      "waking",
+      beforeRestart.lastVerifiedAt,
+      interruptedWakeAt,
+      "sleeping",
+      { wakeRequestedAt: interruptedWakeAt },
+    ));
+    runtime.failNextResume(initial.runtimeSessionId);
+    await sleepingHost.close();
+    sleepingHost = undefined;
+
+    restoredHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      runtimeStatusTimeoutMs: 100,
+    });
+    await restoredHost.restore();
+    assert.equal((await store.getBinding(initial.id))?.state, "sleeping");
+    assert.equal(restoredHost.isAttached(conversation.id, agent.id), true);
+    assert.equal((await store.getBinding(initial.id))?.wakeRequestedAt, undefined);
+    assert.deepEqual(runtime.resumes, [initial.runtimeSessionId, initial.runtimeSessionId],
+      "a failed interrupted wake should reattach safely");
+
+    runtime.failNextResume(initial.runtimeSessionId);
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder please continue",
+    });
+    await waitUntil(async () => runtime.resumes.length === 3);
+    await waitUntil(async () => restoredHost?.agentWorkSnapshot(conversation.id, agent.id)?.queuedTurns === 1);
+    assert.equal(await store.getCursor(conversation.id, agent.id), firstTrigger.sequence);
+    assert.equal((await client.listMessages(conversation.id)).length, 3);
+    assert.equal((await store.getBinding(initial.id))?.state, "sleeping");
+
+    const lifecycleControl = new LocalControlService({
+      withConversationMessageAdmission: conversationServer.service.withConversationMessageAdmission.bind(conversationServer.service),
+      conversations: {
+        getConversation: (conversationId) => client.getConversation(conversationId),
+        getConversationLifecycle: (conversationId) => client.getConversationLifecycle(conversationId),
+        updateConversationLifecycle: (conversationId, input) => client.updateConversationLifecycle(conversationId, input),
+      },
+      bindings: store,
+      runtimes: { "managed-test": runtime },
+      lifecycle: restoredHost!,
+    });
+    const duringWakeRetry = await lifecycleControl.listConversationAgents(conversation.id);
+    assert.equal(duringWakeRetry.agents.find(({ identityId }) => identityId === agent.id)?.state, "uncertain");
+    for (const state of ["snoozed", "settled"] as const) {
+      await assert.rejects(lifecycleControl.updateConversationLifecycle(conversation.id, owner.id, {
+        state,
+        ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 60_000).toISOString() } : {}),
+      }), /All managed Conversation agents must be idle or stopped/);
+    }
+    assert.equal((await client.getConversationLifecycle(conversation.id)).state, "active");
+    assert.equal((await store.getBinding(initial.id))?.state, "sleeping");
+
+    await waitUntil(async () => runtime.resumes.length >= 4
+      && (await store.getCursor(conversation.id, agent.id)) >= trigger.sequence, 5_000);
+    assert.equal((await store.getBinding(initial.id))?.state, "connected");
+    assert.deepEqual(runtime.resumes, [
+      initial.runtimeSessionId,
+      initial.runtimeSessionId,
+      initial.runtimeSessionId,
+      initial.runtimeSessionId,
+    ]);
+    assert.equal((await client.listMessages(conversation.id)).length, 4);
+    assert.equal(runtime.prompts.get(initial.runtimeSessionId)?.length, 2);
+    assert.ok(runtime.listings.every((ownerId) => ownerId === initial.runtimeOwnerId));
+  } finally {
+    await sleepingHost?.close().catch(() => undefined);
+    await restoredHost?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("lifecycle rechecks the Conversation head when Relay has not observed a committed message event", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-delayed-event-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  const client = new DelayedMessageEventConversationClient(
+    conversationServer.endpoint,
+    { serviceToken: conversationServer.serviceToken },
+  );
+  let host: LocalAgentHost | undefined;
+  let delayedMessage: ReturnType<DelayedMessageEventConversationClient["delayNextMessageEvent"]> | undefined;
+  let heldSend: ReturnType<OwnerScopedRuntimeFake["holdSend"]> | undefined;
+  try {
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "delayed-event", name: "Delayed Event" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "delayed-event",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    host = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      idleSleepTimeoutMs: 30,
+      idleSleepCheckIntervalMs: 5,
+      runtimeStatusTimeoutMs: 100,
+    });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    await waitUntil(async () => (await store.getBinding(binding.id))?.state === "sleeping"
+      && runtime.suspensions.includes(binding.runtimeSessionId), 5_000);
+
+    delayedMessage = client.delayNextMessageEvent();
+    heldSend = runtime.holdSend(binding.runtimeSessionId);
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder committed while Relay event is delayed",
+    });
+    let messageEventHeld = false;
+    void delayedMessage.entered.then(() => { messageEventHeld = true; });
+    await waitUntil(async () => messageEventHeld);
+    let refreshedHeads = 0;
+    const refreshWorkSnapshot = host.refreshConversationWorkSnapshot.bind(host);
+    host.refreshConversationWorkSnapshot = async (conversationId) => {
+      refreshedHeads += 1;
+      await refreshWorkSnapshot(conversationId);
+    };
+
+    const control = new LocalControlService({
+      withConversationMessageAdmission: conversationServer.service.withConversationMessageAdmission.bind(conversationServer.service),
+      conversations: client,
+      bindings: store,
+      runtimes: { "managed-test": runtime },
+      lifecycle: host,
+    });
+    await assert.rejects(control.updateConversationLifecycle(conversation.id, owner.id, {
+      state: "settled",
+    }), /All managed Conversation agents must be idle or stopped/);
+    assert.equal(refreshedHeads, 1, "lifecycle must refresh Relay against committed Conversation messages");
+    assert.equal((await client.getConversationLifecycle(conversation.id)).state, "active");
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+
+    heldSend.release();
+    heldSend = undefined;
+    delayedMessage.release();
+    delayedMessage = undefined;
+    await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= trigger.sequence, 5_000);
+  } finally {
+    heldSend?.release();
+    delayedMessage?.release();
+    await host?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("Snooze and Archive reject committed work before a connected agent sees its SSE event", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-connected-event-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  const client = new DelayedMessageEventConversationClient(
+    conversationServer.endpoint,
+    { serviceToken: conversationServer.serviceToken },
+  );
+  let host: LocalAgentHost | undefined;
+  let delayedMessage: ReturnType<DelayedMessageEventConversationClient["delayNextMessageEvent"]> | undefined;
+  let releaseCatchUp: (() => void) | undefined;
+  try {
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "connected-event", name: "Connected Event" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "connected-event",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    await waitUntil(async () => host?.agentWorkSnapshot(conversation.id, agent.id)?.queuedTurnsExact === true);
+    assert.equal(await runtime.status(binding.runtimeSessionId), "idle");
+    releaseCatchUp = client.holdCatchUp();
+    delayedMessage = client.delayNextMessageEvent();
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder do not discard this pending message",
+    });
+    await delayedMessage.entered;
+    assert.deepEqual(host.agentWorkSnapshot(conversation.id, agent.id), {
+      activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true,
+    }, "the connected agent looks idle before lifecycle refreshes the committed head");
+    const control = new LocalControlService({
+      withConversationMessageAdmission: conversationServer.service.withConversationMessageAdmission.bind(conversationServer.service),
+      conversations: client,
+      bindings: store,
+      runtimes: { "managed-test": runtime },
+      lifecycle: host,
+    });
+    assert.equal((await control.listConversationAgents(conversation.id)).agents.find(
+      ({ identityId }) => identityId === agent.id,
+    )?.state, "idle");
+    for (const state of ["snoozed", "settled"] as const) {
+      await assert.rejects(control.updateConversationLifecycle(conversation.id, owner.id, {
+        state,
+        ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 60_000).toISOString() } : {}),
+      }), /All managed Conversation agents must be idle or stopped/);
+      assert.equal((await client.getConversationLifecycle(conversation.id)).state, "active");
+      assert.equal((await store.getBinding(binding.id))?.state, "connected");
+      assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+      assert.equal(await runtime.status(binding.runtimeSessionId), "idle");
+    }
+    const pending = (await control.listConversationAgents(conversation.id)).agents.find(
+      ({ identityId }) => identityId === agent.id,
+    );
+    assert.equal(pending?.state, "uncertain");
+    assert.equal(pending?.diagnostics?.queuedTurnsExact, false);
+    releaseCatchUp();
+    releaseCatchUp = undefined;
+    delayedMessage.release();
+    delayedMessage = undefined;
+    await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= trigger.sequence, 5_000);
+  } finally {
+    releaseCatchUp?.();
+    delayedMessage?.release();
+    await host?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("messages arriving after the lifecycle head check wait for Stop and lifecycle commit", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-lifecycle-admission-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  let host: LocalAgentHost | undefined;
+  let releaseStop: (() => void) | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "lifecycle-admission", name: "Lifecycle Admission" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    const stop = host.stopConversationAgent.bind(host);
+    const admit = conversationServer.service.withConversationMessageAdmission.bind(conversationServer.service);
+    const control = new LocalControlService({
+      conversations: client,
+      withConversationMessageAdmission: admit,
+      bindings: store,
+      runtimes: { "managed-test": runtime },
+      lifecycle: host,
+    });
+    for (const state of ["snoozed", "settled"] as const) {
+      const conversation = await client.createConversation({
+        workspaceId: workspace.id,
+        name: `admission-${state}`,
+        participantIds: [owner.id, agent.id],
+      });
+      await host.startConversationAgent(conversation.id, agent.id, owner.id);
+      const binding = (await store.listConversationBindings(conversation.id))[0]!;
+      await waitUntil(async () => host?.agentWorkSnapshot(conversation.id, agent.id)?.queuedTurnsExact === true);
+      let notifyStop!: () => void;
+      const stopEntered = new Promise<void>((resolve) => { notifyStop = resolve; });
+      const stopReleased = new Promise<void>((resolve) => { releaseStop = resolve; });
+      let notifyMessageAttempt!: () => void;
+      const messageAdmissionAttempted = new Promise<void>((resolve) => { notifyMessageAttempt = resolve; });
+      conversationServer.service.withConversationMessageAdmission = <T>(conversationId: string, operation: () => Promise<T>) => {
+        if (conversationId === conversation.id) notifyMessageAttempt();
+        return admit(conversationId, operation);
+      };
+      host.stopConversationAgent = async (...args: Parameters<LocalAgentHost["stopConversationAgent"]>) => {
+        notifyStop();
+        await stopReleased;
+        return stop(...args);
+      };
+      const transition = control.updateConversationLifecycle(conversation.id, owner.id, {
+        state,
+        ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 60_000).toISOString() } : {}),
+      });
+      await stopEntered;
+      let messageFinished = false;
+      const message = client.postMessage(conversation.id, {
+        participantId: owner.id,
+        body: "@builder sent while Stop waits after head verification",
+      }).finally(() => { messageFinished = true; });
+      void message.catch(() => undefined);
+      await messageAdmissionAttempted;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(messageFinished, false, "message must not commit during the lifecycle Stop");
+      assert.equal((await store.getBinding(binding.id))?.state, "connected");
+      releaseStop?.();
+      releaseStop = undefined;
+      await transition;
+      assert.equal((await store.getBinding(binding.id))?.state, "disabled");
+      assert.equal((await client.getConversationLifecycle(conversation.id)).state, state);
+      if (state === "settled") {
+        await assert.rejects(message, /Settled Conversations are frozen/);
+      } else {
+        const accepted = await message;
+        assert.ok(accepted.sequence > 0, "snoozed messages may commit only after lifecycle completion");
+        assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+      }
+      assert.equal(runtime.prompts.get(binding.runtimeSessionId)?.length ?? 0, 0);
+    }
+  } finally {
+    releaseStop?.();
+    await host?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("confirmed managed-session loss pauses wake retries and preserves the Relay cursor", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-missing-session-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  let host: LocalAgentHost | undefined;
+  let restartedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "missing-session", name: "Missing Session" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "missing-session",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+
+    host = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      idleSleepTimeoutMs: 30,
+      idleSleepCheckIntervalMs: 5,
+      runtimeStatusTimeoutMs: 100,
+    });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    await waitUntil(async () => (await store.getBinding(binding.id))?.state === "sleeping"
+      && runtime.suspensions.includes(binding.runtimeSessionId), 5_000);
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+
+    runtime.forgetManagedSession(binding.runtimeSessionId);
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder continue after descriptor loss",
+    });
+    await waitUntil(async () => (await store.getBinding(binding.id))?.state === "offline"
+      && !host?.isAttached(conversation.id, agent.id), 5_000);
+
+    const missing = await store.getBinding(binding.id);
+    assert.equal(missing?.wakeRequestedAt, undefined);
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+    assert.ok(trigger.sequence > 0);
+    assert.deepEqual(runtime.resumes, []);
+    const listingsAfterLoss = runtime.listings.length;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_100));
+    assert.equal(runtime.listings.length, listingsAfterLoss, "a confirmed missing session must not enter a wake retry loop");
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0, "the queued message remains uncommitted");
+
+    const startsBeforeRestart = runtime.starts.length;
+    await host.close();
+    host = undefined;
+    restartedHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      autoResumeActorIdentityId: owner.id,
+    });
+    await restartedHost.restore();
+    const afterRestart = await store.getBinding(binding.id);
+    assert.equal(afterRestart?.state, "offline");
+    assert.ok(afterRestart?.managedSessionMissingAt, "confirmed missing state must survive process restart");
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.starts.length, startsBeforeRestart, "startup must not replace a confirmed-missing session");
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+  } finally {
+    await host?.close().catch(() => undefined);
+    await restartedHost?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("startup-confirmed loss of a sleeping session never auto-replaces or skips pending work", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-startup-missing-source-")));
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-startup-missing-data-"));
+  const url = localRelayLibSqlUrl(join(dataDirectory, "relay.db"));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  let store = await DrizzleLibSqlRelayStorage.open({ url });
+  const runtime = new OwnerScopedRuntimeFake();
+  let initialHost: LocalAgentHost | undefined;
+  let restartedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "startup-missing", name: "Startup Missing" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "startup-missing",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    initialHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      idleSleepTimeoutMs: 30,
+      idleSleepCheckIntervalMs: 5,
+    });
+    await initialHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    await waitUntil(async () => (await store.getBinding(binding.id))?.state === "sleeping"
+      && runtime.suspensions.includes(binding.runtimeSessionId), 5_000);
+    await initialHost.close();
+    initialHost = undefined;
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder pending while the managed descriptor disappears",
+    });
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+    runtime.forgetManagedSession(binding.runtimeSessionId);
+    await store.close();
+    store = await DrizzleLibSqlRelayStorage.open({ url });
+
+    restartedHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      autoResumeActorIdentityId: owner.id,
+    });
+    await restartedHost.restore();
+    const offline = await store.getBinding(binding.id);
+    assert.equal(offline?.state, "offline");
+    assert.ok(offline?.managedSessionMissingAt, "owner-scoped absence must be recorded at startup");
+    assert.equal(offline?.wakeRequestedAt, undefined);
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.starts.length, 1, "startup must not implicitly create a new session");
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+    assert.ok(trigger.sequence > 0, "pending addressed work remains beyond the unchanged cursor");
+    assert.equal((await store.getBinding(binding.id))?.generation, binding.generation);
+  } finally {
+    await initialHost?.close().catch(() => undefined);
+    await restartedHost?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+      rm(dataDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("startup-confirmed loss of a connected managed session preserves pending work", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-connected-missing-source-")));
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-connected-missing-data-"));
+  const url = localRelayLibSqlUrl(join(dataDirectory, "relay.db"));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  let store = await DrizzleLibSqlRelayStorage.open({ url });
+  const runtime = new OwnerScopedRuntimeFake();
+  let initialHost: LocalAgentHost | undefined;
+  let restartedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "connected-missing", name: "Connected Missing" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "connected-missing",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    initialHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await initialHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(binding.state, "connected");
+    await initialHost.close();
+    initialHost = undefined;
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder pending before connected-session loss",
+    });
+    runtime.forgetManagedSession(binding.runtimeSessionId);
+    await runtime.stop(binding.runtimeSessionId);
+    await store.close();
+    store = await DrizzleLibSqlRelayStorage.open({ url });
+
+    restartedHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      autoResumeActorIdentityId: owner.id,
+    });
+    await restartedHost.restore();
+    const offline = await store.getBinding(binding.id);
+    assert.equal(offline?.state, "offline");
+    assert.ok(offline?.managedSessionMissingAt, "confirmed loss must be durable for connected bindings");
+    assert.equal(offline?.generation, binding.generation);
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.starts.length, 1, "startup must not implicitly replace a missing managed session");
+    assert.ok(trigger.sequence > 0);
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+  } finally {
+    await initialHost?.close().catch(() => undefined);
+    await restartedHost?.close().catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+      rm(dataDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("startup reconciles an interrupted sleep only after the managed worker becomes idle", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-sleep-recovery-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  let initialHost: LocalAgentHost | undefined;
+  let recoveringHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "sleep-recovery", name: "Sleep Recovery" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      name: "sleep-recovery",
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    initialHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await initialHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    runtime.setStatus(binding.runtimeSessionId, "working");
+    const interruptedAt = new Date().toISOString();
+    assert.ok(await store.updateBindingState(
+      binding.id,
+      binding.generation,
+      binding.leaseOwner!,
+      "sleeping",
+      binding.lastVerifiedAt,
+      interruptedAt,
+      "connected",
+    ));
+    await initialHost.close();
+    initialHost = undefined;
+
+    recoveringHost = new LocalAgentHost({
+      client,
+      store,
+      runtimes: { "managed-test": runtime },
+      idleSleepCheckIntervalMs: 10,
+    });
+    await recoveringHost.restore();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    assert.equal((await store.getBinding(binding.id))?.state, "sleeping");
+    assert.deepEqual(runtime.suspensions, [], "startup must not suspend work still running in Runtime");
+    assert.deepEqual(runtime.resumes, []);
+
+    runtime.setStatus(binding.runtimeSessionId, "idle");
+    await waitUntil(async () => runtime.suspensions.length === 1, 5_000);
+    await waitUntil(async () => Boolean((await store.getBinding(binding.id))?.sleptAt));
+    const reconciled = await store.getBinding(binding.id);
+    assert.equal(reconciled?.state, "sleeping");
+    assert.ok(reconciled?.sleptAt);
+    assert.equal(await runtime.status(binding.runtimeSessionId), "offline");
+    assert.deepEqual(runtime.resumes, []);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    const checkedAgain = await store.getBinding(binding.id);
+    assert.equal(checkedAgain?.sleptAt, reconciled?.sleptAt,
+      "reconciliation must preserve the completed sleep timestamp across scheduler passes");
+
+    runtime.setStatus(binding.runtimeSessionId, "working");
+    const queuedWhileWorking = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder wait for the existing Runtime work",
+    });
+    await waitUntil(async () => runtime.resumes.length === 1, 2_000);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    assert.equal(await store.getCursor(conversation.id, agent.id), 0);
+    assert.equal((await store.getBinding(binding.id))?.state, "sleeping");
+    assert.deepEqual(runtime.suspensions, [binding.runtimeSessionId]);
+    assert.equal(runtime.prompts.get(binding.runtimeSessionId)?.length ?? 0, 0);
+
+    runtime.setStatus(binding.runtimeSessionId, "idle");
+    await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= queuedWhileWorking.sequence, 5_000);
+    assert.equal((await store.getBinding(binding.id))?.state, "connected");
+    assert.equal(runtime.prompts.get(binding.runtimeSessionId)?.length, 1);
+    assert.deepEqual(runtime.resumes, [binding.runtimeSessionId, binding.runtimeSessionId]);
+  } finally {
+    await initialHost?.close().catch(() => undefined);
+    await recoveringHost?.close().catch(() => undefined);
     await Promise.all([
       store.close(),
       conversationServer.close(),

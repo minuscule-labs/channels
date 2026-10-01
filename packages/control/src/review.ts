@@ -229,6 +229,7 @@ export async function createLocalReviewApp(
       currentHumanIdentityId: human.id,
       conversationsEndpoint: conversationsServer.endpoint,
       conversationsServiceToken: conversationsServer.serviceToken,
+      withConversationMessageAdmission: conversationsServer.service.withConversationMessageAdmission.bind(conversationsServer.service),
       relayDatabasePath,
       webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,

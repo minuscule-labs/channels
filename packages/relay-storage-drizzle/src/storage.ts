@@ -95,6 +95,10 @@ function binding(row: typeof schema.conversationAgentBindings.$inferSelect): Con
     leaseOwner: row.leaseOwner ?? undefined,
     leaseExpiresAt: row.leaseExpiresAt ?? undefined,
     lastVerifiedAt: row.lastVerifiedAt ?? undefined,
+    lastActiveAt: row.lastActiveAt ?? undefined,
+    sleptAt: row.sleptAt ?? undefined,
+    wakeRequestedAt: row.wakeRequestedAt ?? undefined,
+    managedSessionMissingAt: row.managedSessionMissingAt ?? undefined,
   };
 }
 
@@ -560,15 +564,30 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     state: ConversationAgentBindingState,
     lastVerifiedAt: string | undefined,
     updatedAt: string,
+    expectedState?: ConversationAgentBindingState,
+    lifecycle?: {
+      lastActiveAt?: string | null;
+      sleptAt?: string | null;
+      wakeRequestedAt?: string | null;
+      managedSessionMissingAt?: string | null;
+    },
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({
       state,
       lastVerifiedAt,
       updatedAt,
+      ...(lifecycle?.lastActiveAt !== undefined ? { lastActiveAt: lifecycle.lastActiveAt } : {}),
+      ...(lifecycle?.sleptAt !== undefined ? { sleptAt: lifecycle.sleptAt } : {}),
+      ...(lifecycle?.wakeRequestedAt !== undefined ? { wakeRequestedAt: lifecycle.wakeRequestedAt } : {}),
+      ...(lifecycle?.managedSessionMissingAt !== undefined
+        ? { managedSessionMissingAt: lifecycle.managedSessionMissingAt }
+        : {}),
+      ...(state === "connected" ? { managedSessionMissingAt: null } : {}),
     }).where(and(
       eq(schema.conversationAgentBindings.id, bindingId),
       eq(schema.conversationAgentBindings.generation, generation),
       eq(schema.conversationAgentBindings.leaseOwner, leaseOwner),
+      ...(expectedState ? [eq(schema.conversationAgentBindings.state, expectedState)] : []),
       gt(schema.conversationAgentBindings.leaseExpiresAt, updatedAt),
     )).returning();
     return rows[0] ? binding(rows[0]) : undefined;
@@ -594,6 +613,10 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         leaseOwner: null,
         leaseExpiresAt: null,
         lastVerifiedAt: null,
+        lastActiveAt: updatedAt,
+        sleptAt: null,
+        wakeRequestedAt: null,
+        managedSessionMissingAt: null,
         updatedAt,
       }).where(and(
         eq(schema.conversationAgentBindings.id, bindingId),
@@ -619,6 +642,8 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         leaseOwner: null,
         leaseExpiresAt: null,
         lastVerifiedAt: null,
+        wakeRequestedAt: null,
+        managedSessionMissingAt: null,
         updatedAt,
       }).where(and(
         eq(schema.conversationAgentBindings.id, bindingId),

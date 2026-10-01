@@ -29,6 +29,8 @@ export interface LocalControlDaemonOptions {
   currentHumanIdentityId: string;
   conversationsEndpoint?: string;
   conversationsServiceToken?: string;
+  /** Available only when the Conversation service is owned by this process. */
+  withConversationMessageAdmission?<T>(conversationId: string, operation: () => Promise<T>): Promise<T>;
   relayDatabasePath?: string;
   relayMigrationsFolder?: string;
   webUrl?: string;
@@ -105,6 +107,7 @@ export async function createLocalControlDaemon(
     await agentHost.restore();
     const service = new LocalControlService({
       conversations: client,
+      withConversationMessageAdmission: options.withConversationMessageAdmission,
       bindings: store,
       runtimes: options.runtimes ?? {},
       lifecycle: agentHost,

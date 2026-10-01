@@ -471,6 +471,7 @@ export async function createLocalProductApp(
       currentHumanIdentityId: profile.currentHumanIdentityId,
       conversationsEndpoint: conversationsServer.endpoint,
       conversationsServiceToken: conversationsServer.serviceToken,
+      withConversationMessageAdmission: conversationsServer.service.withConversationMessageAdmission.bind(conversationsServer.service),
       relayDatabasePath,
       relayMigrationsFolder,
       sessionKeyPath: join(dataDirectory, "browser-session.key"),

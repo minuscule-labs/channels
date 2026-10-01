@@ -205,13 +205,17 @@ export const conversationAgentBindings = sqliteTable("conversation_agent_binding
   runtimeSessionId: text("runtime_session_id").notNull(),
   runtimeOwnerId: text("runtime_owner_id"),
   generation: integer("generation").notNull(),
-  state: text("state", { enum: ["connected", "offline", "replacing", "disabled"] }).notNull(),
+  state: text("state", { enum: ["connected", "sleeping", "waking", "offline", "replacing", "disabled"] }).notNull(),
   wakePolicy: text("wake_policy", {
     enum: ["mentions", "direct_mentions", "all_messages", "muted"],
   }).notNull(),
   leaseOwner: text("lease_owner"),
   leaseExpiresAt: text("lease_expires_at"),
   lastVerifiedAt: text("last_verified_at"),
+  lastActiveAt: text("last_active_at"),
+  sleptAt: text("slept_at"),
+  wakeRequestedAt: text("wake_requested_at"),
+  managedSessionMissingAt: text("managed_session_missing_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
@@ -220,4 +224,5 @@ export const conversationAgentBindings = sqliteTable("conversation_agent_binding
   uniqueIndex("conversation_agent_bindings_runtime_session_unique")
     .on(table.runtimeAdapter, table.runtimeSessionId),
   index("conversation_agent_bindings_conversation_idx").on(table.conversationId),
+  index("conversation_agent_bindings_idle_idx").on(table.state, table.lastActiveAt),
 ]);

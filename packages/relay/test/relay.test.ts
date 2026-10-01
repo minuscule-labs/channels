@@ -13,6 +13,7 @@ import {
 import {
   InMemoryRelayBindingStore,
   LocalRelayDirectory,
+  RestoredConversationBindings,
   restoreConversationBindings,
 } from "../src/binding-store.ts";
 import {
@@ -706,6 +707,53 @@ test("private bindings isolate Conversation sessions and restore them under gene
   assert.equal((await store.getBinding(bindingA.id))?.leaseOwner, undefined);
   await uncertain.close();
   await server.close();
+});
+
+test("sleeping attachment refuses a concurrent Stop at its final lease/state fence", async () => {
+  const store = new InMemoryRelayBindingStore();
+  const now = new Date().toISOString();
+  const record = {
+    id: "binding-sleep-stop-race",
+    workspaceAgentConfigId: "config-sleep-stop-race",
+    workspaceId: "workspace-sleep-stop-race",
+    conversationId: "conversation-sleep-stop-race",
+    agentIdentityId: "agent-sleep-stop-race",
+    runtimeAdapter: "fake",
+    runtimeSessionId: "managed-sleep-stop-race",
+    runtimeOwnerId: await store.getOrCreateRuntimeOwnerId(),
+    generation: 1,
+    state: "sleeping" as const,
+    wakePolicy: "mentions" as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await store.putAgentConfig({
+    id: record.workspaceAgentConfigId,
+    workspaceId: record.workspaceId,
+    agentIdentityId: record.agentIdentityId,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await store.putBinding(record);
+  const leased = await store.acquireBindingLease(record.id, "restoring-host", now, new Date(Date.now() + 30_000).toISOString());
+  assert.ok(leased);
+  const restored = new RestoredConversationBindings([], new Map(), [leased], store, "restoring-host", 30_000, () => new Date());
+  const update = store.updateBindingState.bind(store);
+  store.updateBindingState = async (...args) => {
+    if (args[3] === "sleeping" && args[6] === "sleeping") {
+      assert.ok(await store.disableBinding(record.id, record.generation, new Date().toISOString()));
+    }
+    return update(...args);
+  };
+  try {
+    assert.equal(await restored.markConnected(), false, "Stop must win before the sleeping route is published");
+    assert.equal((await store.getBinding(record.id))?.state, "disabled");
+    assert.equal((await store.getBinding(record.id))?.generation, 2);
+  } finally {
+    await restored.close();
+    await store.close();
+  }
 });
 
 test("relay catches up on addressed messages using a persisted cursor", async () => {

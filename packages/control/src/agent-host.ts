@@ -4,6 +4,7 @@ import {
   ConversationRuntimeRelay,
   LocalRelayDirectory,
   restoreConversationBindings,
+  type AgentConversationBinding,
   type AgentRuntimePort,
   type ConversationAgentBindingRecord,
   type ConversationWorkingFolder,
@@ -12,6 +13,7 @@ import {
   type RestoredConversationBindings,
   type RestoreBindingOutcome,
   type RelayAgentActivity,
+  type RelayAgentWorkSnapshot,
   type TurnFailureCauseCategory,
   type TurnFailureDeliveryOutcome,
   type TurnFailureDiagnosticRecord,
@@ -140,6 +142,10 @@ export interface LocalAgentHostOptions {
   stopStartedSessionsOnClose?: boolean;
   bindingLeaseDurationMs?: number;
   runtimeStatusTimeoutMs?: number;
+  managedSessionWakeTimeoutMs?: number;
+  /** Optional process-wide idle sleep policy; omitted means sleep/wake remains disabled. */
+  idleSleepTimeoutMs?: number;
+  idleSleepCheckIntervalMs?: number;
   recoveryBackoffMs?: readonly number[];
   /** Local product owner allowed to replace stale offline sessions during startup. */
   autoResumeActorIdentityId?: string;
@@ -324,6 +330,8 @@ export class LocalAgentHost {
     generation: number;
   }>();
   private sessionCleanupTask: Promise<void> | undefined;
+  private idleSleepTimer: NodeJS.Timeout | undefined;
+  private idleSleepTask: Promise<void> | undefined;
   private quiescing = false;
   private quiesced = false;
   private closed = false;
@@ -333,6 +341,20 @@ export class LocalAgentHost {
     this.now = options.now ?? (() => new Date());
     this.leaseOwner = options.leaseOwner ?? `local-agent-host:${process.pid}:${randomUUID()}`;
     this.recoveryBackoffMs = options.recoveryBackoffMs ?? [250, 500, 1_000, 2_000, 5_000];
+    if (options.managedSessionWakeTimeoutMs !== undefined
+      && (!Number.isSafeInteger(options.managedSessionWakeTimeoutMs)
+        || options.managedSessionWakeTimeoutMs < 1 || options.managedSessionWakeTimeoutMs > 2_147_483_647)) {
+      throw new RangeError("managedSessionWakeTimeoutMs must be a supported positive timeout");
+    }
+    if (options.idleSleepTimeoutMs !== undefined
+      && (!Number.isSafeInteger(options.idleSleepTimeoutMs) || options.idleSleepTimeoutMs < 1)) {
+      throw new RangeError("idleSleepTimeoutMs must be a positive integer");
+    }
+    if (options.idleSleepCheckIntervalMs !== undefined
+      && (!Number.isSafeInteger(options.idleSleepCheckIntervalMs)
+        || options.idleSleepCheckIntervalMs < 1 || options.idleSleepCheckIntervalMs > 2_147_483_647)) {
+      throw new RangeError("idleSleepCheckIntervalMs must be a supported positive interval");
+    }
     if (this.recoveryBackoffMs.length === 0 || this.recoveryBackoffMs.some(
       (delayMs) => !Number.isSafeInteger(delayMs) || delayMs < 1,
     )) {
@@ -356,14 +378,263 @@ export class LocalAgentHost {
     };
   }
 
+  agentWorkSnapshot(conversationId: string, agentIdentityId: string): RelayAgentWorkSnapshot | undefined {
+    return this.runners.get(conversationId)?.relay.agentWorkSnapshot(agentIdentityId);
+  }
+
+  async refreshConversationWorkSnapshot(conversationId: string): Promise<void> {
+    const runner = this.runners.get(conversationId);
+    if (!runner) return;
+    const messages = await this.options.client.listMessages(conversationId, {
+      beforeSequence: Number.MAX_SAFE_INTEGER,
+      limit: 1,
+    });
+    const headSequence = messages.at(-1)?.sequence ?? 0;
+    for (const agentIdentityId of runner.restored.keys()) {
+      runner.relay.observeConversationHead(agentIdentityId, headSequence);
+    }
+  }
+
+  private startIdleSleepScheduler(): void {
+    const timeoutMs = this.options.idleSleepTimeoutMs;
+    const hasSleepingBinding = [...this.runners.values()].some((runner) =>
+      [...runner.restored.values()].some((restored) => restored.bindings.some(({ isSleeping }) => isSleeping)));
+    if ((timeoutMs === undefined && !hasSleepingBinding) || this.idleSleepTimer || this.closed || this.quiescing) return;
+    const intervalMs = this.options.idleSleepCheckIntervalMs
+      ?? (timeoutMs === undefined ? 30_000 : Math.max(1, Math.min(30_000, Math.floor(timeoutMs / 4) || 1)));
+    this.idleSleepTimer = setInterval(() => { void this.runIdleSleepPass(); }, intervalMs);
+    this.idleSleepTimer.unref();
+    void this.runIdleSleepPass();
+  }
+
+  private async runIdleSleepPass(): Promise<void> {
+    if (this.idleSleepTask) return this.idleSleepTask;
+    if (this.closed || this.quiescing) return;
+    let task!: Promise<void>;
+    task = (async () => {
+      const candidates = new Map<string, {
+        runner: ConversationRunner;
+        binding: AgentConversationBinding;
+      }>();
+      for (const runner of this.runners.values()) {
+        if (runner.readiness !== "ready") continue;
+        for (const restored of runner.restored.values()) {
+          for (const binding of restored.bindings) {
+            const id = binding.diagnosticBinding?.id;
+            if (id) candidates.set(id, { runner, binding });
+          }
+        }
+      }
+      if (this.options.idleSleepTimeoutMs === undefined
+        && ![...candidates.values()].some(({ binding }) => binding.isSleeping)) {
+        if (this.idleSleepTimer) clearInterval(this.idleSleepTimer);
+        this.idleSleepTimer = undefined;
+        return;
+      }
+      for (const { runner, binding } of candidates.values()) {
+        if (this.closed || this.quiescing) return;
+        const bindingId = binding.diagnosticBinding?.id;
+        if (!bindingId) continue;
+        const record = await this.options.store.getBinding(bindingId);
+        if (!record || (record.state !== "connected" && record.state !== "sleeping")
+          || !record.runtimeOwnerId || record.generation !== binding.diagnosticBinding?.generation) continue;
+        if (record.state === "connected") {
+          const timeoutMs = this.options.idleSleepTimeoutMs;
+          if (timeoutMs === undefined) continue;
+          const lastActiveAt = Date.parse(record.lastActiveAt ?? record.updatedAt);
+          if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) continue;
+        }
+        await this.sleepIdleBinding(runner, binding, record).catch(() => {
+          this.options.onError?.(new Error("Managed Runtime idle sleep attempt failed"));
+        });
+      }
+    })().catch((error) => {
+      this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    }).finally(() => {
+      if (this.idleSleepTask === task) this.idleSleepTask = undefined;
+    });
+    this.idleSleepTask = task;
+    await task;
+  }
+
+  private async sleepIdleBinding(
+    runner: ConversationRunner,
+    binding: AgentConversationBinding,
+    snapshot: ConversationAgentBindingRecord,
+  ): Promise<void> {
+    const key = this.bindingKey(snapshot.conversationId, snapshot.agentIdentityId);
+    await this.exclusive(key, async () => {
+      if (this.closed || this.quiescing || this.conversationAdmissionFences.has(snapshot.conversationId)) return;
+      const current = await this.options.store.getBinding(snapshot.id);
+      const timeoutMs = this.options.idleSleepTimeoutMs;
+      if (!current || (current.state !== "connected" && current.state !== "sleeping")
+        || current.generation !== snapshot.generation
+        || current.runtimeSessionId !== snapshot.runtimeSessionId
+        || current.runtimeOwnerId !== snapshot.runtimeOwnerId || !current.runtimeOwnerId) return;
+      const wasSleeping = current.state === "sleeping" || binding.isSleeping === true;
+      let durableSleeping = current.state === "sleeping";
+      if (!wasSleeping) {
+        if (timeoutMs === undefined) return;
+        const lastActiveAt = Date.parse(current.lastActiveAt ?? current.updatedAt);
+        if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) return;
+      }
+      const runtime = this.options.runtimes[current.runtimeAdapter];
+      if (!runtime?.suspend || !runtime.resume || !runtime.listManagedSessions || !binding.verifyLease) return;
+
+      const reconcileInner = async (): Promise<boolean> => {
+        if (this.closed || this.quiescing || this.conversationAdmissionFences.has(current.conversationId)
+          || !await binding.verifyLease!()) return false;
+        const latest = await this.options.store.getBinding(current.id);
+        if (!latest || latest.state !== current.state || latest.generation !== current.generation
+          || latest.runtimeOwnerId !== current.runtimeOwnerId
+          || latest.runtimeSessionId !== current.runtimeSessionId) return false;
+        if (!wasSleeping) {
+          if (timeoutMs === undefined) return false;
+          const latestActivity = Date.parse(latest.lastActiveAt ?? latest.updatedAt);
+          if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < timeoutMs) return false;
+        }
+        const sessions = await this.withTimeout(
+          runtime.listManagedSessions!(latest.runtimeOwnerId!),
+          this.options.runtimeStatusTimeoutMs ?? 2_000,
+          "Managed Runtime listing timed out",
+        );
+        const managed = sessions.find((candidate) =>
+          candidate.id === latest.runtimeSessionId && candidate.ownerId === latest.runtimeOwnerId);
+        if (managed?.state === "suspended" && wasSleeping) {
+          if (latest.state !== "sleeping" || !latest.sleptAt || latest.wakeRequestedAt) {
+            const confirmedAt = this.now().toISOString();
+            const confirmed = await this.options.store.updateBindingState(
+              latest.id,
+              latest.generation,
+              this.leaseOwner,
+              "sleeping",
+              confirmedAt,
+              confirmedAt,
+              latest.state,
+              {
+                sleptAt: latest.state === "sleeping" ? latest.sleptAt ?? confirmedAt : confirmedAt,
+                wakeRequestedAt: null,
+              },
+            );
+            if (confirmed) durableSleeping = true;
+          }
+          return durableSleeping || wasSleeping;
+        }
+        if (!managed || managed.state !== "active") return false;
+        if (await this.runtimeStatus(runtime, latest.runtimeSessionId) !== "idle"
+          || this.closed || this.quiescing
+          || this.conversationAdmissionFences.has(current.conversationId)) return false;
+
+        const timestamp = this.now().toISOString();
+        if (!durableSleeping) {
+          durableSleeping = true;
+          const sleeping = await this.options.store.updateBindingState(
+            latest.id,
+            latest.generation,
+            this.leaseOwner,
+            "sleeping",
+            timestamp,
+            timestamp,
+            "connected",
+            { wakeRequestedAt: null },
+          );
+          if (!sleeping) {
+            durableSleeping = false;
+            return false;
+          }
+        }
+
+        let suspendCompleted = false;
+        try {
+          await this.withTimeout(
+            runtime.suspend!(latest.runtimeSessionId, latest.runtimeOwnerId!),
+            30_000,
+            "Managed Runtime suspend timed out",
+          );
+          suspendCompleted = true;
+        } catch {
+          this.options.onError?.(new Error("Managed Runtime suspend did not complete cleanly"));
+        }
+
+        let after: Awaited<ReturnType<NonNullable<LocalManagedRuntimePort["listManagedSessions"]>>>;
+        try {
+          after = await this.withTimeout(
+            runtime.listManagedSessions!(latest.runtimeOwnerId!),
+            this.options.runtimeStatusTimeoutMs ?? 2_000,
+            "Managed Runtime listing timed out",
+          );
+        } catch {
+          // Keep the durable sleeping fence when Runtime state cannot be verified.
+          return durableSleeping;
+        }
+        const observed = after.find((candidate) =>
+          candidate.id === latest.runtimeSessionId && candidate.ownerId === latest.runtimeOwnerId);
+        if (observed?.state === "suspended") {
+          const confirmedAt = this.now().toISOString();
+          await this.options.store.updateBindingState(
+            latest.id,
+            latest.generation,
+            this.leaseOwner,
+            "sleeping",
+            confirmedAt,
+            confirmedAt,
+            "sleeping",
+            { sleptAt: confirmedAt, wakeRequestedAt: null },
+          );
+          return true;
+        }
+        if (suspendCompleted && observed?.state === "active") {
+          try {
+            if (await this.runtimeStatus(runtime, latest.runtimeSessionId) === "idle") {
+              if (wasSleeping) return false;
+              const checkedAt = this.now().toISOString();
+              const awake = await this.options.store.updateBindingState(
+                latest.id,
+                latest.generation,
+                this.leaseOwner,
+                "connected",
+                checkedAt,
+                checkedAt,
+                "sleeping",
+                { lastActiveAt: checkedAt, wakeRequestedAt: null },
+              );
+              if (awake) return false;
+            }
+          } catch {
+            // Preserve sleeping on uncertain status; the next eligible message must verify wake.
+          }
+        }
+        return durableSleeping;
+      };
+      const reconcile = async (): Promise<boolean> => {
+        try {
+          return await reconcileInner();
+        } catch {
+          this.options.onError?.(new Error("Managed Runtime sleep state could not be verified"));
+          return durableSleeping || wasSleeping;
+        }
+      };
+
+      if (wasSleeping) {
+        await runner.relay.reconcileSleepingIfIdle(current.agentIdentityId, reconcile);
+      } else {
+        await runner.relay.sleepIfIdle(current.agentIdentityId, reconcile);
+      }
+    });
+  }
+
   async beginQuiesce(): Promise<LocalAgentHostWorkSnapshot> {
     if (this.closed) return this.workSnapshot();
     this.quiescing = true;
+    if (this.idleSleepTimer) clearInterval(this.idleSleepTimer);
+    this.idleSleepTimer = undefined;
     for (const recovery of this.recoveries.values()) clearTimeout(recovery.timer);
     this.recoveries.clear();
     // Freeze Relay admission at the boundary. Operations already serialized before
     // it may still finish durable lifecycle changes, including a quiesced attach.
     for (const { relay } of this.runners.values()) relay.quiesce();
+    const idleSleepTask = this.idleSleepTask;
+    if (idleSleepTask) await idleSleepTask.catch(() => undefined);
     while (this.pending.size > 0) {
       await Promise.allSettled([...this.pending.values()]);
     }
@@ -435,6 +706,7 @@ export class LocalAgentHost {
       }
     })));
     await Promise.all(conversationIds.map((conversationId) => this.autoResumeOfflineBindings(conversationId)));
+    this.startIdleSleepScheduler();
   }
 
   async startConversationAgent(
@@ -1105,6 +1377,10 @@ export class LocalAgentHost {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.idleSleepTimer) clearInterval(this.idleSleepTimer);
+    this.idleSleepTimer = undefined;
+    for (const { relay } of this.runners.values()) relay.quiesce();
+    await this.idleSleepTask?.catch(() => undefined);
     for (const recovery of this.recoveries.values()) clearTimeout(recovery.timer);
     this.recoveries.clear();
     // Operations that passed their availability check own their transition through completion.
@@ -1568,7 +1844,11 @@ export class LocalAgentHost {
     runtime: LocalManagedRuntimePort,
     sessionId: string,
   ): Promise<"idle" | "working" | "offline"> {
-    return this.withTimeout(runtime.status(sessionId), 2_000, "Runtime status timed out");
+    return this.withTimeout(
+      runtime.status(sessionId),
+      this.options.runtimeStatusTimeoutMs ?? 2_000,
+      "Runtime status timed out",
+    );
   }
 
   private async resumeManagedBinding(binding: ConversationAgentBindingRecord): Promise<boolean> {
@@ -1752,7 +2032,7 @@ export class LocalAgentHost {
       if ((await this.options.client.getConversationLifecycle(conversationId)).state !== "active") return;
       const bindings = await this.options.store.listConversationBindings(conversationId);
       await Promise.all(bindings
-        .filter((binding) => binding.state === "offline")
+        .filter((binding) => binding.state === "offline" && !binding.managedSessionMissingAt)
         .map(async (binding) => {
           try {
             if (binding.runtimeOwnerId && await this.resumeManagedBinding(binding)) {
@@ -1779,7 +2059,7 @@ export class LocalAgentHost {
   private async refreshConversation(conversationId: string): Promise<void> {
     const records = await this.options.store.listConversationBindings(conversationId);
     await Promise.all(records
-      .filter((record) => record.state !== "disabled")
+      .filter((record) => record.state !== "disabled" && !record.managedSessionMissingAt)
       .map(async (record) => {
         let result: AttachmentResult;
         try {
@@ -1826,6 +2106,7 @@ export class LocalAgentHost {
         leaseOwner: this.leaseOwner,
         leaseDurationMs: this.options.bindingLeaseDurationMs,
         statusTimeoutMs: this.options.runtimeStatusTimeoutMs,
+        resumeTimeoutMs: this.options.managedSessionWakeTimeoutMs,
         now: this.now,
         runtimes,
       });
@@ -1856,6 +2137,11 @@ export class LocalAgentHost {
                 elapsedMs: event.elapsedMs,
                 attemptCount: event.attemptCount,
               }),
+              onBindingUnavailable: (attachedBinding) => {
+                void this.retireBinding(conversationId, attachedBinding.participantId).catch(() => {
+                  this.options.onError?.(new Error("Unavailable managed binding could not be detached"));
+                });
+              },
               onError: (_binding, error) => this.options.onError?.(error),
             }),
             readiness: "starting",
@@ -1903,6 +2189,7 @@ export class LocalAgentHost {
         this.scheduleRecovery(recoveryRecord, 0, "binding_lease");
       });
       this.cancelRecovery(bindingId);
+      this.startIdleSleepScheduler();
       return "attached";
     } catch (error) {
       if (attached && runner) await runner.relay.retire(
