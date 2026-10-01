@@ -395,11 +395,20 @@ export class LocalAgentHost {
     }
   }
 
+  private async effectiveIdleSleepTimeoutMs(workspaceId: string): Promise<number | undefined> {
+    if (this.options.idleSleepTimeoutMs !== undefined) return this.options.idleSleepTimeoutMs;
+    const configured = (await this.withTimeout(
+      this.options.store.getWorkspaceConfig(workspaceId),
+      2_000,
+      "Workspace idle sleep policy read timed out",
+    ))?.idleSleepTimeoutMs;
+    return configured !== undefined && [15, 30, 60, 240, 1440].includes(configured / 60_000)
+      ? configured : undefined;
+  }
+
   private startIdleSleepScheduler(): void {
     const timeoutMs = this.options.idleSleepTimeoutMs;
-    const hasSleepingBinding = [...this.runners.values()].some((runner) =>
-      [...runner.restored.values()].some((restored) => restored.bindings.some(({ isSleeping }) => isSleeping)));
-    if ((timeoutMs === undefined && !hasSleepingBinding) || this.idleSleepTimer || this.closed || this.quiescing) return;
+    if (this.idleSleepTimer || this.closed || this.quiescing) return;
     const intervalMs = this.options.idleSleepCheckIntervalMs
       ?? (timeoutMs === undefined ? 30_000 : Math.max(1, Math.min(30_000, Math.floor(timeoutMs / 4) || 1)));
     this.idleSleepTimer = setInterval(() => { void this.runIdleSleepPass(); }, intervalMs);
@@ -425,21 +434,38 @@ export class LocalAgentHost {
           }
         }
       }
-      if (this.options.idleSleepTimeoutMs === undefined
-        && ![...candidates.values()].some(({ binding }) => binding.isSleeping)) {
-        if (this.idleSleepTimer) clearInterval(this.idleSleepTimer);
-        this.idleSleepTimer = undefined;
-        return;
-      }
+      // One policy lookup per Workspace per pass; an Off Workspace must not poll
+      // every connected binding. Sleeping routes still need reconciliation even
+      // after their Workspace policy is turned off.
+      const policies = new Map<string, Promise<number | undefined>>();
+      const policyFor = (workspaceId: string): Promise<number | undefined> => {
+        let policy = policies.get(workspaceId);
+        if (!policy) {
+          policy = this.effectiveIdleSleepTimeoutMs(workspaceId).catch(() => {
+            // Unknown policy fails closed for this Workspace only; another
+            // Workspace may still have a sleeping session to reconcile.
+            try {
+              this.options.onError?.(new Error("Workspace idle sleep policy could not be verified"));
+            } catch {
+              // Diagnostics must not abort the remaining idle pass.
+            }
+            return undefined;
+          });
+          policies.set(workspaceId, policy);
+        }
+        return policy;
+      };
       for (const { runner, binding } of candidates.values()) {
         if (this.closed || this.quiescing) return;
         const bindingId = binding.diagnosticBinding?.id;
         if (!bindingId) continue;
+        const workspaceId = binding.diagnosticBinding?.workspaceId;
+        if (!binding.isSleeping && workspaceId && await policyFor(workspaceId) === undefined) continue;
         const record = await this.options.store.getBinding(bindingId);
         if (!record || (record.state !== "connected" && record.state !== "sleeping")
           || !record.runtimeOwnerId || record.generation !== binding.diagnosticBinding?.generation) continue;
         if (record.state === "connected") {
-          const timeoutMs = this.options.idleSleepTimeoutMs;
+          const timeoutMs = await policyFor(record.workspaceId);
           if (timeoutMs === undefined) continue;
           const lastActiveAt = Date.parse(record.lastActiveAt ?? record.updatedAt);
           if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) continue;
@@ -466,7 +492,6 @@ export class LocalAgentHost {
     await this.exclusive(key, async () => {
       if (this.closed || this.quiescing || this.conversationAdmissionFences.has(snapshot.conversationId)) return;
       const current = await this.options.store.getBinding(snapshot.id);
-      const timeoutMs = this.options.idleSleepTimeoutMs;
       if (!current || (current.state !== "connected" && current.state !== "sleeping")
         || current.generation !== snapshot.generation
         || current.runtimeSessionId !== snapshot.runtimeSessionId
@@ -474,6 +499,7 @@ export class LocalAgentHost {
       const wasSleeping = current.state === "sleeping" || binding.isSleeping === true;
       let durableSleeping = current.state === "sleeping";
       if (!wasSleeping) {
+        const timeoutMs = await this.effectiveIdleSleepTimeoutMs(current.workspaceId);
         if (timeoutMs === undefined) return;
         const lastActiveAt = Date.parse(current.lastActiveAt ?? current.updatedAt);
         if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) return;
@@ -489,9 +515,10 @@ export class LocalAgentHost {
           || latest.runtimeOwnerId !== current.runtimeOwnerId
           || latest.runtimeSessionId !== current.runtimeSessionId) return false;
         if (!wasSleeping) {
-          if (timeoutMs === undefined) return false;
+          const currentTimeoutMs = await this.effectiveIdleSleepTimeoutMs(latest.workspaceId);
+          if (currentTimeoutMs === undefined) return false;
           const latestActivity = Date.parse(latest.lastActiveAt ?? latest.updatedAt);
-          if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < timeoutMs) return false;
+          if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < currentTimeoutMs) return false;
         }
         const sessions = await this.withTimeout(
           runtime.listManagedSessions!(latest.runtimeOwnerId!),

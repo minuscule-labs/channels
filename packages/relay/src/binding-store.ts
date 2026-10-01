@@ -42,6 +42,8 @@ export interface LocalWorkspaceConfig {
   workspaceId: string;
   rootUri: string;
   notesFolderId?: string;
+  /** Undefined means no automatic sleep for this Workspace. */
+  idleSleepTimeoutMs?: number;
   runtimeModelPolicies?: Record<string, RuntimeModelRef[]>;
   createdAt: string;
   updatedAt: string;
@@ -823,6 +825,7 @@ export class LocalRelayDirectory {
     workspaceId: string;
     rootUri: string;
     notesFolderId?: string | null;
+    idleSleepTimeoutMs?: number | null;
   }): Promise<LocalWorkspaceConfig> {
     await this.client.getWorkspace(input.workspaceId);
     if (!input.rootUri.trim()) throw new Error("rootUri is required");
@@ -835,6 +838,9 @@ export class LocalRelayDirectory {
         ? existing?.notesFolderId
         : input.notesFolderId ?? undefined,
       runtimeModelPolicies: existing?.runtimeModelPolicies,
+      idleSleepTimeoutMs: input.idleSleepTimeoutMs === undefined
+        ? existing?.idleSleepTimeoutMs
+        : input.idleSleepTimeoutMs ?? undefined,
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     });
@@ -1460,7 +1466,7 @@ export async function restoreConversationBindings(
       wakePolicy: connected.wakePolicy,
       maxMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
       maxTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
-      diagnosticBinding: { id: connected.id, generation: connected.generation },
+      diagnosticBinding: { id: connected.id, generation: connected.generation, workspaceId: connected.workspaceId },
       isSleeping: remainsSleeping,
       verifyLease: async () => {
         const checkedAt = now();

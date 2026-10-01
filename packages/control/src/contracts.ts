@@ -85,6 +85,8 @@ export interface LocalWorkspaceConfigurationSummary {
   workspaceId: string;
   rootConfigured: boolean;
   notesFolderConfigured: boolean;
+  /** Absent means automatic managed-agent sleep is off. */
+  idleSleepTimeoutMs?: number;
   agents: LocalWorkspaceAgentConfigurationSummary[];
 }
 
@@ -113,8 +115,10 @@ export interface LocalWorkspaceAgentConfiguration {
 }
 
 export interface UpdateLocalWorkspaceConfigurationInput {
-  rootUri: string;
+  rootUri?: string;
   notesFolderId?: string | null;
+  /** Null explicitly turns automatic sleep off. */
+  idleSleepTimeoutMs?: number | null;
 }
 
 /** Presentation-safe private Conversation scope; absolute Workspace paths never leave local control. */

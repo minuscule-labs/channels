@@ -18,6 +18,32 @@ test("private relay storage rejects remote database URLs", async () => {
   );
 });
 
+test("Workspace idle sleep policy persists without changing private Workspace source or other settings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-sleep-policy-storage-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  let store = await DrizzleLibSqlRelayStorage.open({ url });
+  try {
+    const original = {
+      workspaceId: "workspace-policy", rootUri: "file:///private/source",
+      notesFolderId: "private-notes", idleSleepTimeoutMs: 15 * 60_000,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    await store.putWorkspaceConfig(original);
+    await store.close();
+    store = await DrizzleLibSqlRelayStorage.open({ url });
+    assert.deepEqual(await store.getWorkspaceConfig(original.workspaceId), { ...original, runtimeModelPolicies: undefined });
+    await store.putWorkspaceConfig({ ...original, idleSleepTimeoutMs: undefined,
+      updatedAt: "2026-01-02T00:00:00.000Z" });
+    await store.close();
+    store = await DrizzleLibSqlRelayStorage.open({ url });
+    assert.equal((await store.getWorkspaceConfig(original.workspaceId))?.idleSleepTimeoutMs, undefined);
+    assert.equal((await store.getWorkspaceConfig(original.workspaceId))?.rootUri, original.rootUri);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("private Conversation working folders are ordered, isolated, atomic, and survive reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-relay-folders-"));
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));

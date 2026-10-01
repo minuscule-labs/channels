@@ -1,6 +1,6 @@
 # Idle agent sleep and wake
 
-**Status:** Phase 2 core implemented on `feat/runtime-managed-agent-sleep-wake`. The opt-in agent-host state machine, durable sleeping/waking state, lazy Relay wake, and restart reconciliation are covered by tests. Product policy/UI and orphan cleanup remain deferred; lifecycle transitions reject pending or uncertain wake work. Production hosts do not set the sleep timeout, so the feature is off by default.
+**Status:** Phase 2 core is implemented. Workspace owners/admins can opt in through Workspace settings with an Off-by-default timeout; the agent host reads the private Workspace policy on each idle pass. Per-agent overrides, default-on rollout, and orphan cleanup remain deferred. Lifecycle transitions reject pending or uncertain wake work.
 
 ## Decision
 
@@ -8,7 +8,7 @@ MinuChannels should automatically sleep eligible, Runtime-owned agent sessions a
 
 Sleep is a process-lifecycle optimization, not a model-cost control. An idle Pi worker currently makes no model calls and uses effectively no CPU, but it still holds processes, listeners, file descriptors, registrations, and memory. The feature should preserve the agent's transcript, Conversation cursor, binding generation, and identity while removing those live resources.
 
-This remains opt-in under the [product boundary](product-boundary.md) MVP guardrail. Runtime's owner-scoped suspend/resume and Channels session history are merged. Channels now has the core state machine, but no Workspace setting or production default enables it; resource measurements and a reliability review are still required before exposing policy.
+This remains opt-in under the [product boundary](product-boundary.md) MVP guardrail. Runtime's owner-scoped suspend/resume and Channels session history are merged. The Workspace setting permits deliberate local opt-in but does not change existing Workspaces or enable sleep by deployment alone; resource measurements and real-Pi reliability validation are still required before making it the default.
 
 ## User model
 
@@ -45,7 +45,7 @@ Sleeping must not be presented as Offline or Stopped. An addressed message may w
 
 ### Initial rollout
 
-The current Phase 2 implementation accepts an internal `LocalAgentHost` timeout for controlled testing. The production daemon does not pass it, so all Workspaces remain opted out. A later policy phase may add Workspace defaults and per-agent overrides; only after resource measurements and reliability review should **30 minutes** become the default for new Workspaces.
+The production daemon reads the private Workspace setting for each attached agent. Existing Workspaces have no timeout and remain Off; an owner/admin can opt in under Workspace settings by selecting a timeout and saving. The host rereads the policy on its next idle check (normally within 30 seconds). Turning the policy off prevents subsequent idle sleep attempts (an already in-flight transition may finish) but does not destroy a session already sleeping; the next eligible message wakes it. The internal `LocalAgentHost` timeout remains a test-only override. Per-agent overrides are deferred; only after resource measurements and real-Pi reliability review should **30 minutes** be considered as a default for new Workspaces.
 
 Supported policy values:
 
@@ -56,7 +56,7 @@ Supported policy values:
 - 4 hours
 - 24 hours
 
-A Workspace provides the default. A Workspace agent may inherit it, choose another value, or choose **Never sleep**. Policy is restricted Workspace configuration, not public Conversation metadata.
+A Workspace currently provides the policy for all its managed agents. Per-agent inherit/override/**Never sleep** controls remain a later step. Policy is restricted Workspace configuration, not public Conversation metadata.
 
 ### Eligibility
 
@@ -255,11 +255,11 @@ Useful future metrics are counts of awake/sleeping workers, wake latency, transi
 - Relay closes per-binding admission during suspend and keeps eligible messages beyond the durable cursor until owner-scoped resume is verified.
 - Startup attaches suspended bindings lazily and reconciles interrupted sleep transitions without suspending a working session.
 - Failed wake attempts retry the same trigger without advancing its cursor.
-- The policy remains disabled in production; no Workspace setting or UI is included.
+- Phase 2 ships without a production default; the follow-up adds an explicit Off-by-default Workspace setting.
 
 ### Phase 3 — Policy and UI
 
-- Add Workspace default and per-agent override.
+- Add Off-by-default Workspace owner/admin policy and settings control; per-agent overrides remain deferred.
 - Add presentation-safe `sleeping`/`waking` states.
 - Add sanitized audits, diagnostics, and user documentation.
 - Enable the default only for newly created Workspaces after reliability review.
@@ -288,7 +288,7 @@ Useful future metrics are counts of awake/sleeping workers, wake latency, transi
 
 Runtime PR #7 proves that the managed ID and transcript identity survive worker exit; Pi's native worker ID may change. The following cross-layer questions remain before enabling sleep:
 
-- Do all supported Pi versions restore the required launch behavior (skills, extensions, model, reasoning, and prompt composition) without duplicating append-only prompt text?
+- A local real-Pi smoke passed owner-scoped start, idle status, suspend, same-session resume, and destroy without prompting or using a provider. Do supported Pi versions also preserve full launch behavior (skills, extensions, model, reasoning, prompt composition) and transcript continuation through an actual model turn without duplicating append-only prompt text?
 - Can Channels' admission fence, durable `sleeping` transition, Runtime suspend, and crash recovery be made atomic enough that uncertainty never causes a second worker or lost message?
 - How should Snooze/Archive preserve a lazily routable current binding without treating it as automatic historical-session recovery?
 - What wake-latency budget is acceptable on supported machines and models?
