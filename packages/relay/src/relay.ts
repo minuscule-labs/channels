@@ -127,7 +127,7 @@ export interface AgentConversationBinding {
   maxMessages?: number;
   maxTokens?: number;
   /** Private binding snapshot used only for generation-gated local diagnostics. */
-  diagnosticBinding?: { id: string; generation: number };
+  diagnosticBinding?: { id: string; generation: number; workspaceId?: string };
   /** Private fencing check used to suppress work and responses after lease loss. */
   verifyLease?(): Promise<boolean>;
   /** Sleeping is private binding lifecycle state; the next eligible turn must wake first. */

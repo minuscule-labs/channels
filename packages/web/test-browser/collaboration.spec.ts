@@ -720,6 +720,16 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect(await rootResponse.text()).not.toContain(rootValue);
   await expect(dialog.getByText("Source: configured", { exact: true })).toBeVisible();
   await expect(dialog.getByLabel("Replace source location", { exact: true })).toHaveValue("");
+  await expect(dialog.getByLabel("Sleep after")).toHaveValue("off");
+  await dialog.getByLabel("Sleep after").selectOption("15");
+  const sleepResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "PATCH"
+    && response.url().endsWith(`/local/workspaces/${workspace.id}/config`));
+  await dialog.getByRole("button", { name: "Save sleep policy" }).click();
+  const sleepResponse = await sleepResponsePromise;
+  expect(sleepResponse.ok()).toBe(true);
+  expect(await sleepResponse.json()).toMatchObject({ idleSleepTimeoutMs: 15 * 60_000 });
+  await expect(dialog.getByLabel("Sleep after")).toHaveValue("15");
 
   await dialog.getByRole("button", { name: "Close Workspace configuration" }).click();
   await page.getByRole("link", { name: "Agents", exact: true }).click();

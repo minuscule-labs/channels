@@ -11,6 +11,7 @@ export const localWorkspaceConfigs = sqliteTable("local_workspace_config", {
   workspaceId: text("workspace_id").primaryKey(),
   rootUri: text("root_uri").notNull(),
   notesFolderId: text("notes_folder_id"),
+  idleSleepTimeoutMs: integer("idle_sleep_timeout_ms"),
   runtimeModelPolicies: text("runtime_model_policies"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
