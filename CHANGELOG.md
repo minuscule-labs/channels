@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.12
+
+- Pin the Runtime managed-session release and add private, owner-scoped Conversation session history with durable activation, retirement, and cleanup reconciliation (`0011` Relay migration). Existing legacy references remain explicitly unmapped.
+- Add opt-in idle suspend and lazy wake for owned Pi sessions. Preserve the logical session, transcript, Relay cursor, and binding generation; fail closed on uncertain work, lease, ownership, or lifecycle state (`0012` Relay migration).
+- Add an owner/admin-only Workspace idle-sleep policy and settings control (`0013` Relay migration). Existing Workspaces and new deployments remain **Off** until explicitly configured; turning Off does not destroy a session already sleeping.
+- Load browser routes and Markdown/syntax-highlighting features on demand to reduce the initial web bundle.
+
 ## 0.0.11
 
 - Keep the local product browser session across service restarts with an owner-private signing key; renew it during use and require a new login only after 30 days of inactivity or credential removal.
