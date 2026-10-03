@@ -26,6 +26,17 @@ describe("agent response markdown", () => {
     assert.equal(html.match(/aria-label="Copy code"/g)?.length, 1);
   });
 
+  it("recognizes Mermaid fences, including nested tilde fences, without loading the renderer on the server", () => {
+    const html = renderToStaticMarkup(
+      <MessageMarkdown body={'> ~~~mermaid\n> graph TD\n>   A[Start] --> B[Done]\n> ~~~'} />,
+    );
+    assert.match(html, /data-language="mermaid"/);
+    assert.match(html, /Rendering diagram/);
+    assert.match(html, /A\[Start\]/);
+    assert.match(html, /aria-label="Copy code"/);
+    assert.doesNotMatch(html, /aria-label="Mermaid diagram"/);
+  });
+
   it("safely treats prototype-related fence labels as plaintext", () => {
     const html = renderToStaticMarkup(
       <MessageMarkdown body={'```__proto__\nplain text\n```\n\n```constructor\nmore plain text\n```'} />,

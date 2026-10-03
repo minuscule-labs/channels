@@ -174,7 +174,7 @@ export function ConversationComposer({
   };
 
   const insertMention = (suggestion: MentionSuggestion) => {
-    if (!mentionQuery) return;
+    if (!mentionQuery || mutation.isPending) return;
     const next = replaceMention(body, mentionQuery, suggestion.handle);
     pendingCursorRef.current = next.cursor;
     updateBody(next.body, next.cursor);
@@ -229,7 +229,7 @@ export function ConversationComposer({
               setCursor(event.currentTarget.selectionStart);
             }}
             onKeyDown={(event) => {
-              if (composingRef.current || event.nativeEvent.isComposing) return;
+              if (composingRef.current || event.nativeEvent.isComposing || mutation.isPending) return;
               if (suggestions.length && mentionQuery) {
                 if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                   event.preventDefault();
@@ -272,7 +272,9 @@ export function ConversationComposer({
                 : identityStatus === "unavailable"
                   ? "Relaunch MinuChannels to restore your browser identity."
                   : "You are not an active human participant in this Conversation.")}
-            disabled={Boolean(readOnlyReason) || !activeAuthorId || !authorReady || mutation.isPending}
+            disabled={Boolean(readOnlyReason) || !activeAuthorId || !authorReady}
+            readOnly={mutation.isPending}
+            aria-busy={mutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] px-2.5 py-2">

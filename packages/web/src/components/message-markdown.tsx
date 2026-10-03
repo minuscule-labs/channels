@@ -4,6 +4,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { canonicalFenceLanguage, fencedCodeLanguages } from "../lib/code-fences";
 import type { RehypeHighlightPlugin } from "../lib/code-highlighter";
+import { MermaidDiagram } from "./mermaid-diagram";
 
 function textContent(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
@@ -22,16 +23,27 @@ function codeLanguage(children: ReactNode): string {
   const language = typeof className === "string"
     ? className.split(/\s+/).find((value) => value.startsWith("language-"))?.slice("language-".length)
     : undefined;
-  return canonicalFenceLanguage(language);
+  return language?.trim().toLowerCase() ?? "plaintext";
 }
 
 function CodeBlock({ children, className, "data-language": language, node: _node, ...properties }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const code = Children.toArray(children).map(textContent).join("");
-  const displayLanguage = canonicalFenceLanguage(language) === "plaintext"
-    ? codeLanguage(children)
-    : canonicalFenceLanguage(language);
+  const fenceLanguage = codeLanguage(children);
+  const displayLanguage = fenceLanguage === "mermaid" ? "mermaid"
+    : canonicalFenceLanguage(language) === "plaintext"
+      ? canonicalFenceLanguage(fenceLanguage)
+      : canonicalFenceLanguage(language);
+  const source = (
+    <pre
+      {...properties}
+      data-language={displayLanguage}
+      className={`${className ?? ""} max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[inherit]`}
+    >
+      {children}
+    </pre>
+  );
 
   useEffect(() => () => clearTimeout(resetTimer.current), []);
 
@@ -62,13 +74,7 @@ function CodeBlock({ children, className, "data-language": language, node: _node
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre
-        {...properties}
-        data-language={displayLanguage}
-        className={`${className ?? ""} max-w-full overflow-x-auto p-3 font-mono text-xs leading-5 [&>code]:bg-transparent [&>code]:p-0 [&>code]:text-[inherit]`}
-      >
-        {children}
-      </pre>
+      {displayLanguage === "mermaid" ? <MermaidDiagram code={code} source={source} /> : source}
     </div>
   );
 }

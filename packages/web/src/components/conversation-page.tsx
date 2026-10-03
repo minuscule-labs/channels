@@ -3,7 +3,7 @@ import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
 import { shortId } from "../lib/messages";
@@ -28,6 +28,11 @@ export function ConversationPage() {
   const [pendingBulkTargets, setPendingBulkTargets] = useState<ReadonlySet<string>>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearEndRef = useRef(true);
+  const scrollLayoutRef = useRef({ scrollHeight: 0, clientHeight: 0 });
+  const scrollToLatest = useCallback((scroll: HTMLDivElement) => {
+    scroll.scrollTo({ top: scroll.scrollHeight });
+    scrollLayoutRef.current = { scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight };
+  }, []);
   const previousMessageCountRef = useRef(0);
   const workspace = useQuery({
     queryKey: queryKeys.workspace(workspaceId),
@@ -195,7 +200,9 @@ export function ConversationPage() {
     : lifecycle.data?.state === "settled" ? "Archived"
       : "Active";
 
-  useEffect(() => {
+  const timelineReady = !metadata.isLoading && !messages.isLoading && !metadata.error && !messages.error && Boolean(metadata.data);
+
+  useLayoutEffect(() => {
     nearEndRef.current = true;
     previousMessageCountRef.current = 0;
     setUnseenMessages(0);
@@ -210,26 +217,40 @@ export function ConversationPage() {
     }));
     const identityId = currentSession.data?.identityId;
     const sequence = messages.data?.at(-1)?.sequence;
-    if (!identityId || sequence === undefined || document.visibilityState !== "visible" || !nearEndRef.current) return;
+    if (!scrollRef.current || !identityId || sequence === undefined || document.visibilityState !== "visible" || !nearEndRef.current) return;
     if (readSequence(localStorage, identityId, conversationId) > sequence) resetReadSequence(localStorage, identityId, conversationId);
     writeReadSequence(localStorage, identityId, conversationId, sequence);
     window.dispatchEvent(new Event("minu-read-state"));
   }, [conversationId, currentSession.data?.identityId, messages.data]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    // Messages may arrive before metadata; don't consume the initial count until the timeline mounts.
+    if (!timelineReady || !scroll) return;
     const count = messages.data?.length ?? 0;
     const previousCount = previousMessageCountRef.current;
     previousMessageCountRef.current = count;
-    if (!count || count <= previousCount) return;
-    const added = count - previousCount;
-    if (previousCount === 0 || nearEndRef.current) {
-      requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }));
+    if (nearEndRef.current) {
+      scrollToLatest(scroll);
       setUnseenMessages(0);
       markRead();
-    } else {
-      setUnseenMessages((current) => current + added);
+    } else if (count > previousCount) {
+      setUnseenMessages((current) => current + count - previousCount);
     }
-  }, [markRead, messages.data?.length]);
+  }, [conversationId, markRead, messages.data?.length, scrollToLatest, timelineReady]);
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const content = scroll?.firstElementChild;
+    if (!timelineReady || !scroll || !content) return;
+    // Diagrams, syntax highlighting, composer resizing, and viewport changes can all move the end.
+    const observer = new ResizeObserver(() => {
+      if (nearEndRef.current) scrollToLatest(scroll);
+    });
+    observer.observe(scroll);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [conversationId, scrollToLatest, timelineReady]);
   useEffect(() => {
     const visible = () => markRead();
     document.addEventListener("visibilitychange", visible);
@@ -364,7 +385,14 @@ export function ConversationPage() {
             ref={scrollRef}
             className="minu-scroll absolute inset-0 overflow-y-auto bg-[var(--bg)]"
             onScroll={(event) => {
-              nearEndRef.current = isNearTimelineEnd(event.currentTarget);
+              const scroll = event.currentTarget;
+              const previousLayout = scrollLayoutRef.current;
+              const layoutChanged = previousLayout.scrollHeight !== scroll.scrollHeight
+                || previousLayout.clientHeight !== scroll.clientHeight;
+              // Layout/clamping can emit scroll before ResizeObserver. Don't mistake that for reading history.
+              if (nearEndRef.current && layoutChanged) scrollToLatest(scroll);
+              else nearEndRef.current = isNearTimelineEnd(scroll);
+              scrollLayoutRef.current = { scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight };
               window.dispatchEvent(new CustomEvent("minu-conversation-view", {
                 detail: { conversationId, nearEnd: nearEndRef.current },
               }));

@@ -29,7 +29,7 @@ The browser must never open private storage, receive Runtime credentials/session
 - MinuNotes-inspired responsive sidebar shell and flat technical visual language.
 - Explicitly labeled Workspace sections and names in navigation and Conversation headers.
 - Durable Conversation names as primary labels; opaque ids remain routing details.
-- Conversation timeline ordered by monotonic sequence.
+- Conversation timeline ordered by monotonic sequence. Opening or switching Conversations starts at the latest message; live messages and content/composer/viewport resizing keep the end anchored unless the reader scrolls up. New messages then accumulate behind an explicit jump-to-latest control.
 - Race-free SSE startup: subscribe, wait for `ready`, refetch, then merge by message id.
 - Revision-aware roster refresh.
 - Authenticated browser session bound to one stable current-human identity; composer authorship is automatic and offers no impersonation selector.
@@ -38,10 +38,12 @@ The browser must never open private storage, receive Runtime credentials/session
 - Named Conversation creation from selected active Workspace members.
 - Existing-Conversation participant administration with optimistic roster revisions and conflict recovery.
 - Explicit Start, New session (generation-fenced replacement), and Stop actions with confirmation, bounded pending/error state, and redacted status refresh.
-- Safe Markdown/GFM rendering for agent-authored responses only; human-authored messages remain plain text for now. Raw HTML and remote image loading are disabled.
+- Safe Markdown/GFM message rendering with syntax highlighting and code-copy controls. Raw HTML and Markdown remote image loading are disabled.
+- Fenced `mermaid` blocks lazily render display-only, sanitized diagrams with strict security settings, dark styling, copyable source, and a source fallback for invalid syntax or loading failure. Diagrams and highlighted code can coexist in one message. Large diagrams are bounded to 50,000 characters and 500 edges.
+- Mermaid rendering is allowlisted to basic `graph`/`flowchart` diagrams in the standard TD/TB/BT/LR/RL directions and a bounded `sequenceDiagram` profile. Sequences admit ordinary participants/actors, messages, activation, notes, loops/branches, titles and numbering; arbitrary background fills and actor properties/icons are not admitted. Other grammars (including Gantt), unknown sequence statements, message-supplied configuration/directives, extended node metadata, custom styling, and embedded HTML/SVG fall back to source before Mermaid parsing/rendering. Basic `<br>` line breaks are allowed. The type/statement allowlist bounds the resource-capable grammar surface rather than trying to block every Mermaid styling keyword. Output sanitization alone cannot prevent resource requests during temporary DOM measurement; expanding grammar support requires a reviewed profile or a network-restricted rendering environment.
 - Historical timeline attribution resolved from stable Workspace identities after roster removal.
 - Plain-text composer with mention suggestions and structured targets. In a two-participant human-agent Conversation, an ordinary human message implicitly targets the sole bound agent; larger Conversations require a mention.
-- Enter-to-send interaction; Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
+- Enter-to-send interaction retains focus in the composer during sending and after success or failure. The draft is temporarily read-only while sending, not disabled; failed sends preserve it. Shift+Enter and Cmd/Ctrl+Enter insert line breaks without breaking IME or mention selection.
 - Desktop roster rail and mobile roster drawer.
 - Explicit connecting/live/disconnected state and manual retry.
 

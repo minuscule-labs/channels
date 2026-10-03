@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Open Conversations at the latest message and keep the timeline anchored through live updates and content/composer resizing, while preserving the reader's position in older history.
+- Retain composer focus during and after Enter-to-send, including failed sends with preserved drafts.
+- Lazily render a bounded Mermaid flowchart/basic-sequence profile with copyable source and safe fallback; preserve diagrams beside highlighted code and reject unsupported resource-capable syntax before rendering.
+
 ## 0.0.12
 
 - Pin the Runtime managed-session release and add private, owner-scoped Conversation session history with durable activation, retirement, and cleanup reconciliation (`0011` Relay migration). Existing legacy references remain explicitly unmapped.
