@@ -5,13 +5,14 @@ import type {
   WorkspaceMember,
 } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, LoaderCircle, Plus, UserRoundCog, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { conversations, localControl } from "../lib/api";
+import { isConversationParticipantChoice } from "../lib/participants";
 import { queryKeys } from "../lib/query-keys";
-import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
+import { ErrorNotice } from "./ui/error-notice";
 import { ConversationWorkingFolders } from "./conversation-working-folders";
 
 interface WorkspaceParticipant {
@@ -64,21 +65,25 @@ function ParticipantChoices({
   participants,
   selected,
   currentHumanIdentityId,
+  existingParticipantIds,
   onToggle,
 }: {
   participants: WorkspaceParticipant[];
   selected: Set<string>;
   currentHumanIdentityId?: string;
+  existingParticipantIds?: ReadonlySet<string>;
   onToggle(identityId: string): void;
 }) {
+  const choices = participants.filter(({ identity }) =>
+    isConversationParticipantChoice(identity, currentHumanIdentityId, existingParticipantIds));
   return (
     <fieldset>
       <legend className="text-xs font-medium">Participants</legend>
       <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
-        Select active Workspace members. Agents receive an isolated Runtime session for this Conversation when bound.
+        Choose existing Workspace agents. You are included automatically, and existing participants remain editable.
       </p>
       <div className="mt-3 max-h-72 space-y-1 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2">
-        {participants.map(({ identity, member }) => {
+        {choices.map(({ identity, member }) => {
           const available = identity.status === "active" && member.status === "active";
           const isCurrentHuman = identity.id === currentHumanIdentityId;
           return (
@@ -236,7 +241,7 @@ export function CreateConversationDialog({
       open={open}
       onOpenChange={setOpen}
       title={`Create a Conversation in ${workspace.name}`}
-      description="Name the conversation and choose its initial participants."
+      description="Name the conversation and choose its initial agents. You are included automatically."
       trigger={(
         <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Conversation in ${workspace.name}`} title="Create Conversation">
           <Plus className="h-3.5 w-3.5" />
@@ -268,7 +273,7 @@ export function CreateConversationDialog({
             })}
           />
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+            {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
             <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>
             <button className="button-primary" type="submit" disabled={!name.trim() || selected.size === 0 || mutation.isPending}>
               {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
@@ -285,6 +290,7 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(conversation.name);
   const [selected, setSelected] = useState<Set<string>>(new Set(conversation.participants.map(({ id }) => id)));
+  const existingParticipantIds = useMemo(() => new Set(conversation.participants.map(({ id }) => id)), [conversation.participants]);
   const data = useWorkspaceParticipants(conversation.workspaceId, open);
   const queryClient = useQueryClient();
   const renameMutation = useMutation({
@@ -335,7 +341,7 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
       open={open}
       onOpenChange={handleOpenChange}
       title={`Manage #${conversation.name}`}
-      description={`Choose participants for roster revision ${conversation.rosterRevision + 1}. Historical messages retain their author identity.`}
+      description={`Choose existing agents for roster revision ${conversation.rosterRevision + 1}. Historical messages retain their author identity.`}
       trigger={(
         <button type="button" className="icon-button inline-flex" aria-label="Manage Conversation participants" title="Manage participants">
           <UserRoundCog className="h-4 w-4" />
@@ -363,7 +369,7 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
               />
             </label>
             <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-              {renameMutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{renameMutation.error.message}</span> : null}
+              {renameMutation.error ? <ErrorNotice className="mr-auto" onDismiss={renameMutation.reset}>{renameMutation.error.message}</ErrorNotice> : null}
               {renameMutation.isSuccess && name === conversation.name ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Name saved</span> : null}
               <button
                 className="button-secondary"
@@ -376,6 +382,7 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
             </div>
           </form>
           <ParticipantChoices
+            existingParticipantIds={existingParticipantIds}
             participants={data.participants}
             selected={selected}
             currentHumanIdentityId={data.session.data?.identityId}
@@ -387,14 +394,18 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
             })}
           />
           <ConversationWorkingFolders conversationId={conversation.id} canAdminister={data.canAdminister} />
-          <AddWorkspaceParticipantForm
-            workspaceId={conversation.workspaceId}
-            existingMembers={data.members.data ?? []}
-            onCreated={(identity) => setSelected((current) => new Set([...current, identity.id]))}
-          />
+          <p className="text-xs text-[var(--muted)]">
+            Create and configure agents on the {" "}
+            <Link
+              to="/app/workspaces/$workspaceId/agents"
+              params={{ workspaceId: conversation.workspaceId }}
+              onClick={() => setOpen(false)}
+              className="text-[var(--accent)] underline underline-offset-2"
+            >Agents page</Link>.
+          </p>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {mutation.error ? (
-              <span className="mr-auto text-xs text-[var(--danger)]">
+              <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>
                 {mutation.error.message}
                 {/reload and retry/i.test(mutation.error.message) ? (
                   <button
@@ -406,7 +417,7 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
                     }}
                   >Reload roster</button>
                 ) : null}
-              </span>
+              </ErrorNotice>
             ) : null}
             {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
             <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>

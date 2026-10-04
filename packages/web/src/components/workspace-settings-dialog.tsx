@@ -6,6 +6,7 @@ import { Check, FolderOpen, LoaderCircle, Settings, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
 
 function ConfigurationState({ configured, label }: { configured: boolean; label: string }) {
   return (
@@ -42,7 +43,7 @@ function WorkspaceNameForm({ workspace, actorIdentityId }: { workspace: Workspac
         <input value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
       </label>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.isSuccess && !changed ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
         <button className="button-primary" type="submit" disabled={!changed || !name.trim() || mutation.isPending}>Save name</button>
       </div>
@@ -109,7 +110,8 @@ function WorkspaceRootForm({
         The saved value is never read back. Existing sessions are unchanged.
       </p>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error || picker.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? picker.error)?.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
+        {picker.error ? <ErrorNotice className="mr-auto" onDismiss={picker.reset}>{picker.error.message}</ErrorNotice> : null}
         {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
         <button className="button-primary" type="submit" disabled={!rootUri.trim() || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
@@ -158,7 +160,7 @@ function WorkspaceIdleSleepForm({ workspaceId, summary }: {
         {sleepOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.isSuccess && selected === saved ? <span className="mr-auto text-xs text-[var(--success)]">Saved</span> : null}
         <button className="button-primary" type="submit" disabled={selected === saved || mutation.isPending}>Save sleep policy</button>
       </div>

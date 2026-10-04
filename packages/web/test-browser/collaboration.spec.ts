@@ -959,6 +959,8 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await createDialog.getByLabel("Conversation name").fill("roster-administration");
   await expect(createDialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
   await expect(createDialog.getByRole("checkbox", { name: /David Kennedy/ })).toHaveCount(0);
+  await expect(createDialog.getByRole("checkbox", { name: /Workspace Member/ })).toHaveCount(0);
+  await expect(createDialog.getByLabel("Participant type")).toHaveCount(0);
   await createDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   const createResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/conversations"));
@@ -1041,26 +1043,34 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   expect((await renameResponsePromise).ok()).toBe(true);
   await expect(page.getByRole("heading", { name: "#delivery-room" })).toBeVisible();
   rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
-  const participantForm = rosterDialog.locator("form").filter({ hasText: "Create a participant" });
-  await participantForm.getByLabel("Participant type").selectOption("agent");
-  await participantForm.getByLabel("Display name").fill("Reviewer Agent");
-  await expect(participantForm.getByLabel("Mention handle")).toHaveValue("reviewer-agent");
-  await participantForm.getByLabel("Mention handle").fill("@reviewer");
-  await expect(participantForm.getByLabel("Mention handle")).toHaveValue("reviewer");
-  await participantForm.getByLabel("Public role (optional)").fill("reviewer");
-  await participantForm.getByLabel("Agent instructions (optional)").fill("Review work for correctness and report concrete findings.");
+  await expect(rosterDialog.getByText("Create a participant", { exact: true })).toHaveCount(0);
+  await expect(rosterDialog.getByLabel("Participant type")).toHaveCount(0);
+  await expect(rosterDialog.getByLabel("Display name")).toHaveCount(0);
+  await expect(rosterDialog.getByRole("button", { name: /Create participant|Create agent/ })).toHaveCount(0);
+  await rosterDialog.getByRole("link", { name: "Agents page" }).click();
+  await expect(rosterDialog).toBeHidden();
+  await page.getByRole("link", { name: "Add agent" }).click();
+  await expect(page.getByLabel("Participant type")).toHaveCount(0);
+  await page.getByLabel("Display name").fill("Reviewer Agent");
+  await page.getByLabel("Agent instructions").fill("Review work for correctness and report concrete findings.");
   const identityResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith("/identities"));
   const memberResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith(`/workspaces/${workspace.id}/members`));
   const configurationResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH" && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
-  await participantForm.getByRole("button", { name: "Create participant" }).click();
-  expect((await identityResponsePromise).ok()).toBe(true);
+  await page.getByRole("button", { name: "Create agent" }).click();
+  const identityResponse = await identityResponsePromise;
+  expect(identityResponse.ok()).toBe(true);
+  expect((await identityResponse.json() as { identity: { type: string } }).identity.type).toBe("agent");
   expect((await memberResponsePromise).ok()).toBe(true);
   expect((await configurationResponsePromise).ok()).toBe(true);
-  await expect(participantForm.getByText("Participant created and selected", { exact: true })).toBeVisible();
-  await expect(rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ })).toBeChecked();
+  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await page.getByRole("link", { name: "delivery-room", exact: true }).first().click();
+  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
+  await expect(rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ })).not.toBeChecked();
+  await rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ }).check();
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).uncheck();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();

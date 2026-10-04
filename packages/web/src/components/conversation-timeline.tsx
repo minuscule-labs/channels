@@ -1,4 +1,5 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
+import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
 import { Menu } from "lucide-react";
 import { useMemo } from "react";
 import { shortId } from "../lib/messages";
@@ -6,18 +7,23 @@ import { participantHandle, participantLabel } from "../lib/participants";
 import { projectTimeline, type TimelineRow } from "../lib/timeline";
 import { MessageMarkdown } from "./message-markdown";
 
+type BroadcastTargetLabel = "@channel" | "@conversation";
+
 function MessageRow({
   message,
   participants,
   continuation,
+  broadcastTargetLabel,
 }: {
   message: ConversationMessage;
   participants: Participant[];
   continuation: boolean;
+  broadcastTargetLabel: BroadcastTargetLabel;
 }) {
   const author = participants.find(({ id }) => id === message.participantId);
   const targets = message.to.map((id) =>
-    id === "@conversation" ? "@conversation" : `@${participantHandle(participants.find((participant) => participant.id === id), id)}`,
+    id === "@conversation" ? broadcastTargetLabel
+      : `@${participantHandle(participants.find((participant) => participant.id === id), id)}`,
   );
   const timestamp = new Date(message.createdAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
@@ -58,7 +64,11 @@ function MessageRow({
   );
 }
 
-function TimelineRowView({ row, participants }: { row: TimelineRow; participants: Participant[] }) {
+function TimelineRowView({ row, participants, broadcastTargetLabel }: {
+  row: TimelineRow;
+  participants: Participant[];
+  broadcastTargetLabel: BroadcastTargetLabel;
+}) {
   if (row.kind === "day-divider") {
     return (
       <div className="relative mx-auto my-3 flex max-w-3xl items-center gap-3 px-4 sm:px-6" role="separator">
@@ -70,11 +80,17 @@ function TimelineRowView({ row, participants }: { row: TimelineRow; participants
       </div>
     );
   }
-  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} />;
+  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} />;
 }
 
-export function ConversationTimeline({ messages, participants }: { messages: ConversationMessage[]; participants: Participant[] }) {
+export function ConversationTimeline({ messages, participants, attributionParticipants = participants }: {
+  messages: ConversationMessage[];
+  participants: Participant[];
+  attributionParticipants?: Participant[];
+}) {
   const rows = useMemo(() => projectTimeline(messages), [messages]);
+  // Broadcast names follow the live roster; historical identities only label authors/recipients.
+  const broadcastTargetLabel = hasChannelMentionCollision(participants) ? "@conversation" : "@channel";
 
   if (!rows.length) {
     return (
@@ -90,7 +106,7 @@ export function ConversationTimeline({ messages, participants }: { messages: Con
 
   return (
     <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
-      {rows.map((row) => <TimelineRowView key={row.id} row={row} participants={participants} />)}
+      {rows.map((row) => <TimelineRowView key={row.id} row={row} participants={attributionParticipants} broadcastTargetLabel={broadcastTargetLabel} />)}
     </div>
   );
 }

@@ -2,26 +2,31 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Popover from "@radix-ui/react-popover";
 import { EllipsisVertical, LoaderCircle, Play, Square } from "lucide-react";
 import { useRef, useState } from "react";
+import { ErrorNotice } from "./ui/error-notice";
 
 export function ParticipantActionsMenu({
   startEligible,
   stopEligible,
   pendingAction,
+  disabled = false,
   onStart,
   onStop,
+  onDismissError,
 }: {
   startEligible: number;
   stopEligible: number;
   pendingAction?: "start" | "stop";
+  disabled?: boolean;
   onStart?(): void;
   onStop?(): Promise<void>;
+  onDismissError?(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const pending = pendingAction !== undefined;
+  const pending = disabled || pendingAction !== undefined;
   const start = () => {
     setMenuOpen(false);
     onStart?.();
@@ -32,6 +37,7 @@ export function ParticipantActionsMenu({
     setConfirmOpen(true);
   };
   const stop = async () => {
+    setError(undefined);
     try {
       await onStop?.();
       setConfirmOpen(false);
@@ -55,6 +61,7 @@ export function ParticipantActionsMenu({
             className="icon-button inline-flex shrink-0"
             aria-label="Open participant actions"
             title="Participant actions"
+            disabled={pending}
           >
             <EllipsisVertical className="h-4 w-4" />
           </button>
@@ -107,7 +114,10 @@ export function ParticipantActionsMenu({
           <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
             Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back.
           </Dialog.Description>
-          {error ? <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{error}</p> : null}
+          {error ? <ErrorNotice className="mt-3" onDismiss={() => {
+            setError(undefined);
+            onDismissError?.();
+          }}>{error}</ErrorNotice> : null}
           <div className="mt-5 flex justify-end gap-2">
             <Dialog.Close asChild>
               <button ref={cancelRef} type="button" className="button-secondary" disabled={pending}>Cancel</button>

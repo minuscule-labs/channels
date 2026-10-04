@@ -9,12 +9,14 @@ import {
   Square,
 } from "lucide-react";
 import { useRef, useState } from "react";
+import { ErrorNotice } from "./ui/error-notice";
 
 type ParticipantSessionAction = "start" | "reconnect" | "replace" | "stop" | "cancel";
 type ConfirmedAction = "replace" | "stop";
 
 export function ParticipantSessionActionsMenu({
   participantName,
+  showStartButton = false,
   canStart,
   canReconnect,
   canReplace,
@@ -27,8 +29,10 @@ export function ParticipantSessionActionsMenu({
   onReplace,
   onCancel,
   onStop,
+  onDismissError,
 }: {
   participantName: string;
+  showStartButton?: boolean;
   canStart: boolean;
   canReconnect: boolean;
   canReplace: boolean;
@@ -41,12 +45,14 @@ export function ParticipantSessionActionsMenu({
   onReplace?(): void | Promise<unknown>;
   onCancel?(): void | Promise<unknown>;
   onStop?(): void | Promise<unknown>;
+  onDismissError?(): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmedAction, setConfirmedAction] = useState<ConfirmedAction>();
   const [error, setError] = useState<string>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmationTriggerRef = useRef<HTMLButtonElement | null>(null);
   const pending = pendingAction !== undefined;
   const hasActions = canStart || canReconnect || canReplace || canCancel || canStop;
 
@@ -56,13 +62,15 @@ export function ParticipantSessionActionsMenu({
     setMenuOpen(false);
     void Promise.resolve(action()).catch(() => undefined);
   };
-  const requestConfirmation = (action: ConfirmedAction) => {
+  const requestConfirmation = (action: ConfirmedAction, trigger = triggerRef.current) => {
+    confirmationTriggerRef.current = trigger;
     setMenuOpen(false);
     setError(undefined);
     setConfirmedAction(action);
   };
   const confirm = async () => {
     if (!confirmedAction) return;
+    setError(undefined);
     try {
       if (confirmedAction === "replace") await onReplace?.();
       else await onStop?.();
@@ -80,6 +88,21 @@ export function ParticipantSessionActionsMenu({
         if (!open && !pending) setConfirmedAction(undefined);
       }}
     >
+      {showStartButton && ((canStart && onStart) || (canReplace && onReplace)) ? (
+        <button
+          type="button"
+          className="button-secondary shrink-0 px-2"
+          aria-label={`Start ${participantName}`}
+          disabled={disabled || pending}
+          onClick={(event) => {
+            if (canStart && onStart) invoke(onStart);
+            else requestConfirmation("replace", event.currentTarget);
+          }}
+        >
+          {pending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+          Start
+        </button>
+      ) : null}
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
         <Popover.Trigger asChild>
           <button
@@ -157,7 +180,7 @@ export function ParticipantSessionActionsMenu({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            triggerRef.current?.focus();
+            (confirmationTriggerRef.current?.isConnected ? confirmationTriggerRef.current : triggerRef.current)?.focus();
           }}
         >
           <Dialog.Title className="text-base font-semibold">
@@ -168,7 +191,10 @@ export function ParticipantSessionActionsMenu({
               ? "The private Runtime transcript will reset using the current configuration. A temporary handoff is created from public Conversation history when available; it is not stored as memory. Pending work through the current Conversation head will be discarded. Conversation history and filesystem effects remain; future turns receive the configured recent context."
               : "Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back."}
           </Dialog.Description>
-          {error ? <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{error}</p> : null}
+          {error ? <ErrorNotice className="mt-3" onDismiss={() => {
+            setError(undefined);
+            onDismissError?.();
+          }}>{error}</ErrorNotice> : null}
           <div className="mt-5 flex justify-end gap-2">
             <Dialog.Close asChild>
               <button ref={cancelRef} type="button" className="button-secondary" disabled={pending}>Cancel</button>

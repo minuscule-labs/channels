@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Share complete-handle mention parsing between server and browser so trailing hyphens such as `@channel-` cannot be truncated into broadcast or another participant's handle.
+- Scope broadcast recipient labels to the Conversation roster, while keeping broader Workspace identities for historical author/recipient attribution after removal.
+- Make transient chat, participant, agent, and Workspace action errors dismissible without losing drafts, retry keys, or persisted diagnostics.
+- Add collapse/dismiss controls to bulk-agent results and isolate chat feedback and late lifecycle responses across Conversation navigation.
+- Expose individual Start buttons in the participant roster, retaining capability checks and new-session confirmation for stopped agents.
+- Restore `@channel` in broadcast suggestions and recipient labels, recognize it through the real message/response API, and retain the canonical `@conversation` target and older drafts. Reserve both broadcast handles against new assignment; preserve existing `channel` handles as direct mentions until renamed, with an unambiguous legacy broadcast fallback.
+- Simplify Conversation participant dialogs to choosing existing agents, keep the current human automatic and existing non-agent roster members editable, and move identity creation out of the modal to the Workspace Agents page.
 - Open Conversations at the latest message and keep the timeline anchored through live updates and content/composer resizing, while preserving the reader's position in older history.
 - Retain composer focus during and after Enter-to-send, including failed sends with preserved drafts.
 - Lazily render a bounded Mermaid flowchart/basic-sequence profile with copyable source and safe fallback; preserve diagrams beside highlighted code and reject unsupported resource-capable syntax before rendering.

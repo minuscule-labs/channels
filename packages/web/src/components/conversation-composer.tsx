@@ -1,4 +1,5 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
+import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Send } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -15,6 +16,7 @@ import {
 } from "../lib/composer";
 import { mergeMessages } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
 
 interface MentionSuggestion {
   id: string;
@@ -56,6 +58,7 @@ export function ConversationComposer({
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dismissedMention, setDismissedMention] = useState<string>();
   const [failedSubmission, setFailedSubmission] = useState<MessageSubmission>();
+  const [errorDismissed, setErrorDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const pendingCursorRef = useRef<number | undefined>(undefined);
@@ -115,7 +118,11 @@ export function ConversationComposer({
   const suggestions = useMemo<MentionSuggestion[]>(() => {
     if (!mentionQuery || dismissedMention === mentionIdentity) return [];
     return [
-      { id: "@conversation", handle: "conversation", label: "Everyone allowed by wake policy" },
+      {
+        id: "@conversation",
+        handle: hasChannelMentionCollision(participants) ? "conversation" : "channel",
+        label: "Everyone allowed by wake policy",
+      },
       ...participants
         .filter((participant) => participant.status !== "disabled")
         .map((participant) => ({
@@ -145,13 +152,20 @@ export function ConversationComposer({
         setCursor(0);
       }
     },
-    onError: (_error, submission) => setFailedSubmission(submission),
+    onError: (_error, submission) => {
+      setFailedSubmission(submission);
+      setErrorDismissed(false);
+    },
   });
 
   const canSubmit = Boolean(body.trim()) && !bodyTooLarge && Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
   const submit = (submission?: MessageSubmission) => {
-    if (!canSubmit && !submission) return;
-    mutation.mutate(submission ?? createMessageSubmission(activeAuthorId, body, participants));
+    if (!canSubmit) return;
+    // Dismissing feedback must not discard the key of an ambiguously failed send.
+    const matchingFailure = failedSubmission && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants)
+      ? failedSubmission
+      : undefined;
+    mutation.mutate(submission ?? matchingFailure ?? createMessageSubmission(activeAuthorId, body, participants));
   };
 
   const updateBody = (nextBody: string, nextCursor: number) => {
@@ -181,9 +195,8 @@ export function ConversationComposer({
     setDismissedMention(`${next.cursor}:${next.cursor}:`);
   };
 
-  const retryAvailable = failedSubmission
-    && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants)
-    && !mutation.isPending;
+  const retryAvailable = canSubmit && failedSubmission
+    && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants);
 
   return (
     <div className="border-t border-[var(--border)] bg-[var(--panel)] px-3 py-3 sm:px-6">
@@ -310,15 +323,19 @@ export function ConversationComposer({
           </div>
         </div>
         <div className="min-h-7 pt-2">{activity}</div>
-        {mutation.error ? (
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--danger)]" role="alert">
-            <span>{mutation.error.message}. Your draft was preserved.</span>
-            {retryAvailable ? (
-              <button className="button-secondary" type="button" onClick={() => submit(failedSubmission)}>
-                <RotateCcw className="h-3.5 w-3.5" /> Retry same message
-              </button>
-            ) : null}
-          </div>
+        {mutation.error && !errorDismissed ? (
+          <ErrorNotice
+            className="mt-2"
+            dismissLabel="Dismiss send error"
+            onDismiss={() => setErrorDismissed(true)}
+          >
+            {mutation.error.message}. Your draft was preserved.
+          </ErrorNotice>
+        ) : null}
+        {retryAvailable ? (
+          <button className="button-secondary mt-2" type="button" onClick={() => submit(failedSubmission)}>
+            <RotateCcw className="h-3.5 w-3.5" /> Retry same message
+          </button>
         ) : null}
       </div>
     </div>

@@ -17,14 +17,22 @@ import { ConversationTimeline } from "./conversation-timeline";
 import { MemberRoster } from "./member-roster";
 import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 import { Drawer, DrawerCloseButton } from "./ui/drawer";
+import { ErrorNotice } from "./ui/error-notice";
 
 export function ConversationPage() {
   const { workspaceId, conversationId } = useParams({ from: "/app/workspaces/$workspaceId/conversations/$conversationId" });
+  // Route parameters can change without unmounting the page. Keep feedback and
+  // in-flight mutation callbacks scoped to the Conversation that created them.
+  return <ConversationPageContent key={`${workspaceId}:${conversationId}`} workspaceId={workspaceId} conversationId={conversationId} />;
+}
+
+function ConversationPageContent({ workspaceId, conversationId }: { workspaceId: string; conversationId: string }) {
   const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
+  const [bulkResultsExpanded, setBulkResultsExpanded] = useState(true);
   const [pendingBulkTargets, setPendingBulkTargets] = useState<ReadonlySet<string>>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearEndRef = useRef(true);
@@ -140,6 +148,7 @@ export function ConversationPage() {
       : localControl.stopAllConversationAgents(conversationId),
     onMutate: (action) => {
       setBulkResults(undefined);
+      setBulkResultsExpanded(true);
       setPendingBulkTargets(new Set((localAgents.data ?? [])
         .filter(({ state }) => action === "start"
           ? state === "unbound" || state === "disabled"
@@ -366,7 +375,12 @@ export function ConversationPage() {
               pendingBulkAction={bulkAgentAction.isPending ? bulkAgentAction.variables : undefined}
               pendingBulkIdentityIds={pendingBulkTargets}
               bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
+              onDismissAgentError={() => { if (agentAction.isError) agentAction.reset(); }}
+              onDismissBulkError={() => { if (bulkAgentAction.isError) bulkAgentAction.reset(); }}
               bulkResults={bulkResults}
+              bulkResultsExpanded={bulkResultsExpanded}
+              onToggleBulkResults={() => setBulkResultsExpanded((expanded) => !expanded)}
+              onDismissBulkResults={() => setBulkResults(undefined)}
             />
           </Drawer>
         </header>
@@ -375,11 +389,21 @@ export function ConversationPage() {
             This Conversation is archived and read-only. Reopen it to send messages, edit participants, or manage agents.
           </div>
         ) : null}
-        {agentAction.error || turnFailureDiagnosticAction.error || bulkAgentAction.error || lifecycleAction.error ? (
-          <div className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2 text-xs text-[var(--danger)]" role="alert">
-            {(agentAction.error ?? turnFailureDiagnosticAction.error ?? bulkAgentAction.error ?? lifecycleAction.error)?.message}
-          </div>
-        ) : null}
+        {[
+          { name: "agent action", mutation: agentAction },
+          { name: "diagnostic", mutation: turnFailureDiagnosticAction },
+          { name: "bulk action", mutation: bulkAgentAction },
+          { name: "Conversation status", mutation: lifecycleAction },
+        ].map(({ name, mutation }) => mutation.error ? (
+          <ErrorNotice
+            key={name}
+            className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2"
+            dismissLabel={`Dismiss ${name} error`}
+            onDismiss={mutation.reset}
+          >
+            {mutation.error.message}
+          </ErrorNotice>
+        ) : null)}
         <div className="relative min-h-0 flex-1">
           <div
             ref={scrollRef}
@@ -402,7 +426,7 @@ export function ConversationPage() {
               }
             }}
           >
-            <ConversationTimeline messages={messages.data ?? []} participants={attributionParticipants} />
+            <ConversationTimeline messages={messages.data ?? []} participants={participants} attributionParticipants={attributionParticipants} />
           </div>
           {unseenMessages ? (
             <button
@@ -450,7 +474,12 @@ export function ConversationPage() {
           pendingBulkAction={bulkAgentAction.isPending ? bulkAgentAction.variables : undefined}
           pendingBulkIdentityIds={pendingBulkTargets}
           bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
+          onDismissAgentError={() => { if (agentAction.isError) agentAction.reset(); }}
+          onDismissBulkError={() => { if (bulkAgentAction.isError) bulkAgentAction.reset(); }}
           bulkResults={bulkResults}
+          bulkResultsExpanded={bulkResultsExpanded}
+          onToggleBulkResults={() => setBulkResultsExpanded((expanded) => !expanded)}
+          onDismissBulkResults={() => setBulkResults(undefined)}
         />
       </div>
     </div>

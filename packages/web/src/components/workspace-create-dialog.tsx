@@ -5,6 +5,7 @@ import { FolderOpen, FolderPlus, LoaderCircle, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
 
 function workspaceSlug(name: string): string {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 52) || "workspace";
@@ -99,7 +100,9 @@ export function WorkspaceCreateDialog({
               </div>
             <p className="mt-1.5 text-[10px] leading-4 text-[var(--muted)]">Use an absolute local path. It remains private configuration.</p>
             <div className="mt-5 flex items-center justify-end gap-2">
-              {mutation.error || picker.error || session.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? picker.error ?? session.error)?.message}</span> : null}
+              {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
+              {picker.error ? <ErrorNotice className="mr-auto" onDismiss={picker.reset}>{picker.error.message}</ErrorNotice> : null}
+              {session.error ? <span className="mr-auto text-xs text-[var(--danger)]">{session.error.message}</span> : null}
               {!onboarding ? <Dialog.Close asChild><button type="button" className="button-secondary">Cancel</button></Dialog.Close> : null}
               <button type="submit" className="button-primary" disabled={!valid || mutation.isPending}>{mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}Create Workspace</button>
             </div>

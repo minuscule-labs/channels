@@ -4,7 +4,8 @@ import type {
   LocalLiveCapabilityState,
 } from "@minu/channels-control/contracts";
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
-import { useEffect, useState } from "react";
+import { ChevronDown, ChevronUp, X } from "lucide-react";
+import { useEffect, useId, useState } from "react";
 import { participantLabel } from "../lib/participants";
 import { shortId } from "../lib/messages";
 import { queuedTurnsSummary } from "./conversation-activity-strip";
@@ -76,11 +77,16 @@ export function MemberRoster({
   onStopAgent,
   onStartAllAgents,
   onStopAllAgents,
+  onDismissAgentError,
+  onDismissBulkError,
   pendingAgentAction,
   pendingBulkAction,
   pendingBulkIdentityIds,
   bulkResultAction,
   bulkResults,
+  bulkResultsExpanded = true,
+  onToggleBulkResults,
+  onDismissBulkResults,
 }: {
   participants: Participant[];
   currentHumanIdentityId?: string;
@@ -97,12 +103,18 @@ export function MemberRoster({
   onStopAgent?(identityId: string): void | Promise<unknown>;
   onStartAllAgents?(): void;
   onStopAllAgents?(): Promise<void>;
+  onDismissAgentError?(): void;
+  onDismissBulkError?(): void;
   pendingAgentAction?: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string };
   pendingBulkAction?: "start" | "stop";
   pendingBulkIdentityIds?: ReadonlySet<string>;
   bulkResultAction?: "start" | "stop";
   bulkResults?: readonly LocalBulkAgentLifecycleResult[];
+  bulkResultsExpanded?: boolean;
+  onToggleBulkResults?(): void;
+  onDismissBulkResults?(): void;
 }) {
+  const bulkResultsId = useId();
   const [now, setNow] = useState(() => Date.now());
   const agentValues = [...(localAgents?.values() ?? [])];
   const hasActivity = agentValues.some((agent) => agent.activity);
@@ -129,8 +141,10 @@ export function MemberRoster({
               startEligible={startEligible}
               stopEligible={stopEligible}
               pendingAction={pendingBulkAction}
+              disabled={Boolean(pendingAgentAction)}
               onStart={onStartAllAgents}
               onStop={onStopAllAgents}
+              onDismissError={onDismissBulkError}
             />
           ) : null}
           {drawer ? <DrawerCloseButton label="Close participants" /> : null}
@@ -138,8 +152,29 @@ export function MemberRoster({
       </div>
       {bulkResults ? (
         <div role="status" className="border-b border-[var(--border)] px-4 py-2 text-[11px] text-[var(--muted)]">
-          <p className="font-medium text-[var(--text)]">Bulk action complete</p>
-          <ul className="mt-1 space-y-0.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-medium text-[var(--text)]">Bulk action complete</p>
+            <div className="flex shrink-0 items-center gap-1">
+              {onToggleBulkResults ? (
+                <button
+                  type="button"
+                  className="icon-button inline-flex"
+                  aria-label={bulkResultsExpanded ? "Hide bulk results" : "Show bulk results"}
+                  aria-expanded={bulkResultsExpanded}
+                  aria-controls={bulkResultsId}
+                  onClick={onToggleBulkResults}
+                >
+                  {bulkResultsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </button>
+              ) : null}
+              {onDismissBulkResults ? (
+                <button type="button" className="icon-button inline-flex" aria-label="Dismiss bulk results" title="Dismiss bulk results" onClick={onDismissBulkResults}>
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <ul id={bulkResultsId} hidden={!bulkResultsExpanded} className="mt-1 space-y-0.5">
             {bulkResults.map((result) => {
               const participant = participants.find(({ id }) => id === result.identityId);
               return (
@@ -230,18 +265,20 @@ export function MemberRoster({
                 {localAgent && !readOnly ? (
                   <ParticipantSessionActionsMenu
                     participantName={label}
+                    showStartButton={localAgent.state === "unbound" || localAgent.state === "disabled"}
                     canStart={localAgent.capabilities.start && Boolean(onStartAgent)}
                     canReconnect={localAgent.capabilities.reconnect && Boolean(onReconnectAgent)}
                     canReplace={localAgent.capabilities.replace && Boolean(onReplaceAgent)}
                     canCancel={localAgent.capabilities.interrupt && Boolean(onCancelAgent)}
                     canStop={localAgent.capabilities.stop && Boolean(onStopAgent)}
                     pendingAction={participantPendingAction}
-                    disabled={pendingBulkIdentityIds?.has(participant.id)}
+                    disabled={Boolean(pendingAgentAction && pendingAgentAction.identityId !== participant.id) || pendingBulkIdentityIds?.has(participant.id)}
                     onStart={onStartAgent ? () => onStartAgent(participant.id) : undefined}
                     onReconnect={onReconnectAgent ? () => onReconnectAgent(participant.id) : undefined}
                     onReplace={onReplaceAgent ? () => onReplaceAgent(participant.id) : undefined}
                     onCancel={onCancelAgent ? () => onCancelAgent(participant.id) : undefined}
                     onStop={onStopAgent ? () => onStopAgent(participant.id) : undefined}
+                    onDismissError={onDismissAgentError}
                   />
                 ) : null}
               </div>

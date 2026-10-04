@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createResourceId, isResourceId } from "./ids.ts";
+import { isReservedMentionHandle, mentionHandles } from "./mentions.ts";
 import {
   InMemoryConversationStorage,
   type ConversationStorage,
@@ -40,6 +41,12 @@ export class ConversationConflictError extends Error {}
 type EventListener = (event: ConversationEvent) => void;
 
 const LEGACY_WORKSPACE_ID = "legacy-default-workspace";
+
+function assertUnreservedMentionHandle(handle: string): void {
+  if (isReservedMentionHandle(handle)) {
+    throw new ConversationValidationError(`@${handle.toLowerCase()} is reserved for broadcast mentions; choose a different mention handle`);
+  }
+}
 
 function validateParticipant(participant: Participant): Participant {
   if (!participant || typeof participant !== "object") {
@@ -113,19 +120,25 @@ function messageTargets(conversation: Conversation, input: CreateMessageInput): 
     throw new ConversationValidationError("to must be an array of participant ids");
   }
   const resolveTarget = (target: string): string => {
-    if (target === "@conversation" || target === "conversation") return "@conversation";
+    const normalized = target.toLowerCase();
+    if (normalized === "@conversation" || normalized === "conversation") return "@conversation";
+    const lookup = normalized === "@channel" ? "channel" : normalized;
     const participant = conversation.participants.find(
-      (candidate) => candidate.id === target || candidate.handle?.toLowerCase() === target.toLowerCase(),
+      (candidate) => candidate.id === target || candidate.handle?.toLowerCase() === lookup
+        || (lookup === "channel" && candidate.id.toLowerCase() === lookup),
     );
+    // Grandfather existing channel handles as direct mentions, including disabled
+    // members. Only an unclaimed name becomes broadcast; never silently widen it.
+    if (!participant && (normalized === "channel" || normalized === "@channel")) {
+      return "@conversation";
+    }
     if (!participant) throw new ConversationValidationError(`Target participant is not in conversation: ${target}`);
     if (participant.status === "disabled") {
       throw new ConversationValidationError(`Target participant is disabled: ${target}`);
     }
     return participant.id;
   };
-  const mentioned = [...input.body.matchAll(/(?:^|\s)@([a-zA-Z0-9_-]+)\b/g)].map(
-    (match) => resolveTarget(match[1]!),
-  );
+  const mentioned = mentionHandles(input.body).map(resolveTarget);
   const structured = (input.to ?? []).map((target) => {
     if (typeof target !== "string" || !target.trim()) {
       throw new ConversationValidationError("to must contain non-empty participant ids");
@@ -316,6 +329,7 @@ export class ConversationService {
     if (typeof input.mentionHandle !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(input.mentionHandle)) {
       throw new ConversationValidationError("mentionHandle must be mention-safe and at most 63 characters");
     }
+    assertUnreservedMentionHandle(input.mentionHandle);
     if ((await this.storage.getWorkspaceMember(workspaceId, identity.id))) {
       throw new ConversationConflictError("Identity is already a Workspace member");
     }
@@ -400,6 +414,11 @@ export class ConversationService {
       : input.mentionHandle.toLowerCase();
     if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(mentionHandle)) {
       throw new ConversationValidationError("mentionHandle must be mention-safe and at most 63 characters");
+    }
+    // Existing reserved handles may keep unrelated membership edits and can be
+    // renamed away from the collision; newly assigning either spelling is blocked.
+    if (input.mentionHandle !== undefined && mentionHandle !== target.mentionHandle.toLowerCase()) {
+      assertUnreservedMentionHandle(mentionHandle);
     }
     if (members.some((member) => member.identityId !== identityId
       && member.mentionHandle.toLowerCase() === mentionHandle)) {
@@ -650,6 +669,8 @@ export class ConversationService {
         throw new ConversationValidationError("legacy participants cannot be used with an explicit Workspace");
       }
       const legacy = input.participants!.map(validateParticipant);
+      // Legacy participant ids become mention handles, bypassing addWorkspaceMember.
+      for (const participant of legacy) assertUnreservedMentionHandle(participant.id);
       if (new Set(legacy.map((participant) => participant.id)).size !== legacy.length) {
         throw new ConversationValidationError("participant ids must be unique within a conversation");
       }
