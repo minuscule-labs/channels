@@ -1234,7 +1234,7 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
 
   await row.getByLabel(`Conversation actions for ${name}`).click();
   await page.getByRole("button", { name: "Settled", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("archived and read-only");
+  await expect(page.getByRole("status").filter({ hasText: "archived and read-only" })).toBeVisible();
   await expect(page.getByLabel("Conversation message")).toBeDisabled();
   const settled = page.getByRole("button", { name: "Settled", exact: true });
   await expect(settled).toBeVisible();
