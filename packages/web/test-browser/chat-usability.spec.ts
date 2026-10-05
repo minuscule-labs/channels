@@ -85,6 +85,16 @@ test("keeps the composer focused while Enter sends, on success, and on failure",
   });
   await launch(page, request, workspaceId, primaryId);
   const composer = page.getByRole("combobox", { name: "Conversation message" });
+  const composerSurface = composer.locator("xpath=../../..");
+  const [composerBackground, timelineBackground, topBorderWidth] = await Promise.all([
+    composerSurface.evaluate((element) => getComputedStyle(element).backgroundColor),
+    page.locator(".minu-scroll.absolute").first().evaluate((element) => getComputedStyle(element).backgroundColor),
+    composerSurface.evaluate((element) => getComputedStyle(element).borderTopWidth),
+  ]);
+  expect(composerBackground).toBe(timelineBackground);
+  expect(topBorderWidth).toBe("0px");
+  const composerBox = await composer.locator("xpath=..").boundingBox();
+  expect(page.viewportSize()!.height - composerBox!.y - composerBox!.height).toBeLessThanOrEqual(28);
   await composer.fill("Focused Enter send");
   await composer.press("Enter");
   await expect(composer).toHaveAttribute("aria-busy", "true");
@@ -132,6 +142,39 @@ test("lazily renders Mermaid, retains copyable source, and anchors through diagr
   await timeline.evaluate((element) => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event("scroll")); });
   await block.getByText("Mermaid source", { exact: true }).click();
   await expect(block.locator('pre[data-language="mermaid"]')).toBeVisible();
+  await expectAtEnd(timeline);
+  const toolbar = block.locator(":scope > div").first();
+  const expand = toolbar.getByRole("button", { name: "Expand Mermaid diagram", exact: true });
+  const copy = toolbar.getByRole("button", { name: "Copy code", exact: true });
+  expect((await expand.boundingBox())!.x).toBeLessThan((await copy.boundingBox())!.x);
+  await expand.click();
+  const expanded = page.getByRole("dialog", { name: "Mermaid diagram", exact: true });
+  await expect(expanded).toBeVisible();
+  await expect(expanded.getByRole("img", { name: "Expanded Mermaid diagram" }).locator("svg")).toBeVisible();
+  await expanded.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect(expanded.getByText("125%", { exact: true })).toBeVisible();
+  const viewport = expanded.getByRole("region", { name: "Expanded interactive Mermaid diagram. Drag to pan." });
+  await expect.poll(() => viewport.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeGreaterThan(0);
+  await expect(expanded.getByRole("button", { name: /^Pan / })).toHaveCount(0);
+  const viewportBounds = (await viewport.boundingBox())!;
+  const zoomControls = expanded.getByRole("group", { name: "Diagram zoom controls" });
+  const zoomBounds = (await zoomControls.boundingBox())!;
+  expect(viewportBounds.x + viewportBounds.width - zoomBounds.x - zoomBounds.width).toBeCloseTo(16, 0);
+  expect(viewportBounds.y + viewportBounds.height - zoomBounds.y - zoomBounds.height).toBeCloseTo(16, 0);
+  const scrollBeforeDrag = await viewport.evaluate((element) => element.scrollLeft);
+  await page.mouse.move(viewportBounds.x + viewportBounds.width / 2, viewportBounds.y + viewportBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(viewportBounds.x + viewportBounds.width / 2 - 80, viewportBounds.y + viewportBounds.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => viewport.evaluate((element) => element.scrollLeft)).toBeGreaterThan(scrollBeforeDrag);
+  await expanded.getByRole("button", { name: "Reset diagram zoom", exact: true }).click();
+  await expect(expanded.getByText("100%", { exact: true })).toBeVisible();
+  await expect.poll(() => viewport.evaluate((element) => element.scrollLeft)).toBe(0);
+  await expanded.getByRole("button", { name: "Close expanded diagram", exact: true }).click();
+  await expect(expand).toBeFocused();
+  await expect(block.locator('pre[data-language="mermaid"]')).toBeVisible();
+  // The Expand control shares the toolbar above a tall diagram, like Copy; return to latest before testing resize anchoring.
+  await timeline.evaluate((element) => { element.scrollTop = element.scrollHeight; element.dispatchEvent(new Event("scroll")); });
   await expectAtEnd(timeline);
   await page.setViewportSize({ width: 1050, height: 650 });
   await expectAtEnd(timeline);

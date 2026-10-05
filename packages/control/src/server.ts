@@ -64,7 +64,6 @@ import {
   type LocalControlCapabilities,
   type LocalControlHealth,
   type LocalLiveCapabilityState,
-  type LocalOpenTurnFailureDiagnosticResponse,
   type LocalRuntimeOptions,
   type LocalWakePolicy,
   type ProvisionLocalWorkspaceResult,
@@ -165,15 +164,8 @@ export interface LocalControlAgentLifecyclePort {
   listConversationTurnFailures?(
     conversationId: string,
     actorIdentityId: string,
-    browserSessionScope: string,
     limit: number,
   ): Promise<LocalConversationTurnFailuresResponse>;
-  openConversationTurnFailureDiagnostic?(
-    conversationId: string,
-    actorIdentityId: string,
-    browserSessionScope: string,
-    token: string,
-  ): Promise<LocalOpenTurnFailureDiagnosticResponse>;
   activity?(conversationId: string, agentIdentityId: string): LocalAgentActivity | undefined;
 }
 
@@ -670,30 +662,12 @@ export class LocalControlService {
   async listConversationTurnFailures(
     conversationId: string,
     actorIdentityId: string,
-    browserSessionScope: string,
     limit: number,
   ): Promise<LocalConversationTurnFailuresResponse> {
     if (!this.options.lifecycle?.listConversationTurnFailures) {
       throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
     }
-    return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, browserSessionScope, limit);
-  }
-
-  async openConversationTurnFailureDiagnostic(
-    conversationId: string,
-    actorIdentityId: string,
-    browserSessionScope: string,
-    token: string,
-  ): Promise<LocalOpenTurnFailureDiagnosticResponse> {
-    if (!this.options.lifecycle?.openConversationTurnFailureDiagnostic) {
-      return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, status: "unavailable" };
-    }
-    return this.options.lifecycle.openConversationTurnFailureDiagnostic(
-      conversationId,
-      actorIdentityId,
-      browserSessionScope,
-      token,
-    );
+    return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, limit);
   }
 
   private async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
@@ -1108,7 +1082,6 @@ export async function createLocalControlHttpServer(
     const isAllowedPost = request.method === "POST" && (
       /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
-      || /^\/local\/conversations\/[^/]+\/turn-failures\/open-diagnostic$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
@@ -1178,22 +1151,7 @@ export async function createLocalControlHttpServer(
         json(response, 200, await options.service.listConversationTurnFailures(
           decodeURIComponent(turnFailuresMatch[1]!),
           browserSession.identityId,
-          browserSession.scope,
           limit,
-        ), origin);
-        return;
-      }
-      const openTurnFailureDiagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/turn-failures\/open-diagnostic$/);
-      if (openTurnFailureDiagnosticMatch && browserSession && request.method === "POST") {
-        const input = await readJson(request);
-        const token = input && typeof input === "object" && typeof (input as { token?: unknown }).token === "string"
-          ? (input as { token: string }).token
-          : "";
-        json(response, 202, await options.service.openConversationTurnFailureDiagnostic(
-          decodeURIComponent(openTurnFailureDiagnosticMatch[1]!),
-          browserSession.identityId,
-          browserSession.scope,
-          token,
         ), origin);
         return;
       }

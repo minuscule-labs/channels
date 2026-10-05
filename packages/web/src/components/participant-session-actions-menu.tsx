@@ -4,11 +4,12 @@ import {
   CircleX,
   EllipsisVertical,
   LoaderCircle,
+  Info,
   Play,
   RefreshCw,
   Square,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ErrorNotice } from "./ui/error-notice";
 
 type ParticipantSessionAction = "start" | "reconnect" | "replace" | "stop" | "cancel";
@@ -16,7 +17,7 @@ type ConfirmedAction = "replace" | "stop";
 
 export function ParticipantSessionActionsMenu({
   participantName,
-  showStartButton = false,
+  replacementStartsSession = false,
   canStart,
   canReconnect,
   canReplace,
@@ -30,9 +31,11 @@ export function ParticipantSessionActionsMenu({
   onCancel,
   onStop,
   onDismissError,
+  onDetails,
+  trigger,
 }: {
   participantName: string;
-  showStartButton?: boolean;
+  replacementStartsSession?: boolean;
   canStart: boolean;
   canReconnect: boolean;
   canReplace: boolean;
@@ -46,24 +49,24 @@ export function ParticipantSessionActionsMenu({
   onCancel?(): void | Promise<unknown>;
   onStop?(): void | Promise<unknown>;
   onDismissError?(): void;
+  onDetails?(trigger: HTMLButtonElement | null): void;
+  trigger?: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmedAction, setConfirmedAction] = useState<ConfirmedAction>();
   const [error, setError] = useState<string>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const confirmationTriggerRef = useRef<HTMLButtonElement | null>(null);
   const pending = pendingAction !== undefined;
   const hasActions = canStart || canReconnect || canReplace || canCancel || canStop;
 
-  if (!hasActions) return null;
+  if (!hasActions && !onDetails) return null;
 
   const invoke = (action: () => void | Promise<unknown>) => {
     setMenuOpen(false);
     void Promise.resolve(action()).catch(() => undefined);
   };
-  const requestConfirmation = (action: ConfirmedAction, trigger = triggerRef.current) => {
-    confirmationTriggerRef.current = trigger;
+  const requestConfirmation = (action: ConfirmedAction) => {
     setMenuOpen(false);
     setError(undefined);
     setConfirmedAction(action);
@@ -80,6 +83,7 @@ export function ParticipantSessionActionsMenu({
     }
   };
   const replacing = confirmedAction === "replace";
+  const replacementLabel = replacementStartsSession ? "Start session" : "New session";
 
   return (
     <Dialog.Root
@@ -88,25 +92,9 @@ export function ParticipantSessionActionsMenu({
         if (!open && !pending) setConfirmedAction(undefined);
       }}
     >
-      {showStartButton && ((canStart && onStart) || (canReplace && onReplace)) ? (
-        <button
-          type="button"
-          className="button-secondary shrink-0 px-2"
-          aria-label={`Start ${participantName}`}
-          disabled={disabled || pending}
-          onClick={(event) => {
-            if (canStart && onStart) invoke(onStart);
-            else requestConfirmation("replace", event.currentTarget);
-          }}
-        >
-          {pending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-          Start
-        </button>
-      ) : null}
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
-        <Popover.Trigger asChild>
-          <button
-            ref={triggerRef}
+        <Popover.Trigger asChild ref={triggerRef} disabled={disabled || pending}>
+          {trigger ?? <button
             type="button"
             className="icon-button inline-flex shrink-0"
             aria-label={`Open actions for ${participantName}`}
@@ -114,7 +102,7 @@ export function ParticipantSessionActionsMenu({
             disabled={disabled || pending}
           >
             {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <EllipsisVertical className="h-4 w-4" />}
-          </button>
+          </button>}
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Content
@@ -128,7 +116,7 @@ export function ParticipantSessionActionsMenu({
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
                 onClick={() => invoke(onStart)}
               >
-                <Play className="h-4 w-4" /> Start
+                <Play className="h-4 w-4" /> Start session
               </button>
             ) : null}
             {canReconnect && onReconnect ? (
@@ -146,7 +134,7 @@ export function ParticipantSessionActionsMenu({
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
                 onClick={() => requestConfirmation("replace")}
               >
-                <RefreshCw className="h-4 w-4" /> New session
+                {replacementStartsSession ? <Play className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />} {replacementLabel}
               </button>
             ) : null}
             {canCancel && onCancel ? (
@@ -167,6 +155,20 @@ export function ParticipantSessionActionsMenu({
                 <Square className="h-4 w-4" /> Stop agent
               </button>
             ) : null}
+            {onDetails ? (
+              <div className={hasActions ? "mt-1 border-t border-[var(--border)] pt-1" : undefined}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDetails(triggerRef.current);
+                  }}
+                >
+                  <Info className="h-4 w-4" /> Details &amp; diagnostics
+                </button>
+              </div>
+            ) : null}
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
@@ -180,7 +182,7 @@ export function ParticipantSessionActionsMenu({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            (confirmationTriggerRef.current?.isConnected ? confirmationTriggerRef.current : triggerRef.current)?.focus();
+            triggerRef.current?.focus();
           }}
         >
           <Dialog.Title className="text-base font-semibold">
@@ -210,7 +212,7 @@ export function ParticipantSessionActionsMenu({
               onClick={() => void confirm()}
             >
               {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-              {replacing ? "New session" : "Stop agent"}
+              {replacing ? replacementLabel : "Stop agent"}
             </button>
           </div>
         </Dialog.Content>

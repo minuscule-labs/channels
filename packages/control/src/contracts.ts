@@ -253,7 +253,16 @@ export interface LocalConversationAgentsResponse {
   agents: LocalConversationAgent[];
 }
 
-export type LocalTurnFailureDiagnosticOpenState = "available" | "stale" | "unavailable";
+/** Minimal issue notice safe to show in a shared Conversation timeline. */
+export interface LocalTurnFailureNotice {
+  participant: {
+    identityId: string;
+    displayLabel: string;
+  };
+  /** Public Conversation sequence of the message that triggered the failed turn. */
+  triggerSequence: number;
+  failedAt: string;
+}
 
 /** Safe local projection of one durable Relay turn-failure record. */
 export interface LocalTurnFailureDiagnostic {
@@ -270,22 +279,15 @@ export interface LocalTurnFailureDiagnostic {
     code: "retry_or_start_new_session" | "retry_request" | "reconnect_agent" | "open_runtime_diagnostic" | "check_connection_and_retry";
     label: string;
   };
-  openDiagnostic: {
-    state: LocalTurnFailureDiagnosticOpenState;
-    /** Short-lived, opaque, browser-session-scoped action token. */
-    token?: string;
-  };
 }
 
 export interface LocalConversationTurnFailuresResponse {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   conversationId: string;
+  /** Minimal notices are visible to active Conversation participants. */
+  notices: LocalTurnFailureNotice[];
+  /** Detailed in-app diagnostics are restricted to active Workspace owners/admins. */
   diagnostics: LocalTurnFailureDiagnostic[];
-}
-
-export interface LocalOpenTurnFailureDiagnosticResponse {
-  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
-  status: "accepted" | "unavailable";
 }
 
 export type LocalBulkAgentLifecycleReason =

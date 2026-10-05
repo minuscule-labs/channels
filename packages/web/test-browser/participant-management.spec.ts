@@ -33,7 +33,11 @@ test("agent-first roster editing preserves existing human and service participan
   const destination = `/app/workspaces/${workspaceId}/conversations/${conversation.id}`;
   const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}`)).json() as { launchUrl: string };
   await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  const openSettings = async () => {
+    await page.getByRole("button", { name: "Conversation actions for existing-participant-regression", exact: true }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+  };
+  await openSettings();
   const dialog = page.getByRole("dialog", { name: "Manage #existing-participant-regression" });
   await expect(dialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("checkbox", { name: /Workspace Member/ })).toHaveCount(0);
@@ -53,7 +57,7 @@ test("agent-first roster editing preserves existing human and service participan
   await expect(dialog).toBeHidden();
   expect(new Set(savedIds[0])).toEqual(new Set([ownerId, agentId, ...existingIds]));
 
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  await openSettings();
   await serviceChoice.uncheck();
   // A choice must not disappear just because its checkbox was toggled off.
   await serviceChoice.check();
@@ -63,7 +67,7 @@ test("agent-first roster editing preserves existing human and service participan
   await expect(dialog).toBeHidden();
   expect(new Set(savedIds[1])).toEqual(new Set([ownerId, agentId, existingIds[0]]));
 
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  await openSettings();
   await expect(serviceChoice).toHaveCount(0);
   await expect(dialog.getByRole("checkbox", { name: /Existing human participant/ })).toBeChecked();
 });

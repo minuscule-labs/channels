@@ -22,6 +22,24 @@ async function openParticipantActions(page: Page, participantName: string): Prom
   await page.getByRole("button", { name: `Open actions for ${participantName}` }).first().click();
 }
 
+async function openWorkspaceActions(page: Page, workspaceName: string): Promise<void> {
+  const trigger = page.getByRole("button", { name: `Workspace actions for ${workspaceName}`, exact: true });
+  await expect(trigger.locator("svg")).toHaveClass(/lucide-ellipsis-vertical/);
+  await trigger.click();
+  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
+}
+
+async function openWorkspaceSettings(page: Page, workspaceName: string): Promise<void> {
+  await openWorkspaceActions(page, workspaceName);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+}
+
+async function openWorkspaceAgents(page: Page, workspaceName: string): Promise<void> {
+  await openWorkspaceActions(page, workspaceName);
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+}
+
 test("redirects an authenticated legacy Channel link to its Conversation", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
@@ -52,34 +70,45 @@ test("hides sidebar lifecycle controls from an active Workspace member", async (
   await expect(page.getByLabel(`Conversation actions for ${conversation.name}`)).toHaveCount(0);
 });
 
-test("shows owner-only safe turn failures and opens a token-gated diagnostic", async ({ page, request }) => {
+test("shows brief turn issue notices in chat while keeping detailed diagnostics owner/admin-only", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string; name: string }> };
   const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
   const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     conversations: Array<{ id: string; name: string }>;
   };
   const conversation = conversations.find(({ name }) => name === "browser-collaboration")!;
+  await request.post(`${fixtureBase}/member-participant?value=true`);
   await request.post(`${fixtureBase}/turn-failures?value=true`);
   try {
-    const before = (await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number }).count;
     await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`);
-    await expect(page.getByLabel("Recent turn failures")).toHaveCount(0);
-    await page.getByRole("button", { name: "Issues: 1" }).click();
-    const diagnostics = page.getByRole("dialog", { name: "Diagnostics" });
-    const failures = diagnostics.getByLabel("Recent turn failures");
+    await expect(page.getByRole("button", { name: "View Runtime issue details for Builder Agent", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "View issue details for Builder Agent", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Issues:/ })).toHaveCount(0);
+    await page.getByRole("button", { name: "View Runtime issue details for Builder Agent", exact: true }).click();
+    const diagnostics = page.getByRole("dialog", { name: "Details for Builder Agent", exact: true });
+    const failures = diagnostics.getByLabel("Issue diagnostics");
     await expect(failures).toContainText("Runtime request timed out");
     await expect(failures).toContainText("Builder Agent");
     await expect(failures).toContainText("2 attempts");
     await expect(failures).toContainText("Recommended: Retry request");
-    await failures.getByRole("button", { name: "Open diagnostic", exact: true }).click();
-    await expect(failures.getByRole("button", { name: "Diagnostic opened", exact: true })).toBeVisible();
-    expect((await (await request.get(`${fixtureBase}/diagnostic-opens`)).json() as { count: number }).count).toBe(before + 1);
+    await expect(failures.getByRole("button", { name: "Open diagnostic", exact: true })).toHaveCount(0);
     expect(await failures.innerText()).not.toMatch(/trigger|binding|session|fixture-turn-failure-token/i);
 
+    await diagnostics.getByRole("button", { name: "Close participant details" }).click();
+    await openParticipantActions(page, "Builder Agent");
+    await page.getByRole("button", { name: "Details & diagnostics", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Details for Builder Agent", exact: true }).getByLabel("Issue diagnostics")).toContainText("Runtime request timed out");
+
     await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`, "member");
-    await expect(page.getByLabel("Recent turn failures")).toHaveCount(0);
+    await expect(page.getByRole("status", { name: "Issue notice for Builder Agent", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "View issue details for Builder Agent", exact: true })).toHaveCount(0);
+    const memberDetails = page.getByRole("button", { name: "Open actions for Builder Agent", exact: true });
+    await memberDetails.click();
+    await page.getByRole("button", { name: "Details & diagnostics", exact: true }).click();
+    await expect(page.getByLabel("Issue diagnostics")).toHaveCount(0);
   } finally {
     await request.post(`${fixtureBase}/turn-failures?value=false`);
+    await request.post(`${fixtureBase}/member-participant?value=false`);
   }
 });
 
@@ -119,9 +148,8 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   const { workspaces } = await workspacesResponse.json() as { workspaces: Array<{ id: string }> };
   const workspaceId = workspaces[0]!.id;
   const conversationsResponse = await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`);
-  const { conversations } = await conversationsResponse.json() as { conversations: Array<{ id: string; rosterRevision: number }> };
+  const { conversations } = await conversationsResponse.json() as { conversations: Array<{ id: string }> };
   const conversationId = conversations[0]!.id;
-  const initialRosterRevision = conversations[0]!.rosterRevision;
   const membersResponse = await request.get(`${conversationsBase}/workspaces/${workspaceId}/members`);
   const { members } = await membersResponse.json() as {
     members: Array<{ identityId: string; mentionHandle: string }>;
@@ -147,11 +175,17 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   );
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect(page.getByRole("heading", { name: "#browser-collaboration" })).toBeVisible();
-  await expect(page.getByText("Workspace: Browser Test", { exact: false })).toBeVisible();
+  await expect(page.getByText("Workspace: Browser Test", { exact: true })).toBeVisible();
+  await expect(page.locator(".connection-pill")).toHaveCount(0);
+  await expect(page.getByText(/Conversation ID|roster \d+/)).toHaveCount(0);
   await expect(page.getByText("Verify the browser collaboration flow.", { exact: false })).toBeVisible();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-  await expect(page.getByText("@mention wakes an agent", { exact: false })).toBeVisible();
-  await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
+  const composer = page.getByRole("combobox", { name: "Conversation message" });
+  await expect(composer).toHaveAttribute("rows", "2");
+  await expect(composer).toHaveAttribute("placeholder", "Message #Channel");
+  const sendButton = page.getByRole("button", { name: "Send message", exact: true });
+  await expect(sendButton).toHaveText("");
+  await expect(page.getByText(/@mention wakes an agent|Sending as @david/)).toHaveCount(0);
   await expect(page.getByText("Send as", { exact: true })).toHaveCount(0);
 
   await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
@@ -159,10 +193,18 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
     value: agent.identityId,
   });
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(page.getByText("Sending as @david", { exact: true })).toBeVisible();
+  await expect(composer).toHaveAttribute("placeholder", "Message #Channel");
+  await expect(page.getByText("Sending as @david", { exact: true })).toHaveCount(0);
 
-  const composer = page.getByRole("combobox", { name: "Conversation message" });
   const compactHeight = await composer.evaluate((element) => element.clientHeight);
+  const expectedCompactHeight = await composer.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return 2 * Number.parseFloat(style.lineHeight) + Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  });
+  expect(Math.abs(compactHeight - expectedCompactHeight)).toBeLessThanOrEqual(1);
+  const sendBounds = await sendButton.boundingBox();
+  expect(sendBounds).not.toBeNull();
+  expect(Math.abs(sendBounds!.width - sendBounds!.height)).toBeLessThanOrEqual(1);
   await composer.fill(Array.from({ length: 20 }, (_, index) => `visual line ${index + 1}`).join("\n"));
   await expect.poll(() => composer.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, overflowY: getComputedStyle(element).overflowY })))
     .toMatchObject({ overflowY: "auto" });
@@ -173,7 +215,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await expect(page.getByRole("option", { name: /@builder/ })).toBeVisible();
   await composer.press("Enter");
   await composer.pressSequentially("Browser reply.");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByRole("log").getByText("@builder Browser reply.", { exact: true })).toBeVisible();
   expect(idempotencyKeys[0]).toBeTruthy();
   await expect(composer).toHaveValue("");
@@ -192,15 +234,21 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
     { data: { actorIdentityId: human.identityId, roleLabel: "principal builder" } },
   );
   expect(update.ok()).toBe(true);
-  await expect(page.getByText("principal builder — Implements features and verifies changes.")).toBeVisible();
-  await expect(page.getByText(new RegExp(`roster ${initialRosterRevision + 1}$`))).toBeVisible();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Details & diagnostics", exact: true }).click();
+  const participantDetails = page.getByRole("dialog", { name: "Details for Builder Agent", exact: true });
+  await expect(participantDetails.getByText("principal builder", { exact: true })).toBeVisible();
+  await expect(participantDetails.getByText("Implements features and verifies changes.", { exact: true })).toBeVisible();
+  await participantDetails.getByRole("button", { name: "Close participant details" }).click();
+  await expect(page.getByText("Workspace: Browser Test", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Conversation ID|roster \d+/)).toHaveCount(0);
 
   const disconnect = await request.post(`${fixtureBase}/disconnect`);
   expect(disconnect.ok()).toBe(true);
   await expect(page.getByLabel("Live updates disconnected")).toBeVisible({ timeout: 10_000 });
 
   await composer.fill("@builder Preserve and retry this draft.");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Your draft was preserved");
   await expect(composer).toHaveValue("@builder Preserve and retry this draft.");
   const failedKey = idempotencyKeys.at(-1);
@@ -254,9 +302,10 @@ test("keeps Workspace navigation responsive with more Conversations than the bro
 
 test("tracks durable unread mentions and plays only opt-in contextual sound", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
-    workspaces: Array<{ id: string }>;
+    workspaces: Array<{ id: string; name: string }>;
   };
-  const workspaceId = workspaces[0]!.id;
+  const workspace = workspaces[0]!;
+  const workspaceId = workspace.id;
   const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     conversations: Array<{ id: string; name: string }>;
   };
@@ -284,7 +333,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 
-  await page.getByRole("link", { name: "Agents" }).first().click();
+  await openWorkspaceAgents(page, workspace.name);
   await request.post(`${fixtureBase}/peer-message?mention=true&body=Unread%20mention`);
   const unread = page.getByLabel(/1 unread message, 1 direct mention/).first();
   await expect(unread).toBeVisible({ timeout: 10_000 });
@@ -303,7 +352,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
   await expect(page).toHaveTitle("MinuChannels");
   await page.getByLabel("Notification sound").first().selectOption("off");
-  await page.getByRole("link", { name: "Agents" }).first().click();
+  await openWorkspaceAgents(page, workspace.name);
   await request.post(`${fixtureBase}/peer-message?body=Muted%20agent%20reply`);
   await expect(page.getByLabel(/1 unread message/).first()).toBeVisible({ timeout: 10_000 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
@@ -311,7 +360,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByText("Muted agent reply", { exact: true })).toBeVisible();
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
 
-  await page.getByRole("link", { name: "Agents" }).first().click();
+  await openWorkspaceAgents(page, workspace.name);
   await request.post(`${fixtureBase}/peer-message?author=human&body=Own%20message`);
   await page.waitForTimeout(5_500);
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
@@ -512,17 +561,18 @@ test("reconnects an existing reachable session and exposes only safe diagnostic 
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New session", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await page.getByText("Diagnostics").click();
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Details & diagnostics", exact: true }).click();
   await expect(page.getByText("disconnected", { exact: true })).toBeVisible();
   await expect(page.locator("dt", { hasText: "Safe activity" }).locator("+ dd")).toHaveText("Unavailable");
   await expect(page.locator("dt", { hasText: "Interrupt" }).locator("+ dd")).toHaveText("Available");
   await expect(page.locator("dt", { hasText: "Reconnect existing" }).locator("+ dd")).toHaveText("Available");
-  await expect(page.locator("dt", { hasText: "Open diagnostic" }).locator("+ dd")).toHaveText("Available");
   expect(await page.locator("body").innerText()).not.toMatch(/private-browser-session|runtimeSessionId|\/tmp|SECRET_DIAGNOSTIC/);
 
   await request.post(`${fixtureBase}/runtime-capabilities?mode=failed`);
   await expect(page.getByText("Not verified", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
   expect(await page.locator("body").innerText()).not.toContain("SECRET_RUNTIME_CAPABILITY_TRANSPORT");
+  await page.getByRole("button", { name: "Close participant details" }).click();
   await openParticipantActions(page, "Builder Agent");
   await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -541,7 +591,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostic 
   await expect(page.getByTitle("Runtime: Offline")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Open diagnostic", exact: true })).toHaveCount(0);
   await openParticipantActions(page, "Builder Agent");
-  await expect(page.getByRole("button", { name: "New session", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -624,17 +674,17 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByRole("heading", { name: "Participants" })).toBeVisible();
   const unboundRow = page.getByRole("listitem").filter({
-    has: page.getByText("@unbound-agent · agent", { exact: true }),
+    has: page.getByText("Unbound Agent", { exact: true }),
   }).first();
   await expect(unboundRow.getByText("Unbound Agent", { exact: true })).toBeVisible();
   await expect(unboundRow.getByTitle("Runtime: Not started")).toBeVisible();
   const rowText = await unboundRow.textContent() ?? "";
-  expect(rowText.indexOf("Unbound Agent")).toBeLessThan(rowText.indexOf("@unbound-agent · agent"));
-  expect(rowText.indexOf("@unbound-agent · agent")).toBeLessThan(rowText.indexOf("Not started"));
+  expect(rowText).not.toContain("@unbound-agent · agent");
+  expect(rowText).not.toContain("Not started");
   const unboundActions = page.getByRole("button", { name: "Open actions for Unbound Agent" }).first();
   await unboundActions.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("button", { name: "Start", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(unboundActions).toBeFocused();
   const actions = page.getByRole("button", { name: "Open participant actions" });
@@ -704,7 +754,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   const workspace = workspaces[0]!;
   await launchAuthenticated(page, request, "/");
 
-  await page.getByRole("button", { name: `Configure Workspace ${workspace.name}` }).click();
+  await openWorkspaceSettings(page, workspace.name);
   const dialog = page.getByRole("dialog", { name: `${workspace.name} configuration` });
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("Signed in as @david · owner");
@@ -732,7 +782,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   await expect(dialog.getByLabel("Sleep after")).toHaveValue("15");
 
   await dialog.getByRole("button", { name: "Close Workspace configuration" }).click();
-  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await openWorkspaceAgents(page, workspace.name);
   await expect(page.getByRole("heading", { name: `${workspace.name} agents` })).toBeVisible();
   await page.getByRole("link", { name: /Builder Agent/ }).click();
   await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 1 })).toBeVisible();
@@ -934,7 +984,7 @@ test("creates and renames a Workspace with a private source path", async ({ page
     if (!response.ok) return false;
     return Boolean((await response.json() as { rootConfigured?: boolean }).rootConfigured);
   }, createdWorkspaceId)).toBe(true);
-  await page.getByRole("button", { name: "Configure Workspace Browser Workspace" }).click();
+  await openWorkspaceSettings(page, "Browser Workspace");
   const settings = page.getByRole("dialog", { name: "Browser Workspace configuration" });
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
   await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
@@ -953,7 +1003,9 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   const builder = members.find(({ mentionHandle }) => mentionHandle === "builder")!;
   await launchAuthenticated(page, request, "/");
 
-  await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
+  const createConversation = page.getByRole("button", { name: `Create Conversation in ${workspace.name}` });
+  await expect(createConversation.locator("svg")).toHaveClass(/lucide-square-pen/);
+  await createConversation.click();
   const createDialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
   await expect(createDialog).toBeVisible();
   await createDialog.getByLabel("Conversation name").fill("roster-administration");
@@ -974,7 +1026,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
     response.request().method() === "POST"
     && response.url().endsWith(`/local/conversations/${conversation.id}/agents/${builder.identityId}/start`));
   await openParticipantActions(page, "Builder Agent");
-  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await page.getByRole("button", { name: "Start session", exact: true }).click();
   expect((await startResponsePromise).ok()).toBe(true);
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
@@ -1022,9 +1074,9 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await expect(page.getByTitle("Runtime: Stopped")).toBeVisible();
 
   await openParticipantActions(page, "Builder Agent");
-  await page.getByRole("button", { name: "New session", exact: true }).click();
+  await page.getByRole("button", { name: "Start session", exact: true }).click();
   lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
-  await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
+  await lifecycleDialog.getByRole("button", { name: "Start session", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const historical = await request.post(`${conversationsBase}/conversations/${conversation.id}/messages`, {
@@ -1033,7 +1085,8 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   expect(historical.ok()).toBe(true);
   await expect(page.getByRole("log").getByText("Builder attribution survives roster removal.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  await page.getByRole("button", { name: "Conversation actions for roster-administration", exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   let rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
   await rosterDialog.getByLabel("Conversation name").fill("delivery-room");
@@ -1067,22 +1120,26 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   expect((await configurationResponsePromise).ok()).toBe(true);
   await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
   await page.getByRole("link", { name: "delivery-room", exact: true }).first().click();
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  await page.getByRole("button", { name: "Conversation actions for delivery-room", exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ })).not.toBeChecked();
   await rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ }).check();
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).uncheck();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();
-  await expect(page.getByText(/roster 2$/)).toBeVisible();
+  await expect(page.getByText("Workspace: Browser Test", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Conversation ID|roster \d+/)).toHaveCount(0);
   await expect(page.getByRole("log").getByText("Builder Agent", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  await page.getByRole("button", { name: "Conversation actions for delivery-room", exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
   await expect(rosterDialog).toBeHidden();
-  await expect(page.getByText(/roster 3$/)).toBeVisible();
+  await expect(page.getByText("Workspace: Browser Test", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Conversation ID|roster \d+/)).toHaveCount(0);
 });
 
 test("caps wrapped drafts on mobile and restores them after Conversation navigation", async ({ page, request }) => {
@@ -1107,7 +1164,7 @@ test("caps wrapped drafts on mobile and restores them after Conversation navigat
     overflowY: getComputedStyle(element).overflowY,
   }))).toMatchObject({ overflowY: "auto" });
   expect(await composer.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-  expect((await page.getByRole("button", { name: "Send", exact: true }).boundingBox())!.y).toBeLessThan(480);
+  expect((await page.getByRole("button", { name: "Send message", exact: true }).boundingBox())!.y).toBeLessThan(480);
 
   await page.goto(`/app/workspaces/${workspace.id}/conversations/${alternate.id}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "#alternate-collaboration" })).toBeVisible();
@@ -1207,7 +1264,8 @@ test("preloads agent pages on intent before navigation", async ({ page, request 
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
-  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
+  const workspaceId = workspace.id;
   const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
     conversations: Array<{ id: string; name: string }>;
   };
@@ -1219,7 +1277,8 @@ test("preloads agent pages on intent before navigation", async ({ page, request 
 
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversation.id}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
-  const agentsLink = page.getByRole("link", { name: "Agents" }).first();
+  await openWorkspaceActions(page, workspace.name);
+  const agentsLink = page.getByRole("link", { name: "Agents", exact: true });
   await agentsLink.hover();
   await expect.poll(() => moduleRequests.length).toBeGreaterThan(0);
   await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
@@ -1231,7 +1290,8 @@ test("keeps navigation available and retries a failed agent page chunk", async (
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
-  const workspaceId = workspaces.find(({ name }) => name === "Browser Test")!.id;
+  const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
+  const workspaceId = workspace.id;
   let moduleAttempts = 0;
   let failModuleRequests = true;
   await page.route("**/*agent-management-page*", async (route) => {
@@ -1244,7 +1304,8 @@ test("keeps navigation available and retries a failed agent page chunk", async (
   const errorState = page.getByRole("alert");
   await expect(errorState).toContainText("Agent management couldn’t be loaded");
   await expect(errorState.getByRole("button", { name: "Reload and retry" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Agents" }).first()).toBeVisible();
+  await openWorkspaceActions(page, workspace.name);
+  await expect(page.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
   expect(moduleAttempts).toBeGreaterThan(0);
 
   failModuleRequests = false;
@@ -1307,7 +1368,7 @@ test("keeps messaging available when Runtime status is unavailable", async ({ pa
 
   const composer = page.getByRole("combobox", { name: "Conversation message" });
   await composer.fill("Public messaging remains available without local control.");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByRole("log").getByText(
     "Public messaging remains available without local control.",
     { exact: true },

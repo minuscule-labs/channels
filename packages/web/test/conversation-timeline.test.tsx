@@ -1,3 +1,4 @@
+import type { LocalTurnFailureNotice } from "@minu/channels-control/contracts";
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -48,5 +49,34 @@ describe("Conversation broadcast labels", () => {
     const html = render([human, builder, { ...legacy, status: "disabled" }]);
     expect(html.match(/>to @conversation</g)).toHaveLength(2);
     expect(html).not.toContain(">to @channel<");
+  });
+
+  it("anchors a short clickable issue notice after its triggering message while keeping details gated", () => {
+    const notice: LocalTurnFailureNotice = {
+      participant: { identityId: builder.id, displayLabel: "Builder" },
+      triggerSequence: 2,
+      failedAt: "2025-01-01T10:02:00.000Z",
+    };
+    const ownerHtml = renderToStaticMarkup(<ConversationTimeline
+      messages={messages}
+      participants={[human, builder]}
+      turnFailureNotices={[notice]}
+      canOpenIssueDetails
+      onViewIssueDetails={() => undefined}
+    />);
+    expect(ownerHtml).toContain('aria-label="View Runtime issue details for Builder"');
+    expect(ownerHtml).toContain("Something went wrong with Builder");
+    expect(ownerHtml).toContain("View details");
+    expect(ownerHtml.indexOf("Broadcast")).toBeLessThan(ownerHtml.indexOf("Something went wrong with Builder"));
+    expect(ownerHtml.indexOf("Something went wrong with Builder")).toBeLessThan(ownerHtml.indexOf("Continued broadcast"));
+
+    const memberHtml = renderToStaticMarkup(<ConversationTimeline
+      messages={messages}
+      participants={[human, builder]}
+      turnFailureNotices={[notice]}
+    />);
+    expect(memberHtml).toContain('aria-label="Issue notice for Builder"');
+    expect(memberHtml).toContain("An owner or admin can review the details.");
+    expect(memberHtml).not.toContain('aria-label="View Runtime issue details for Builder"');
   });
 });

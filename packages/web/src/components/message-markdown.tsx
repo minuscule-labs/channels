@@ -28,6 +28,7 @@ function codeLanguage(children: ReactNode): string {
 
 function CodeBlock({ children, className, "data-language": language, node: _node, ...properties }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const [mermaidExpandTarget, setMermaidExpandTarget] = useState<HTMLSpanElement | null>(null);
   const resetTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const code = Children.toArray(children).map(textContent).join("");
   const fenceLanguage = codeLanguage(children);
@@ -64,17 +65,20 @@ function CodeBlock({ children, className, "data-language": language, node: _node
         <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[var(--muted)]">
           {displayLanguage === "plaintext" ? "Code" : displayLanguage}
         </span>
-        <button
-          type="button"
-          onClick={copyCode}
-          className="inline-flex min-h-7 items-center gap-1 rounded px-1.5 text-[0.625rem] font-medium text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
-          aria-label={copied ? "Code copied" : "Copy code"}
-        >
-          {copied ? <Check aria-hidden="true" size={13} /> : <Copy aria-hidden="true" size={13} />}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <div className="flex items-center gap-1">
+          {displayLanguage === "mermaid" ? <span ref={setMermaidExpandTarget} className="inline-flex" /> : null}
+          <button
+            type="button"
+            onClick={copyCode}
+            className="inline-flex min-h-7 items-center gap-1 rounded px-1.5 text-[0.625rem] font-medium text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--accent)]"
+            aria-label={copied ? "Code copied" : "Copy code"}
+          >
+            {copied ? <Check aria-hidden="true" size={13} /> : <Copy aria-hidden="true" size={13} />}
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
       </div>
-      {displayLanguage === "mermaid" ? <MermaidDiagram code={code} source={source} /> : source}
+      {displayLanguage === "mermaid" ? <MermaidDiagram code={code} source={source} expandTarget={mermaidExpandTarget} /> : source}
     </div>
   );
 }

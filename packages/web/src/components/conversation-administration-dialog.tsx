@@ -7,8 +7,8 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Check, LoaderCircle, Plus, UserRoundCog, X } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { Check, LoaderCircle, Plus, SquarePen, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { conversations, localControl } from "../lib/api";
 import { isConversationParticipantChoice } from "../lib/participants";
 import { queryKeys } from "../lib/query-keys";
@@ -127,6 +127,7 @@ function AdministrationDialog({
   title,
   description,
   trigger,
+  onCloseAutoFocus,
   children,
 }: {
   open: boolean;
@@ -134,14 +135,15 @@ function AdministrationDialog({
   title: string;
   description: string;
   trigger: ReactNode;
+  onCloseAutoFocus?(event: Event): void;
   children: ReactNode;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Trigger asChild>{trigger}</Dialog.Trigger>
+      {trigger ? <Dialog.Trigger asChild>{trigger}</Dialog.Trigger> : null}
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(36rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
+        <Dialog.Content onCloseAutoFocus={onCloseAutoFocus} className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(36rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
           <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
             <div>
               <Dialog.Title className="text-base font-semibold">{title}</Dialog.Title>
@@ -244,7 +246,7 @@ export function CreateConversationDialog({
       description="Name the conversation and choose its initial agents. You are included automatically."
       trigger={(
         <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Conversation in ${workspace.name}`} title="Create Conversation">
-          <Plus className="h-3.5 w-3.5" />
+          <SquarePen className="h-3.5 w-3.5" />
         </button>
       )}
     >
@@ -286,8 +288,26 @@ export function CreateConversationDialog({
   );
 }
 
-export function EditConversationParticipantsDialog({ conversation }: { conversation: ConversationMetadata }) {
-  const [open, setOpen] = useState(false);
+export function EditConversationParticipantsDialog({
+  conversation,
+  open: controlledOpen,
+  onOpenChange,
+  onCloseAutoFocus,
+  trigger = null,
+}: {
+  conversation: ConversationMetadata;
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
+  onCloseAutoFocus?(event: Event): void;
+  trigger?: ReactNode;
+}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (nextOpen: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  };
+  const previousOpen = useRef(false);
   const [name, setName] = useState(conversation.name);
   const [selected, setSelected] = useState<Set<string>>(new Set(conversation.participants.map(({ id }) => id)));
   const existingParticipantIds = useMemo(() => new Set(conversation.participants.map(({ id }) => id)), [conversation.participants]);
@@ -323,30 +343,27 @@ export function EditConversationParticipantsDialog({ conversation }: { conversat
       setOpen(false);
     },
   });
-  const handleOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen);
-    if (nextOpen) {
-      setName(conversation.name);
-      setSelected(new Set([
-        ...conversation.participants.filter(({ status }) => status === "active").map(({ id }) => id),
-        ...(data.session.data ? [data.session.data.identityId] : []),
-      ]));
-      renameMutation.reset();
-      mutation.reset();
-    }
-  };
+  useEffect(() => {
+    const opening = open && !previousOpen.current;
+    previousOpen.current = open;
+    if (!opening) return;
+    setName(conversation.name);
+    setSelected(new Set([
+      ...conversation.participants.filter(({ status }) => status === "active").map(({ id }) => id),
+      ...(data.session.data ? [data.session.data.identityId] : []),
+    ]));
+    renameMutation.reset();
+    mutation.reset();
+  }, [open, conversation, data.session.data, renameMutation.reset, mutation.reset]);
 
   return (
     <AdministrationDialog
       open={open}
-      onOpenChange={handleOpenChange}
+      onOpenChange={setOpen}
+      onCloseAutoFocus={onCloseAutoFocus}
       title={`Manage #${conversation.name}`}
       description={`Choose existing agents for roster revision ${conversation.rosterRevision + 1}. Historical messages retain their author identity.`}
-      trigger={(
-        <button type="button" className="icon-button inline-flex" aria-label="Manage Conversation participants" title="Manage participants">
-          <UserRoundCog className="h-4 w-4" />
-        </button>
-      )}
+      trigger={trigger}
     >
       <QueryState pending={data.pending} error={data.error} canAdminister={data.canAdminister}>
         <div className="space-y-5">

@@ -13,7 +13,6 @@ import type {
   LocalControlCapabilities,
   LocalControlHealth,
   LocalCurrentSession,
-  LocalOpenTurnFailureDiagnosticResponse,
   LocalRuntimeOptions,
   LocalWorkspaceAgentConfiguration,
   LocalWorkspaceConfigurationSummary,
@@ -86,17 +85,6 @@ export class LocalControlClient {
     const search = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
     return this.get<LocalConversationTurnFailuresResponse>(
       `/local/conversations/${encodeURIComponent(conversationId)}/turn-failures${search}`,
-    );
-  }
-
-  async openConversationTurnFailureDiagnostic(
-    conversationId: string,
-    token: string,
-  ): Promise<LocalOpenTurnFailureDiagnosticResponse> {
-    return this.request<LocalOpenTurnFailureDiagnosticResponse>(
-      `/local/conversations/${encodeURIComponent(conversationId)}/turn-failures/open-diagnostic`,
-      { method: "POST", body: JSON.stringify({ token }) },
-      this.lifecycleTimeoutMs,
     );
   }
 

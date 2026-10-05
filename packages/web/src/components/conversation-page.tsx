@@ -6,17 +6,15 @@ import { AlertCircle, RefreshCw, Users } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
-import { shortId } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 import { readSequence, resetReadSequence, writeReadSequence } from "../lib/conversation-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
 import { ConversationActivityStrip } from "./conversation-activity-strip";
-import { EditConversationParticipantsDialog } from "./conversation-administration-dialog";
 import { ConversationComposer } from "./conversation-composer";
 import { ConversationTimeline } from "./conversation-timeline";
 import { MemberRoster } from "./member-roster";
-import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
-import { Drawer, DrawerCloseButton } from "./ui/drawer";
+import { ParticipantDetailsDialog } from "./participant-details-dialog";
+import { Drawer } from "./ui/drawer";
 import { ErrorNotice } from "./ui/error-notice";
 
 export function ConversationPage() {
@@ -29,11 +27,13 @@ export function ConversationPage() {
 function ConversationPageContent({ workspaceId, conversationId }: { workspaceId: string; conversationId: string }) {
   const queryClient = useQueryClient();
   const [rosterOpen, setRosterOpen] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
   const [bulkResultsExpanded, setBulkResultsExpanded] = useState(true);
   const [pendingBulkTargets, setPendingBulkTargets] = useState<ReadonlySet<string>>();
+  const [issueDialogParticipantId, setIssueDialogParticipantId] = useState<string>();
+  const [issueDialogOpen, setIssueDialogOpen] = useState(false);
+  const issueNoticeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearEndRef = useRef(true);
   const scrollLayoutRef = useRef({ scrollHeight: 0, clientHeight: 0 });
@@ -133,15 +133,6 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
   });
-  const turnFailureDiagnosticAction = useMutation({
-    mutationFn: async ({ key, token }: { key: string; token: string }) => ({
-      key,
-      response: await localControl.openConversationTurnFailureDiagnostic(conversationId, token),
-    }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationTurnFailures(conversationId) });
-    },
-  });
   const bulkAgentAction = useMutation({
     mutationFn: (action: "start" | "stop") => action === "start"
       ? localControl.startAllConversationAgents(conversationId)
@@ -168,6 +159,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     await bulkAgentAction.mutateAsync("stop");
   };
   const participants = metadata.data?.participants ?? [];
+  const issueDialogParticipant = participants.find(({ id }) => id === issueDialogParticipantId);
   const attributionParticipants = useMemo<Participant[]>(() => {
     const byId = new Map(participants.map((participant) => [participant.id, participant]));
     const identitiesById = new Map((identities.data ?? []).map((identity) => [identity.id, identity]));
@@ -195,15 +187,23 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
   const currentMembership = workspaceMembers.data?.find(
     ({ identityId }) => identityId === currentSession.data?.identityId,
   );
+  const currentParticipant = participants.find(({ id }) => id === currentSession.data?.identityId);
+  const canViewTurnFailureNotices = currentMembership?.status === "active"
+    && Boolean(currentParticipant && currentParticipant.status !== "disabled");
   const canOpenDiagnostics = currentMembership?.status === "active"
     && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
   const turnFailures = useQuery({
-    queryKey: queryKeys.localConversationTurnFailures(conversationId),
+    queryKey: queryKeys.localConversationTurnFailures(conversationId, currentSession.data?.identityId),
     queryFn: () => localControl.listConversationTurnFailures(conversationId),
-    enabled: canOpenDiagnostics,
+    enabled: canViewTurnFailureNotices,
     retry: false,
     refetchInterval: 10_000,
   });
+  const participantFeedback = {
+    participantActionError: agentAction.isError && agentAction.variables
+      ? { identityId: agentAction.variables.identityId, message: agentAction.error.message } : undefined,
+    turnFailures: canOpenDiagnostics ? turnFailures.data?.diagnostics : undefined,
+  };
   const settled = lifecycle.data?.state === "settled";
   const lifecycleLabel = lifecycle.data?.state === "snoozed" ? "Snoozed"
     : lifecycle.data?.state === "settled" ? "Archived"
@@ -287,61 +287,18 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h1 className="truncate text-sm font-semibold" title={metadata.data.name}>#{metadata.data.name}</h1>
-              <span className={`connection-pill ${connection}`} aria-label={`Live updates ${connection}`}>
-                <span className="status-dot" /> {connection}
-              </span>
-            </div>
-            <p className="truncate text-[11px] text-[var(--muted)]">
-              Workspace: {workspace.data?.name ?? shortId(workspaceId)} · Conversation ID {shortId(conversationId)} · roster {metadata.data.rosterRevision}
-            </p>
+            <h1 className="truncate text-sm font-semibold" title={metadata.data.name}>#{metadata.data.name}</h1>
+            <p className="truncate text-[11px] text-[var(--muted)]">Workspace: {workspace.data?.name ?? "Workspace"}</p>
+            <span className="sr-only" role="status" aria-label={`Live updates ${connection}`}>Live updates {connection}</span>
           </div>
           {connection === "disconnected" ? (
             <button className="button-secondary" type="button" onClick={retry}>
               <RefreshCw className="h-3.5 w-3.5" /> Retry
             </button>
           ) : null}
-          {settled ? null : <EditConversationParticipantsDialog conversation={metadata.data} />}
           {lifecycle.data ? <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${settled ? "border-[var(--border)] text-[var(--muted)]" : lifecycle.data.state === "snoozed" ? "border-[var(--accent)]/40 text-[var(--accent)]" : "border-[var(--border)] text-[var(--muted)]"}`}>{lifecycleLabel}</span> : null}
           {canOpenDiagnostics && lifecycle.data && lifecycle.data.state !== "active" ? (
             <button className="button-secondary" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("active")}>Reopen</button>
-          ) : null}
-          {canOpenDiagnostics && turnFailures.data?.diagnostics.length ? (
-            <Drawer
-              open={diagnosticsOpen}
-              onOpenChange={setDiagnosticsOpen}
-              side="right"
-              title="Diagnostics"
-              description="Owner-only Runtime turn-failure diagnostics for this Conversation."
-              trigger={(
-                <button className="button-secondary" type="button" aria-label={`Issues: ${turnFailures.data.diagnostics.length}`}>
-                  <AlertCircle className="h-3.5 w-3.5" /> Issues <span className="rounded-full bg-[var(--border)] px-1.5 text-[10px]">{turnFailures.data.diagnostics.length}</span>
-                </button>
-              )}
-            >
-              <div className="flex h-full min-h-0 flex-col">
-                <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-                  <div>
-                    <h2 className="text-sm font-semibold">Diagnostics</h2>
-                    <p className="text-xs text-[var(--muted)]">Recent Runtime turn failures</p>
-                  </div>
-                  <DrawerCloseButton label="Close diagnostics" />
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <TurnFailureDiagnostics
-                    diagnostics={turnFailures.data.diagnostics}
-                    isLoading={turnFailures.isLoading}
-                    unavailable={turnFailures.isError}
-                    pendingKey={turnFailureDiagnosticAction.isPending ? turnFailureDiagnosticAction.variables.key : undefined}
-                    action={turnFailureDiagnosticAction.data
-                      ? { key: turnFailureDiagnosticAction.data.key, status: turnFailureDiagnosticAction.data.response.status }
-                      : undefined}
-                    onOpen={(key, token) => turnFailureDiagnosticAction.mutate({ key, token })}
-                  />
-                </div>
-              </div>
-            </Drawer>
           ) : null}
           <Drawer
             open={rosterOpen}
@@ -362,6 +319,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               localAgents={localAgentMap}
               localStatus={localStatus}
               showDiagnostics={currentSession.isSuccess}
+              {...participantFeedback}
               drawer
               readOnly={settled}
               onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
@@ -391,7 +349,6 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
         ) : null}
         {[
           { name: "agent action", mutation: agentAction },
-          { name: "diagnostic", mutation: turnFailureDiagnosticAction },
           { name: "bulk action", mutation: bulkAgentAction },
           { name: "Conversation status", mutation: lifecycleAction },
         ].map(({ name, mutation }) => mutation.error ? (
@@ -426,7 +383,18 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               }
             }}
           >
-            <ConversationTimeline messages={messages.data ?? []} participants={participants} attributionParticipants={attributionParticipants} />
+            <ConversationTimeline
+              messages={messages.data ?? []}
+              participants={participants}
+              attributionParticipants={attributionParticipants}
+              turnFailureNotices={turnFailures.data?.notices}
+              canOpenIssueDetails={canOpenDiagnostics}
+              onViewIssueDetails={(identityId, trigger) => {
+                issueNoticeTriggerRef.current = trigger;
+                setIssueDialogParticipantId(identityId);
+                setIssueDialogOpen(true);
+              }}
+            />
           </div>
           {unseenMessages ? (
             <button
@@ -462,6 +430,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           localAgents={localAgentMap}
           localStatus={localStatus}
           showDiagnostics={currentSession.isSuccess}
+          {...participantFeedback}
           readOnly={settled}
           onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
           onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
@@ -482,6 +451,23 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           onDismissBulkResults={() => setBulkResults(undefined)}
         />
       </div>
+      {issueDialogParticipant ? <ParticipantDetailsDialog
+        participant={issueDialogParticipant}
+        agent={localAgentMap?.get(issueDialogParticipant.id)}
+        messages={messages.data ?? []}
+        participants={participants}
+        localStatus={localStatus}
+        showDiagnostics={currentSession.isSuccess}
+        now={Date.now()}
+        open={issueDialogOpen}
+        onOpenChange={setIssueDialogOpen}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (issueNoticeTriggerRef.current?.isConnected) issueNoticeTriggerRef.current.focus();
+        }}
+        actionError={agentAction.isError && agentAction.variables?.identityId === issueDialogParticipant.id ? agentAction.error.message : undefined}
+        failures={canOpenDiagnostics ? turnFailures.data?.diagnostics.filter(({ participant }) => participant.identityId === issueDialogParticipant.id) : undefined}
+      /> : null}
     </div>
   );
 }

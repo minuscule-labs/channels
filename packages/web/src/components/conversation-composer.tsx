@@ -1,7 +1,7 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Send } from "lucide-react";
+import { LoaderCircle, RotateCcw, Send } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { conversations } from "../lib/api";
 import {
@@ -72,7 +72,7 @@ export function ConversationComposer({
     const lineHeight = Number.parseFloat(styles.lineHeight) || 20;
     const verticalPadding = Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
     const maxHeight = Math.max(lineHeight + verticalPadding, Math.min(lineHeight * 16 + verticalPadding, window.innerHeight * 0.4));
-    const minHeight = Math.min(lineHeight * 3 + verticalPadding, maxHeight);
+    const minHeight = Math.min(lineHeight * 2 + verticalPadding, maxHeight);
     textarea.style.height = "auto";
     const height = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
     textarea.style.height = `${height}px`;
@@ -199,7 +199,7 @@ export function ConversationComposer({
     && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants);
 
   return (
-    <div className="border-t border-[var(--border)] bg-[var(--panel)] px-3 py-3 sm:px-6">
+    <div className="bg-[var(--bg)] px-3 pt-3 pb-1 sm:px-6">
       <div className="relative mx-auto max-w-5xl">
         {suggestions.length ? (
           <div
@@ -271,7 +271,7 @@ export function ConversationComposer({
                 submit();
               }
             }}
-            rows={3}
+            rows={2}
             aria-label="Conversation message"
             aria-autocomplete="list"
             aria-controls={suggestions.length ? "conversation-mention-suggestions" : undefined}
@@ -279,7 +279,7 @@ export function ConversationComposer({
             aria-activedescendant={suggestions.length ? `mention-suggestion-${activeSuggestionIndex}` : undefined}
             role="combobox"
             placeholder={readOnlyReason ?? (authorReady
-              ? "Message this Conversation… Use @ to mention an agent."
+              ? "Message #Channel"
               : identityStatus === "loading"
                 ? "Loading your browser identity…"
                 : identityStatus === "unavailable"
@@ -290,18 +290,8 @@ export function ConversationComposer({
             aria-busy={mutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-subtle)] px-2.5 py-2">
-            <span className="min-w-0 text-xs text-[var(--muted)]">
-              {readOnlyReason ?? (currentHuman
-                ? <>Sending as <strong className="font-mono font-medium text-[var(--text)]">@{currentHuman.handle ?? currentHuman.id}</strong></>
-                : identityStatus === "loading"
-                  ? "Loading your identity…"
-                  : identityStatus === "unavailable"
-                    ? "Browser identity unavailable"
-                    : "Current human is not an active Conversation participant")}
-            </span>
-            <span className="text-[10px] text-[var(--muted)]">Enter sends · Shift or ⌘/Ctrl + Enter adds a line · @mention wakes an agent</span>
-            <div className="ml-auto flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-3 px-2.5 py-2">
+            <div className="flex items-center gap-2">
               {showByteCount ? (
                 <span
                   className={`font-mono text-[10px] ${byteCountTone}`}
@@ -311,18 +301,21 @@ export function ConversationComposer({
                 </span>
               ) : null}
               <button
-                className="button-primary"
+                className="button-primary composer-send-button"
                 type="button"
+                aria-label={mutation.isPending ? "Sending message" : "Send message"}
+                title={mutation.isPending ? "Sending message" : "Send message"}
                 disabled={!canSubmit}
                 onClick={() => submit()}
               >
-                <Send className="h-3.5 w-3.5" />
-                {mutation.isPending ? "Sending…" : "Send"}
+                {mutation.isPending
+                  ? <LoaderCircle aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                  : <Send aria-hidden="true" className="h-3.5 w-3.5" />}
               </button>
             </div>
           </div>
         </div>
-        <div className="min-h-7 pt-2">{activity}</div>
+        <div className="min-h-5 pt-1">{activity}</div>
         {mutation.error && !errorDismissed ? (
           <ErrorNotice
             className="mt-2"
