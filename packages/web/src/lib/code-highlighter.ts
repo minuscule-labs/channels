@@ -1,5 +1,6 @@
-import { createHighlighter, type LanguageDefinition } from "@tanstack/highlight/core";
-import { rehypeHighlightCodeBlocks } from "@tanstack/highlight/rehype";
+import { createHighlighter, type Highlighter, type LanguageDefinition } from "@tanstack/highlight/core";
+import type { HastElement } from "@tanstack/highlight/markdown";
+import { rehypePreCodeToHast, type rehypeHighlightCodeBlocks } from "@tanstack/highlight/rehype";
 import type { SupportedFenceLanguage } from "./code-fences";
 
 type LanguageLoader = () => Promise<LanguageDefinition>;
@@ -26,6 +27,26 @@ const languageLoaders: Readonly<Record<SupportedFenceLanguage, LanguageLoader>> 
 export type RehypeHighlightPlugin = () => ReturnType<typeof rehypeHighlightCodeBlocks>;
 
 const plugins = new Map<string, Promise<RehypeHighlightPlugin>>();
+type HighlightTree = Parameters<ReturnType<typeof rehypeHighlightCodeBlocks>>[0];
+
+function isElement(node: HighlightTree): node is HastElement {
+  return node.type === "element" && typeof node.tagName === "string";
+}
+
+function highlightCodeBlocks(tree: HighlightTree, highlighter: Highlighter): void {
+  tree.children?.forEach((child, index, children) => {
+    if (isElement(child) && child.tagName === "pre") {
+      const code = child.children.find((node) => isElement(node) && node.tagName === "code");
+      const className = code && isElement(code) ? code.properties?.className : undefined;
+      const classes = Array.isArray(className) ? className : typeof className === "string" ? className.split(/\s+/) : [];
+      // The default transform rewrites unknown languages to plaintext and destroys Mermaid's fence identity.
+      if (classes.some((value) => typeof value === "string" && value.toLowerCase() === "language-mermaid")) return;
+      children[index] = rehypePreCodeToHast(child, { highlighter }) ?? child;
+      return;
+    }
+    highlightCodeBlocks(child, highlighter);
+  });
+}
 
 /** Builds and caches a code-block plugin for exactly the requested grammar set. */
 export function loadRehypeHighlight(
@@ -36,9 +57,10 @@ export function loadRehypeHighlight(
   const existing = plugins.get(key);
   if (existing) return existing;
 
-  const plugin = Promise.all(languages.map((language) => languageLoaders[language]())).then((loadedLanguages) =>
-    () => rehypeHighlightCodeBlocks({ highlighter: createHighlighter({ languages: loadedLanguages }) }),
-  );
+  const plugin = Promise.all(languages.map((language) => languageLoaders[language]())).then((loadedLanguages) => {
+    const highlighter = createHighlighter({ languages: loadedLanguages });
+    return () => (tree: HighlightTree) => highlightCodeBlocks(tree, highlighter);
+  });
   plugins.set(key, plugin);
   return plugin;
 }

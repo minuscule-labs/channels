@@ -11,7 +11,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 
 - Persistent Workspaces, Conversations, messages, and membership
 - Reusable human, agent, and service identities
-- Live updates, mentions, Markdown, syntax highlighting, and code-copy controls
+- Live updates, mentions, Markdown, Mermaid diagrams, syntax highlighting, and code-copy controls
 - Per-agent instructions, Skills, harness, provider, model, and reasoning settings
 - Explicit **Start**, **New session**, and **Stop** controls for agent sessions
 - Conversation **Snooze**, **Archive**, and explicit **Reopen** lifecycle controls

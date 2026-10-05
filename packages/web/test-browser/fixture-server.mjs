@@ -87,9 +87,8 @@ const attachedAgents = new Set([`${conversation.id}:${agent.id}`]);
 let agentActivity;
 let runtimeReachable = true;
 let runtimeCapabilityMode = "available";
-let diagnosticOpenCount = 0;
 let turnFailuresVisible = false;
-let turnFailureTokenVersion = 0;
+let turnFailureGeneration = 0;
 const fixtureRuntime = {
   async status() { return runtimeReachable ? (agentActivity ? "working" : "idle") : "offline"; },
   async sessionCapabilities() {
@@ -107,7 +106,7 @@ const fixtureRuntime = {
     };
   },
   async interrupt() {},
-  async openDiagnostic() { diagnosticOpenCount += 1; },
+  async openDiagnostic() {},
   async capabilities() {
     return {
       models: [
@@ -199,30 +198,26 @@ const localControl = await createLocalControlHttpServer({
       },
       async listConversationTurnFailures(conversationId) {
         if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 17, conversationId, diagnostics: [] };
+          return { protocolVersion: 17, conversationId, notices: [], diagnostics: [] };
         }
-        turnFailureTokenVersion += 1;
         return {
           protocolVersion: 17,
           conversationId,
+          notices: [{
+            participant: { identityId: agent.id, displayLabel: "Builder Agent" },
+            triggerSequence: initialTrigger.sequence,
+            failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
+          }],
           diagnostics: [{
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },
             causeCategory: "runtime_request_timeout",
-            failedAt: "2026-09-18T13:00:00.000Z",
+            failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
             elapsedMs: 2_400,
             attemptCount: 2,
             deliveryOutcome: "delivered",
             remediation: { code: "retry_request", label: "Retry request" },
-            openDiagnostic: runtimeReachable ? { state: "available", token: `fixture-turn-failure-token-${turnFailureTokenVersion}` } : { state: "unavailable" },
           }],
         };
-      },
-      async openConversationTurnFailureDiagnostic(conversationId, _actorIdentityId, _scope, token) {
-        if (!turnFailuresVisible || conversationId !== conversation.id || token !== `fixture-turn-failure-token-${turnFailureTokenVersion}` || !runtimeReachable) {
-          return { protocolVersion: 17, status: "unavailable" };
-        }
-        await fixtureRuntime.openDiagnostic();
-        return { protocolVersion: 17, status: "accepted" };
       },
       activity(conversationId, identityId) {
         return conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
@@ -292,19 +287,30 @@ const controlServer = createServer(async (request, response) => {
     response.writeHead(204).end();
     return;
   }
+  if (request.method === "POST" && url.pathname === "/member-participant") {
+    const metadata = await service.getConversation(conversation.id);
+    const participantIds = new Set(metadata.participants.map(({ id }) => id));
+    if (url.searchParams.get("value") === "true") participantIds.add(member.id);
+    else participantIds.delete(member.id);
+    await service.updateConversationParticipants(conversation.id, {
+      actorIdentityId: human.id,
+      participantIds: [...participantIds],
+      expectedRosterRevision: metadata.rosterRevision,
+    });
+    response.writeHead(204).end();
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/turn-failures") {
     turnFailuresVisible = url.searchParams.get("value") !== "false";
+    if (turnFailuresVisible) {
+      turnFailureGeneration += 1;
+    }
     response.writeHead(204).end();
     return;
   }
   if (request.method === "POST" && url.pathname === "/runtime-reachable") {
     runtimeReachable = url.searchParams.get("value") !== "false";
     response.writeHead(204).end();
-    return;
-  }
-  if (request.method === "GET" && url.pathname === "/diagnostic-opens") {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ count: diagnosticOpenCount }));
     return;
   }
   if (request.method === "POST" && url.pathname === "/runtime-capabilities") {

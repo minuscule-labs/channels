@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Place brief red turn-failure notices after their triggering messages in the Conversation timeline, with safe in-app diagnostics available to owners/admins from the notice and participant details; remove acknowledgment controls and avatar issue badges.
+
+- Share complete-handle mention parsing between server and browser so trailing hyphens such as `@channel-` cannot be truncated into broadcast or another participant's handle.
+- Scope broadcast recipient labels to the Conversation roster, while keeping broader Workspace identities for historical author/recipient attribution after removal.
+- Make transient chat, participant, agent, and Workspace action errors dismissible without losing drafts, retry keys, or persisted diagnostics.
+- Add collapse/dismiss controls to bulk-agent results and isolate chat feedback and late lifecycle responses across Conversation navigation.
+- Keep individual session actions in each participant's popup without inline buttons. Label unstarted/stopped/offline launches as Start session, retain New session for resetting an existing session, and preserve capability checks and replacement confirmation.
+- Restore `@channel` in broadcast suggestions and recipient labels, recognize it through the real message/response API, and retain the canonical `@conversation` target and older drafts. Reserve both broadcast handles against new assignment; preserve existing `channel` handles as direct mentions until renamed, with an unambiguous legacy broadcast fallback.
+- Simplify Conversation participant dialogs to choosing existing agents, keep the current human automatic and existing non-agent roster members editable, and move identity creation out of the modal to the Workspace Agents page.
+- Move channel settings from the header cog to the bottom of owner/admin sidebar popups, opening the existing name, participant, and working-folder modal without navigation or changes to its save behavior.
+- Remove the redundant header Issues control in favor of participant Details & diagnostics. Keep participant avatars clickable with a bottom-right Runtime dot in expanded and minimized views, show turn-failure notices in the Conversation timeline, and avoid sidebar issue badges.
+- Simplify participant rows to names, Runtime status dots, and live activity. Add a remembered desktop avatar rail and a Details & diagnostics modal for profiles, triggering messages, and safe failure details. Idle is blue, working green, uncertain/starting/retrying amber, and inactive gray; confirmed failures appear in the chat timeline without changing session health. Keep mobile drawers, lifecycle guards, diagnostic authorization, and Runtime session-ID redaction unchanged.
+- Open Conversations at the latest message and keep the timeline anchored through live updates and content/composer resizing, while preserving the reader's position in older history.
+- Streamline the composer with a two-row minimum input, borderless send-action footer, and accessible square icon-only send button; retain focus during and after Enter-to-send, including failed sends with preserved drafts.
+- Lazily render a bounded Mermaid flowchart/basic-sequence profile with an expandable source disclosure, pointer-drag panning, and fixed zoom controls in the expanded view; preserve diagrams beside highlighted code and reject unsupported resource-capable syntax before rendering.
+
 ## 0.0.12
 
 - Pin the Runtime managed-session release and add private, owner-scoped Conversation session history with durable activation, retirement, and cleanup reconciliation (`0011` Relay migration). Existing legacy references remain explicitly unmapped.

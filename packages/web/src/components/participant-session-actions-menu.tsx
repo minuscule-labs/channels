@@ -4,17 +4,20 @@ import {
   CircleX,
   EllipsisVertical,
   LoaderCircle,
+  Info,
   Play,
   RefreshCw,
   Square,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { ErrorNotice } from "./ui/error-notice";
 
 type ParticipantSessionAction = "start" | "reconnect" | "replace" | "stop" | "cancel";
 type ConfirmedAction = "replace" | "stop";
 
 export function ParticipantSessionActionsMenu({
   participantName,
+  replacementStartsSession = false,
   canStart,
   canReconnect,
   canReplace,
@@ -27,8 +30,12 @@ export function ParticipantSessionActionsMenu({
   onReplace,
   onCancel,
   onStop,
+  onDismissError,
+  onDetails,
+  trigger,
 }: {
   participantName: string;
+  replacementStartsSession?: boolean;
   canStart: boolean;
   canReconnect: boolean;
   canReplace: boolean;
@@ -41,6 +48,9 @@ export function ParticipantSessionActionsMenu({
   onReplace?(): void | Promise<unknown>;
   onCancel?(): void | Promise<unknown>;
   onStop?(): void | Promise<unknown>;
+  onDismissError?(): void;
+  onDetails?(trigger: HTMLButtonElement | null): void;
+  trigger?: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmedAction, setConfirmedAction] = useState<ConfirmedAction>();
@@ -50,7 +60,7 @@ export function ParticipantSessionActionsMenu({
   const pending = pendingAction !== undefined;
   const hasActions = canStart || canReconnect || canReplace || canCancel || canStop;
 
-  if (!hasActions) return null;
+  if (!hasActions && !onDetails) return null;
 
   const invoke = (action: () => void | Promise<unknown>) => {
     setMenuOpen(false);
@@ -63,6 +73,7 @@ export function ParticipantSessionActionsMenu({
   };
   const confirm = async () => {
     if (!confirmedAction) return;
+    setError(undefined);
     try {
       if (confirmedAction === "replace") await onReplace?.();
       else await onStop?.();
@@ -72,6 +83,7 @@ export function ParticipantSessionActionsMenu({
     }
   };
   const replacing = confirmedAction === "replace";
+  const replacementLabel = replacementStartsSession ? "Start session" : "New session";
 
   return (
     <Dialog.Root
@@ -81,9 +93,8 @@ export function ParticipantSessionActionsMenu({
       }}
     >
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
-        <Popover.Trigger asChild>
-          <button
-            ref={triggerRef}
+        <Popover.Trigger asChild ref={triggerRef} disabled={disabled || pending}>
+          {trigger ?? <button
             type="button"
             className="icon-button inline-flex shrink-0"
             aria-label={`Open actions for ${participantName}`}
@@ -91,7 +102,7 @@ export function ParticipantSessionActionsMenu({
             disabled={disabled || pending}
           >
             {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <EllipsisVertical className="h-4 w-4" />}
-          </button>
+          </button>}
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Content
@@ -105,7 +116,7 @@ export function ParticipantSessionActionsMenu({
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
                 onClick={() => invoke(onStart)}
               >
-                <Play className="h-4 w-4" /> Start
+                <Play className="h-4 w-4" /> Start session
               </button>
             ) : null}
             {canReconnect && onReconnect ? (
@@ -123,7 +134,7 @@ export function ParticipantSessionActionsMenu({
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
                 onClick={() => requestConfirmation("replace")}
               >
-                <RefreshCw className="h-4 w-4" /> New session
+                {replacementStartsSession ? <Play className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />} {replacementLabel}
               </button>
             ) : null}
             {canCancel && onCancel ? (
@@ -143,6 +154,20 @@ export function ParticipantSessionActionsMenu({
               >
                 <Square className="h-4 w-4" /> Stop agent
               </button>
+            ) : null}
+            {onDetails ? (
+              <div className={hasActions ? "mt-1 border-t border-[var(--border)] pt-1" : undefined}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDetails(triggerRef.current);
+                  }}
+                >
+                  <Info className="h-4 w-4" /> Details &amp; diagnostics
+                </button>
+              </div>
             ) : null}
           </Popover.Content>
         </Popover.Portal>
@@ -168,7 +193,10 @@ export function ParticipantSessionActionsMenu({
               ? "The private Runtime transcript will reset using the current configuration. A temporary handoff is created from public Conversation history when available; it is not stored as memory. Pending work through the current Conversation head will be discarded. Conversation history and filesystem effects remain; future turns receive the configured recent context."
               : "Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back."}
           </Dialog.Description>
-          {error ? <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{error}</p> : null}
+          {error ? <ErrorNotice className="mt-3" onDismiss={() => {
+            setError(undefined);
+            onDismissError?.();
+          }}>{error}</ErrorNotice> : null}
           <div className="mt-5 flex justify-end gap-2">
             <Dialog.Close asChild>
               <button ref={cancelRef} type="button" className="button-secondary" disabled={pending}>Cancel</button>
@@ -184,7 +212,7 @@ export function ParticipantSessionActionsMenu({
               onClick={() => void confirm()}
             >
               {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-              {replacing ? "New session" : "Stop agent"}
+              {replacing ? replacementLabel : "Stop agent"}
             </button>
           </div>
         </Dialog.Content>

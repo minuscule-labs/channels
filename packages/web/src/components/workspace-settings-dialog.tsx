@@ -3,9 +3,10 @@ import type { Workspace, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, FolderOpen, LoaderCircle, Settings, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
 
 function ConfigurationState({ configured, label }: { configured: boolean; label: string }) {
   return (
@@ -42,7 +43,7 @@ function WorkspaceNameForm({ workspace, actorIdentityId }: { workspace: Workspac
         <input value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
       </label>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.isSuccess && !changed ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
         <button className="button-primary" type="submit" disabled={!changed || !name.trim() || mutation.isPending}>Save name</button>
       </div>
@@ -109,7 +110,8 @@ function WorkspaceRootForm({
         The saved value is never read back. Existing sessions are unchanged.
       </p>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error || picker.error ? <span className="mr-auto text-xs text-[var(--danger)]">{(mutation.error ?? picker.error)?.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
+        {picker.error ? <ErrorNotice className="mr-auto" onDismiss={picker.reset}>{picker.error.message}</ErrorNotice> : null}
         {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
         <button className="button-primary" type="submit" disabled={!rootUri.trim() || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
@@ -158,7 +160,7 @@ function WorkspaceIdleSleepForm({ workspaceId, summary }: {
         {sleepOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.isSuccess && selected === saved ? <span className="mr-auto text-xs text-[var(--success)]">Saved</span> : null}
         <button className="button-primary" type="submit" disabled={selected === saved || mutation.isPending}>Save sleep policy</button>
       </div>
@@ -166,8 +168,25 @@ function WorkspaceIdleSleepForm({ workspaceId, summary }: {
   );
 }
 
-export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace }) {
-  const [open, setOpen] = useState(false);
+export function WorkspaceSettingsDialog({
+  workspace,
+  open: controlledOpen,
+  onOpenChange,
+  trigger,
+  onCloseAutoFocus,
+}: {
+  workspace: Workspace;
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
+  trigger?: ReactNode | null;
+  onCloseAutoFocus?(event: Event): void;
+}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const changeOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
   const session = useQuery({
     queryKey: queryKeys.localCurrentSession(),
     queryFn: () => localControl.currentSession(),
@@ -194,15 +213,19 @@ export function WorkspaceSettingsDialog({ workspace }: { workspace: Workspace })
     : undefined;
 
   return (
-    <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Trigger asChild>
-        <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Configure Workspace ${workspace.name}`} title="Workspace configuration">
-          <Settings className="h-3.5 w-3.5" />
-        </button>
-      </Dialog.Trigger>
+    <Dialog.Root open={open} onOpenChange={changeOpen}>
+      {trigger === null ? null : (
+        <Dialog.Trigger asChild>
+          {trigger ?? (
+            <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Configure Workspace ${workspace.name}`} title="Workspace configuration">
+              <Settings className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </Dialog.Trigger>
+      )}
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(42rem,92vh)] w-[min(38rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
+        <Dialog.Content onCloseAutoFocus={onCloseAutoFocus} className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(42rem,92vh)] w-[min(38rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
           <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
             <div>
               <Dialog.Title className="text-base font-semibold">{workspace.name} configuration</Dialog.Title>

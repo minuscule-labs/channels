@@ -28,6 +28,43 @@ describe("structuredTargets", () => {
     ]);
   });
 
+  it("routes @channel and legacy @conversation to one canonical broadcast target", () => {
+    expect(structuredTargets("@CHANNEL @builder @conversation @channel", participants)).toEqual([
+      "@conversation",
+      "agent-id",
+    ]);
+  });
+
+  it("keeps an existing channel handle direct instead of adding broadcast", () => {
+    const legacy = [...participants, { id: "legacy-id", handle: "channel", type: "agent" as const, status: "active" as const }];
+    expect(structuredTargets("@CHANNEL direct", legacy)).toEqual(["legacy-id"]);
+    expect(structuredTargets("@channel direct and @conversation broadcast", legacy)).toEqual(["legacy-id", "@conversation"]);
+  });
+
+  it("does not broadcast through a disabled channel handle", () => {
+    const legacy = [...participants, { id: "legacy-id", handle: "channel", type: "agent" as const, status: "disabled" as const }];
+    expect(structuredTargets("@channel cannot wake anyone", legacy)).toEqual([]);
+  });
+
+  it.each(["channel-", "CHANNEL-", "channel--", "channel-_", "conversation-", "CONVERSATION-", "builder-"])(
+    "keeps the full handle @%s direct, without broadcast",
+    (handle) => {
+      const roster: Participant[] = [...participants, { id: "hyphen-id", handle: handle.toLowerCase(), type: "agent", status: "active" }];
+      expect(structuredTargets(`@${handle}, inspect and @${handle}`, roster)).toEqual(["hyphen-id"]);
+    },
+  );
+
+  it("does not broadcast an unknown or disabled trailing-hyphen handle", () => {
+    expect(structuredTargets("@channel--- @conversation-", participants)).toEqual([]);
+    const roster: Participant[] = [...participants, { id: "hyphen-id", handle: "channel-", type: "agent", status: "disabled" }];
+    expect(structuredTargets("@CHANNEL-", roster)).toEqual([]);
+  });
+
+  it("still resolves broadcasts next to punctuation, not embedded in other text", () => {
+    expect(structuredTargets("@channel, @CONVERSATION!", participants)).toEqual(["@conversation"]);
+    expect(structuredTargets("someone@channel- @@channel", participants)).toEqual([]);
+  });
+
   it("does not route disabled or unknown handles", () => {
     expect(structuredTargets("@old-agent @missing", participants)).toEqual([]);
   });

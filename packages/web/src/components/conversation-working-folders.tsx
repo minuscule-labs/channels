@@ -3,6 +3,7 @@ import { FolderOpen, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
 
 type DraftFolder = { relativePath?: string; path?: string; primary: boolean };
 
@@ -73,8 +74,8 @@ export function ConversationWorkingFolders({ conversationId, canAdminister }: {
     <div className="mt-3 flex flex-wrap items-center gap-2">
       <button className="button-secondary" type="button" disabled={!folders.data || select.isPending || draft.length >= 16} onClick={() => select.mutate()}>{select.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FolderOpen className="h-3.5 w-3.5" />} Add folder</button>
       <button className="button-primary" type="button" disabled={!folders.data || folders.isError || save.isPending || folders.isPending || (draft.length > 0 && !draft.some((folder) => folder.primary))} onClick={() => save.mutate()}>{save.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null} Save</button>
-      {select.error ? <span className="text-xs text-[var(--danger)]">{select.error.message}</span> : null}
-      {save.error ? <span className="text-xs text-[var(--danger)]">{save.error.message}</span> : null}
+      {select.error ? <ErrorNotice dismissLabel="Dismiss folder selection error" onDismiss={select.reset}>{select.error.message}</ErrorNotice> : null}
+      {save.error ? <ErrorNotice dismissLabel="Dismiss folder save error" onDismiss={save.reset}>{save.error.message}</ErrorNotice> : null}
     </div>
   </section>;
 }

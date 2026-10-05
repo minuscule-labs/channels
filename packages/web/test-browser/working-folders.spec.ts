@@ -12,7 +12,8 @@ async function launchAuthenticated(page: Page, request: APIRequestContext, desti
 test("working folders recover from an initial load failure and save previewed, de-duplicated selections", async ({ page, request }) => {
   const workspaces = (await (await request.get(`${conversationsBase}/workspaces`)).json() as { workspaces: Array<{ id: string }> }).workspaces;
   const workspaceId = workspaces[0]!.id;
-  const conversationId = ((await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as { conversations: Array<{ id: string }> }).conversations[0]!).id;
+  const conversation = (await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as { conversations: Array<{ id: string; name: string }> }).conversations[0]!;
+  const conversationId = conversation.id;
   let folderLoads = 0;
   const puts: unknown[] = [];
   let pickerCalls = 0;
@@ -32,7 +33,8 @@ test("working folders recover from an initial load failure and save previewed, d
   });
   await page.route("**/local/folders/select", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ path: `/private/root/${++pickerCalls}` }) }));
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
-  await page.getByRole("button", { name: "Manage Conversation participants" }).click();
+  await page.getByRole("button", { name: `Conversation actions for ${conversation.name}`, exact: true }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText("Could not load working folders.")).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();

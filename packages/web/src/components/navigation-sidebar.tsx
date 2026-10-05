@@ -1,10 +1,10 @@
 import type { ConversationLifecycleState, ConversationMetadata, Workspace } from "@minu/channels-core/types";
 import { Link } from "@tanstack/react-router";
 import * as Popover from "@radix-ui/react-popover";
-import { useState } from "react";
-import { Archive, Bell, Bot, ChevronDown, Clock3, EllipsisVertical, Hash, MessageSquare, X } from "lucide-react";
+import { useRef, useState } from "react";
+import { Archive, Bell, Bot, ChevronDown, Clock3, EllipsisVertical, Hash, MessageSquare, Settings, X } from "lucide-react";
 import type { NotificationSound } from "../lib/conversation-notifications";
-import { CreateConversationDialog } from "./conversation-administration-dialog";
+import { CreateConversationDialog, EditConversationParticipantsDialog } from "./conversation-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 import { WorkspaceSettingsDialog } from "./workspace-settings-dialog";
 
@@ -75,6 +75,8 @@ function ConversationNavigationLink({
   const [customSnoozeUntil, setCustomSnoozeUntil] = useState(() => datetimeLocalValue(snoozeAt(60)));
   const [menuOpen, setMenuOpen] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const actionsRef = useRef<HTMLButtonElement>(null);
   const evening = upcomingEvening();
   const snoozePresets: ReadonlyArray<readonly [string, string]> = [
     ["In 1 hour", snoozeAt(60)],
@@ -117,6 +119,7 @@ function ConversationNavigationLink({
               className="absolute inset-y-0 right-1 flex w-8 items-center justify-center rounded-md text-xs text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"
               type="button"
               aria-label={`Conversation actions for ${conversation.name}`}
+              ref={actionsRef}
             >
               <EllipsisVertical className="h-4 w-4" aria-hidden="true" />
             </button>
@@ -148,11 +151,103 @@ function ConversationNavigationLink({
               </> : (
                 <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" disabled={pendingLifecycle} onClick={() => onLifecycleChange(conversation.id, { state: "active" })}>Reopen Conversation</button>
               )}
+              {lifecycleState !== "settled" ? (
+                <div className="mt-1 border-t border-[var(--border)] pt-1">
+                  <button
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]"
+                    type="button"
+                    disabled={pendingLifecycle}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setSettingsOpen(true);
+                    }}
+                  >
+                    <Settings className="h-3.5 w-3.5" aria-hidden="true" /> Settings
+                  </button>
+                </div>
+              ) : null}
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
       ) : null}
+      {onLifecycleChange && lifecycleState !== "settled" ? (
+        <EditConversationParticipantsDialog
+          conversation={conversation}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          trigger={null}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            actionsRef.current?.focus();
+          }}
+        />
+      ) : null}
     </li>
+  );
+}
+
+function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate }: {
+  workspace: Workspace;
+  activeAgents: boolean;
+  onNavigate?(): void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+
+  return (
+    <>
+      <CreateConversationDialog workspace={workspace} onNavigate={onNavigate} />
+      <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
+        <Popover.Trigger asChild>
+          <button
+            ref={menuTriggerRef}
+            className="icon-button inline-flex min-h-8 min-w-8"
+            type="button"
+            aria-label={`Workspace actions for ${workspace.name}`}
+            title="Workspace actions"
+          >
+            <EllipsisVertical className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content side="bottom" align="end" sideOffset={4} collisionPadding={12} className="z-[60] w-36 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
+            <button
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]"
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                setSettingsOpen(true);
+              }}
+            >
+              <Settings className="h-3.5 w-3.5" aria-hidden="true" /> Settings
+            </button>
+            <Popover.Close asChild>
+              <Link
+                to="/app/workspaces/$workspaceId/agents"
+                params={{ workspaceId: workspace.id }}
+                preload="intent"
+                onClick={onNavigate}
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${activeAgents ? "bg-[var(--selected)] text-[var(--text)]" : "text-[var(--text)] hover:bg-[var(--hover)]"}`}
+                aria-current={activeAgents ? "page" : undefined}
+              >
+                <Bot className="h-3.5 w-3.5" aria-hidden="true" /> Agents
+              </Link>
+            </Popover.Close>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+      <WorkspaceSettingsDialog
+        workspace={workspace}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        trigger={null}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          menuTriggerRef.current?.focus({ preventScroll: true });
+        }}
+      />
+    </>
   );
 }
 
@@ -236,26 +331,9 @@ export function NavigationSidebar({
                       </h2>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <span className="status-dot" data-status={workspace.status} title={workspace.status} />
-                      <CreateConversationDialog workspace={workspace} onNavigate={onNavigate} />
-                      <WorkspaceSettingsDialog workspace={workspace} />
+                      <WorkspaceHeaderActions workspace={workspace} activeAgents={activeAgentsWorkspaceId === workspace.id} onNavigate={onNavigate} />
                     </div>
                   </div>
-                  <Link
-                    to="/app/workspaces/$workspaceId/agents"
-                    params={{ workspaceId: workspace.id }}
-                    preload="intent"
-                    onClick={onNavigate}
-                    className={`mb-1 flex min-h-9 items-center gap-2 rounded-md px-2.5 text-sm transition-colors ${
-                      activeAgentsWorkspaceId === workspace.id
-                        ? "bg-[var(--selected)] text-[var(--text)]"
-                        : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
-                    }`}
-                    aria-current={activeAgentsWorkspaceId === workspace.id ? "page" : undefined}
-                  >
-                    <Bot className="h-3.5 w-3.5 shrink-0" />
-                    <span>Agents</span>
-                  </Link>
                   {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
                   <ul className="space-y-1">{active.map((conversation) => (
                     <ConversationNavigationLink

@@ -1,4 +1,5 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
+import { hasChannelMentionCollision, mentionHandles } from "@minu/channels-core/mentions";
 
 export function mergeMessages(
   current: ConversationMessage[] | undefined,
@@ -15,10 +16,14 @@ export function structuredTargets(body: string, participants: Participant[]): st
       .filter((participant) => participant.status !== "disabled")
       .map((participant) => [(participant.handle ?? participant.id).toLowerCase(), participant.id]),
   );
+  const channelMentionCollision = hasChannelMentionCollision(participants);
   const targets: string[] = [];
-  for (const match of body.matchAll(/(?:^|\s)@([a-zA-Z0-9_-]+)\b/g)) {
-    const handle = match[1]!.toLowerCase();
-    const target = handle === "conversation" ? "@conversation" : byHandle.get(handle);
+  for (const mention of mentionHandles(body)) {
+    const handle = mention.toLowerCase();
+    // Preserve direct routing for grandfathered channel handles. Disabled ones
+    // must not silently turn into broadcast either; core rejects those mentions.
+    const broadcast = handle === "conversation" || (handle === "channel" && !channelMentionCollision);
+    const target = broadcast ? "@conversation" : byHandle.get(handle);
     if (target && !targets.includes(target)) targets.push(target);
   }
   return targets;

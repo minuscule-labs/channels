@@ -1,4 +1,5 @@
 import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
+import { isReservedMentionHandle } from "@minu/channels-core/mentions";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, LoaderCircle, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -9,12 +10,14 @@ import {
   initialLaunchReasoning,
 } from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
 
 function suggestedHandle(value: string): string {
-  return value.toLowerCase()
+  const handle = value.toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 63);
+  return isReservedMentionHandle(handle) ? `${handle}-agent` : handle;
 }
 
 export function AddWorkspaceParticipantForm({
@@ -43,7 +46,8 @@ export function AddWorkspaceParticipantForm({
   const [personaPrompt, setPersonaPrompt] = useState("");
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[] | null>(null);
   const normalizedHandle = mentionHandle.trim().replace(/^@+/, "").toLowerCase();
-  const handleValid = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(normalizedHandle);
+  const handleReserved = isReservedMentionHandle(normalizedHandle);
+  const handleValid = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$/.test(normalizedHandle) && !handleReserved;
   const handleAvailable = !existingMembers.some(
     (member) => member.mentionHandle.toLowerCase() === normalizedHandle,
   );
@@ -222,7 +226,8 @@ export function AddWorkspaceParticipantForm({
             />
             {mentionHandle && (!handleValid || !handleAvailable) ? (
               <span className="mt-1 block text-[10px] text-[var(--danger)]">
-                {handleAvailable ? "Use letters, numbers, underscores, or hyphens." : "That handle is already in use."}
+                {handleReserved ? "@channel and @conversation are reserved for broadcast mentions."
+                  : handleAvailable ? "Use letters, numbers, underscores, or hyphens." : "That handle is already in use."}
               </span>
             ) : null}
           </label>
@@ -371,7 +376,7 @@ export function AddWorkspaceParticipantForm({
         </p>
       ) : null}
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.data?.configurationWarning ? (
           <span className="mr-auto text-xs text-[var(--warning)]">
             Participant added, but configuration needs attention: {mutation.data.configurationWarning}

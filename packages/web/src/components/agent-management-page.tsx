@@ -3,6 +3,7 @@ import type {
   UpdateLocalWorkspaceAgentConfigurationInput,
 } from "@minu/channels-control/contracts";
 import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
+import { isReservedMentionHandle } from "@minu/channels-core/mentions";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
@@ -16,6 +17,7 @@ import {
 import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
 import { useAppToast } from "./ui/toast";
+import { ErrorNotice } from "./ui/error-notice";
 
 function modelKey(model: { provider: string; id: string }): string {
   return JSON.stringify([model.provider, model.id]);
@@ -63,6 +65,7 @@ function AgentIdentityForm({
   const nameChanged = normalizedName !== (identity.displayName ?? "");
   const handleChanged = normalizedHandle !== member.mentionHandle;
   const changed = nameChanged || handleChanged;
+  const handleReserved = handleChanged && isReservedMentionHandle(normalizedHandle);
   const mutation = useMutation({
     mutationFn: async () => {
       const updatedIdentity = nameChanged
@@ -90,7 +93,7 @@ function AgentIdentityForm({
       className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
       onSubmit={(event) => {
         event.preventDefault();
-        if (changed && normalizedName && normalizedHandle && !mutation.isPending) mutation.mutate();
+        if (changed && normalizedName && normalizedHandle && !handleReserved && !mutation.isPending) mutation.mutate();
       }}
     >
       <div>
@@ -115,12 +118,13 @@ function AgentIdentityForm({
             className="settings-input font-mono"
           />
         </div>
+        {handleReserved ? <p className="mt-1 text-[10px] text-[var(--danger)]">@channel and @conversation are reserved for broadcast mentions.</p> : null}
       </label>
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Identity saved</span> : null}
-        <button className="button-primary" type="submit" disabled={!changed || !normalizedName || !normalizedHandle || mutation.isPending}>
+        <button className="button-primary" type="submit" disabled={!changed || !normalizedName || !normalizedHandle || handleReserved || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
           Save identity
         </button>
@@ -552,7 +556,7 @@ function AgentLaunchProfileForm({
             })}
           </div>
           <div className="mt-2 flex items-center justify-end gap-2">
-            {modelPolicyMutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{modelPolicyMutation.error.message}</span> : null}
+            {modelPolicyMutation.error ? <ErrorNotice className="mr-auto" onDismiss={modelPolicyMutation.reset}>{modelPolicyMutation.error.message}</ErrorNotice> : null}
             {modelPolicyMutation.isSuccess && !modelPolicyChanged ? <span className="mr-auto text-xs text-[var(--success)]">Model access saved</span> : null}
             <button type="button" className="button-secondary" disabled={!modelPolicyChanged || modelPolicyMutation.isPending} onClick={() => modelPolicyMutation.mutate()}>
               Save available models
@@ -564,7 +568,7 @@ function AgentLaunchProfileForm({
         Changes apply only when starting or explicitly replacing a session.
       </p>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-        {mutation.error ? <span className="mr-auto text-xs text-[var(--danger)]">{mutation.error.message}</span> : null}
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
         {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Launch profile saved</span> : null}
         <button className="button-primary" type="submit" disabled={!hasUpdate || mutation.isPending}>
           {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
