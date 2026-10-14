@@ -65,6 +65,7 @@ import {
   type LocalControlHealth,
   type LocalLiveCapabilityState,
   type LocalRuntimeOptions,
+  type LocalSessionContextMode,
   type LocalWakePolicy,
   type ProvisionLocalWorkspaceResult,
   type LocalWorkspaceAgentConfiguration,
@@ -84,7 +85,7 @@ export interface LocalControlBindingRecord {
   agentIdentityId: string;
   runtimeAdapter: string;
   runtimeSessionId: string;
-  state: "connected" | "sleeping" | "waking" | "offline" | "replacing" | "disabled";
+  state: "connected" | "sleeping" | "waking" | "offline" | "replacing" | "stopping" | "paused" | "disabled";
   wakePolicy: LocalWakePolicy;
   lastVerifiedAt?: string;
 }
@@ -124,11 +125,13 @@ export interface LocalControlAgentLifecyclePort {
     conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
+    contextMode?: LocalSessionContextMode,
   ): Promise<void>;
   replaceConversationAgent(
     conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
+    contextMode?: LocalSessionContextMode,
   ): Promise<void>;
   stopConversationAgent(
     conversationId: string,
@@ -146,6 +149,7 @@ export interface LocalControlAgentLifecyclePort {
     activeTurns: number;
     queuedTurns: number;
     queuedTurnsExact: boolean;
+    stopRequested?: boolean;
   } | undefined;
   isStarting?(conversationId: string, agentIdentityId: string): boolean;
   startAllConversationAgents?(
@@ -368,7 +372,7 @@ export class LocalControlService {
           );
         }
         const agents = (await this.listConversationAgents(conversationId)).agents;
-        const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "idle"].includes(state));
+        const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "stopped", "idle"].includes(state));
         if (unsafeAgents.length > 0 || agents.some((agent) => {
           if (agent.state !== "idle" || this.options.lifecycle?.isAttached?.(conversationId, agent.identityId) !== true) return false;
           const work = this.options.lifecycle.agentWorkSnapshot?.(conversationId, agent.identityId);
@@ -387,7 +391,7 @@ export class LocalControlService {
           await this.options.lifecycle.stopConversationAgent(conversationId, agent.identityId, actorIdentityId);
         }
         const afterStop = await this.listConversationAgents(conversationId);
-        if (afterStop.agents.some(({ state }) => state !== "unbound" && state !== "disabled")) {
+        if (afterStop.agents.some(({ state }) => !["unbound", "disabled", "stopped"].includes(state))) {
           throw new LocalConfigurationRequestError(
             "Conversation agents changed while lifecycle was being updated; retry",
             409,
@@ -571,15 +575,27 @@ export class LocalControlService {
     );
   }
 
+  private async withStopAdmissionFence<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    const releaseFence = this.options.lifecycle?.fenceConversationAdmission?.(conversationId);
+    try {
+      // Do not hold the Conversation message gate while stopping: an in-flight Relay
+      // response may need that same gate before its drain can settle.
+      return await operation();
+    } finally {
+      releaseFence?.();
+    }
+  }
+
   async startConversationAgent(
     conversationId: string,
     identityId: string,
     actorIdentityId: string,
+    contextMode: LocalSessionContextMode = "with_context",
   ): Promise<LocalConversationAgent> {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.startConversationAgent(conversationId, identityId, actorIdentityId);
+    await this.options.lifecycle.startConversationAgent(conversationId, identityId, actorIdentityId, contextMode);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -587,11 +603,12 @@ export class LocalControlService {
     conversationId: string,
     identityId: string,
     actorIdentityId: string,
+    contextMode: LocalSessionContextMode = "with_context",
   ): Promise<LocalConversationAgent> {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.replaceConversationAgent(conversationId, identityId, actorIdentityId);
+    await this.options.lifecycle.replaceConversationAgent(conversationId, identityId, actorIdentityId, contextMode);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -603,7 +620,8 @@ export class LocalControlService {
     if (!this.options.lifecycle?.available) {
       throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
     }
-    await this.options.lifecycle.stopConversationAgent(conversationId, identityId, actorIdentityId);
+    await this.withStopAdmissionFence(conversationId, () =>
+      this.options.lifecycle!.stopConversationAgent(conversationId, identityId, actorIdentityId));
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -643,7 +661,8 @@ export class LocalControlService {
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       conversationId,
-      results: await this.options.lifecycle.stopAllConversationAgents(conversationId, actorIdentityId),
+      results: await this.withStopAdmissionFence(conversationId, () =>
+        this.options.lifecycle!.stopAllConversationAgents!(conversationId, actorIdentityId)),
     };
   }
 
@@ -721,6 +740,29 @@ export class LocalControlService {
     }
     const binding = matches[0]!;
     const details = { wakePolicy: binding.wakePolicy, lastVerifiedAt: binding.lastVerifiedAt };
+    if (binding.state === "stopping") {
+      return {
+        ...base,
+        ...details,
+        state: "uncertain",
+        capabilities: {
+          ...disabledCapabilities,
+          replace: Boolean(this.options.lifecycle?.available),
+        },
+      };
+    }
+    if (binding.state === "paused") {
+      return {
+        ...base,
+        ...details,
+        state: "stopped",
+        capabilities: {
+          ...disabledCapabilities,
+          start: Boolean(this.options.lifecycle?.available),
+          replace: Boolean(this.options.lifecycle?.available),
+        },
+      };
+    }
     if (binding.state === "disabled") {
       return {
         ...base,
@@ -792,8 +834,24 @@ export class LocalControlService {
         },
       };
     }
+    const work = this.options.lifecycle?.agentWorkSnapshot?.(conversation.id, identityId);
     const activity = this.options.lifecycle?.activity?.(conversation.id, identityId);
     const attached = this.options.lifecycle?.isAttached?.(conversation.id, identityId);
+    if (work?.stopRequested) {
+      return {
+        ...base,
+        ...details,
+        state: "uncertain",
+        diagnostics: {
+          connection: "connected",
+          queuedTurns: work.queuedTurns,
+          queuedTurnsExact: work.queuedTurnsExact,
+          lastVerifiedAt: binding.lastVerifiedAt,
+          capabilities: notVerifiedLiveCapabilities,
+        },
+        capabilities: disabledCapabilities,
+      };
+    }
     if (activity) {
       const liveCapabilities = await this.readRuntimeCapabilities(runtime, binding.runtimeSessionId);
       const diagnosticCapabilities = presentLiveCapabilities(liveCapabilities);
@@ -883,7 +941,6 @@ export class LocalControlService {
         };
       }
       if (status === "idle" && attached === true) {
-        const work = this.options.lifecycle?.agentWorkSnapshot?.(conversation.id, identityId);
         if (!work || work.activeTurns !== 0 || work.queuedTurns !== 0 || !work.queuedTurnsExact) {
           return {
             ...base,
@@ -1026,6 +1083,19 @@ function json(response: ServerResponse, status: number, body: unknown, origin?: 
     response.setHeader("vary", "Origin");
   }
   response.end(JSON.stringify(body));
+}
+
+async function readSessionContextMode(request: IncomingMessage): Promise<LocalSessionContextMode | undefined> {
+  const contentLength = Number(request.headers["content-length"] ?? 0);
+  if (!request.headers["transfer-encoding"] && contentLength === 0) return undefined;
+  const input = await readJson(request);
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new LocalConfigurationRequestError("Session context mode is invalid", 400, "invalid");
+  }
+  const contextMode = (input as { contextMode?: unknown }).contextMode;
+  if (contextMode === undefined) return undefined;
+  if (contextMode === "with_context" || contextMode === "fresh") return contextMode;
+  throw new LocalConfigurationRequestError("Session context mode is invalid", 400, "invalid");
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -1305,6 +1375,7 @@ export async function createLocalControlHttpServer(
           decodeURIComponent(agentStartMatch[1]!),
           decodeURIComponent(agentStartMatch[2]!),
           browserSession.identityId,
+          await readSessionContextMode(request),
         );
         json(response, 201, { agent }, origin);
         return;
@@ -1325,6 +1396,7 @@ export async function createLocalControlHttpServer(
           decodeURIComponent(agentReplaceMatch[1]!),
           decodeURIComponent(agentReplaceMatch[2]!),
           browserSession.identityId,
+          await readSessionContextMode(request),
         );
         json(response, 200, { agent }, origin);
         return;

@@ -2,11 +2,12 @@ import type { ConversationMessage, ConversationMetadata } from "@minu/channels-c
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { mergeMessages } from "../lib/messages";
 import { runBackgroundConversationsConnection } from "../lib/background-conversation";
+import { playNotificationSound } from "../lib/notification-sound";
 import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
@@ -144,32 +145,24 @@ export function AppShell() {
     } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
   };
 
-  const activateAudio = () => {
+  const activateAudio = useCallback(() => {
     try {
-      audioContext.current ??= new window.AudioContext();
-      if (audioContext.current.state === "suspended") void audioContext.current.resume();
+      if (!audioContext.current || audioContext.current.state === "closed") {
+        audioContext.current = new window.AudioContext();
+      }
+      // Resume can reject under browser autoplay policy; keep notifications optional
+      // and retry on the next genuine user interaction.
+      if (audioContext.current.state === "suspended") void audioContext.current.resume().catch(() => undefined);
       return audioContext.current;
     } catch {
       return undefined;
     }
-  };
+  }, []);
   const playSound = () => {
     try {
       const context = audioContext.current;
-      if (!context) return;
-      // A clear but brief rising two-note chime.
-      for (const { frequency, delay, duration, volume } of [
-        { frequency: 523.25, delay: 0, duration: 0.14, volume: 0.08 },
-        { frequency: 659.25, delay: 0.12, duration: 0.2, volume: 0.065 },
-      ]) {
-        const oscillator = context.createOscillator();
-        const gain = context.createGain();
-        gain.gain.value = volume;
-        oscillator.frequency.value = frequency;
-        oscillator.connect(gain).connect(context.destination);
-        oscillator.start(context.currentTime + delay);
-        oscillator.stop(context.currentTime + delay + duration);
-      }
+      if (!context || context.state !== "running") return;
+      playNotificationSound(context);
     } catch {
       // Sound is optional; visual unread state remains authoritative.
     }
@@ -184,6 +177,25 @@ export function AppShell() {
     if (value !== "off") activateAudio();
   };
 
+  useEffect(() => {
+    if (!currentSession.data?.identityId || sound === "off") return;
+    // A saved preference does not unlock Web Audio after reload. Re-arm it within
+    // a user gesture without requiring the user to toggle their setting again.
+    const unlock = (event: Event) => {
+      if (event.isTrusted) activateAudio();
+    };
+    document.addEventListener("pointerdown", unlock, { passive: true });
+    document.addEventListener("keydown", unlock);
+    return () => {
+      document.removeEventListener("pointerdown", unlock);
+      document.removeEventListener("keydown", unlock);
+    };
+  }, [activateAudio, currentSession.data?.identityId, sound]);
+  useEffect(() => () => {
+    const context = audioContext.current;
+    audioContext.current = undefined;
+    if (context && context.state !== "closed") void context.close().catch(() => undefined);
+  }, []);
   useEffect(() => setNavigationOpen(false), [pathname]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
@@ -272,6 +284,7 @@ export function AppShell() {
         if (oldest) soundedMessages.current.delete(oldest);
       }
       const viewingAtEnd = document.visibilityState === "visible"
+        && document.hasFocus()
         && conversation.id === activeConversationId
         && viewingActiveConversationEnd.current;
       if (message.participantId === identityId || viewingAtEnd) return;

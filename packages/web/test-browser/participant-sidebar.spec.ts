@@ -35,7 +35,7 @@ async function launch(page: Page, request: APIRequestContext, data: Fixture, act
 }
 async function mockAgent(page: Page, data: Fixture, view: () => LocalConversationAgent) {
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 17, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
+    json: { protocolVersion: 18, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
   }));
 }
 async function expectTokenColor(locator: Locator, property: string, token: string) {
@@ -143,7 +143,7 @@ test("a failed participant action gets an inline red issue description and viewa
   await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/start`, (route) => route.fulfill({ status: 503, json: { error: "Start failed for sidebar fixture" } }));
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Start session", exact: true }).click();
+  await page.getByRole("button", { name: "Start agent", exact: true }).click();
   const issue = page.getByRole("button", { name: `View issue details for ${data.agent.displayName}`, exact: true });
   await expectTokenColor(issue, "color", "--danger");
   await expect(page.getByRole("button", { name: /^View errors/ })).toHaveCount(0);
@@ -197,7 +197,7 @@ test("details remain available in read-only Conversations without enabling sessi
   await launch(page, request, data);
   await expect(page.getByText("This Conversation is archived and read-only.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await expect(page.getByRole("button", { name: "Start session", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New session with context", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Details & diagnostics", exact: true }).click();
   await expect(page.getByRole("dialog", { name: `Details for ${data.agent.displayName}`, exact: true })).toContainText("Not started");

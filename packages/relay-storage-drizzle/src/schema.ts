@@ -154,6 +154,8 @@ export const conversationAgentSessionHistory = sqliteTable("conversation_agent_s
   origin: text("origin", {
     enum: ["started", "resumed", "forked", "restored", "attached", "migrated"],
   }).notNull(),
+  contextMode: text("context_mode", { enum: ["with_context", "fresh"] })
+    .notNull().default("with_context"),
   conversationSequenceAtActivation: integer("conversation_sequence_at_activation"),
   conversationSequenceAtRetirement: integer("conversation_sequence_at_retirement"),
   activatedAt: text("activated_at").notNull(),
@@ -206,7 +208,7 @@ export const conversationAgentBindings = sqliteTable("conversation_agent_binding
   runtimeSessionId: text("runtime_session_id").notNull(),
   runtimeOwnerId: text("runtime_owner_id"),
   generation: integer("generation").notNull(),
-  state: text("state", { enum: ["connected", "sleeping", "waking", "offline", "replacing", "disabled"] }).notNull(),
+  state: text("state", { enum: ["connected", "sleeping", "waking", "offline", "replacing", "stopping", "paused", "disabled"] }).notNull(),
   wakePolicy: text("wake_policy", {
     enum: ["mentions", "direct_mentions", "all_messages", "muted"],
   }).notNull(),

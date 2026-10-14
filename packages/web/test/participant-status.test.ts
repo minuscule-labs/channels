@@ -15,7 +15,8 @@ describe("participant Runtime status", () => {
     ["disconnected", "attention", "Disconnected"],
     ["uncertain", "attention", "Connection uncertain"],
     ["offline", "inactive", "Offline"],
-    ["disabled", "inactive", "Stopped"],
+    ["stopped", "inactive", "Stopped · resumable"],
+    ["disabled", "inactive", "Stopped · new session required"],
     ["unbound", "inactive", "Not started"],
   ] as const)("maps %s without inferring an error", (state, tone, label) => {
     expect(runtimeStatusTone(agent(state))).toBe(tone);

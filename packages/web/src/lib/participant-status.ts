@@ -12,7 +12,8 @@ export function runtimeStateLabel(agent: LocalConversationAgent): string {
     case "disconnected": return "Disconnected";
     case "uncertain": return "Connection uncertain";
     case "offline": return "Offline";
-    case "disabled": return "Stopped";
+    case "stopped": return "Stopped · resumable";
+    case "disabled": return "Stopped · new session required";
   }
 }
 
@@ -25,6 +26,7 @@ export function runtimeStatusTone(agent?: LocalConversationAgent): "idle" | "wor
     case "disconnected":
     case "uncertain": return "attention";
     case "offline":
+    case "stopped":
     case "disabled":
     case "unbound": return "inactive";
   }

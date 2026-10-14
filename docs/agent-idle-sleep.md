@@ -18,9 +18,10 @@ Use these terms consistently:
 - **Sleeping** — no Runtime worker is alive; MinuChannels can resume the same logical session.
 - **Waking** — a transient state while that session is being resumed.
 - **Offline** — the session was expected to be available but is unexpectedly unreachable or cannot be resumed.
-- **Stopped** — the binding is disabled by an explicit user action. It does not wake automatically.
+- **Stopped · resumable** — an explicit Stop has paused Relay delivery while retaining the current Runtime session and transcript. Only an explicit **Start agent** resumes it; messages posted while stopped wait.
+- **Stopped · new session required** — membership is disabled or the Runtime session was stopped by an older destructive lifecycle path; resume is not promised.
 
-Sleeping must not be presented as Offline or Stopped. An addressed message may wake a sleeping agent, but it must never restart a stopped agent.
+Sleeping must not be presented as Offline or Stopped. An addressed message may wake a sleeping agent, but it must never restart a manually stopped agent.
 
 ## Goals
 
@@ -115,13 +116,16 @@ Extend the private binding state machine:
 
 ```text
 connected ──idle timeout──▶ sleeping ──eligible message──▶ waking ──success──▶ connected
-    │                           │                              │
-    ├──unexpected loss────────▶ offline ◀────missing/failure──┘
     │                           │
-    └──explicit Stop──────────▶ disabled ◀────explicit Stop───┘
+    └──explicit Stop fence──┐   └──explicit Stop fence──┐
+                            ▼                           ▼
+                         stopping ──confirmed──▶ paused ──explicit Start──▶ waking/connected
+                            │
+                            └──uncertain: no auto-restore
+connected/sleeping ──unexpected loss──▶ offline ◀──missing/failure──
 ```
 
-Add durable binding states `sleeping` and `waking`. Keep `connected`, `offline`, `replacing`, and `disabled` with their current meanings.
+Add durable binding states `sleeping`, `waking`, `stopping`, and `paused`. Stop first persists `stopping` and clears the lease so a crash cannot auto-restore or route through a stale Relay; confirmed Stop advances to `paused` with the sequence boundary. A paused binding retains its current Runtime session, does not auto-wake, and is reattached only by explicit Start. An unconfirmed `stopping` binding remains uncertain and requires explicit new-session replacement. Keep `connected`, `offline`, `replacing`, and legacy/membership `disabled` states distinct.
 
 Add private timestamps sufficient for policy and diagnostics:
 
@@ -181,17 +185,18 @@ Service quiesce waits for any already accepted sleep/wake transition, then leave
 
 ## Conversation lifecycle interaction
 
-Snooze and Archive keep their existing admission fence and stop idle bound agents before committing lifecycle state; this includes destroying a sleeping session's Runtime resume descriptor. While fenced, lifecycle checks share an in-process message-admission gate with the Conversation service from the authoritative head read through Stop and lifecycle commit; they require an exact, empty work snapshot for each attached idle agent, whether connected or sleeping. Already-committed messages whose events are delayed cannot be mistaken for an empty queue, and later message commits wait until the transition completes. If that gate is unavailable, Snooze/Archive fails closed. Phase 2 does not add immediate sleep as a Snooze/Archive optimization.
+Snooze and Archive keep their existing admission fence and Stop idle bound agents before committing lifecycle state; Stop now preserves the same Runtime session and resume metadata, including for a sleeping binding, without waking it. While fenced, lifecycle checks share an in-process message-admission gate with the Conversation service from the authoritative head read through Stop and lifecycle commit; they require an exact, empty work snapshot for each attached idle agent, whether connected or sleeping. Already-committed messages whose events are delayed cannot be mistaken for an empty queue, and later message commits wait until the transition completes. If that gate is unavailable, Snooze/Archive fails closed. Phase 2 does not add immediate sleep as a Snooze/Archive optimization.
 
-If future lifecycle behavior should preserve a lazily routable binding across Snooze or Archive, it needs an explicit design. Do not retire a binding into history-only state and then silently reactivate it. Reopening alone must not resume a worker; it may only make an explicitly preserved lazy route eligible for a later addressed message.
+Snooze and Archive leave stopped agents paused with their current Runtime session retained; they do not create a lazily waking route. Reopening clears the Conversation admission fence but does not resume a worker. The owner must explicitly choose **Start agent** to resume the preserved session; never reactivate historical sessions or wake paused agents from a later mention.
 
 ## Explicit lifecycle actions
 
-- **Stop** on a sleeping agent changes the binding to `disabled` and calls Runtime `destroy`; it never resumes merely to stop.
-- **New session** on a sleeping agent starts a fresh session, generation-fences the old binding, commits replacement, and destroys the old suspended descriptor best-effort.
-- **Reconnect** is not offered for sleeping agents because sleeping is healthy and intentional.
+- **Stop** on a sleeping agent changes the binding to `paused` without waking or destroying the Runtime session.
+- **Start agent** on a paused binding explicitly resumes the same managed session, transcript, generation, and context policy. It does not create a handoff or replace the session.
+- **New session with context** creates a distinct Runtime session and may add a temporary Conversation-derived handoff; **Fresh session** creates a distinct session without a handoff and excludes all Conversation messages through its activation boundary from future Relay prompts.
+- **Reconnect** remains for a detached existing session, not for an intentionally stopped one.
 - A future explicit **Wake now** action may be added for diagnostics, but it is not required for the first rollout.
-- Workspace/agent launch-configuration changes continue to apply only to a new session. Wake resumes the old session with its original launch manifest.
+- Workspace/agent launch-configuration changes apply only to a new session. Resume retains the session's original launch manifest.
 
 ## Presentation and controls
 
@@ -203,7 +208,7 @@ A distinct `sleeping`/`waking` presentation and Workspace controls are deferred 
 
 Do not expose Runtime session ids, transcript paths, process ids, resume descriptors, leases, or raw adapter errors.
 
-Workspace Agent settings should expose the inherited/effective idle timeout. Conversation controls retain Start, New session, and Stop with the semantics above.
+Workspace Agent settings should expose the inherited/effective idle timeout. Conversation controls expose **Start agent**, **New session with context**, **Fresh session**, **Reconnect**, and **Stop agent** only for their verified states and capabilities.
 
 ## Orphan cleanup
 
@@ -278,7 +283,7 @@ Useful future metrics are counts of awake/sleeping workers, wake latency, transi
 4. Two simultaneous eligible messages start at most one worker and are processed without duplicate responses.
 5. Sleep never interrupts active, queued, retrying, canceling, replacing, or uncertain work.
 6. Killing MinuChannels during either transition is repaired on restart without creating two workers or losing the triggering message.
-7. Stop and New session retain their existing destructive/replacement semantics for sleeping bindings.
+7. Stop on a sleeping binding preserves the same suspended Runtime session and never wakes it; explicit Start resumes it, while both new-session modes create a different transcript.
 8. Snoozed or archived Conversations do not wake agents; reopening alone does not wake them.
 9. Browser/API payloads and logs contain no Runtime resume metadata.
 10. Orphan cleanup cannot affect attached sessions, another installation, or a worker inferred only from its current directory.

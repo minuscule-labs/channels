@@ -7,7 +7,13 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { ConversationClient, type ClientMessageListOptions, type ConversationEventOptions } from "@minu/channels-core/client";
 import { createConversationHttpServer } from "@minu/channels-core";
-import type { ConversationEvent, ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
+import type {
+  ConversationEvent,
+  ConversationMessage,
+  ConversationMetadata,
+  CreateResponseInput,
+  ResponseResult,
+} from "@minu/channels-core/types";
 import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import {
@@ -96,6 +102,7 @@ class ManagedFakeRuntime {
   private readonly transcripts = new Map<string, Array<{ role: "user" | "assistant"; content: string }>>();
   private readonly statuses = new Map<string, "idle" | "working" | "offline">();
   private readonly statusFailures = new Map<string, Error[]>();
+  private readonly interruptFailures = new Map<string, Error[]>();
   private readonly heldSends = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
   private readonly heldStatuses = new Map<string, { entered: Promise<void>; enter(): void; release: Promise<void>; complete(): void }>();
 
@@ -174,6 +181,15 @@ class ManagedFakeRuntime {
 
   async interrupt(sessionId: string): Promise<void> {
     this.interruptions.push(sessionId);
+    const failures = this.interruptFailures.get(sessionId);
+    const failure = failures?.shift();
+    if (failures?.length === 0) this.interruptFailures.delete(sessionId);
+    if (failure) throw failure;
+    if (this.statuses.get(sessionId) === "working") this.statuses.set(sessionId, "idle");
+  }
+
+  failNextInterrupt(sessionId: string, error = new Error("simulated interrupt acknowledgement loss")): void {
+    this.interruptFailures.set(sessionId, [...(this.interruptFailures.get(sessionId) ?? []), error]);
   }
 
   async stop(sessionId: string): Promise<void> {
@@ -250,6 +266,44 @@ class DelayedMessageEventConversationClient extends ConversationClient {
         yield event;
       }
     })();
+  }
+}
+
+class HeldResponseConversationClient extends ConversationClient {
+  private heldResponse?: {
+    entered: Promise<void>;
+    markEntered(): void;
+    released: Promise<void>;
+    release(): void;
+  };
+  onResponseCommitted?: () => void;
+
+  holdNextResponse(): { entered: Promise<void>; release(): void } {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const held = {
+      entered: new Promise<void>((resolve) => { markEntered = resolve; }),
+      markEntered: () => markEntered(),
+      released: new Promise<void>((resolve) => { release = resolve; }),
+      release: () => release(),
+    };
+    this.heldResponse = held;
+    return { entered: held.entered, release: held.release };
+  }
+
+  override async postResponse(
+    conversationId: string,
+    input: CreateResponseInput,
+  ): Promise<ResponseResult> {
+    const held = this.heldResponse;
+    if (held) {
+      this.heldResponse = undefined;
+      held.markEntered();
+      await held.released;
+    }
+    const response = await super.postResponse(conversationId, input);
+    this.onResponseCommitted?.();
+    return response;
   }
 }
 
@@ -505,7 +559,9 @@ test("projects sleeping bindings with pending work as uncertain and blocks Conve
 });
 
 test("connected idle Runtime is not lifecycle-safe when attached Relay work is queued or unverified", async () => {
-  let work = { activeTurns: 0, queuedTurns: 1, queuedTurnsExact: true };
+  let work: { activeTurns: number; queuedTurns: number; queuedTurnsExact: boolean; stopRequested?: boolean } = {
+    activeTurns: 0, queuedTurns: 1, queuedTurnsExact: true,
+  };
   let stopped = 0;
   const control = new LocalControlService({
     withConversationMessageAdmission: async (_id, operation) => operation(),
@@ -529,6 +585,7 @@ test("connected idle Runtime is not lifecycle-safe when attached Relay work is q
   for (const next of [
     { activeTurns: 0, queuedTurns: 1, queuedTurnsExact: true },
     { activeTurns: 0, queuedTurns: 0, queuedTurnsExact: false },
+    { activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, stopRequested: true },
   ]) {
     work = next;
     const result = await control.listConversationAgents(conversation.id);
@@ -852,7 +909,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 17 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 18 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -934,7 +991,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 17, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 18, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -1015,6 +1072,7 @@ test("renews the persistent cookie on authenticated control requests", async (co
 test("accepts authenticated local session actions with opaque diagnostic responses", async (context) => {
   let cancelCalls = 0;
   const reconnectActors: string[] = [];
+  const sessionContextModes: string[] = [];
   const sessions = new LocalControlBrowserSessions({
     browserUrl: "http://127.0.0.1:5174/",
     currentHumanIdentityId: "human-1",
@@ -1025,7 +1083,13 @@ test("accepts authenticated local session actions with opaque diagnostic respons
     runtimes: { "pi-private-adapter": { async status() { return "working" as const; }, async interrupt() {} } },
     lifecycle: {
       available: true,
-      async startConversationAgent() {}, async replaceConversationAgent() {}, async stopConversationAgent() {},
+      async startConversationAgent(_conversationId, _identityId, _actorIdentityId, contextMode) {
+        sessionContextModes.push(`start:${contextMode ?? "with_context"}`);
+      },
+      async replaceConversationAgent(_conversationId, _identityId, _actorIdentityId, contextMode) {
+        sessionContextModes.push(`replace:${contextMode ?? "with_context"}`);
+      },
+      async stopConversationAgent() {},
       async reconnectConversationAgent(_conversationId, _identityId, actorIdentityId) { reconnectActors.push(actorIdentityId); },
       async cancelCurrentConversationAgent() { cancelCalls += 1; },
       activity() {
@@ -1047,6 +1111,7 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   assert.equal((await fetch(`${server.endpoint}${endpoint}`, { method: "POST" })).status, 401);
   const launch = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = launch.headers.get("set-cookie")!.split(";", 1)[0]!;
+  const headers = { cookie, origin: sessions.browserOrigin };
   const response = await fetch(`${server.endpoint}${endpoint}`, {
     method: "POST",
     headers: { cookie, origin: sessions.browserOrigin },
@@ -1064,6 +1129,41 @@ test("accepts authenticated local session actions with opaque diagnostic respons
   });
   assert.equal(reconnected.status, 200);
   assert.deepEqual(reconnectActors, ["human-1"]);
+
+  const startEndpoint = `${server.endpoint}/local/conversations/${conversation.id}/agents/agent-running/start`;
+  const startDefault = await fetch(startEndpoint, { method: "POST", headers });
+  assert.equal(startDefault.status, 201);
+  const startWithContext = await fetch(startEndpoint, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ contextMode: "with_context" }),
+  });
+  assert.equal(startWithContext.status, 201);
+  const startFresh = await fetch(startEndpoint, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ contextMode: "fresh" }),
+  });
+  assert.equal(startFresh.status, 201);
+  const replaceEndpoint = `${server.endpoint}/local/conversations/${conversation.id}/agents/agent-running/replace`;
+  const replaceFresh = await fetch(replaceEndpoint, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ contextMode: "fresh" }),
+  });
+  assert.equal(replaceFresh.status, 200);
+  const invalidContextMode = await fetch(replaceEndpoint, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ contextMode: "ignore_history" }),
+  });
+  assert.equal(invalidContextMode.status, 400);
+  assert.deepEqual(sessionContextModes, [
+    "start:with_context",
+    "start:with_context",
+    "start:fresh",
+    "replace:fresh",
+  ]);
 
   const ungatedDiagnosticEndpoint = `/local/conversations/${conversation.id}/agents/agent-running/open-diagnostic`;
   assert.equal((await fetch(`${server.endpoint}${ungatedDiagnosticEndpoint}`, {
@@ -1091,7 +1191,7 @@ test("serves bounded, private turn-failure projections without Conversation infe
         }
         limits.push(limit);
         return {
-          protocolVersion: 17,
+          protocolVersion: 18,
           conversationId,
           notices: [{ participant: { identityId: "agent-running", displayLabel: "Builder" }, triggerSequence: 9, failedAt: "2026-08-28T00:00:00.000Z" }],
           diagnostics: [{
@@ -1366,7 +1466,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 17,
+      protocolVersion: 18,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/conversations/${app.conversationId}/agents`, {
@@ -1902,7 +2002,7 @@ test("private configuration keeps lists redacted and returns agent details only 
     }]);
     const detail = await configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id);
     assert.deepEqual(detail, {
-      protocolVersion: 17,
+      protocolVersion: 18,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "PRIVATE PERSONA: build and verify carefully" },
@@ -1998,7 +2098,7 @@ test("Conversation working folders are private, canonical, and owner-controlled"
     });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
     assert.deepEqual(await configuration.getConversationWorkingFolders(conversation.id, owner.id), {
-      protocolVersion: 17,
+      protocolVersion: 18,
       workspaceId: workspace.id,
       conversationId: conversation.id,
       inheritedFromWorkspace: true,
@@ -2445,9 +2545,8 @@ test("bulk stop does not reverse a real individual start accepted after its snap
     assert.equal(runtime.stops.includes(startedD.runtimeSessionId), false);
     assert.equal(runtime.interruptions.includes(startedD.runtimeSessionId), false);
 
-    const nextSessionNumber = runtime.starts.length + 1;
-    const heldStarts = [0, 1, 2].map((offset) =>
-      runtime.holdStatus(`managed-session-${nextSessionNumber + offset}`));
+    const heldStarts = initialBindings.map(({ runtimeSessionId }) =>
+      runtime.holdStatus(runtimeSessionId));
     const starting = host.startAllConversationAgents(conversation.id, owner.id);
     await Promise.all(heldStarts.map(({ entered }) => entered));
     await host.stopConversationAgent(conversation.id, agentD.id, owner.id);
@@ -2456,12 +2555,12 @@ test("bulk stop does not reverse a real individual start accepted after its snap
     assert.deepEqual(startResults.at(-1), {
       identityId: agentD.id,
       outcome: "skipped",
-      reason: "offline",
+      reason: "already_idle",
     });
     const stoppedD = await store.getBinding(startedD.id);
-    assert.equal(stoppedD?.state, "disabled");
-    assert.equal(stoppedD?.generation, 2);
-    assert.equal(runtime.stops.filter((sessionId) => sessionId === startedD.runtimeSessionId).length, 1);
+    assert.equal(stoppedD?.state, "paused");
+    assert.equal(stoppedD?.generation, 1);
+    assert.equal(runtime.stops.filter((sessionId) => sessionId === startedD.runtimeSessionId).length, 0);
   } finally {
     await host?.close().catch(() => undefined);
     await store.close();
@@ -2954,7 +3053,7 @@ test("Snooze and Archive reject committed work before a connected agent sees its
     });
     await delayedMessage.entered;
     assert.deepEqual(host.agentWorkSnapshot(conversation.id, agent.id), {
-      activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true,
+      activeTurns: 0, queuedTurns: 0, queuedTurnsExact: true, stopRequested: false,
     }, "the connected agent looks idle before lifecycle refreshes the committed head");
     const control = new LocalControlService({
       withConversationMessageAdmission: conversationServer.service.withConversationMessageAdmission.bind(conversationServer.service),
@@ -3074,7 +3173,7 @@ test("messages arriving after the lifecycle head check wait for Stop and lifecyc
       releaseStop?.();
       releaseStop = undefined;
       await transition;
-      assert.equal((await store.getBinding(binding.id))?.state, "disabled");
+      assert.equal((await store.getBinding(binding.id))?.state, "paused");
       assert.equal((await client.getConversationLifecycle(conversation.id)).state, state);
       if (state === "settled") {
         await assert.rejects(message, /Settled Conversations are frozen/);
@@ -3580,9 +3679,10 @@ test("managed Runtime history resumes by owner scope and retries retired-session
 
     await reconciledHost.stopConversationAgent(conversation.id, agent.id, owner.id);
     history = await store.listSessionHistory(conversation.id, agent.id);
-    assert.equal(history[1]?.state, "retired");
-    assert.equal(history[1]?.retentionStatus, "destroyed");
-    assert.ok(runtime.destructions.includes(replacement.runtimeSessionId));
+    assert.equal((await store.getBinding(replacement.id))?.state, "paused");
+    assert.equal(history[1]?.state, "active");
+    assert.equal(history[1]?.retentionStatus, "retained");
+    assert.equal(runtime.destructions.includes(replacement.runtimeSessionId), false);
   } finally {
     await Promise.all([
       initialHost?.close().catch(() => undefined),
@@ -3592,6 +3692,460 @@ test("managed Runtime history resumes by owner scope and retries retired-session
       conversationServer.close(),
       rm(sourceDirectory, { recursive: true, force: true }),
       rm(dataDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("individual and bulk Stop do not hold Conversation admission while a response settles", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-stop-response-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  const client = new HeldResponseConversationClient(conversationServer.endpoint, {
+    serviceToken: conversationServer.serviceToken,
+  });
+  let host: LocalAgentHost | undefined;
+  let stopPromise: Promise<unknown> | undefined;
+  let releaseResponse: (() => void) | undefined;
+  let messageAdmissionDepth = 0;
+  let stopSettled = false;
+  let responseCommittedAfterStop = false;
+  let releasePendingInterrupt: (() => void) | undefined;
+  try {
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "stop-response", name: "Stop Response" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+
+    const heldResponse = client.holdNextResponse();
+    releaseResponse = heldResponse.release;
+    await client.postMessage(conversation.id, { participantId: owner.id, body: "@builder finish before Stop" });
+    await heldResponse.entered;
+
+    const admit = conversationServer.service.withConversationMessageAdmission.bind(conversationServer.service);
+    const control = new LocalControlService({
+      conversations: client,
+      withConversationMessageAdmission: async (conversationId, operation) => admit(conversationId, async () => {
+        messageAdmissionDepth += 1;
+        try {
+          return await operation();
+        } finally {
+          messageAdmissionDepth -= 1;
+        }
+      }),
+      bindings: store,
+      runtimes: { "managed-test": runtime },
+      lifecycle: host,
+    });
+    let releaseInterrupt!: () => void;
+    const heldInterrupt = new Promise<void>((resolve) => { releaseInterrupt = resolve; });
+    releasePendingInterrupt = releaseInterrupt;
+    const interrupt = runtime.interrupt.bind(runtime);
+    let interruptEntered = false;
+    runtime.interrupt = async (sessionId) => {
+      interruptEntered = true;
+      await heldInterrupt;
+      await interrupt(sessionId);
+    };
+    client.onResponseCommitted = () => { responseCommittedAfterStop = stopSettled; };
+    stopPromise = control.stopConversationAgent(conversation.id, agent.id, owner.id);
+    await waitUntil(async () => host?.agentWorkSnapshot(conversation.id, agent.id)?.stopRequested === true);
+    assert.equal(messageAdmissionDepth, 0, "Stop must not own the gate needed by Relay response delivery");
+
+    await waitUntil(async () => interruptEntered);
+    heldResponse.release();
+    releaseResponse = undefined;
+    let earlyStop = false;
+    void stopPromise.then(() => { earlyStop = true; });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(earlyStop, false, "Stop must await its interrupt independently of response/drain settlement");
+    releaseInterrupt();
+    runtime.interrupt = interrupt;
+    let timeout: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      stopPromise.then(() => "stopped" as const),
+      new Promise<"timeout">((resolve) => { timeout = setTimeout(() => resolve("timeout"), 2_000); }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    assert.equal(outcome, "stopped", "Stop should finish after the in-flight response settles, not deadlock behind itself");
+    await stopPromise;
+    stopSettled = true;
+
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(binding.state, "paused");
+    const messages = await client.listMessages(conversation.id);
+    assert.equal(messages.filter(({ participantId }) => participantId === agent.id).length, 1);
+    assert.equal(responseCommittedAfterStop, false, "an already-started response must settle before Stop returns");
+    assert.equal(await store.getCursor(conversation.id, agent.id), messages.at(-1)?.sequence);
+
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const heldBulkResponse = client.holdNextResponse();
+    releaseResponse = heldBulkResponse.release;
+    await client.postMessage(conversation.id, { participantId: owner.id, body: "@builder finish before bulk Stop" });
+    await heldBulkResponse.entered;
+    stopSettled = false;
+    responseCommittedAfterStop = false;
+    stopPromise = control.stopAllConversationAgents(conversation.id, owner.id);
+    await waitUntil(async () => host?.agentWorkSnapshot(conversation.id, agent.id)?.stopRequested === true);
+    assert.equal(messageAdmissionDepth, 0, "bulk Stop must not own the gate needed by Relay response delivery");
+    heldBulkResponse.release();
+    releaseResponse = undefined;
+    let bulkTimeout: NodeJS.Timeout | undefined;
+    const bulkOutcome = await Promise.race([
+      stopPromise.then(() => "stopped" as const),
+      new Promise<"timeout">((resolve) => { bulkTimeout = setTimeout(() => resolve("timeout"), 2_000); }),
+    ]);
+    if (bulkTimeout) clearTimeout(bulkTimeout);
+    assert.equal(bulkOutcome, "stopped", "bulk Stop must finish after the in-flight response settles");
+    const bulkResult = await stopPromise as { results: Array<{ identityId: string; outcome: string }> };
+    assert.deepEqual(bulkResult.results, [{ identityId: agent.id, outcome: "stopped" }]);
+    stopSettled = true;
+    const bulkMessages = await client.listMessages(conversation.id);
+    assert.equal(bulkMessages.filter(({ participantId }) => participantId === agent.id).length, 2);
+    assert.equal(responseCommittedAfterStop, false);
+    assert.equal(await store.getCursor(conversation.id, agent.id), bulkMessages.at(-1)?.sequence);
+  } finally {
+    releaseResponse?.();
+    releasePendingInterrupt?.();
+    await host?.close().catch(() => undefined);
+    await stopPromise?.catch(() => undefined);
+    await Promise.all([
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("Stop preserves and explicitly resumes the same Fresh session across service restart", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-stopped-session-source-")));
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-stopped-session-data-"));
+  const databaseUrl = localRelayLibSqlUrl(join(dataDirectory, "relay.db"));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  let store = await DrizzleLibSqlRelayStorage.open({ url: databaseUrl });
+  const runtime = new OwnerScopedRuntimeFake();
+  let host: LocalAgentHost | undefined;
+  let restartedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "stopped-session", name: "Stopped Session" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({
+      workspaceId: workspace.id,
+      participantIds: [owner.id, agent.id],
+    });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    await client.postMessage(conversation.id, { participantId: owner.id, body: "pre-session private context" });
+
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id, "fresh");
+    const original = (await store.listConversationBindings(conversation.id))[0]!;
+    const afterStart = await client.postMessage(conversation.id, {
+      participantId: owner.id,
+      body: "@builder first post-boundary request",
+    });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
+    assert.doesNotMatch(runtime.prompts.get(original.runtimeSessionId)?.[0] ?? "", /pre-session private context/);
+    assert.match(runtime.prompts.get(original.runtimeSessionId)?.[0] ?? "", /first post-boundary request/);
+    assert.equal(await store.getCursor(conversation.id, agent.id), afterStart.sequence);
+
+    await host.stopConversationAgent(conversation.id, agent.id, owner.id);
+    const stopped = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(stopped.id, original.id);
+    assert.equal(stopped.state, "paused");
+    assert.equal(stopped.generation, original.generation);
+    assert.equal(stopped.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(await runtime.status(original.runtimeSessionId), "idle");
+    assert.equal(runtime.destructions.includes(original.runtimeSessionId), false);
+    const stopBoundary = await store.getCursor(conversation.id, agent.id);
+    assert.equal(stopBoundary, (await client.listMessages(conversation.id)).at(-1)?.sequence);
+
+    await client.postMessage(conversation.id, { participantId: owner.id, body: "@builder queued while stopped" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+    assert.equal((await client.listMessages(conversation.id)).length, 4);
+    assert.equal(await store.getCursor(conversation.id, agent.id), stopBoundary);
+    await host.close();
+    host = undefined;
+
+    runtime.setStatus(original.runtimeSessionId, "offline");
+    restartedHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await restartedHost.restore();
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.resumes.length, 0, "a stopped binding must never auto-wake during startup");
+    await client.postMessage(conversation.id, { participantId: owner.id, body: "@builder queued after restart" });
+    assert.equal((await client.listMessages(conversation.id)).length, 5);
+    assert.equal(runtime.resumes.length, 0);
+
+    await restartedHost.startConversationAgent(conversation.id, agent.id, owner.id);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 7);
+    const resumed = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(resumed.state, "connected");
+    assert.equal(resumed.generation, original.generation);
+    assert.equal(resumed.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(runtime.starts.length, 1, "Start must not create a replacement Runtime session");
+    assert.deepEqual(runtime.resumes, [original.runtimeSessionId]);
+    const prompts = runtime.prompts.get(original.runtimeSessionId) ?? [];
+    assert.equal(prompts.length, 3);
+    assert.match(prompts[1] ?? "", /queued while stopped/);
+    assert.match(prompts[2] ?? "", /queued after restart/);
+    assert.doesNotMatch(prompts[2] ?? "", /pre-session private context/);
+    assert.equal((await store.listSessionHistory(conversation.id, agent.id))[0]?.contextMode, "fresh");
+
+    await restartedHost.stopConversationAgent(conversation.id, agent.id, owner.id);
+    const bulkResume = await restartedHost.startAllConversationAgents(conversation.id, owner.id);
+    assert.deepEqual(bulkResume, [{ identityId: agent.id, outcome: "started" }]);
+    const bulkResumed = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(bulkResumed.id, original.id);
+    assert.equal(bulkResumed.generation, original.generation);
+    assert.equal(bulkResumed.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(runtime.starts.length, 1, "bulk Start must not create a replacement Runtime session");
+
+    for (const mode of ["fresh", "with_context"] as const) {
+      const before = (await store.listConversationBindings(conversation.id))[0]!;
+      const oldPromptCount = runtime.prompts.get(before.runtimeSessionId)?.length ?? 0;
+      const startManaged = runtime.startManaged.bind(runtime);
+      let launchEntered!: () => void;
+      let releaseLaunch!: () => void;
+      const entered = new Promise<void>((resolve) => { launchEntered = resolve; });
+      const released = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+      runtime.startManaged = async (...args) => {
+        launchEntered();
+        await released;
+        return startManaged(...args);
+      };
+      const replacing = restartedHost.replaceConversationAgent(conversation.id, agent.id, owner.id, mode);
+      try {
+        await entered;
+        const trigger = await client.postMessage(conversation.id, {
+          participantId: owner.id, body: `@builder arrived during ${mode} launch`,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        assert.equal(runtime.prompts.get(before.runtimeSessionId)?.length ?? 0, oldPromptCount);
+        assert.ok((await store.getCursor(conversation.id, agent.id)) < trigger.sequence);
+        releaseLaunch();
+        await replacing;
+        const replacement = (await store.listConversationBindings(conversation.id))[0]!;
+        await waitUntil(async () => (runtime.prompts.get(replacement.runtimeSessionId)?.length ?? 0) === 1);
+        assert.match(runtime.prompts.get(replacement.runtimeSessionId)?.[0] ?? "", /arrived during/);
+      } finally {
+        releaseLaunch();
+        runtime.startManaged = startManaged;
+        await replacing.catch(() => undefined);
+      }
+    }
+  } finally {
+    await Promise.all([
+      host?.close().catch(() => undefined),
+      restartedHost?.close().catch(() => undefined),
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+      rm(dataDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("failed Stop fences an active session across restart until explicit replacement", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-stop-failure-source-")));
+  const dataDirectory = await mkdtemp(join(tmpdir(), "minu-stop-failure-data-"));
+  const databaseUrl = localRelayLibSqlUrl(join(dataDirectory, "relay.db"));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  let store = await DrizzleLibSqlRelayStorage.open({ url: databaseUrl });
+  const runtime = new OwnerScopedRuntimeFake();
+  let host: LocalAgentHost | undefined;
+  let restartedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "stop-failure", name: "Stop Failure" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimes: { "managed-test": runtime } });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+
+    host = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const original = (await store.listConversationBindings(conversation.id))[0]!;
+    runtime.setStatus(original.runtimeSessionId, "working");
+    runtime.failNextInterrupt(original.runtimeSessionId);
+    await assert.rejects(
+      host.stopConversationAgent(conversation.id, agent.id, owner.id),
+      /held stopped and will not auto-resume/,
+    );
+    const fenced = (await store.getBinding(original.id))!;
+    assert.equal(fenced.state, "stopping");
+    assert.equal(fenced.generation, original.generation);
+    assert.equal(fenced.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(host.isAttached(conversation.id, agent.id), false);
+    assert.equal(await runtime.status(original.runtimeSessionId), "working");
+
+    await host.close();
+    host = undefined;
+    restartedHost = new LocalAgentHost({ client, store, runtimes: { "managed-test": runtime } });
+    await restartedHost.restore();
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.resumes.length, 0);
+    await assert.rejects(
+      restartedHost.startConversationAgent(conversation.id, agent.id, owner.id),
+      /use New session instead/,
+    );
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.starts.length, 1);
+
+    runtime.setStatus(original.runtimeSessionId, "idle");
+    await assert.rejects(restartedHost.startConversationAgent(conversation.id, agent.id, owner.id), /use New session instead/);
+    await restartedHost.replaceConversationAgent(conversation.id, agent.id, owner.id, "fresh");
+    const resumed = (await store.getBinding(original.id))!;
+    assert.equal(resumed.state, "connected");
+    assert.equal(resumed.generation, original.generation + 1);
+    assert.notEqual(resumed.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), true);
+    assert.equal(runtime.starts.length, 2);
+  } finally {
+    await Promise.all([
+      host?.close().catch(() => undefined),
+      restartedHost?.close().catch(() => undefined),
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
+      rm(dataDirectory, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("an unconfirmed Stop remains durably fenced until explicit replacement", async () => {
+  const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-stop-fence-source-")));
+  const conversationServer = await createConversationHttpServer({ port: 0 });
+  const store = new InMemoryRelayBindingStore();
+  const runtime = new OwnerScopedRuntimeFake();
+  const failingStore = new Proxy(store, {
+    get(target, property) {
+      if (property === "pauseBinding") {
+        return async () => { throw new Error("simulated persistent pause write failure"); };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as InMemoryRelayBindingStore;
+  let host: LocalAgentHost | undefined;
+  let restartedHost: LocalAgentHost | undefined;
+  try {
+    const client = new ConversationClient(conversationServer.endpoint, { serviceToken: conversationServer.serviceToken });
+    const [owner, agent] = await Promise.all([
+      client.createIdentity({ type: "human", displayName: "Owner" }),
+      client.createIdentity({ type: "agent", displayName: "Builder" }),
+    ]);
+    const workspace = await client.createWorkspace({ slug: "stop-fence", name: "Stop Fence" });
+    await Promise.all([
+      client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" }),
+      client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" }),
+    ]);
+    const conversation = await client.createConversation({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
+    const configuration = new LocalAgentHostConfiguration({
+      client,
+      store: failingStore,
+      runtimes: { "managed-test": runtime },
+    });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: sourceDirectory });
+    await configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, {
+      runtimeAdapter: "managed-test",
+      modelProvider: "openai",
+      modelId: "gpt-managed",
+    });
+    host = new LocalAgentHost({ client, store: failingStore, runtimes: { "managed-test": runtime } });
+    await host.startConversationAgent(conversation.id, agent.id, owner.id);
+    const binding = (await store.listConversationBindings(conversation.id))[0]!;
+
+    await assert.rejects(
+      host.stopConversationAgent(conversation.id, agent.id, owner.id),
+      /held stopped and will not auto-resume/,
+    );
+    assert.equal((await store.getBinding(binding.id))?.state, "stopping");
+    assert.equal(host.isAttached(conversation.id, agent.id), false);
+
+    await host.close();
+    host = undefined;
+    restartedHost = new LocalAgentHost({ client, store: failingStore, runtimes: { "managed-test": runtime } });
+    await restartedHost.restore();
+    assert.equal(restartedHost.isAttached(conversation.id, agent.id), false);
+    assert.equal(runtime.resumes.length, 0);
+    assert.equal(runtime.starts.length, 1);
+
+    const control = new LocalControlService({
+      conversations: client,
+      bindings: failingStore,
+      runtimes: { "managed-test": runtime },
+      lifecycle: restartedHost,
+    });
+    const uncertain = (await control.listConversationAgents(conversation.id)).agents.find(
+      ({ identityId }) => identityId === agent.id,
+    )!;
+    assert.equal(uncertain.state, "uncertain");
+    assert.equal(uncertain.capabilities.start, false);
+    assert.equal(uncertain.capabilities.replace, true);
+    await assert.rejects(
+      control.startConversationAgent(conversation.id, agent.id, owner.id),
+      /use New session instead/,
+    );
+
+    await client.postMessage(conversation.id, { participantId: owner.id, body: "@builder do not auto-resume" });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
+    assert.equal((await client.listMessages(conversation.id)).length, 1);
+
+    await control.replaceConversationAgent(conversation.id, agent.id, owner.id, "fresh");
+    const replacement = (await store.listConversationBindings(conversation.id))[0]!;
+    assert.equal(replacement.state, "connected");
+    assert.equal(replacement.generation, binding.generation + 1);
+    assert.equal(runtime.starts.length, 2);
+  } finally {
+    await Promise.all([
+      host?.close().catch(() => undefined),
+      restartedHost?.close().catch(() => undefined),
+      store.close(),
+      conversationServer.close(),
+      rm(sourceDirectory, { recursive: true, force: true }),
     ]);
   }
 });
@@ -3819,9 +4373,9 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     runtime.setStatus("managed-session-4", "working");
     await restoredHost.stopConversationAgent(conversationA.id, agent.id, owner.id);
     binding = (await store.listConversationBindings(conversationA.id))[0]!;
-    assert.equal(binding.state, "disabled");
-    assert.equal(binding.generation, 3);
-    assert.equal(await runtime.status("managed-session-4"), "offline");
+    assert.equal(binding.state, "paused");
+    assert.equal(binding.generation, 2);
+    assert.equal(await runtime.status("managed-session-4"), "idle");
     await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder stopped work must not run",
@@ -3829,22 +4383,27 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
     assert.equal((await client.listMessages(conversationA.id)).length, 10);
 
-    await restoredHost.replaceConversationAgent(conversationA.id, agent.id, owner.id);
+    await restoredHost.replaceConversationAgent(conversationA.id, agent.id, owner.id, "fresh");
     binding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(binding.state, "connected");
-    assert.equal(binding.generation, 4);
-    assert.equal(binding.runtimeSessionId, "managed-session-6");
+    assert.equal(binding.generation, 3);
+    assert.equal(binding.runtimeSessionId, "managed-session-5");
+    assert.doesNotMatch(runtime.starts[4]?.config.appendSystemPrompt ?? "", /ephemeral handoff/);
+    assert.equal(await store.getCursor(conversationA.id, agent.id), 10);
+    assert.equal((await store.listSessionHistory(conversationA.id, agent.id)).at(-1)?.contextMode, "fresh");
     await client.postMessage(conversationA.id, {
       participantId: owner.id,
       body: "@builder restarted work only",
     });
     await waitUntil(async () => (await client.listMessages(conversationA.id)).length === 12);
-    assert.match((await client.listMessages(conversationA.id))[11]?.body ?? "", /managed-session-6/);
+    assert.match((await client.listMessages(conversationA.id))[11]?.body ?? "", /managed-session-5/);
+    assert.doesNotMatch(runtime.prompts.get("managed-session-5")?.[0] ?? "", /stopped work must not run/);
+    assert.match(runtime.prompts.get("managed-session-5")?.[0] ?? "", /restarted work only/);
     assert.equal(await store.getCursor(conversationA.id, agent.id), 11);
 
     await (restoredHost as unknown as { retireBinding(conversationId: string, identityId: string): Promise<void> })
       .retireBinding(conversationA.id, agent.id);
-    const neverResolvingStatus = runtime.holdStatus("managed-session-6");
+    const neverResolvingStatus = runtime.holdStatus("managed-session-5");
     const timeoutStartedAt = Date.now();
     await assert.rejects(
       restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
@@ -3854,12 +4413,12 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     neverResolvingStatus.release();
     const unreachableBinding = (await store.listConversationBindings(conversationA.id))[0]!;
     assert.equal(unreachableBinding.state, "connected");
-    assert.equal(unreachableBinding.generation, 4);
-    assert.equal(unreachableBinding.runtimeSessionId, "managed-session-6");
-    assert.equal(runtime.starts.length, 6);
+    assert.equal(unreachableBinding.generation, 3);
+    assert.equal(unreachableBinding.runtimeSessionId, "managed-session-5");
+    assert.equal(runtime.starts.length, 5);
     assert.equal(restoredHost.isAttached(conversationA.id, agent.id), false);
 
-    runtime.setStatus("managed-session-6", "offline");
+    runtime.setStatus("managed-session-5", "offline");
     await assert.rejects(
       restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id),
       /use New session instead/,
@@ -3885,8 +4444,8 @@ test("agent host starts isolated Conversation sessions with private roots and pe
       { action: "agent.session.reconnected", outcome: "rejected" },
     ]);
 
-    runtime.setStatus("managed-session-6", "idle");
-    const heldShutdownReconnect = runtime.holdStatus("managed-session-6");
+    runtime.setStatus("managed-session-5", "idle");
+    const heldShutdownReconnect = runtime.holdStatus("managed-session-5");
     const reconnectDuringShutdown = restoredHost.reconnectConversationAgent(conversationA.id, agent.id, owner.id);
     await heldShutdownReconnect.entered;
     let shutdownFinished = false;
@@ -3905,7 +4464,7 @@ test("agent host starts isolated Conversation sessions with private roots and pe
 
     const startsBeforeRecoveryFences = runtime.starts.length;
     const stopsBeforeRecoveryFences = runtime.stops.length;
-    runtime.failNextStatus("managed-session-6", new Error("transient shutdown recovery failure"));
+    runtime.failNextStatus("managed-session-5", new Error("transient shutdown recovery failure"));
     const shutdownRecoveryHost = new LocalAgentHost({
       client,
       store,
@@ -3917,7 +4476,7 @@ test("agent host starts isolated Conversation sessions with private roots and pe
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
     assert.equal(shutdownRecoveryHost.isAttached(conversationA.id, agent.id), false);
 
-    runtime.failNextStatus("managed-session-6", new Error("transient generation recovery failure"));
+    runtime.failNextStatus("managed-session-5", new Error("transient generation recovery failure"));
     const generationRecoveryHost = new LocalAgentHost({
       client,
       store,
@@ -4221,7 +4780,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     assert.equal(agentConfigurationResponse.status, 200);
     assert.equal(agentConfigurationResponse.headers.get("cache-control"), "no-store");
     assert.deepEqual(await agentConfigurationResponse.json(), {
-      protocolVersion: 17,
+      protocolVersion: 18,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "DAEMON PRIVATE PERSONA" },
@@ -4239,7 +4798,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 17,
+      protocolVersion: 18,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -4254,7 +4813,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 17,
+      protocolVersion: 18,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

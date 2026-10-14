@@ -52,6 +52,7 @@ export interface AgentRuntimePort {
 }
 
 export type WakePolicy = "mentions" | "direct_mentions" | "all_messages" | "muted";
+export type RuntimeSessionContextMode = "with_context" | "fresh";
 
 export type DeliveryDeadLetterReason =
   | "delivery_rejected"
@@ -126,6 +127,8 @@ export interface AgentConversationBinding {
   wakePolicy?: WakePolicy;
   maxMessages?: number;
   maxTokens?: number;
+  /** Exclusive public Conversation sequence floor for a fresh session's context. */
+  contextSequenceFloor?: number;
   /** Private binding snapshot used only for generation-gated local diagnostics. */
   diagnosticBinding?: { id: string; generation: number; workspaceId?: string };
   /** Private fencing check used to suppress work and responses after lease loss. */
@@ -273,6 +276,7 @@ export interface RelayAgentWorkSnapshot {
   activeTurns: number;
   queuedTurns: number;
   queuedTurnsExact: boolean;
+  stopRequested: boolean;
 }
 
 interface BindingState {
@@ -307,9 +311,13 @@ interface BindingState {
   /** Retained for the legacy interrupt-and-replace operation. */
   interruptedTriggerId?: string;
   cancelActorId?: string;
+  stopRequested?: boolean;
+  stopError?: boolean;
   runtimeTurnAccepted?: boolean;
   interruptIssued?: boolean;
   interruptPromise?: Promise<boolean>;
+  /** Survives active-turn cleanup until Stop has verified interrupt settlement. */
+  stopInterruptPromise?: Promise<boolean>;
   drainController?: AbortController;
   drainTask?: Promise<void>;
   lastCatchUpDiagnosticAt?: number;
@@ -385,9 +393,11 @@ function contextEnvelope(
   messages: ConversationMessage[],
   maxMessages: number,
   maxTokens: number,
+  contextSequenceFloor?: number,
 ): string {
   const unseen = messages
-    .filter((message) => message.sequence <= trigger.sequence)
+    .filter((message) => message.sequence <= trigger.sequence
+      && (contextSequenceFloor === undefined || message.sequence > contextSequenceFloor))
     .slice(-maxMessages);
   const maxCharacters = maxTokens * 4;
   const selected: ConversationMessage[] = [];
@@ -399,7 +409,10 @@ function contextEnvelope(
     characters += lineLength;
   }
   selected.reverse();
-  const omitted = Math.max(0, trigger.sequence - selected.length);
+  const omitted = Math.max(
+    0,
+    (contextSequenceFloor === undefined ? trigger.sequence : trigger.sequence - contextSequenceFloor) - selected.length,
+  );
   const label = (identityId: string): string => {
     if (identityId === "@conversation") return identityId;
     const participant = participants.find((candidate) => candidate.id === identityId);
@@ -624,6 +637,7 @@ export class ConversationRuntimeRelay {
       queuedTurns: state.queuedTurns,
       queuedTurnsExact: !state.needsHeadScan
         && state.knownThroughSequence >= state.observedHighWaterSequence,
+      stopRequested: state.stopRequested === true,
     };
   }
 
@@ -834,8 +848,39 @@ export class ConversationRuntimeRelay {
     this.requestRuntimeInterrupt(state, participantId);
   }
 
-  private async assertInterruptible(state: BindingState, participantId: string): Promise<void> {
-    if (state.binding.verifyLease && !(await state.binding.verifyLease())) {
+  /** Close turn admission, interrupt only the active turn, and wait for it to settle. */
+  async stopBinding(
+    participantId: string,
+    actorId: string,
+    options: { leaseAlreadyFenced?: boolean } = {},
+  ): Promise<void> {
+    const state = this.stateFor(participantId);
+    state.stopRequested = true;
+    state.stopInterruptPromise = state.interruptPromise;
+    state.stopError = false;
+    state.drainController?.abort();
+    if (state.activeTrigger) {
+      if (state.phase !== "canceling") {
+        await this.assertInterruptible(state, participantId, !options.leaseAlreadyFenced);
+        this.clearActivitySilence(state);
+        state.phase = "canceling";
+        state.cancelActorId = actorId;
+      }
+      this.requestRuntimeInterrupt(state, participantId);
+    }
+    await state.drainTask?.catch(() => undefined);
+    const interruptSettled = await state.stopInterruptPromise;
+    if (interruptSettled === false || state.stopError || state.activeTrigger) {
+      throw new Error(`Agent turn could not be safely stopped: ${participantId}`);
+    }
+  }
+
+  private async assertInterruptible(
+    state: BindingState,
+    participantId: string,
+    verifyLease = true,
+  ): Promise<void> {
+    if (verifyLease && state.binding.verifyLease && !(await state.binding.verifyLease())) {
       throw new Error(`Agent binding lease was lost: ${participantId}`);
     }
     if (!this.isActiveParticipant(participantId)) {
@@ -861,6 +906,7 @@ export class ConversationRuntimeRelay {
     if (!state.runtimeTurnAccepted || state.interruptIssued) return;
     state.interruptIssued = true;
     state.interruptPromise = this.invokeCancellation(state, participantId, state.retryDeadline);
+    if (state.stopRequested) state.stopInterruptPromise = state.interruptPromise;
   }
 
   private async invokeCancellation(
@@ -1070,7 +1116,7 @@ export class ConversationRuntimeRelay {
   }
 
   private startDrain(state: BindingState): void {
-    if (this.quiescing || state.sleepTransition || state.wakeUnavailable
+    if (this.quiescing || state.sleepTransition || state.wakeUnavailable || state.stopRequested
       || state.drainTask || !this.task || !this.states.includes(state)) return;
     state.drainController ??= new AbortController();
     if (state.drainController.signal.aborted) return;
@@ -1097,7 +1143,7 @@ export class ConversationRuntimeRelay {
           });
           return;
         }
-        if (!this.quiescing && this.task && this.states.includes(state) && !state.drainController?.signal.aborted
+        if (!this.quiescing && !state.stopRequested && this.task && this.states.includes(state) && !state.drainController?.signal.aborted
           && (state.needsHeadScan
             || state.scanSequence < state.observedHighWaterSequence)) {
           this.startDrain(state);
@@ -1109,7 +1155,7 @@ export class ConversationRuntimeRelay {
   private async drainState(state: BindingState, signal: AbortSignal): Promise<void> {
     const pageSize = this.options.catchUpPageSize ?? DEFAULT_CATCH_UP_PAGE_SIZE;
     let failures = 0;
-    while (!this.quiescing && !signal.aborted && this.states.includes(state)) {
+    while (!this.quiescing && !state.stopRequested && !signal.aborted && this.states.includes(state)) {
       let messages: ConversationMessage[];
       try {
         messages = await this.options.client.listMessages(this.options.conversationId, {
@@ -1152,7 +1198,7 @@ export class ConversationRuntimeRelay {
       ), 0);
 
       for (const message of messages) {
-        if (signal.aborted || !this.states.includes(state)) return;
+        if (state.stopRequested || signal.aborted || !this.states.includes(state)) return;
         if (message.sequence <= state.scanSequence) continue;
         const wake = isActive
           && shouldWake(message, state.binding, this.roster?.participants ?? []);
@@ -1495,6 +1541,7 @@ export class ConversationRuntimeRelay {
       conversationMessages,
       binding.maxMessages ?? 20,
       binding.maxTokens ?? 4_000,
+      binding.contextSequenceFloor,
     );
     let response: RuntimePortMessage | undefined;
     this.assertBeforeDeadline(deadline);
@@ -1629,10 +1676,18 @@ export class ConversationRuntimeRelay {
     deadline: number,
   ): Promise<void> {
     const interrupted = await state.interruptPromise;
+    if (interrupted === false && state.stopRequested) {
+      state.stopError = true;
+      throw new Error(`Runtime interruption could not be verified for ${state.binding.participantId}`);
+    }
     if (interrupted === false) {
       // An acknowledgement loss can deliver a session-level interrupt late. Do not let
       // another queued turn share the session until shutdown/recovery fences it.
       while (!this.controller?.signal.aborted) await delay(1_000, this.controller?.signal);
+      return;
+    }
+    if (state.stopRequested) {
+      await this.markProcessed(state, trigger.sequence, deadline);
       return;
     }
     await this.commitCancellation(state, trigger, deadline);
@@ -1673,7 +1728,7 @@ export class ConversationRuntimeRelay {
     // Conversation service acknowledgement was lost. A stopped/fenced Relay has no authority
     // to continue delivery and must let shutdown complete normally.
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
-      if (!await this.mayDeliverResponse(state)) return undefined;
+      if (!await this.mayDeliverResponse(state) || state.stopRequested) return undefined;
       let committed;
       try {
         this.assertBeforeDeadline(deadline);
@@ -1763,7 +1818,7 @@ export class ConversationRuntimeRelay {
     reason: DeliveryDeadLetterReason,
     deadline: number,
   ): Promise<void> {
-    if (!await this.mayDeliverResponse(state)) return;
+    if (!await this.mayDeliverResponse(state) || state.stopRequested) return;
     const commit = this.options.cursorStore?.commitDeliveryDeadLetter;
     if (!commit) throw new Error("Private delivery dead-letter storage is unavailable");
     this.assertBeforeDeadline(deadline);
@@ -1783,9 +1838,9 @@ export class ConversationRuntimeRelay {
   private async mayDeliverResponse(state: BindingState): Promise<boolean> {
     // A definitive false fences delivery. Storage/lease failures are transient and must
     // reach commitResponse's retry loop rather than silently dropping this outcome.
-    if (!this.states.includes(state)) return false;
+    if (!this.states.includes(state) || state.stopRequested) return false;
     if (state.binding.verifyLease && !(await state.binding.verifyLease())) return false;
-    return this.isActiveParticipant(state.binding.participantId);
+    return !state.stopRequested && this.isActiveParticipant(state.binding.participantId);
   }
 
   private async markProcessed(

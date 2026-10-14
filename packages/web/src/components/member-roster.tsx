@@ -1,6 +1,7 @@
 import type {
   LocalBulkAgentLifecycleResult,
   LocalConversationAgent,
+  LocalSessionContextMode,
   LocalTurnFailureDiagnostic,
 } from "@minu/channels-control/contracts";
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
@@ -21,6 +22,7 @@ function bulkReasonLabel(reason: LocalBulkAgentLifecycleResult["reason"]): strin
     case "already_idle": return "already idle";
     case "unconfigured": return "not configured";
     case "offline": return "offline";
+    case "new_session_required": return "new session required";
     case "uncertain": return "status uncertain";
     case "unavailable": return "unavailable";
     case undefined: return undefined;
@@ -64,16 +66,16 @@ export function MemberRoster({
   showDiagnostics?: boolean;
   drawer?: boolean;
   readOnly?: boolean;
-  onStartAgent?(identityId: string): void | Promise<unknown>;
+  onStartAgent?(identityId: string, contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onReconnectAgent?(identityId: string): void | Promise<unknown>;
-  onReplaceAgent?(identityId: string): void | Promise<unknown>;
+  onReplaceAgent?(identityId: string, contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onCancelAgent?(identityId: string): void | Promise<unknown>;
   onStopAgent?(identityId: string): void | Promise<unknown>;
   onStartAllAgents?(): void;
   onStopAllAgents?(): Promise<void>;
   onDismissAgentError?(): void;
   onDismissBulkError?(): void;
-  pendingAgentAction?: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string };
+  pendingAgentAction?: { action: "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel"; identityId: string };
   pendingBulkAction?: "start" | "stop";
   pendingBulkIdentityIds?: ReadonlySet<string>;
   bulkResultAction?: "start" | "stop";
@@ -117,7 +119,7 @@ export function MemberRoster({
   const [now, setNow] = useState(() => Date.now());
   const agentValues = [...(localAgents?.values() ?? [])];
   const hasActivity = agentValues.some((agent) => agent.activity);
-  const startEligible = agentValues.filter(({ state }) => state === "unbound" || state === "disabled").length;
+  const startEligible = agentValues.filter(({ state }) => state === "unbound" || state === "stopped").length;
   const stopEligible = agentValues.filter(({ state }) => state === "idle" || state === "running" || state === "disconnected" || state === "offline").length;
   const participantActionsMenu = !readOnly && (onStartAllAgents || onStopAllAgents) ? (
     <ParticipantActionsMenu
@@ -205,8 +207,8 @@ export function MemberRoster({
                         const retry = bulkResultAction === "stop"
                           ? onStopAgent?.(result.identityId)
                           : localAgents?.get(result.identityId)?.state === "disabled"
-                            ? onReplaceAgent?.(result.identityId)
-                            : onStartAgent?.(result.identityId);
+                            ? onReplaceAgent?.(result.identityId, "with_context")
+                            : onStartAgent?.(result.identityId, "with_context");
                         void Promise.resolve(retry).catch(() => undefined);
                       }}
                     >
@@ -262,17 +264,17 @@ export function MemberRoster({
               participantName={label}
               trigger={trigger}
               onDetails={(trigger) => openDetails(participant.id, trigger)}
-              replacementStartsSession={localAgent?.state === "disabled" || localAgent?.state === "offline"}
-              canStart={!readOnly && Boolean(localAgent?.capabilities.start && onStartAgent)}
+              canStart={!readOnly && localAgent?.state === "unbound" && Boolean(localAgent.capabilities.start && onStartAgent)}
+              canResume={!readOnly && localAgent?.state === "stopped" && Boolean(localAgent.capabilities.start && onStartAgent)}
               canReconnect={!readOnly && Boolean(localAgent?.capabilities.reconnect && onReconnectAgent)}
               canReplace={!readOnly && Boolean(localAgent?.capabilities.replace && onReplaceAgent)}
               canCancel={!readOnly && Boolean(localAgent?.capabilities.interrupt && onCancelAgent)}
               canStop={!readOnly && Boolean(localAgent?.capabilities.stop && onStopAgent)}
               pendingAction={pendingAgentAction?.identityId === participant.id ? pendingAgentAction.action : undefined}
               disabled={Boolean(pendingAgentAction && pendingAgentAction.identityId !== participant.id) || pendingBulkIdentityIds?.has(participant.id)}
-              onStart={onStartAgent ? () => onStartAgent(participant.id) : undefined}
+              onStart={onStartAgent ? (contextMode) => onStartAgent(participant.id, contextMode) : undefined}
               onReconnect={onReconnectAgent ? () => onReconnectAgent(participant.id) : undefined}
-              onReplace={onReplaceAgent ? () => onReplaceAgent(participant.id) : undefined}
+              onReplace={onReplaceAgent ? (contextMode) => onReplaceAgent(participant.id, contextMode) : undefined}
               onCancel={onCancelAgent ? () => onCancelAgent(participant.id) : undefined}
               onStop={onStopAgent ? () => onStopAgent(participant.id) : undefined}
               onDismissError={onDismissAgentError}

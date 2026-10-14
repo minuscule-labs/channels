@@ -2,13 +2,15 @@
 
 ## Unreleased
 
+- Use the short Bell fifth notification sound at its original pitch with increased gain; unlock saved sound preferences on trusted interaction after reload and notify when the browser window is unfocused while keeping a focused chat at its latest messages quiet.
+- Persist a lease-clearing Stop intent before draining so crashes and uncertain pauses cannot auto-resume; preserve managed sessions for explicit Start, discard work through the stop boundary, and apply persisted per-session context modes including Fresh-session history exclusion.
 - Place brief red turn-failure notices after their triggering messages in the Conversation timeline, with safe in-app diagnostics available to owners/admins from the notice and participant details; remove acknowledgment controls and avatar issue badges.
 
 - Share complete-handle mention parsing between server and browser so trailing hyphens such as `@channel-` cannot be truncated into broadcast or another participant's handle.
 - Scope broadcast recipient labels to the Conversation roster, while keeping broader Workspace identities for historical author/recipient attribution after removal.
 - Make transient chat, participant, agent, and Workspace action errors dismissible without losing drafts, retry keys, or persisted diagnostics.
 - Add collapse/dismiss controls to bulk-agent results and isolate chat feedback and late lifecycle responses across Conversation navigation.
-- Keep individual session actions in each participant's popup without inline buttons. Label unstarted/stopped/offline launches as Start session, retain New session for resetting an existing session, and preserve capability checks and replacement confirmation.
+- Keep individual session actions in each participant's popup without inline buttons. **Start agent** explicitly resumes a stopped session; **Reconnect** remains distinct. Offer **New session with context** and **Fresh session** for separate sessions, with Fresh excluding messages through its pre-launch Conversation boundary from future prompts.
 - Restore `@channel` in broadcast suggestions and recipient labels, recognize it through the real message/response API, and retain the canonical `@conversation` target and older drafts. Reserve both broadcast handles against new assignment; preserve existing `channel` handles as direct mentions until renamed, with an unambiguous legacy broadcast fallback.
 - Simplify Conversation participant dialogs to choosing existing agents, keep the current human automatic and existing non-agent roster members editable, and move identity creation out of the modal to the Workspace Agents page.
 - Move channel settings from the header cog to the bottom of owner/admin sidebar popups, opening the existing name, participant, and working-folder modal without navigation or changes to its save behavior.
