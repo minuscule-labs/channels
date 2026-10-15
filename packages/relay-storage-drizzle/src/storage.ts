@@ -15,6 +15,7 @@ import type {
   RuntimeSessionCleanupAttempt,
   RuntimeSessionHistoryOrigin,
   RuntimeSessionHistoryRecord,
+  RuntimeSessionContextMode,
   RuntimeSessionRetirementReason,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
@@ -155,7 +156,11 @@ async function assertManagedSessionReusable(
 async function insertSessionActivation(
   transaction: RelayStorageTransaction,
   record: ConversationAgentBindingRecord,
-  activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+  activation?: {
+    origin?: RuntimeSessionHistoryOrigin;
+    conversationSequence?: number;
+    contextMode?: RuntimeSessionContextMode;
+  },
 ): Promise<void> {
   if (record.runtimeOwnerId !== undefined && !record.runtimeOwnerId.trim()) {
     throw new Error("Runtime owner scope must not be empty");
@@ -177,6 +182,7 @@ async function insertSessionActivation(
     mapping: managed ? "managed" : "legacy_unmapped",
     state: "active",
     origin: activation?.origin ?? (managed ? "started" : "migrated"),
+    contextMode: activation?.contextMode ?? "with_context",
     conversationSequenceAtActivation: activation?.conversationSequence ?? null,
     activatedAt: record.updatedAt,
     retirementReason: null,
@@ -398,7 +404,11 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
 
   async putBinding(
     record: ConversationAgentBindingRecord,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
   ): Promise<ConversationAgentBindingRecord> {
     await this.database.transaction(async (transaction) => {
       await transaction.insert(schema.conversationAgentBindings).values({
@@ -508,6 +518,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     leaseOwner: string,
     now: string,
     leaseExpiresAt: string,
+    expected?: Pick<ConversationAgentBindingRecord, "generation" | "state">,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({
       leaseOwner,
@@ -516,6 +527,11 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     }).where(and(
       eq(schema.conversationAgentBindings.id, bindingId),
       ne(schema.conversationAgentBindings.state, "disabled"),
+      ne(schema.conversationAgentBindings.state, "stopping"),
+      ...(expected ? [
+        eq(schema.conversationAgentBindings.generation, expected.generation),
+        eq(schema.conversationAgentBindings.state, expected.state),
+      ] : []),
       or(
         isNull(schema.conversationAgentBindings.leaseOwner),
         eq(schema.conversationAgentBindings.leaseOwner, leaseOwner),
@@ -603,7 +619,11 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
   ): Promise<ConversationAgentBindingRecord | undefined> {
     return this.database.transaction(async (transaction) => {
       const rows = await transaction.update(schema.conversationAgentBindings).set({
@@ -630,6 +650,63 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       const replacement = binding(rows[0]);
       await insertSessionActivation(transaction, replacement, activation);
       return replacement;
+    });
+  }
+
+  async beginStopBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing">,
+    updatedAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const rows = await this.database.update(schema.conversationAgentBindings).set({
+      state: "stopping",
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      lastVerifiedAt: null,
+      wakeRequestedAt: null,
+      updatedAt,
+    }).where(and(
+      eq(schema.conversationAgentBindings.id, bindingId),
+      eq(schema.conversationAgentBindings.generation, expectedGeneration),
+      eq(schema.conversationAgentBindings.state, expectedState),
+    )).returning();
+    return rows[0] ? binding(rows[0]) : undefined;
+  }
+
+  async pauseBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    conversationSequence: number,
+    updatedAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    return this.database.transaction(async (transaction) => {
+      const rows = await transaction.update(schema.conversationAgentBindings).set({
+        state: "paused",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastVerifiedAt: null,
+        wakeRequestedAt: null,
+        updatedAt,
+      }).where(and(
+        eq(schema.conversationAgentBindings.id, bindingId),
+        eq(schema.conversationAgentBindings.generation, expectedGeneration),
+        ne(schema.conversationAgentBindings.state, "disabled"),
+      )).returning();
+      if (!rows[0]) return undefined;
+      await transaction.insert(schema.agentHostCursors).values({
+        conversationId: rows[0].conversationId,
+        participantId: rows[0].agentIdentityId,
+        lastProcessedSequence: conversationSequence,
+        updatedAt,
+      }).onConflictDoUpdate({
+        target: [schema.agentHostCursors.conversationId, schema.agentHostCursors.participantId],
+        set: {
+          lastProcessedSequence: sql`max(${schema.agentHostCursors.lastProcessedSequence}, ${conversationSequence})`,
+          updatedAt,
+        },
+      });
+      return binding(rows[0]);
     });
   }
 

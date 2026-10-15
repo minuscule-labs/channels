@@ -1,4 +1,4 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 17 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 18 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -193,10 +193,12 @@ export type LocalConversationAgentState =
   | "running"
   | "disconnected"
   | "offline"
+  | "stopped"
   | "disabled"
   | "uncertain";
 
 export type LocalWakePolicy = "mentions" | "direct_mentions" | "all_messages" | "muted";
+export type LocalSessionContextMode = "with_context" | "fresh";
 
 /** Presentation-safe Relay activity; it deliberately omits Runtime/session internals. */
 export interface LocalAgentActivity {
@@ -295,6 +297,7 @@ export type LocalBulkAgentLifecycleReason =
   | "already_idle"
   | "unconfigured"
   | "offline"
+  | "new_session_required"
   | "uncertain"
   | "unavailable";
 

@@ -10,15 +10,16 @@ import {
   Square,
 } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
+import type { LocalSessionContextMode } from "@minu/channels-control/contracts";
 import { ErrorNotice } from "./ui/error-notice";
 
-type ParticipantSessionAction = "start" | "reconnect" | "replace" | "stop" | "cancel";
-type ConfirmedAction = "replace" | "stop";
+type ParticipantSessionAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
+type ConfirmedAction = "replace" | "fresh" | "start-fresh" | "stop";
 
 export function ParticipantSessionActionsMenu({
   participantName,
-  replacementStartsSession = false,
   canStart,
+  canResume,
   canReconnect,
   canReplace,
   canCancel,
@@ -35,17 +36,17 @@ export function ParticipantSessionActionsMenu({
   trigger,
 }: {
   participantName: string;
-  replacementStartsSession?: boolean;
   canStart: boolean;
+  canResume: boolean;
   canReconnect: boolean;
   canReplace: boolean;
   canCancel: boolean;
   canStop: boolean;
   pendingAction?: ParticipantSessionAction;
   disabled?: boolean;
-  onStart?(): void | Promise<unknown>;
+  onStart?(contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onReconnect?(): void | Promise<unknown>;
-  onReplace?(): void | Promise<unknown>;
+  onReplace?(contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onCancel?(): void | Promise<unknown>;
   onStop?(): void | Promise<unknown>;
   onDismissError?(): void;
@@ -58,7 +59,7 @@ export function ParticipantSessionActionsMenu({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const pending = pendingAction !== undefined;
-  const hasActions = canStart || canReconnect || canReplace || canCancel || canStop;
+  const hasActions = canStart || canResume || canReconnect || canReplace || canCancel || canStop;
 
   if (!hasActions && !onDetails) return null;
 
@@ -75,15 +76,18 @@ export function ParticipantSessionActionsMenu({
     if (!confirmedAction) return;
     setError(undefined);
     try {
-      if (confirmedAction === "replace") await onReplace?.();
+      if (confirmedAction === "replace") await onReplace?.("with_context");
+      else if (confirmedAction === "fresh") await onReplace?.("fresh");
+      else if (confirmedAction === "start-fresh") await onStart?.("fresh");
       else await onStop?.();
       setConfirmedAction(undefined);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to complete the participant action.");
     }
   };
-  const replacing = confirmedAction === "replace";
-  const replacementLabel = replacementStartsSession ? "Start session" : "New session";
+  const replacing = confirmedAction === "replace" || confirmedAction === "fresh" || confirmedAction === "start-fresh";
+  const fresh = confirmedAction === "fresh" || confirmedAction === "start-fresh";
+  const replacementLabel = fresh ? "Fresh session" : "New session with context";
 
   return (
     <Dialog.Root
@@ -110,13 +114,31 @@ export function ParticipantSessionActionsMenu({
             sideOffset={6}
             className="z-50 min-w-52 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none"
           >
+            {canResume && onStart ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                onClick={() => invoke(() => onStart("with_context"))}
+              >
+                <Play className="h-4 w-4" /> Start agent
+              </button>
+            ) : null}
             {canStart && onStart ? (
               <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => invoke(onStart)}
+                onClick={() => invoke(() => onStart("with_context"))}
               >
-                <Play className="h-4 w-4" /> Start session
+                <Play className="h-4 w-4" /> Start agent
+              </button>
+            ) : null}
+            {canStart && onStart ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                onClick={() => requestConfirmation("start-fresh")}
+              >
+                <Play className="h-4 w-4" /> Fresh session
               </button>
             ) : null}
             {canReconnect && onReconnect ? (
@@ -134,7 +156,16 @@ export function ParticipantSessionActionsMenu({
                 className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
                 onClick={() => requestConfirmation("replace")}
               >
-                {replacementStartsSession ? <Play className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />} {replacementLabel}
+                <RefreshCw className="h-4 w-4" /> New session with context
+              </button>
+            ) : null}
+            {canReplace && onReplace ? (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                onClick={() => requestConfirmation("fresh")}
+              >
+                <Play className="h-4 w-4" /> Fresh session
               </button>
             ) : null}
             {canCancel && onCancel ? (
@@ -186,12 +217,20 @@ export function ParticipantSessionActionsMenu({
           }}
         >
           <Dialog.Title className="text-base font-semibold">
-            {replacing ? `Start a new session for ${participantName}?` : `Stop ${participantName}?`}
+            {confirmedAction === "replace"
+              ? `Start a new session with context for ${participantName}?`
+              : fresh
+                ? `Start a fresh session for ${participantName}?`
+                : `Stop ${participantName}?`}
           </Dialog.Title>
           <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
-            {replacing
-              ? "The private Runtime transcript will reset using the current configuration. A temporary handoff is created from public Conversation history when available; it is not stored as memory. Pending work through the current Conversation head will be discarded. Conversation history and filesystem effects remain; future turns receive the configured recent context."
-              : "Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back."}
+            {confirmedAction === "replace"
+              ? "This creates a new Runtime session; it does not resume the current transcript. A temporary handoff may be summarized from public Conversation history, and future turns receive configured recent context. Pending work through the current Conversation head is discarded. Conversation history and filesystem effects remain."
+              : confirmedAction === "fresh"
+                ? "This creates a new Runtime session with no handoff and excludes Conversation messages from before it starts. Current agent/project instructions and configuration still apply; future messages are included. Pending work through the current Conversation head is discarded. Conversation history and filesystem effects remain."
+                : confirmedAction === "start-fresh"
+                  ? "Starts a Runtime session with no handoff and excludes all earlier Conversation messages. Saved agent/project instructions and configuration still apply; messages posted after it starts are included."
+                : "Active work will be interrupted and queued turns through the stop boundary discarded. The same Runtime session is kept; messages posted while stopped wait until you resume it. External tool or filesystem effects cannot be rolled back."}
           </Dialog.Description>
           {error ? <ErrorNotice className="mt-3" onDismiss={() => {
             setError(undefined);

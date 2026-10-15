@@ -533,11 +533,18 @@ test("private bindings isolate Conversation sessions and restore them under gene
     }),
   ]);
   assert.equal(isResourceId(agentConfig.id, "config"), true);
+  const preActivationMessage = await client.postMessage(conversationA.id, {
+    participantId: human.id,
+    to: [agent.id],
+    body: "This must remain outside a fresh session",
+  });
   const bindingA = await directory.bindAgent({
     conversationId: conversationA.id,
     agentIdentityId: agent.id,
     runtimeAdapter: "fake",
     runtimeSessionId: "session-conversation-a",
+    conversationSequenceAtActivation: preActivationMessage.sequence,
+    contextMode: "fresh",
   });
   assert.equal(isResourceId(bindingA.id, "binding"), true);
   await Promise.all([
@@ -590,6 +597,9 @@ test("private bindings isolate Conversation sessions and restore them under gene
       first.bindings.map(({ sessionId }) => sessionId).sort(),
       ["reviewer-conversation-a", "session-conversation-a"],
     );
+    assert.equal(first.bindings.find(({ sessionId }) => sessionId === "session-conversation-a")?.contextSequenceFloor,
+      preActivationMessage.sequence);
+    assert.equal(await store.getCursor(conversationA.id, agent.id), preActivationMessage.sequence);
     assert.equal(competitor.bindings.length, 0);
     assert.equal(competitor.outcomes.get(bindingA.id), "lease_unavailable");
     assert.deepEqual(
@@ -706,6 +716,27 @@ test("private bindings isolate Conversation sessions and restore them under gene
   assert.equal(uncertain.bindings.length, 0);
   assert.equal((await store.getBinding(bindingA.id))?.leaseOwner, undefined);
   await uncertain.close();
+  runtime.status = status;
+  const acquire = store.acquireBindingLease.bind(store);
+  const raceTargets = (await store.listConversationBindings(conversationA.id));
+  for (const [index, target] of raceTargets.entries()) {
+    const racedState = index === 0 ? "stopping" : "paused";
+    store.acquireBindingLease = async (id, ...args) => {
+      if (id === target.id) {
+        await store.beginStopBinding(id, target.generation, target.state as "connected" | "offline", new Date().toISOString());
+        if (racedState === "paused") await store.pauseBinding(id, target.generation, 1, new Date().toISOString());
+      }
+      return acquire(id, ...args);
+    };
+    const raced = await restoreConversationBindings({
+      client, store, conversationId: conversationA.id, bindingIds: [target.id],
+      leaseOwner: `raced-${racedState}`, runtimes: { fake: runtime },
+    });
+    assert.equal(raced.bindings.length, 0, "Stop winning after discovery must prevent automatic restoration");
+    assert.equal((await store.getBinding(target.id))?.state, racedState);
+    await raced.close();
+  }
+  store.acquireBindingLease = acquire;
   await server.close();
 });
 
@@ -1148,6 +1179,56 @@ test("an addressed turn includes bounded Conversation history from before the bi
     await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
     assert.match(runtime.prompts.get("session-a")![0]!, /Historical record needed by the next request/);
     assert.match(runtime.prompts.get("session-a")![0]!, /@agent-a see above/);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("fresh sessions exclude pre-activation Conversation history but retain later messages", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime();
+  const cursors = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+      { id: "observer", type: "human" },
+    ],
+  });
+  const prior = await client.postMessage(conversation.id, {
+    participantId: "user",
+    body: "This pre-session detail must not reach a fresh agent",
+  });
+  await cursors.setCursor(conversation.id, "agent-a", prior.sequence);
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{
+      participantId: "agent-a",
+      sessionId: "fresh-session",
+      runtime,
+      contextSequenceFloor: prior.sequence,
+    }],
+    cursorStore: cursors,
+  });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, {
+      participantId: "user",
+      body: "Post-session information remains available",
+    });
+    await client.postMessage(conversation.id, {
+      participantId: "user",
+      to: ["agent-a"],
+      body: "@agent-a answer using the new information",
+    });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 4);
+    const prompt = runtime.prompts.get("fresh-session")?.[0] ?? "";
+    assert.doesNotMatch(prompt, /pre-session detail/);
+    assert.match(prompt, /Post-session information remains available/);
+    assert.match(prompt, /answer using the new information/);
   } finally {
     await relay.stop();
     await server.close();
@@ -2211,6 +2292,115 @@ test("interrupting an active relay turn suppresses its response and runs the rep
     assert.equal(messages.some((message) => message.body.includes("original response")), false);
     assert.equal(relay.cursor("agent-a"), 2);
   } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("Stop interrupts the active Relay turn, discards queued turns, and leaves no chat notice", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new InterruptibleRuntime();
+  const cursorStore = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore,
+  });
+  try {
+    await relay.start();
+    const active = await client.postMessage(conversation.id, {
+      participantId: "user",
+      to: ["agent-a"],
+      body: "@agent-a Start the task",
+    });
+    await waitUntil(async () => (await runtime.status()) === "working");
+    const queued = await client.postMessage(conversation.id, {
+      participantId: "user",
+      to: ["agent-a"],
+      body: "@agent-a Queue this before Stop",
+    });
+    await waitUntil(async () => relay.agentWorkSnapshot("agent-a")?.queuedTurnsExact === false);
+
+    await relay.stopBinding("agent-a", "user");
+    assert.equal(runtime.interruptCount, 1);
+    assert.equal(runtime.sendCount, 1);
+    assert.equal(relay.cursor("agent-a"), active.sequence);
+    assert.equal(await cursorStore.getCursor(conversation.id, "agent-a"), active.sequence);
+
+    await client.postMessage(conversation.id, {
+      participantId: "user",
+      to: ["agent-a"],
+      body: "@agent-a Wait for explicit Start",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const messages = await client.listMessages(conversation.id);
+    assert.deepEqual(messages.map(({ body }) => body), [
+      "@agent-a Start the task",
+      "@agent-a Queue this before Stop",
+      "@agent-a Wait for explicit Start",
+    ]);
+    assert.equal(queued.sequence, 2);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("Stop fences response delivery when lease verification is already in flight", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime();
+  const cursorStore = new InMemoryConversationStorage();
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  let leaseChecks = 0;
+  let leaseVerificationBlocked = false;
+  let releaseLease!: () => void;
+  const heldLease = new Promise<void>((resolve) => { releaseLease = resolve; });
+  const relay = new ConversationRuntimeRelay({
+    client,
+    conversationId: conversation.id,
+    bindings: [{
+      participantId: "agent-a",
+      sessionId: "session-a",
+      runtime,
+      verifyLease: async () => {
+        leaseChecks += 1;
+        if (leaseChecks === 3) {
+          leaseVerificationBlocked = true;
+          await heldLease;
+        }
+        return true;
+      },
+    }],
+    cursorStore,
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(conversation.id, {
+      participantId: "user",
+      body: "@agent-a suppress this response when Stop wins",
+    });
+    await waitUntil(async () => Promise.resolve(leaseVerificationBlocked));
+
+    const stopping = relay.stopBinding("agent-a", "user");
+    await waitUntil(async () => Promise.resolve(relay.agentWorkSnapshot("agent-a")?.stopRequested === true));
+    releaseLease();
+    await stopping;
+
+    const messages = await client.listMessages(conversation.id);
+    assert.deepEqual(messages.map(({ body }) => body), [trigger.body]);
+  } finally {
+    releaseLease();
     await relay.stop();
     await server.close();
   }

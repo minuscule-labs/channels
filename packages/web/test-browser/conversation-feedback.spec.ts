@@ -38,7 +38,9 @@ function localAgent(data: Fixture, state: LocalConversationAgent["state"] = "unb
     identityId: data.agent.id,
     state,
     capabilities: {
-      start: state === "unbound", replace: state === "disabled" || state === "offline", stop: state === "idle",
+      start: state === "unbound" || state === "stopped",
+      replace: state === "disabled" || state === "offline" || state === "stopped",
+      stop: state === "idle",
       steer: false, interrupt: false, reconnect: false,
     },
   };
@@ -46,7 +48,7 @@ function localAgent(data: Fixture, state: LocalConversationAgent["state"] = "unb
 
 async function mockAgents(page: Page, data: Fixture, state: () => LocalConversationAgent["state"] = () => "unbound") {
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 17, conversationId: data.primary.id, agents: [localAgent(data, state())] },
+    json: { protocolVersion: 18, conversationId: data.primary.id, agents: [localAgent(data, state())] },
   }));
 }
 
@@ -57,7 +59,7 @@ async function startAll(page: Page) {
 
 function bulkResponse(data: Fixture) {
   return {
-    protocolVersion: 17,
+    protocolVersion: 18,
     conversationId: data.primary.id,
     results: [
       { identityId: data.agent.id, outcome: "failed" },
@@ -88,7 +90,7 @@ for (const mobile of [false, true]) {
     await expect(page.getByRole("button", { name: `Start ${data.agent.displayName}`, exact: true })).toHaveCount(0);
     const agentActions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
     await agentActions.click();
-    await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(agentActions).toBeFocused();
     // The next operation shows fresh feedback even after the previous panel was dismissed.
@@ -114,7 +116,7 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
   });
   await launch(page, request, data);
   const actions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
-  const start = page.getByRole("button", { name: "Start session", exact: true });
+  const start = page.getByRole("button", { name: "Start agent", exact: true });
   await expect(page.getByRole("button", { name: `Start ${data.agent.displayName}`, exact: true })).toHaveCount(0);
   await expect(start).toHaveCount(0);
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -139,8 +141,51 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
   expect(calls).toBe(3);
 });
 
+test("offers fresh context isolation when initially starting an unbound agent", async ({ page, request }) => {
+  const data = await fixture(request);
+  let state: LocalConversationAgent["state"] = "unbound";
+  let contextMode: unknown;
+  await mockAgents(page, data, () => state);
+  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/start`, async (route) => {
+    contextMode = route.request().postDataJSON()?.contextMode;
+    state = "idle";
+    await route.fulfill({ json: { agent: localAgent(data, state) } });
+  });
+  await launch(page, request, data);
+  await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
+  await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Fresh session", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Fresh session", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: `Start a fresh session for ${data.agent.displayName}?` });
+  await expect(confirmation).toContainText("excludes all earlier Conversation messages");
+  await confirmation.getByRole("button", { name: "Fresh session", exact: true }).click();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
+  expect(contextMode).toBe("fresh");
+});
+
+test("Start agent resumes an intentionally stopped session without confirmation", async ({ page, request }) => {
+  const data = await fixture(request);
+  let state: LocalConversationAgent["state"] = "stopped";
+  let contextMode: unknown;
+  await mockAgents(page, data, () => state);
+  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/start`, async (route) => {
+    contextMode = route.request().postDataJSON()?.contextMode;
+    state = "idle";
+    await route.fulfill({ json: { agent: localAgent(data, state) } });
+  });
+  await launch(page, request, data);
+  await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
+  const start = page.getByRole("button", { name: "Start agent", exact: true });
+  await expect(start).toBeVisible();
+  await expect(page.getByRole("button", { name: "New session with context", exact: true })).toBeVisible();
+  await start.click();
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(contextMode).toBe("with_context");
+});
+
 for (const initialState of ["disabled", "offline"] as const) {
-  test(`starting a ${initialState} agent is labelled Start session and keeps replacement confirmation`, async ({ page, request }) => {
+  test(`starting a ${initialState} agent offers an explicit context mode and keeps replacement confirmation`, async ({ page, request }) => {
     const data = await fixture(request);
     let state: LocalConversationAgent["state"] = initialState;
     await mockAgents(page, data, () => state);
@@ -156,18 +201,18 @@ for (const initialState of ["disabled", "offline"] as const) {
     const actions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
     const openConfirmation = async () => {
       await actions.click();
-      await expect(page.getByRole("button", { name: "New session", exact: true })).toHaveCount(0);
-      await page.getByRole("button", { name: "Start session", exact: true }).click();
+      await expect(page.getByRole("button", { name: "New session with context", exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "New session with context", exact: true }).click();
     };
-    await expect(page.getByRole("button", { name: "Start session", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "New session with context", exact: true })).toHaveCount(0);
     await openConfirmation();
     const confirmation = page.getByRole("dialog");
-    await expect(confirmation).toContainText("private Runtime transcript will reset");
+    await expect(confirmation).toContainText("does not resume the current transcript");
     await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(actions).toBeFocused();
     expect(calls).toBe(0);
     await openConfirmation();
-    await confirmation.getByRole("button", { name: "Start session", exact: true }).click();
+    await confirmation.getByRole("button", { name: "New session with context", exact: true }).click();
     await expect(confirmation.getByRole("alert")).toContainText("Restart unavailable");
     await confirmation.getByRole("button", { name: "Dismiss error", exact: true }).click();
     await expect(confirmation.getByRole("alert")).toHaveCount(0);
@@ -175,7 +220,7 @@ for (const initialState of ["disabled", "offline"] as const) {
     await expect(page.getByRole("alert")).toHaveCount(0);
     await openConfirmation();
     fail = false;
-    await confirmation.getByRole("button", { name: "Start session", exact: true }).click();
+    await confirmation.getByRole("button", { name: "New session with context", exact: true }).click();
     await expect(confirmation).toHaveCount(0);
     await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
     expect(calls).toBe(2);

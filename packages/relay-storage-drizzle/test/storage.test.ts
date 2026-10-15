@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createClient } from "@libsql/client";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import type {
   ConversationAgentBindingRecord,
   ConversationWorkingFolder,
   TurnFailureDiagnosticInput,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
+import { defaultRelayMigrationsFolder, DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../src/storage.ts";
 
 test("private relay storage rejects remote database URLs", async () => {
   await assert.rejects(
@@ -363,6 +365,60 @@ test("managed binding sleep and wake states use durable lease-fenced transitions
   }
 });
 
+test("the session context migration backfills existing history as with-context", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-context-migration-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const migrationsFolder = join(directory, "v0013-migrations");
+  let storage: DrizzleLibSqlRelayStorage | undefined;
+  try {
+    await cp(defaultRelayMigrationsFolder(), migrationsFolder, { recursive: true });
+    const journalPath = join(migrationsFolder, "meta", "_journal.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as { entries: Array<{ idx: number }> };
+    journal.entries = journal.entries.filter(({ idx }) => idx <= 13);
+    await writeFile(journalPath, JSON.stringify(journal));
+
+    const migrations = readMigrationFiles({ migrationsFolder });
+    const legacyClient = createClient({ url });
+    try {
+      for (const migration of migrations) {
+        for (const statement of migration.sql) await legacyClient.execute(statement);
+      }
+      await legacyClient.execute(
+        "CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash TEXT NOT NULL, created_at NUMERIC)",
+      );
+      for (const migration of migrations) {
+        await legacyClient.execute({
+          sql: "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+          args: [migration.hash, migration.folderMillis],
+        });
+      }
+      const timestamp = "2026-01-01T00:00:00.000Z";
+      await legacyClient.execute({
+        sql: `INSERT INTO conversation_agent_session_history (
+          id, workspace_id, conversation_id, agent_identity_id, workspace_agent_config_id,
+          binding_id, binding_generation, runtime_adapter, mapping, state, origin, activated_at,
+          cleanup_action, cleanup_status, retention_status, cleanup_attempt_count, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          "history-before-context-mode", "workspace", "conversation", "agent", "config",
+          "binding", 1, "managed-test", "legacy_unmapped", "active", "migrated", timestamp,
+          "none", "unknown", "retained", 0, timestamp, timestamp,
+        ],
+      });
+    } finally {
+      await legacyClient.close();
+    }
+
+    storage = await DrizzleLibSqlRelayStorage.open({ url });
+    const history = await storage.listSessionHistory("conversation", "agent");
+    assert.equal(history.length, 1);
+    assert.equal(history[0]?.contextMode, "with_context");
+  } finally {
+    await storage?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("managed session history is transactionally versioned, owner-scoped, and reconciled after reopen", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-relay-session-history-"));
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));
@@ -402,7 +458,7 @@ test("managed session history is transactionally versioned, owner-scoped, and re
       "managed-session-b",
       "2026-01-01T00:00:01.000Z",
       ownerId,
-      { origin: "started", conversationSequence: 18 },
+      { origin: "started", conversationSequence: 18, contextMode: "fresh" },
     );
     assert.equal(replaced?.generation, 2);
     assert.equal(replaced?.runtimeSessionId, "managed-session-b");
@@ -430,6 +486,9 @@ test("managed session history is transactionally versioned, owner-scoped, and re
       { managedSessionId: "managed-session-b", state: "active", cleanupStatus: "not_required", mapping: "managed" },
     ]);
     assert.equal(history[0]?.conversationSequenceAtActivation, 12);
+    assert.equal(history[0]?.contextMode, "with_context");
+    assert.equal(history[1]?.conversationSequenceAtActivation, 18);
+    assert.equal(history[1]?.contextMode, "fresh");
     assert.equal(history[0]?.conversationSequenceAtRetirement, undefined);
     assert.equal(history[0]?.retentionStatus, "destroy_pending");
     assert.equal(history[1]?.retentionStatus, "retained");
@@ -459,6 +518,7 @@ test("managed session history is transactionally versioned, owner-scoped, and re
     assert.equal(history[0]?.cleanupAttemptCount, 1);
     assert.equal(history[0]?.retentionStatus, "destroyed");
     assert.equal(history[1]?.state, "active");
+    assert.equal(history[1]?.contextMode, "fresh");
     const disabled = await reopened.disableBinding(
       binding.id,
       2,
@@ -471,6 +531,83 @@ test("managed session history is transactionally versioned, owner-scoped, and re
     await reopened.deleteBinding(binding.id);
     assert.equal(await reopened.getBinding(binding.id), undefined);
     assert.equal((await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId)).length, 2);
+  } finally {
+    await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stop intent is durable and fences a binding across storage reopen", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-relay-stopping-state-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const first = await DrizzleLibSqlRelayStorage.open({ url });
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  const config: WorkspaceAgentConfig = {
+    id: "config-stopping",
+    workspaceId: "workspace-stopping",
+    agentIdentityId: "agent-stopping",
+    status: "active",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const binding: ConversationAgentBindingRecord = {
+    id: "binding-stopping",
+    workspaceAgentConfigId: config.id,
+    workspaceId: config.workspaceId,
+    conversationId: "conversation-stopping",
+    agentIdentityId: config.agentIdentityId,
+    runtimeAdapter: "pi",
+    runtimeSessionId: "managed-session-stopping",
+    generation: 1,
+    state: "connected",
+    wakePolicy: "mentions",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  try {
+    await first.putAgentConfig(config);
+    await first.putBinding(binding, { origin: "started", conversationSequence: 4 });
+    const leased = await first.acquireBindingLease(
+      binding.id,
+      "host-stopping",
+      timestamp,
+      "2026-01-01T00:00:30.000Z",
+    );
+    assert.equal(leased?.leaseOwner, "host-stopping");
+    const stopping = await first.beginStopBinding(
+      binding.id,
+      binding.generation,
+      "connected",
+      "2026-01-01T00:00:01.000Z",
+    );
+    assert.equal(stopping?.state, "stopping");
+    assert.equal(stopping?.leaseOwner, undefined);
+    assert.equal(await first.acquireBindingLease(
+      binding.id, "raced-restorer", "2026-01-01T00:00:01.100Z", "2026-01-01T00:00:31.100Z",
+      { generation: binding.generation, state: "connected" },
+    ), undefined);
+    assert.equal(await first.beginStopBinding(
+      binding.id,
+      binding.generation,
+      "connected",
+      "2026-01-01T00:00:02.000Z",
+    ), undefined, "the stop transition is compare-and-set against the observed state");
+  } finally {
+    await first.close();
+  }
+
+  const reopened = await DrizzleLibSqlRelayStorage.open({ url });
+  try {
+    const persisted = await reopened.getBinding(binding.id);
+    assert.equal(persisted?.state, "stopping");
+    assert.equal(persisted?.generation, binding.generation);
+    assert.equal(persisted?.runtimeSessionId, binding.runtimeSessionId);
+    assert.equal((await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId))[0]?.state, "active");
+    await reopened.pauseBinding(binding.id, binding.generation, 4, "2026-01-01T00:00:03.000Z");
+    assert.equal(await reopened.acquireBindingLease(
+      binding.id, "raced-restorer", "2026-01-01T00:00:04.000Z", "2026-01-01T00:00:34.000Z",
+      { generation: binding.generation, state: "connected" },
+    ), undefined, "a stale eligible snapshot cannot acquire an intentionally paused binding");
   } finally {
     await reopened.close();
     await rm(directory, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 # Runtime session history and recovery
 
-**Status:** Phase 1 implemented and verified. MinuRuntime's owner-scoped managed-session lifecycle is merged in PR #7; this work adds private Channels history and cleanup reconciliation. Historical resume/fork UI and MinuSessionStore integration remain out of scope.
+**Status:** Durable session history, intentional Stop→Start resume, and per-session context modes are implemented. Historical session selection/fork UI and MinuSessionStore integration remain out of scope.
 
 ## BLUF
 
@@ -23,7 +23,7 @@ current binding ──────────────► current Runtime se
 
 ## Motivation
 
-`conversation_agent_bindings` stores the session reference required to route work. For Runtime-managed sessions, that value is a stable managed ID scoped by a persistent opaque Runtime owner ID; the harness-native ID stays private to the adapter and can change on resume. **New session** replaces the managed ID and increments the binding generation. A private activation history preserves the old reference and makes cleanup durable.
+`conversation_agent_bindings` stores the session reference required to route work. For Runtime-managed sessions, that value is a stable managed ID scoped by a persistent opaque Runtime owner ID; the harness-native ID stays private to the adapter and can change on resume. **Start agent** resumes an intentionally stopped current binding without changing its managed ID or generation. **New session with context** and **Fresh session** create a distinct Runtime session and increment the binding generation. A private activation history preserves prior references and records each session's context policy.
 
 That is sufficient for current routing, but it has three limitations:
 
@@ -65,7 +65,9 @@ A durable history closes these gaps without changing the public Conversation mod
 - **Binding:** The current `(workspaceId, conversationId, agentIdentityId)` routing record.
 - **Activation:** One binding generation during which a Runtime session was selected for that Conversation agent.
 - **Retirement:** Ending an activation and reconciling the requested owner-scoped worker cleanup. Runtime metadata destruction does not delete the persisted native harness transcript.
-- **Resume:** Reopen the same persisted logical session under the same managed ID and owner scope; the native worker ID may change.
+- **Resume:** Reopen the same persisted logical session under the same managed ID, owner scope, binding generation, transcript, and context policy; the native worker ID may change.
+- **New session with context:** Create a distinct Runtime session with an optional ephemeral handoff from public Conversation history and normal bounded recent Conversation context on future turns.
+- **Fresh session:** Create a distinct Runtime session without a handoff and exclude Conversation messages through the session's activation boundary from all future Relay prompts. Current agent/project instructions, configuration, participant metadata, and later messages remain available.
 - **Fork:** Create a new managed session from an older session while preserving lineage.
 - **Restore:** Recover native session material from an archive so an adapter can subsequently resume or fork it.
 
@@ -79,7 +81,8 @@ A durable history closes these gaps without changing the public Conversation mod
 6. The same retired managed session may be activated again, but each activation receives a new binding generation and history row.
 7. A managed session must not be active in two Conversation-agent routes at once unless a future adapter explicitly proves that sharing is safe. No current adapter does.
 8. Cleanup failure is durable state, not a log-only event.
-9. Historical resume and fork are explicit owner/admin actions and fail closed when support cannot be verified.
+9. An intentionally stopped current binding is resumed only by explicit Start; it is never auto-woken during startup or by a Conversation message.
+10. Historical resume and fork are explicit owner/admin actions and fail closed when support cannot be verified.
 
 ## Phase 1 data model
 
@@ -112,6 +115,7 @@ Migration `0011_runtime_session_history` adds the private `conversation_agent_se
 | `legacy_runtime_session_ref` | Exact private pre-managed binding reference for `legacy_unmapped`; never treated as a managed ID. |
 | `mapping` | `managed` or `legacy_unmapped`; selects which operations are safe. |
 | `origin` | `started`, `resumed`, `forked`, `restored`, `attached`, or `migrated`. |
+| `context_mode` | `with_context` or `fresh`; migration `0014` backfills existing activations to `with_context`. |
 | `conversation_sequence_at_activation` | Conversation head when the activation became current. |
 | `conversation_sequence_at_retirement` | Optional retirement boundary; Phase 1 leaves it unset, and historical recovery must not rely on it yet. |
 | `activated_at` | Activation timestamp. |
@@ -160,38 +164,40 @@ Do not introduce that split before it solves a concrete integration need. The li
 ### Start first session
 
 1. Resolve and validate the Workspace agent configuration.
-2. Start the Runtime with `startManaged(config, ownerId)` and receive its stable managed-session ID. The owner ID is generated and persisted by the local Relay store; the native harness ID remains private to Runtime.
-3. Snapshot the Conversation head and advance the Relay cursor to that boundary.
-4. In one private-store transaction, create the current binding at generation 1 and insert its matching active history row.
+2. Snapshot the Conversation head immediately before Runtime creation; this is the activation boundary. Messages posted after it remain eligible for Relay catch-up once attached.
+3. Start the Runtime with `startManaged(config, ownerId)` and receive its stable managed-session ID. The owner ID is generated and persisted by the local Relay store; the native harness ID remains private to Runtime.
+4. Advance the initial Relay cursor to the activation boundary and, in one private-store transaction, create the current binding at generation 1 with its matching active history row and selected context mode.
 5. Lease, verify, and attach the binding.
 6. If persistence fails after Runtime startup, best-effort destroy the unbound managed Runtime; when a binding/history row exists, persist cleanup outcome for retry.
 
-### Replace with New session
+### Create a new session
 
-1. Require the existing binding to be idle and verify the expected binding generation.
-2. Start the replacement Runtime.
-3. In one private-store transaction:
-   - mark the old activation retired with cleanup `pending` and retention `destroy_pending` because **New session** explicitly discards its Runtime resume metadata;
-   - compare-and-swap the binding to the new managed-session ID and increment its generation; and
-   - insert the new active history row.
-4. Attach and verify the new generation.
-5. Destroy the old Runtime-managed registration through its exact owner scope. Runtime destruction preserves the harness transcript.
-6. Mark old-session cleanup `succeeded` and retention `destroyed`, or leave it durably retryable on failure, without changing the new current binding.
+1. Require the existing binding to be idle and verify its generation. A disconnected/offline binding may use an explicit replacement only when the existing safety checks permit it.
+2. Persist a lease-clearing fence and retire the old Relay route before preparing a handoff or creating the replacement Runtime session. For **New session with context**, optionally summarize the public Conversation transcript into an ephemeral handoff. **Fresh session** omits that handoff.
+3. Capture the Conversation activation boundary immediately before creating the Runtime session. The new session discards queued work through that boundary; later messages remain eligible for the new generation, never the old route. A failed launch leaves the previous session fenced until an explicit new-session action.
+4. In one private-store transaction, retire the previous activation with explicit destroy intent, compare-and-swap to the new managed-session ID and increment the generation, then insert the active history row with `context_mode` and the activation boundary.
+5. Attach and verify the new generation, then destroy the previous Runtime-managed registration through its exact owner scope. Runtime destruction preserves the harness transcript.
+6. Mark cleanup complete or leave the old session durably retryable without changing the new current binding.
 
-A crash after step 3 leaves a durable `destroy_pending` record with the old managed ID and owner scope. Startup reconciliation can safely finish destruction without changing the new current binding.
+A crash after the transaction leaves a durable `destroy_pending` record and the new activation. Startup reconciliation can safely finish destruction without changing the current binding.
 
-### Stop or retire an agent
+### Stop and explicitly resume the current session
 
-1. Fence new work by incrementing/disabling the current binding according to the existing lifecycle contract.
-2. Retire the active history row transactionally and mark cleanup `pending` plus retention `destroy_pending` for explicit Stop.
-3. Attempt owner-scoped Runtime `destroy`; this removes Runtime resume metadata but preserves the persisted harness transcript.
-4. Persist the cleanup and retention result. A failed destroy remains `destroy_pending` for bounded retry.
+1. Persist a `stopping` intent and clear the binding lease before draining. This immediately fences stale Relay owners and survives a crash; startup never restores a `stopping` binding.
+2. Close local Relay admission, interrupt active Runtime work, and await every issued interrupt independently of response/drain settlement before confirming pause. An ambiguous interrupt leaves a non-resumable `stopping` fence even if Runtime later reports idle, because the request may still arrive late. Discard queued work through an atomically recorded Conversation-head boundary.
+3. On confirmed settlement, persist the binding as `paused` and advance its private cursor to that boundary. Keep the same binding generation and active history row; do not destroy or retire Runtime resume metadata.
+4. Messages posted after the boundary remain in the Conversation and wait. Startup skips both `stopping` and `paused` bindings; messages cannot auto-wake them.
+5. Explicit **Start agent** resumes a confirmed `paused` binding only after verifying the exact owner-scoped managed session is idle (resuming it if suspended), then reattaches the same ID, generation, transcript, and context mode.
+6. If Stop cannot verify interruption or cannot persist the final pause, leave the binding `stopping`/`paused` and out of automatic recovery. A `stopping` binding is visibly uncertain and can only be resolved through an explicit new-session action; **Start agent** remains blocked.
+7. Bindings disabled by the old destructive Stop behavior have no resumable Runtime metadata; show only the explicit new-session actions.
+
+Stopping an idle-sleeping agent is also non-destructive: convert the current binding to `paused` without waking the suspended Runtime or enabling automatic wake.
 
 ### Startup reconciliation
 
 On agent-host startup, queue a bounded cleanup batch in the background so current-binding restoration and the local control server are not held behind retirement work:
 
-- restore only the current bindings through the existing lease and generation rules;
+- restore only current eligible bindings through lease acquisition conditional on the observed generation and state; skip `stopping` bindings unconditionally and skip `paused` bindings unless an explicit Start request is in progress;
 - scan a bounded batch of `pending` or retryable `failed` cleanup records;
 - verify owner scope with adapter timeouts;
 - suspend retained sessions and destroy only rows already marked `destroy_pending`;

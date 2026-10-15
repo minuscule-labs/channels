@@ -1,4 +1,4 @@
-import type { LocalBulkAgentLifecycleResult } from "@minu/channels-control/contracts";
+import type { LocalBulkAgentLifecycleResult, LocalSessionContextMode } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -90,12 +90,20 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
   });
   const { connection, retry } = useLiveConversation(conversationId);
   const agentAction = useMutation({
-    mutationFn: ({ action, identityId }: { action: "start" | "reconnect" | "replace" | "stop" | "cancel"; identityId: string }) => {
+    mutationFn: ({ action, identityId }: {
+      action: "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
+      identityId: string;
+    }) => {
       if (action === "reconnect") return localControl.reconnectConversationAgent(conversationId, identityId);
-      if (action === "replace") return localControl.replaceConversationAgent(conversationId, identityId);
+      if (action === "replace") return localControl.replaceConversationAgent(conversationId, identityId, "with_context");
+      if (action === "replace-fresh") return localControl.replaceConversationAgent(conversationId, identityId, "fresh");
       if (action === "stop") return localControl.stopConversationAgent(conversationId, identityId);
       if (action === "cancel") return localControl.cancelCurrentConversationAgent(conversationId, identityId);
-      return localControl.startConversationAgent(conversationId, identityId);
+      return localControl.startConversationAgent(
+        conversationId,
+        identityId,
+        action === "start-fresh" ? "fresh" : "with_context",
+      );
     },
     onMutate: ({ action, identityId }) => {
       setBulkResults(undefined);
@@ -322,9 +330,15 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               {...participantFeedback}
               drawer
               readOnly={settled}
-              onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
+              onStartAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
+                action: contextMode === "fresh" ? "start-fresh" : "start",
+                identityId,
+              })}
               onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
-              onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
+              onReplaceAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
+                action: contextMode === "fresh" ? "replace-fresh" : "replace",
+                identityId,
+              })}
               onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
@@ -432,9 +446,15 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           showDiagnostics={currentSession.isSuccess}
           {...participantFeedback}
           readOnly={settled}
-          onStartAgent={(identityId) => agentAction.mutateAsync({ action: "start", identityId })}
+          onStartAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
+            action: contextMode === "fresh" ? "start-fresh" : "start",
+            identityId,
+          })}
           onReconnectAgent={(identityId) => agentAction.mutateAsync({ action: "reconnect", identityId })}
-          onReplaceAgent={(identityId) => agentAction.mutateAsync({ action: "replace", identityId })}
+          onReplaceAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
+            action: contextMode === "fresh" ? "replace-fresh" : "replace",
+            identityId,
+          })}
           onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}

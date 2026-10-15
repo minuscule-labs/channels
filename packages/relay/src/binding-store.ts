@@ -11,6 +11,7 @@ import type {
   TurnFailureDeliveryOutcome,
   TurnFailureDiagnosticInput,
   TurnFailureRemediationCode,
+  RuntimeSessionContextMode,
   WakePolicy,
 } from "./relay.ts";
 
@@ -71,7 +72,7 @@ export interface WorkspaceAgentConfig {
   updatedAt: string;
 }
 
-export type ConversationAgentBindingState = "connected" | "sleeping" | "waking" | "offline" | "replacing" | "disabled";
+export type ConversationAgentBindingState = "connected" | "sleeping" | "waking" | "offline" | "replacing" | "stopping" | "paused" | "disabled";
 
 export interface ConversationAgentBindingRecord {
   id: string;
@@ -129,6 +130,7 @@ export interface RuntimeSessionHistoryRecord {
   mapping: RuntimeSessionHistoryMapping;
   state: RuntimeSessionHistoryState;
   origin: RuntimeSessionHistoryOrigin;
+  contextMode: RuntimeSessionContextMode;
   conversationSequenceAtActivation?: number;
   conversationSequenceAtRetirement?: number;
   activatedAt: string;
@@ -212,7 +214,11 @@ export interface RelayBindingStore extends RelayCursorStore {
   getOrCreateRuntimeOwnerId(): Promise<string>;
   putBinding(
     binding: ConversationAgentBindingRecord,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
   ): Promise<ConversationAgentBindingRecord>;
   getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined>;
   deleteBinding(bindingId: string): Promise<void>;
@@ -226,6 +232,7 @@ export interface RelayBindingStore extends RelayCursorStore {
     leaseOwner: string,
     now: string,
     leaseExpiresAt: string,
+    expected?: Pick<ConversationAgentBindingRecord, "generation" | "state">,
   ): Promise<ConversationAgentBindingRecord | undefined>;
   renewBindingLease(
     bindingId: string,
@@ -257,7 +264,23 @@ export interface RelayBindingStore extends RelayCursorStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
+  ): Promise<ConversationAgentBindingRecord | undefined>;
+  beginStopBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing">,
+    updatedAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined>;
+  pauseBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    conversationSequence: number,
+    updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined>;
   disableBinding(
     bindingId: string,
@@ -413,7 +436,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
 
   async putBinding(
     binding: ConversationAgentBindingRecord,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
   ): Promise<ConversationAgentBindingRecord> {
     validateRuntimeOwnerScope(binding.runtimeOwnerId);
     if (this.bindings.has(binding.id)) throw new Error("Conversation agent binding id already exists");
@@ -453,7 +480,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
 
   private createSessionActivation(
     binding: ConversationAgentBindingRecord,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
   ): void {
     const managed = binding.runtimeOwnerId !== undefined;
     const record: RuntimeSessionHistoryRecord = {
@@ -471,6 +502,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       mapping: managed ? "managed" : "legacy_unmapped",
       state: "active",
       origin: activation?.origin ?? (managed ? "started" : "migrated"),
+      contextMode: activation?.contextMode ?? "with_context",
       conversationSequenceAtActivation: activation?.conversationSequence,
       activatedAt: binding.updatedAt,
       cleanupAction: "none",
@@ -567,9 +599,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     leaseOwner: string,
     now: string,
     leaseExpiresAt: string,
+    expected?: Pick<ConversationAgentBindingRecord, "generation" | "state">,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
-    if (!binding || binding.state === "disabled") return undefined;
+    if (!binding || binding.state === "disabled" || binding.state === "stopping"
+      || (expected && (binding.generation !== expected.generation || binding.state !== expected.state))) return undefined;
     if (binding.leaseOwner && binding.leaseOwner !== leaseOwner
       && binding.leaseExpiresAt && binding.leaseExpiresAt > now) return undefined;
     binding.leaseOwner = leaseOwner;
@@ -655,7 +689,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: { origin?: RuntimeSessionHistoryOrigin; conversationSequence?: number },
+    activation?: {
+      origin?: RuntimeSessionHistoryOrigin;
+      conversationSequence?: number;
+      contextMode?: RuntimeSessionContextMode;
+    },
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
@@ -790,6 +828,42 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       .filter((record) => record.conversationId === conversationId && record.participantId === participantId)
       .sort((left, right) => left.triggerSequence - right.triggerSequence)
       .map((record) => ({ ...record }));
+  }
+
+  async beginStopBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing">,
+    updatedAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration || binding.state !== expectedState) return undefined;
+    binding.state = "stopping";
+    delete binding.leaseOwner;
+    delete binding.leaseExpiresAt;
+    delete binding.lastVerifiedAt;
+    delete binding.wakeRequestedAt;
+    binding.updatedAt = updatedAt;
+    return copyBinding(binding);
+  }
+
+  async pauseBinding(
+    bindingId: string,
+    expectedGeneration: number,
+    conversationSequence: number,
+    updatedAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration || binding.state === "disabled") return undefined;
+    const cursorKey = `${binding.conversationId}:${binding.agentIdentityId}`;
+    this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, conversationSequence));
+    binding.state = "paused";
+    delete binding.leaseOwner;
+    delete binding.leaseExpiresAt;
+    delete binding.lastVerifiedAt;
+    delete binding.wakeRequestedAt;
+    binding.updatedAt = updatedAt;
+    return copyBinding(binding);
   }
 
   async disableBinding(
@@ -957,6 +1031,7 @@ export class LocalRelayDirectory {
     runtimeSessionId: string;
     runtimeOwnerId?: string;
     conversationSequenceAtActivation?: number;
+    contextMode?: RuntimeSessionContextMode;
     origin?: RuntimeSessionHistoryOrigin;
     wakePolicy?: WakePolicy;
   }): Promise<ConversationAgentBindingRecord> {
@@ -998,6 +1073,7 @@ export class LocalRelayDirectory {
     }, {
       origin: input.origin ?? (input.runtimeOwnerId ? "started" : "attached"),
       conversationSequence: input.conversationSequenceAtActivation,
+      contextMode: input.contextMode,
     });
   }
 
@@ -1008,6 +1084,7 @@ export class LocalRelayDirectory {
     runtimeSessionId: string;
     runtimeOwnerId?: string;
     conversationSequenceAtActivation?: number;
+    contextMode?: RuntimeSessionContextMode;
     origin?: RuntimeSessionHistoryOrigin;
   }): Promise<ConversationAgentBindingRecord> {
     const replaced = await this.store.replaceBindingSession(
@@ -1020,6 +1097,7 @@ export class LocalRelayDirectory {
       {
         origin: input.origin ?? (input.runtimeOwnerId ? "started" : "attached"),
         conversationSequence: input.conversationSequenceAtActivation,
+        contextMode: input.contextMode,
       },
     );
     if (!replaced) throw new Error("Binding generation changed; reload before replacing the session");
@@ -1041,6 +1119,8 @@ export interface RestoreConversationBindingsOptions {
   conversationId: string;
   /** Restore only these records when attaching one runner to an already-live Relay. */
   bindingIds?: readonly string[];
+  /** Explicit Start may reattach a user-paused Runtime session; automatic recovery never does. */
+  resumePaused?: boolean;
   /** Defer connected state until the caller has completed Relay attachment. */
   markConnected?: boolean;
   leaseOwner: string;
@@ -1091,7 +1171,7 @@ export class RestoredConversationBindings {
         "connected",
         timestamp,
         timestamp,
-        record.state === "waking" ? "waking" : undefined,
+        record.state === "waking" ? "waking" : record.state === "paused" ? "paused" : undefined,
         record.state === "waking"
           ? { lastActiveAt: timestamp, wakeRequestedAt: null }
           : { lastActiveAt: timestamp },
@@ -1187,12 +1267,16 @@ export async function restoreConversationBindings(
   }
   const now = options.now ?? (() => new Date());
   const conversation = await options.client.getConversation(options.conversationId);
-  const [candidates, workspaceMembers, workspaceConfig] = await Promise.all([
+  const [candidates, workspaceMembers, workspaceConfig, sessionHistory] = await Promise.all([
     options.store.listConversationBindings(options.conversationId),
     options.client.listWorkspaceMembers(conversation.workspaceId),
     options.store.getWorkspaceConfig(conversation.workspaceId),
+    options.store.listSessionHistory(options.conversationId),
   ]);
   if (!workspaceConfig) throw new Error("Private Workspace configuration is required");
+  const sessionHistoryByBinding = new Map(sessionHistory
+    .filter(({ state }) => state === "active")
+    .map((activation) => [`${activation.bindingId}\0${activation.bindingGeneration}`, activation]));
   const bindings: AgentConversationBinding[] = [];
   const records: ConversationAgentBindingRecord[] = [];
   const outcomes = new Map<string, RestoreBindingOutcome>();
@@ -1222,15 +1306,23 @@ export async function restoreConversationBindings(
   try {
     for (const candidate of candidates) {
     if (options.bindingIds && !options.bindingIds.includes(candidate.id)) continue;
-    if (candidate.state === "disabled") continue;
+    if (candidate.state === "disabled" || candidate.state === "stopping"
+      || (candidate.state === "paused" && !options.resumePaused)) continue;
     const timestamp = now();
     const leased = await options.store.acquireBindingLease(
       candidate.id,
       options.leaseOwner,
       timestamp.toISOString(),
       new Date(timestamp.getTime() + leaseDurationMs).toISOString(),
+      { generation: candidate.generation, state: candidate.state },
     );
     if (!leased) {
+      outcomes.set(candidate.id, "lease_unavailable");
+      continue;
+    }
+    if (leased.generation !== candidate.generation || leased.state !== candidate.state
+      || (leased.state === "paused" && !options.resumePaused)) {
+      await options.store.releaseBindingLease(leased.id, leased.generation, options.leaseOwner);
       outcomes.set(candidate.id, "lease_unavailable");
       continue;
     }
@@ -1273,6 +1365,19 @@ export async function restoreConversationBindings(
       await release();
       continue;
     }
+    const activation = sessionHistoryByBinding.get(`${leased.id}\0${leased.generation}`);
+    if (activation?.contextMode === "fresh" && activation.conversationSequenceAtActivation === undefined) {
+      outcomes.set(leased.id, "invalid_binding");
+      await release();
+      continue;
+    }
+    if (activation?.contextMode === "fresh") {
+      await options.store.setCursor(
+        options.conversationId,
+        leased.agentIdentityId,
+        activation.conversationSequenceAtActivation!,
+      );
+    }
     const runtime = options.runtimes[leased.runtimeAdapter];
     if (!runtime) {
       outcomes.set(leased.id, "runtime_unavailable");
@@ -1308,23 +1413,27 @@ export async function restoreConversationBindings(
       const ownedSession = managedSessions.find((session) =>
         session.id === leased.runtimeSessionId && session.ownerId === leased.runtimeOwnerId);
       if (!ownedSession) {
-        const verifiedAt = now().toISOString();
-        const offline = await options.store.updateBindingState(
-          leased.id,
-          leased.generation,
-          options.leaseOwner,
-          "offline",
-          verifiedAt,
-          verifiedAt,
-          leased.state,
-          {
-            managedSessionMissingAt: verifiedAt,
-            ...((leased.state === "sleeping" || leased.state === "waking")
-              ? { wakeRequestedAt: null }
-              : {}),
-          },
-        );
-        outcomes.set(leased.id, offline ? "runtime_offline" : "runtime_uncertain");
+        if (leased.state !== "paused") {
+          const verifiedAt = now().toISOString();
+          const offline = await options.store.updateBindingState(
+            leased.id,
+            leased.generation,
+            options.leaseOwner,
+            "offline",
+            verifiedAt,
+            verifiedAt,
+            leased.state,
+            {
+              managedSessionMissingAt: verifiedAt,
+              ...((leased.state === "sleeping" || leased.state === "waking")
+                ? { wakeRequestedAt: null }
+                : {}),
+            },
+          );
+          outcomes.set(leased.id, offline ? "runtime_offline" : "runtime_uncertain");
+        } else {
+          outcomes.set(leased.id, "runtime_offline");
+        }
         await release();
         continue;
       }
@@ -1333,6 +1442,31 @@ export async function restoreConversationBindings(
         outcomes.set(leased.id, "runtime_uncertain");
         await release();
         continue;
+      }
+      if (leased.state === "paused" && options.resumePaused && managedSessionState === "suspended") {
+        if (!runtime.resume) {
+          outcomes.set(leased.id, "runtime_unavailable");
+          await release();
+          continue;
+        }
+        let resumed: { id: string; ownerId: string };
+        try {
+          resumed = await withRuntimeTimeout(
+            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId),
+            resumeTimeoutMs,
+            "Runtime session resume",
+          );
+        } catch {
+          outcomes.set(leased.id, "runtime_uncertain");
+          await release();
+          continue;
+        }
+        if (resumed.id !== leased.runtimeSessionId || resumed.ownerId !== leased.runtimeOwnerId) {
+          outcomes.set(leased.id, "runtime_uncertain");
+          await release();
+          continue;
+        }
+        managedSessionState = "active";
       }
       if (leased.state === "waking") {
         if (!runtime.resume) {
@@ -1399,6 +1533,11 @@ export async function restoreConversationBindings(
         status = "uncertain";
       }
     }
+    if (leased.state === "paused" && options.resumePaused && status !== "idle") {
+      outcomes.set(leased.id, status === "offline" ? "runtime_offline" : "runtime_uncertain");
+      await release();
+      continue;
+    }
     const verifiedAt = now().toISOString();
     let remainsSleeping = leased.state === "sleeping" || interruptedWakeRecovered;
     if (leased.state === "waking" && !interruptedWakeRecovered && status !== "idle") {
@@ -1428,14 +1567,16 @@ export async function restoreConversationBindings(
     }
     if (!remainsSleeping && status === "offline") {
       outcomes.set(leased.id, "runtime_offline");
-      await options.store.updateBindingState(
-        leased.id,
-        leased.generation,
-        options.leaseOwner,
-        "offline",
-        verifiedAt,
-        verifiedAt,
-      );
+      if (leased.state !== "paused") {
+        await options.store.updateBindingState(
+          leased.id,
+          leased.generation,
+          options.leaseOwner,
+          "offline",
+          verifiedAt,
+          verifiedAt,
+        );
+      }
       await release();
       continue;
     }
@@ -1448,7 +1589,7 @@ export async function restoreConversationBindings(
         "connected",
         verifiedAt,
         verifiedAt,
-        leased.state === "waking" ? "waking" : undefined,
+        leased.state === "waking" ? "waking" : leased.state === "paused" ? "paused" : undefined,
         leased.state === "waking"
           ? { lastActiveAt: verifiedAt, wakeRequestedAt: null }
           : { lastActiveAt: verifiedAt },
@@ -1464,6 +1605,9 @@ export async function restoreConversationBindings(
       sessionId: connected.runtimeSessionId,
       runtime,
       wakePolicy: connected.wakePolicy,
+      contextSequenceFloor: activation?.contextMode === "fresh"
+        ? activation.conversationSequenceAtActivation
+        : undefined,
       maxMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
       maxTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
       diagnosticBinding: { id: connected.id, generation: connected.generation, workspaceId: connected.workspaceId },

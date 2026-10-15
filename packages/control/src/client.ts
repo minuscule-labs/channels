@@ -14,6 +14,7 @@ import type {
   LocalControlHealth,
   LocalCurrentSession,
   LocalRuntimeOptions,
+  LocalSessionContextMode,
   LocalWorkspaceAgentConfiguration,
   LocalWorkspaceConfigurationSummary,
   ProvisionLocalWorkspaceInput,
@@ -147,10 +148,14 @@ export class LocalControlClient {
     );
   }
 
-  async startConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+  async startConversationAgent(
+    conversationId: string,
+    identityId: string,
+    contextMode?: LocalSessionContextMode,
+  ): Promise<LocalConversationAgent> {
     const response = await this.request<{ agent: LocalConversationAgent }>(
       `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/start`,
-      { method: "POST" },
+      { method: "POST", ...(contextMode ? { body: JSON.stringify({ contextMode }) } : {}) },
       this.lifecycleTimeoutMs,
     );
     return response.agent;
@@ -165,10 +170,14 @@ export class LocalControlClient {
     return response.agent;
   }
 
-  async replaceConversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+  async replaceConversationAgent(
+    conversationId: string,
+    identityId: string,
+    contextMode?: LocalSessionContextMode,
+  ): Promise<LocalConversationAgent> {
     const response = await this.request<{ agent: LocalConversationAgent }>(
       `/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/replace`,
-      { method: "POST" },
+      { method: "POST", ...(contextMode ? { body: JSON.stringify({ contextMode }) } : {}) },
       this.lifecycleTimeoutMs,
     );
     return response.agent;

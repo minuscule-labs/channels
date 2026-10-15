@@ -53,6 +53,7 @@ export {
   type RelayAgentActivityPhase,
   type RelayAgentWorkSnapshot,
   type RelayWorkSnapshot,
+  type RuntimeSessionContextMode,
   type TurnFailureCauseCategory,
   type TurnFailureDeliveryInput,
   type TurnFailureDeliveryOutcome,

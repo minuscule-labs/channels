@@ -181,14 +181,14 @@ const localControl = await createLocalControlHttpServer({
       },
       async stopConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${conversationId}:${identityId}`, "disabled");
+        agentBindings.set(`${conversationId}:${identityId}`, "paused");
         attachedAgents.delete(`${conversationId}:${identityId}`);
       },
       async startAllConversationAgents() {
         return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
       },
       async stopAllConversationAgents() {
-        agentBindings.set(`${conversation.id}:${agent.id}`, "disabled");
+        agentBindings.set(`${conversation.id}:${agent.id}`, "paused");
         attachedAgents.delete(`${conversation.id}:${agent.id}`);
         return [{ identityId: agent.id, outcome: "stopped" }];
       },
@@ -198,10 +198,10 @@ const localControl = await createLocalControlHttpServer({
       },
       async listConversationTurnFailures(conversationId) {
         if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 17, conversationId, notices: [], diagnostics: [] };
+          return { protocolVersion: 18, conversationId, notices: [], diagnostics: [] };
         }
         return {
-          protocolVersion: 17,
+          protocolVersion: 18,
           conversationId,
           notices: [{
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },

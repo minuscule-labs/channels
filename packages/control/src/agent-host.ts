@@ -17,6 +17,7 @@ import {
   type TurnFailureCauseCategory,
   type TurnFailureDeliveryOutcome,
   type TurnFailureDiagnosticRecord,
+  type RuntimeSessionContextMode,
   type WorkspaceAgentConfig,
 } from "@minu/channels-relay";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -25,6 +26,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import type { LocalControlRuntimePort } from "./server.ts";
+import { LOCAL_CONTROL_PROTOCOL_VERSION } from "./contracts.ts";
 import type {
   LocalAgentRuntimeOptions,
   LocalBulkAgentLifecycleResult,
@@ -709,12 +711,13 @@ export class LocalAgentHost {
       workspaces.map((workspace) => this.options.store.listWorkspaceBindings(workspace.id)),
     );
     const conversationIds = [...new Set(bindingGroups.flat()
-      .filter((binding) => binding.state !== "disabled")
+      .filter((binding) => binding.state !== "disabled" && binding.state !== "paused" && binding.state !== "stopping")
       .map((binding) => binding.conversationId))];
     const records = bindingGroups.flat();
     await Promise.all(conversationIds.map((conversationId) => this.refreshConversation(conversationId).catch(() => {
       for (const record of records.filter(
-        (candidate) => candidate.conversationId === conversationId && candidate.state !== "disabled",
+        (candidate) => candidate.conversationId === conversationId && candidate.state !== "disabled"
+          && candidate.state !== "paused" && candidate.state !== "stopping",
       )) {
         this.handleAttachmentResult(record, "failed", "binding_restore");
       }
@@ -727,7 +730,8 @@ export class LocalAgentHost {
     conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
-    expectedBinding?: null,
+    contextMode: RuntimeSessionContextMode = "with_context",
+    expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state"> | null,
   ): Promise<void> {
     const key = this.bindingKey(conversationId, agentIdentityId);
     this.startingBindings.add(key);
@@ -764,13 +768,47 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
-        if (expectedBinding === null
-          && bindings.some((binding) => binding.agentIdentityId === agentIdentityId)) {
+        const existingBindings = bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
+        if (expectedBinding === null && existingBindings.length > 0) {
           throw new BulkSnapshotChangedError("Agent binding changed after bulk acceptance");
         }
-        if (bindings.some((binding) => binding.agentIdentityId === agentIdentityId)) {
+        if (expectedBinding && (existingBindings.length !== 1
+          || existingBindings[0]!.id !== expectedBinding.id
+          || existingBindings[0]!.generation !== expectedBinding.generation
+          || existingBindings[0]!.state !== expectedBinding.state)) {
+          throw new BulkSnapshotChangedError("Agent binding changed after bulk acceptance");
+        }
+        if (existingBindings.length > 1) {
+          throw new LocalConfigurationRequestError("Agent has uncertain Conversation sessions", 409, "unavailable");
+        }
+        if (existingBindings[0]?.state === "stopping") {
           throw new LocalConfigurationRequestError(
-            "Agent already has a Conversation session; explicit replacement is required",
+            "Stop could not be confirmed; use New session instead",
+            409,
+            "unavailable",
+          );
+        }
+        if (existingBindings[0]?.state === "paused") {
+          if (await this.attachBinding(conversationId, existingBindings[0].id, true) !== "attached") {
+            throw new LocalConfigurationRequestError(
+              "Stopped Runtime session could not be resumed; use New session instead",
+              409,
+              "unavailable",
+            );
+          }
+          this.audit({
+            action: "agent.session.resumed",
+            outcome: "accepted",
+            actorIdentityId,
+            workspaceId: conversation.workspaceId,
+            conversationId,
+            targetIdentityId: agentIdentityId,
+          });
+          return;
+        }
+        if (existingBindings.length > 0) {
+          throw new LocalConfigurationRequestError(
+            "Agent already has a Conversation session; explicit new session is required",
             409,
             "unavailable",
           );
@@ -798,6 +836,8 @@ export class LocalAgentHost {
         let sessionOwnerId: string | undefined;
         let bindingId: string | undefined;
         try {
+          const messages = await this.options.client.listMessages(conversationId);
+          const conversationSequence = messages.at(-1)?.sequence ?? 0;
           const started = await startRuntimeSession(runtime, {
             cwd: launch.cwd,
             appendSystemPrompt: this.appendWorkingFolderGuidance(agentConfig.personaPrompt, launch.workingFolderGuidance),
@@ -809,8 +849,6 @@ export class LocalAgentHost {
           }, runtimeOwnerId);
           session = started.session;
           sessionOwnerId = started.runtimeOwnerId;
-          const messages = await this.options.client.listMessages(conversationId);
-          const conversationSequence = messages.at(-1)?.sequence ?? 0;
           await this.options.store.setCursor(conversationId, agentIdentityId, conversationSequence);
           const binding = await this.directory.bindAgent({
             conversationId,
@@ -819,6 +857,7 @@ export class LocalAgentHost {
             runtimeSessionId: session.id,
             runtimeOwnerId: sessionOwnerId,
             conversationSequenceAtActivation: conversationSequence,
+            contextMode,
             origin: "started",
           });
           bindingId = binding.id;
@@ -893,6 +932,7 @@ export class LocalAgentHost {
     conversationId: string,
     agentIdentityId: string,
     actorIdentityId: string,
+    contextMode: RuntimeSessionContextMode = "with_context",
     expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state">,
   ): Promise<void> {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
@@ -930,8 +970,18 @@ export class LocalAgentHost {
         previousRuntime = this.options.runtimes[previous.runtimeAdapter];
         previousSessionId = previous.runtimeSessionId;
         await this.assertBindingsIdle([previous], previous.id);
+        // Fence the old route durably before selecting the activation boundary. A
+        // failed launch stays fenced and can be resolved by explicit replacement.
+        if (previous.state !== "disabled" && previous.state !== "paused" && previous.state !== "stopping") {
+          const fenced = await this.options.store.beginStopBinding(
+            previous.id, previous.generation, previous.state, this.now().toISOString(),
+          );
+          if (!fenced) throw new LocalConfigurationRequestError("Agent binding changed; reload before replacing", 409, "unavailable");
+        }
+        await this.retireBinding(conversationId, agentIdentityId);
+        await this.assertBindingsIdle([previous], previous.id);
         runtime = context.runtime;
-        const handoffBrief = previous.state === "offline"
+        const handoffBrief = contextMode === "fresh" || previous.state === "offline"
           ? undefined
           : await this.createHandoffBrief(
             runtime,
@@ -941,6 +991,8 @@ export class LocalAgentHost {
             context.agentConfig,
           ).catch(() => undefined);
         const runtimeOwnerId = await this.options.store.getOrCreateRuntimeOwnerId();
+        const messages = await this.options.client.listMessages(conversationId);
+        const conversationSequence = messages.at(-1)?.sequence ?? 0;
         const started = await startRuntimeSession(runtime, {
           cwd: context.cwd,
           appendSystemPrompt: this.appendWorkingFolderGuidance(
@@ -960,8 +1012,6 @@ export class LocalAgentHost {
         }, runtimeOwnerId);
         session = started.session;
         sessionOwnerId = started.runtimeOwnerId;
-        const messages = await this.options.client.listMessages(conversationId);
-        const conversationSequence = messages.at(-1)?.sequence ?? 0;
         const replaced = await this.directory.replaceSession({
           bindingId: previous.id,
           expectedGeneration: previous.generation,
@@ -969,6 +1019,7 @@ export class LocalAgentHost {
           runtimeSessionId: session.id,
           runtimeOwnerId: sessionOwnerId,
           conversationSequenceAtActivation: conversationSequence,
+          contextMode,
           origin: "started",
         });
         committed = true;
@@ -1076,7 +1127,8 @@ export class LocalAgentHost {
           throw new LocalConfigurationRequestError("Agent reconnect requires one existing Conversation session", 409, "unavailable");
         }
         const binding = matches[0]!;
-        if (binding.state === "disabled" || binding.state === "replacing") {
+        if (binding.state === "disabled" || binding.state === "paused"
+          || binding.state === "replacing" || binding.state === "stopping") {
           throw new LocalConfigurationRequestError("Agent session cannot be reconnected from its current state", 409, "unavailable");
         }
         if (this.isAttached(conversationId, agentIdentityId)) {
@@ -1199,7 +1251,7 @@ export class LocalAgentHost {
       };
     })) : [];
     return {
-      protocolVersion: 17,
+      protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       conversationId,
       notices,
       diagnostics,
@@ -1293,6 +1345,9 @@ export class LocalAgentHost {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
       let committed = false;
+      let stopFenceAttempted = false;
+      let interruptionConfirmed = false;
+      let stopTarget: ConversationAgentBindingRecord | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
@@ -1306,20 +1361,47 @@ export class LocalAgentHost {
           );
         }
         const target = matches[0]!;
+        stopTarget = target;
         if (expectedBinding && (target.id !== expectedBinding.id
           || target.generation !== expectedBinding.generation
           || target.state !== expectedBinding.state)) {
           throw new BulkSnapshotChangedError("Agent binding changed after bulk acceptance");
         }
-        if (target.state === "disabled") {
+        if (target.state === "disabled" || target.state === "paused") {
           throw new LocalConfigurationRequestError("Agent Conversation session is already stopped", 409, "unavailable");
         }
-        const disabled = await this.options.store.disableBinding(
+        if (target.state === "stopping") {
+          throw new LocalConfigurationRequestError("Agent Conversation session is uncertain", 409, "unavailable");
+        }
+        const stopping = await this.options.store.beginStopBinding(
           target.id,
           target.generation,
+          target.state,
           this.now().toISOString(),
         );
-        if (!disabled) {
+        if (!stopping) {
+          throw new LocalConfigurationRequestError("Agent binding changed; reload before stopping", 409, "unavailable");
+        }
+        stopFenceAttempted = true;
+        const relay = this.runners.get(conversationId)?.relay;
+        if (this.isAttached(conversationId, agentIdentityId) && relay) {
+          await relay.stopBinding(agentIdentityId, actorIdentityId, { leaseAlreadyFenced: true });
+        }
+        const runtime = this.options.runtimes[target.runtimeAdapter];
+        if (!runtime) {
+          throw new LocalConfigurationRequestError("Agent Runtime is unavailable; session was not stopped", 409, "unavailable");
+        }
+        await this.interruptRuntimeForStop(runtime, target.runtimeSessionId, target.state);
+        interruptionConfirmed = true;
+        const messages = await this.options.client.listMessages(conversationId);
+        const stopBoundary = messages.at(-1)?.sequence ?? 0;
+        const paused = await this.options.store.pauseBinding(
+          target.id,
+          target.generation,
+          stopBoundary,
+          this.now().toISOString(),
+        );
+        if (!paused) {
           throw new LocalConfigurationRequestError(
             "Agent binding changed; reload before stopping",
             409,
@@ -1327,14 +1409,6 @@ export class LocalAgentHost {
           );
         }
         committed = true;
-        await this.stopRuntimeBestEffort(
-          this.options.runtimes[target.runtimeAdapter],
-          target.runtimeSessionId,
-          target.runtimeOwnerId,
-          target.id,
-          target.generation,
-          "destroy",
-        );
         this.startedSessions.delete(this.sessionKey(target.id, target.runtimeSessionId));
         await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -1360,6 +1434,50 @@ export class LocalAgentHost {
           targetIdentityId: agentIdentityId,
         });
         if (committed) return;
+        let fencedStopped = false;
+        if (stopFenceAttempted && stopTarget) {
+          try {
+            const messages = await this.options.client.listMessages(conversationId);
+            const stopBoundary = messages.at(-1)?.sequence ?? 0;
+            const paused = interruptionConfirmed
+              ? await this.options.store.pauseBinding(
+                stopTarget.id,
+                stopTarget.generation,
+                stopBoundary,
+                this.now().toISOString(),
+              )
+              : undefined;
+            if (paused) {
+              fencedStopped = true;
+            } else {
+              const current = await this.options.store.getBinding(stopTarget.id);
+              fencedStopped = current?.generation === stopTarget.generation
+                && (current.state === "stopping" || current.state === "paused");
+            }
+          } catch (fenceError) {
+            this.options.onError?.(fenceError instanceof Error ? fenceError : new Error(String(fenceError)));
+            try {
+              const current = await this.options.store.getBinding(stopTarget.id);
+              fencedStopped = current?.generation === stopTarget.generation
+                && (current.state === "stopping" || current.state === "paused");
+            } catch (readError) {
+              this.options.onError?.(readError instanceof Error ? readError : new Error(String(readError)));
+            }
+          }
+          if (fencedStopped) {
+            this.startedSessions.delete(this.sessionKey(stopTarget.id, stopTarget.runtimeSessionId));
+            await this.retireBinding(conversationId, agentIdentityId).catch((detachError) => {
+              this.options.onError?.(detachError instanceof Error ? detachError : new Error(String(detachError)));
+            });
+          }
+        }
+        if (fencedStopped) {
+          throw new LocalConfigurationRequestError(
+            "Stop could not be confirmed; the session is held stopped and will not auto-resume",
+            409,
+            "unavailable",
+          );
+        }
         if (error instanceof LocalConfigurationRequestError || error instanceof BulkSnapshotChangedError) throw error;
         throw new LocalConfigurationRequestError("Agent session could not be stopped", 409, "unavailable");
       }
@@ -1490,10 +1608,13 @@ export class LocalAgentHost {
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult> {
     const { identityId, binding } = target;
-    if (target.duplicate || binding?.state === "replacing") {
+    if (target.duplicate || binding?.state === "replacing" || binding?.state === "stopping") {
       return { identityId, outcome: "skipped", reason: "uncertain" };
     }
-    if (binding && binding.state !== "disabled") {
+    if (binding?.state === "disabled") {
+      return { identityId, outcome: "skipped", reason: "new_session_required" };
+    }
+    if (binding && binding.state !== "paused") {
       if (binding.state === "offline") return { identityId, outcome: "skipped", reason: "offline" };
       const runtime = this.options.runtimes[binding.runtimeAdapter];
       if (!runtime) return { identityId, outcome: "skipped", reason: "offline" };
@@ -1514,10 +1635,10 @@ export class LocalAgentHost {
       return { identityId, outcome: "skipped", reason: "unconfigured" };
     }
     try {
-      if (binding?.state === "disabled") {
-        await this.replaceConversationAgent(conversationId, identityId, actorIdentityId, binding);
+      if (binding?.state === "paused") {
+        await this.startConversationAgent(conversationId, identityId, actorIdentityId, "with_context", binding);
       } else {
-        await this.startConversationAgent(conversationId, identityId, actorIdentityId, null);
+        await this.startConversationAgent(conversationId, identityId, actorIdentityId, "with_context", null);
       }
       return { identityId, outcome: "started" };
     } catch (error) {
@@ -1533,10 +1654,10 @@ export class LocalAgentHost {
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult> {
     const { identityId, binding } = target;
-    if (target.duplicate || binding?.state === "replacing") {
+    if (target.duplicate || binding?.state === "replacing" || binding?.state === "stopping") {
       return { identityId, outcome: "skipped", reason: "uncertain" };
     }
-    if (!binding || binding.state === "disabled") {
+    if (!binding || binding.state === "disabled" || binding.state === "paused") {
       return { identityId, outcome: "skipped", reason: "already_idle" };
     }
     try {
@@ -1798,6 +1919,43 @@ export class LocalAgentHost {
     );
   }
 
+  private async interruptRuntimeForStop(
+    runtime: LocalManagedRuntimePort,
+    sessionId: string,
+    bindingState: ConversationAgentBindingRecord["state"],
+  ): Promise<void> {
+    if (bindingState === "sleeping") return;
+    let status = await this.runtimeStatus(runtime, sessionId);
+    if (status === "offline") {
+      throw new LocalConfigurationRequestError(
+        "Agent Runtime session is unavailable; use New session instead",
+        409,
+        "unavailable",
+      );
+    }
+    if (status !== "working") return;
+    if (!runtime.interrupt) {
+      throw new LocalConfigurationRequestError(
+        "Runtime cannot interrupt active work; session was not stopped",
+        409,
+        "unavailable",
+      );
+    }
+    await this.withTimeout(runtime.interrupt(sessionId), 5_000, "Runtime interruption timed out");
+    const deadline = Date.now() + 15_000;
+    while (status === "working" && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      status = await this.runtimeStatus(runtime, sessionId);
+    }
+    if (status === "working") {
+      throw new LocalConfigurationRequestError(
+        "Runtime work is still active; session was not stopped",
+        409,
+        "unavailable",
+      );
+    }
+  }
+
   private async resumeManagedBinding(binding: ConversationAgentBindingRecord): Promise<boolean> {
     if (binding.runtimeOwnerId === undefined) return false;
     if (!binding.runtimeOwnerId.trim()) throw new Error("Stored Runtime owner scope is invalid");
@@ -1992,6 +2150,7 @@ export class LocalAgentHost {
               conversationId,
               binding.agentIdentityId,
               actorIdentityId,
+              "with_context",
               binding,
             );
           } catch {
@@ -2006,7 +2165,8 @@ export class LocalAgentHost {
   private async refreshConversation(conversationId: string): Promise<void> {
     const records = await this.options.store.listConversationBindings(conversationId);
     await Promise.all(records
-      .filter((record) => record.state !== "disabled" && !record.managedSessionMissingAt)
+      .filter((record) => record.state !== "disabled" && record.state !== "paused"
+        && record.state !== "stopping" && !record.managedSessionMissingAt)
       .map(async (record) => {
         let result: AttachmentResult;
         try {
@@ -2018,7 +2178,11 @@ export class LocalAgentHost {
       }));
   }
 
-  private async attachBinding(conversationId: string, bindingId: string): Promise<AttachmentResult> {
+  private async attachBinding(
+    conversationId: string,
+    bindingId: string,
+    resumePaused = false,
+  ): Promise<AttachmentResult> {
     if (this.conversationAdmissionFences.has(conversationId)) return "lease_unavailable";
     try {
       if ((await this.options.client.getConversationLifecycle(conversationId)).state !== "active") {
@@ -2049,6 +2213,7 @@ export class LocalAgentHost {
         store: this.options.store,
         conversationId,
         bindingIds: [bindingId],
+        resumePaused,
         markConnected: false,
         leaseOwner: this.leaseOwner,
         leaseDurationMs: this.options.bindingLeaseDurationMs,
@@ -2213,7 +2378,8 @@ export class LocalAgentHost {
     category: LocalAgentHostDiagnosticEvent["category"],
     result: AttachmentResult = "runtime_uncertain",
   ): void {
-    if (this.closed || this.quiescing || record.state === "disabled" || this.recoveries.has(record.id)) return;
+    if (this.closed || this.quiescing || record.state === "disabled" || record.state === "paused"
+      || record.state === "stopping" || this.recoveries.has(record.id)) return;
     const delayMs = this.recoveryBackoffMs[Math.min(attempt, this.recoveryBackoffMs.length - 1)]!;
     const timer = setTimeout(() => {
       this.recoveries.delete(record.id);
@@ -2251,7 +2417,8 @@ export class LocalAgentHost {
     await this.exclusive(key, async () => {
       if (this.closed || this.quiescing) return;
       const current = await this.options.store.getBinding(expected.id);
-      if (!current || current.generation !== expected.generation || current.state === "disabled") {
+      if (!current || current.generation !== expected.generation || current.state === "disabled"
+        || current.state === "paused" || current.state === "stopping") {
         this.cancelRecovery(expected.id);
         return;
       }

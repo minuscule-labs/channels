@@ -99,6 +99,13 @@
       "when": 1799539200000,
       "tag": "0013_workspace_idle_sleep_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1799539200001,
+      "tag": "0014_session_context_mode",
+      "breakpoints": true
     }
   ]
 }

@@ -16,6 +16,7 @@ export type LocalControlAuditAction =
   | "runtime.models.updated"
   | "agent.config.updated"
   | "agent.session.started"
+  | "agent.session.resumed"
   | "agent.session.replaced"
   | "agent.session.stopped"
   | "agent.session.reconnected"
@@ -41,6 +42,7 @@ export interface LocalControlAuditEvent {
     | "already_idle"
     | "unconfigured"
     | "offline"
+    | "new_session_required"
     | "uncertain";
   actorIdentityId?: string;
   workspaceId?: string;

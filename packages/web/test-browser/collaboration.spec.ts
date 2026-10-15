@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { installNotificationAudioMock } from "./notification-audio";
 
 const conversationsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const controlBase = `http://127.0.0.1:${process.env.MINU_TEST_CONTROL_PORT ?? 58411}`;
@@ -310,25 +311,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
     conversations: Array<{ id: string; name: string }>;
   };
   const conversationId = conversations[0]!.id;
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
-    class TestAudioContext {
-      currentTime = 0;
-      destination = {};
-      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
-      createOscillator() {
-        return {
-          frequency: { value: 0 },
-          connect: () => ({ connect: () => this.destination }),
-          start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
-          stop: () => undefined,
-          addEventListener: (_name: string, listener: () => void) => listener(),
-        };
-      }
-      close() { return Promise.resolve(); }
-    }
-    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
-  });
+  await page.addInitScript(installNotificationAudioMock);
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
@@ -370,6 +353,37 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 });
 
+test("restored sound unlocks on pointer and keyboard interaction without changing the preference", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
+  await page.addInitScript(installNotificationAudioMock);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+  const sound = page.getByLabel("Notification sound").first();
+  await sound.selectOption("all");
+
+  for (const interaction of ["pointer", "keyboard"] as const) {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(sound).toHaveValue("all");
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __audioContextCount: number }).__audioContextCount)).toBe(0);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+    if (interaction === "pointer") await page.getByRole("heading", { name: "Workspace agents", exact: true }).click();
+    else await page.keyboard.press("Shift");
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __audioResumeCount: number }).__audioResumeCount)).toBe(1);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+    const result = await request.post(`${fixtureBase}/peer-message?body=Restored%20${interaction}%20sound`);
+    expect(result.ok()).toBe(true);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount), { timeout: 10_000 }).toBe(2);
+  }
+
+  await sound.selectOption("off");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(sound).toHaveValue("off");
+  await page.keyboard.press("Shift");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __audioContextCount: number }).__audioContextCount)).toBe(0);
+});
+
 test("tracks an inactive visited Workspace incrementally with cursor-bounded requests", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
@@ -384,22 +398,7 @@ test("tracks an inactive visited Workspace incrementally with cursor-bounded req
   page.on("request", (outgoing) => {
     if (outgoing.url().includes(`/conversations/${secondaryConversationId}/messages`)) messageRequests.push(outgoing.url());
   });
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "__soundCount", { value: 0, writable: true });
-    class TestAudioContext {
-      currentTime = 0;
-      destination = {};
-      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
-      createOscillator() {
-        return {
-          frequency: { value: 0 }, connect: () => ({ connect: () => this.destination }),
-          start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
-          stop: () => undefined, addEventListener: (_name: string, listener: () => void) => listener(),
-        };
-      }
-    }
-    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
-  });
+  await page.addInitScript(installNotificationAudioMock);
   await launchAuthenticated(page, request, `/app/workspaces/${secondary.id}/conversations/${secondaryConversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   messageRequests.length = 0;
@@ -455,20 +454,7 @@ test("advances the durable read cursor only when a real visible timeline is near
     members: Array<{ identityId: string; mentionHandle: string }>;
   };
   const humanId = members.find(({ mentionHandle }) => mentionHandle === "david")!.identityId;
-  await page.addInitScript(() => {
-    (window as unknown as { __soundCount: number }).__soundCount = 0;
-    class TestAudioContext {
-      currentTime = 0; destination = {};
-      createGain() { return { gain: { value: 0 }, connect: () => this.destination }; }
-      createOscillator() { return {
-        frequency: { value: 0 }, connect: () => ({ connect: () => this.destination }),
-        start: () => { (window as unknown as { __soundCount: number }).__soundCount += 1; },
-        stop: () => undefined, addEventListener: (_name: string, listener: () => void) => listener(),
-      }; }
-      close() { return Promise.resolve(); }
-    }
-    Object.defineProperty(window, "AudioContext", { value: TestAudioContext, configurable: true });
-  });
+  await page.addInitScript(installNotificationAudioMock);
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await page.getByLabel("Notification sound").first().selectOption("mentions");
@@ -494,6 +480,46 @@ test("advances the durable read cursor only when a real visible timeline is near
 
   await page.getByRole("button", { name: "1 new message" }).click();
   await expect.poll(() => page.evaluate((key) => Number(localStorage.getItem(key) ?? 0), cursorKey)).toBeGreaterThan(heldCursor);
+});
+
+test("sounds for an unfocused visible window but stays quiet at the end of a focused chat", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string; name: string }>;
+  };
+  const workspace = workspaces.find(({ name }) => name === "Browser Test")!;
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json() as {
+    conversations: Array<{ id: string; name: string }>;
+  };
+  const conversation = conversations.find(({ name }) => name === "browser-collaboration")!;
+  await page.addInitScript(installNotificationAudioMock);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/conversations/${conversation.id}`);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await page.bringToFront();
+  await page.getByLabel("Notification sound").first().selectOption("all");
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(true);
+
+  await request.post(`${fixtureBase}/peer-message?body=Focused%20reply`);
+  await expect(page.getByText("Focused reply", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
+
+  // Headless tab switching also changes visibility. Isolate the case of a still-
+  // visible browser window losing focus to another application instead.
+  await page.evaluate(() => Object.defineProperty(document, "hasFocus", { value: () => false, configurable: true }));
+  await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("visible");
+  await request.post(`${fixtureBase}/peer-message?duplicate=true&body=Unfocused%20reply`);
+  await expect(page.getByText("Unfocused reply", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+
+  await request.post(`${fixtureBase}/peer-message?author=human&body=Unfocused%20own%20message`);
+  await expect(page.getByText("Unfocused own message", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
+
+  await page.evaluate(() => Reflect.deleteProperty(document, "hasFocus"));
+  await page.bringToFront();
+  await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(true);
+  await request.post(`${fixtureBase}/peer-message?body=Refocused%20reply`);
+  await expect(page.getByText("Refocused reply", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
 });
 
 test("hides identity-scoped notification preferences when session capability is unavailable", async ({ page, request }) => {
@@ -559,7 +585,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostic 
   await openParticipantActions(page, "Builder Agent");
   await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "New session", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New session with context", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await openParticipantActions(page, "Builder Agent");
   await page.getByRole("button", { name: "Details & diagnostics", exact: true }).click();
@@ -591,7 +617,7 @@ test("reconnects an existing reachable session and exposes only safe diagnostic 
   await expect(page.getByTitle("Runtime: Offline")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Open diagnostic", exact: true })).toHaveCount(0);
   await openParticipantActions(page, "Builder Agent");
-  await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New session with context", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reconnect", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Resume/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -638,7 +664,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 17,
+      protocolVersion: 18,
       conversationId,
       agents: [
         {
@@ -662,7 +688,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 17,
+        protocolVersion: 18,
         conversationId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -684,7 +710,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
   const unboundActions = page.getByRole("button", { name: "Open actions for Unbound Agent" }).first();
   await unboundActions.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("button", { name: "Start session", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(unboundActions).toBeFocused();
   const actions = page.getByRole("button", { name: "Open participant actions" });
@@ -719,7 +745,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 17,
+      protocolVersion: 18,
       features: {
         currentSession: true,
         conversationAgentStatus: true,
@@ -917,7 +943,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 17,
+        protocolVersion: 18,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,
@@ -1026,8 +1052,10 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
     response.request().method() === "POST"
     && response.url().endsWith(`/local/conversations/${conversation.id}/agents/${builder.identityId}/start`));
   await openParticipantActions(page, "Builder Agent");
-  await page.getByRole("button", { name: "Start session", exact: true }).click();
-  expect((await startResponsePromise).ok()).toBe(true);
+  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  const startResponse = await startResponsePromise;
+  expect(startResponse.ok()).toBe(true);
+  expect(startResponse.request().postDataJSON()).toEqual({ contextMode: "with_context" });
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const replacePath = `/local/conversations/${conversation.id}/agents/${builder.identityId}/replace`;
@@ -1037,11 +1065,11 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
     body: JSON.stringify({ error: "Replacement temporarily unavailable" }),
   }), { times: 1 });
   await openParticipantActions(page, "Builder Agent");
-  await page.getByRole("button", { name: "New session", exact: true }).click();
-  let lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
-  await expect(lifecycleDialog).toContainText("A temporary handoff is created from public Conversation history when available; it is not stored as memory.");
+  await page.getByRole("button", { name: "New session with context", exact: true }).click();
+  let lifecycleDialog = page.getByRole("dialog", { name: "Start a new session with context for Builder Agent?" });
+  await expect(lifecycleDialog).toContainText("This creates a new Runtime session; it does not resume the current transcript.");
   await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeFocused();
-  await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
+  await lifecycleDialog.getByRole("button", { name: "New session with context", exact: true }).click();
   await expect(lifecycleDialog.getByRole("alert")).toHaveText("Replacement temporarily unavailable");
 
   let releaseReplace!: () => void;
@@ -1052,15 +1080,29 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   }, { times: 1 });
   const replaceResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith(replacePath));
-  await lifecycleDialog.getByRole("button", { name: "New session", exact: true }).click();
+  await lifecycleDialog.getByRole("button", { name: "New session with context", exact: true }).click();
   await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
-  await expect(lifecycleDialog.getByRole("button", { name: "New session", exact: true })).toBeDisabled();
+  await expect(lifecycleDialog.getByRole("button", { name: "New session with context", exact: true })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(lifecycleDialog).toBeVisible();
   releaseReplace();
-  expect((await replaceResponsePromise).ok()).toBe(true);
+  const replaceResponse = await replaceResponsePromise;
+  expect(replaceResponse.ok()).toBe(true);
+  expect(replaceResponse.request().postDataJSON()).toEqual({ contextMode: "with_context" });
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open actions for Builder Agent" }).first()).toBeFocused();
+
+  const freshReplaceResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith(replacePath));
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Fresh session", exact: true }).click();
+  lifecycleDialog = page.getByRole("dialog", { name: "Start a fresh session for Builder Agent?" });
+  await expect(lifecycleDialog).toContainText("with no handoff and excludes Conversation messages from before it starts");
+  await lifecycleDialog.getByRole("button", { name: "Fresh session", exact: true }).click();
+  const freshReplaceResponse = await freshReplaceResponsePromise;
+  expect(freshReplaceResponse.ok()).toBe(true);
+  expect(freshReplaceResponse.request().postDataJSON()).toEqual({ contextMode: "fresh" });
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const stopResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
@@ -1071,12 +1113,20 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await expect(lifecycleDialog).toContainText("filesystem effects cannot be rolled back");
   await lifecycleDialog.getByRole("button", { name: "Stop agent", exact: true }).click();
   expect((await stopResponsePromise).ok()).toBe(true);
-  await expect(page.getByTitle("Runtime: Stopped")).toBeVisible();
+  await expect(page.getByTitle("Runtime: Stopped · resumable")).toBeVisible();
+
+  const resumeResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith(`/local/conversations/${conversation.id}/agents/${builder.identityId}/start`));
+  await openParticipantActions(page, "Builder Agent");
+  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  expect((await resumeResponsePromise).ok()).toBe(true);
+  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   await openParticipantActions(page, "Builder Agent");
-  await page.getByRole("button", { name: "Start session", exact: true }).click();
-  lifecycleDialog = page.getByRole("dialog", { name: "Start a new session for Builder Agent?" });
-  await lifecycleDialog.getByRole("button", { name: "Start session", exact: true }).click();
+  await page.getByRole("button", { name: "New session with context", exact: true }).click();
+  lifecycleDialog = page.getByRole("dialog", { name: "Start a new session with context for Builder Agent?" });
+  await lifecycleDialog.getByRole("button", { name: "New session with context", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
 
   const historical = await request.post(`${conversationsBase}/conversations/${conversation.id}/messages`, {
