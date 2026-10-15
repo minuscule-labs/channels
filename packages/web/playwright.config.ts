@@ -33,7 +33,7 @@ export default defineConfig({
       timeout: 20_000,
     },
     {
-      command: `pnpm exec vite --host 127.0.0.1 --port ${webPort} --strictPort`,
+      command: `pnpm exec vite${process.env.MINU_TEST_WEB_PREVIEW === "1" ? " preview" : ""} --host 127.0.0.1 --port ${webPort} --strictPort`,
       port: webPort,
       env: {
         VITE_CHANNELS_PROXY_TARGET: `http://127.0.0.1:${conversationsPort}`,

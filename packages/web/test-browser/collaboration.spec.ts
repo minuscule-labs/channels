@@ -275,17 +275,10 @@ test("keeps Workspace navigation responsive with more Conversations than the bro
   };
   expect(conversations.length).toBeGreaterThan(6);
   const active = conversations.find(({ name }) => name === "browser-collaboration")!;
-  const eventRequests: string[] = [];
-  page.on("request", (outgoing) => {
-    const url = new URL(outgoing.url());
-    if (url.pathname.endsWith("/events")) eventRequests.push(`${url.pathname}${url.search}`);
-  });
-
   await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/conversations/${active.id}`);
   await expect(page.getByLabel("Live updates live")).toBeVisible();
-  await expect.poll(() => eventRequests.some((url) => url.startsWith("/conversations/events?"))).toBe(true);
-  expect(new Set(eventRequests.filter((url) => /^\/conversations\/[^/]+\/events$/.test(url))))
-    .toEqual(new Set([`/conversations/${active.id}/events`]));
+  // SharedWorker requests are not owned by an individual page's network session.
+  await expect.poll(async () => (await (await request.get(`${fixtureBase}/stream-metrics`)).json()).active).toBe(1);
 
   const fetchDuration = await page.evaluate(async () => {
     const startedAt = performance.now();
@@ -721,10 +714,10 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
   await expect(confirmation).toContainText("Active work will be interrupted");
   await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeFocused();
   await confirmation.getByRole("button", { name: "Stop active agents" }).click();
-  await expect(confirmation.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await expect(confirmation.getByRole("button", { name: "Close", exact: true })).toBeEnabled();
   await expect(confirmation.getByRole("button", { name: "Stop active agents" })).toBeDisabled();
   await page.keyboard.press("Escape");
-  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toHaveCount(0);
   releaseRequest();
   await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("stopped");
   await expect(page.getByRole("status").filter({ hasText: "Bulk action complete" })).toContainText("status uncertain");
@@ -1081,10 +1074,10 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   const replaceResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST" && response.url().endsWith(replacePath));
   await lifecycleDialog.getByRole("button", { name: "New session with context", exact: true }).click();
-  await expect(lifecycleDialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await expect(lifecycleDialog.getByRole("button", { name: "Close", exact: true })).toBeEnabled();
   await expect(lifecycleDialog.getByRole("button", { name: "New session with context", exact: true })).toBeDisabled();
   await page.keyboard.press("Escape");
-  await expect(lifecycleDialog).toBeVisible();
+  await expect(lifecycleDialog).toHaveCount(0);
   releaseReplace();
   const replaceResponse = await replaceResponsePromise;
   expect(replaceResponse.ok()).toBe(true);

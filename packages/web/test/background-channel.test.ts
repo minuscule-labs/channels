@@ -126,6 +126,39 @@ describe("inactive Conversation catch-up ordering", () => {
     expect(streamAborted).toBe(true);
   });
 
+  it("retains the older fence when a worker reconnects during catch-up", async () => {
+    let cached: ConversationMessage[] = [];
+    const requested: number[] = [];
+    let release!: () => void;
+    const liveMerged = new Promise<void>((resolve) => { release = resolve; });
+    await runBackgroundConversationsConnection({
+      signal: new AbortController().signal,
+      conversations: [{
+        conversationId: "conversation-a", currentMessages: () => cached,
+        listMessages: async ({ afterSequence }) => {
+          requested.push(afterSequence);
+          if (requested.length === 1) { await liveMerged; return [message(1), message(2)]; }
+          return afterSequence === 0 ? [message(3), message(99)] : [message(99)];
+        },
+        onLiveMessage: (next) => {
+          cached = mergeMessages(cached, [next]);
+          if (next.sequence === 100) release();
+        },
+        onCatchUpMessage: (next) => { cached = mergeMessages(cached, [next]); },
+        onRosterUpdated: () => undefined,
+      }],
+      events: async function* ({ onReady, onConnecting }) {
+        onReady();
+        yield { id: "first", type: "message.created", conversationId: "conversation-a", message: message(50), createdAt: "2026-10-15" };
+        onConnecting?.();
+        onReady();
+        yield { id: "second", type: "message.created", conversationId: "conversation-a", message: message(100), createdAt: "2026-10-15" };
+      },
+    });
+    expect(requested).toEqual([0, 0]);
+    expect(cached.map(({ sequence }) => sequence)).toEqual([1, 2, 3, 50, 99, 100]);
+  });
+
   it("rejects a stream that closes before readiness", async () => {
     await expect(runBackgroundConversationsConnection({
       signal: new AbortController().signal,

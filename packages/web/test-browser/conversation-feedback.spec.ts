@@ -131,8 +131,14 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
   await actions.click();
   await start.click();
   await expect(start).toHaveCount(0);
-  await expect(actions).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Open participant actions" })).toBeDisabled();
+  await expect(actions).toBeEnabled();
+  await actions.click();
+  await expect(start).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Details & diagnostics", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Open participant actions" }).click();
+  await expect(page.getByRole("button", { name: "Start eligible agents (1)" })).toBeDisabled();
+  await page.keyboard.press("Escape");
   release();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   await expect(actions).toBeEnabled();

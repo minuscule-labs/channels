@@ -5,27 +5,67 @@ import { conversations } from "./api";
 import { conversationCacheAction } from "./conversation-events";
 import { mergeMessages } from "./messages";
 import { queryKeys } from "./query-keys";
+import { sharedConversationEvents } from "./shared-conversation-events";
 
-export type ConnectionState = "connecting" | "live" | "disconnected";
+export type ConnectionState = "connecting" | "live" | "disconnected" | "polling";
 
 const MAX_RECONNECT_DELAY_MS = 10_000;
 
-export function useLiveConversation(conversationId: string) {
+export function useLiveConversation(conversationId: string, identityId: string | undefined) {
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [attempt, setAttempt] = useState(0);
   const reconnectStreak = useRef(0);
 
   useEffect(() => {
+    if (!identityId) return;
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let highestRosterRevisionSeen = 0;
-    let resolveReady!: () => void;
-    let rejectReady!: (error: Error) => void;
-    const ready = new Promise<void>((resolve, reject) => {
-      resolveReady = resolve;
-      rejectReady = reject;
-    });
+    let generation = 0;
+    let polling = false;
+    let requested = false;
+    let reconciling = false;
+    const failed = () => {
+      if (controller.signal.aborted) return;
+      controller.abort();
+      setConnection("disconnected");
+      const delay = Math.min(1_000 * (2 ** reconnectStreak.current), MAX_RECONNECT_DELAY_MS);
+      reconnectStreak.current += 1;
+      retryTimer = setTimeout(() => setAttempt((current) => current + 1), delay);
+    };
+    const reconcile = () => {
+      requested = true;
+      if (reconciling) return;
+      reconciling = true;
+      void (async () => {
+        try {
+          while (requested && !controller.signal.aborted) {
+            requested = false;
+            const currentGeneration = generation;
+            const [metadata, messages] = await Promise.all([
+              conversations.getConversation(conversationId),
+              conversations.listMessages(conversationId, { signal: controller.signal }),
+            ]);
+            if (controller.signal.aborted) return;
+            queryClient.setQueryData(queryKeys.conversation(conversationId), metadata);
+            queryClient.setQueryData<ConversationMessage[]>(
+              queryKeys.conversationMessages(conversationId),
+              (current) => mergeMessages(current, messages),
+            );
+            if (highestRosterRevisionSeen > metadata.rosterRevision) {
+              await queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversationId), exact: true });
+            }
+            if (controller.signal.aborted) return;
+            if (currentGeneration === generation) {
+              reconnectStreak.current = 0;
+              setConnection(polling ? "polling" : "live");
+            }
+          }
+        } catch { failed(); }
+        finally { reconciling = false; }
+      })();
+    };
 
     const apply = (event: ConversationEvent) => {
       const current = queryClient.getQueryData<ConversationMetadata>(queryKeys.conversation(conversationId));
@@ -55,54 +95,26 @@ export function useLiveConversation(conversationId: string) {
     };
 
     const stream = (async () => {
-      for await (const event of conversations.events(conversationId, {
+      for await (const event of sharedConversationEvents(identityId, [conversationId], {
         signal: controller.signal,
-        onReady: resolveReady,
+        onConnecting: () => { generation++; setConnection(polling ? "polling" : "connecting"); },
+        onDisconnected: () => { generation++; setConnection("disconnected"); },
+        onPolling: () => { polling = true; },
+        onReady: reconcile,
       })) {
         apply(event);
       }
       if (!controller.signal.aborted) throw new Error("Conversation event stream closed");
     })();
-    void stream.catch((error) => {
-      if (!controller.signal.aborted) rejectReady(error instanceof Error ? error : new Error(String(error)));
-    });
-
+    void stream.catch(failed);
     setConnection("connecting");
-    void (async () => {
-      try {
-        await ready;
-        const [metadata, messages] = await Promise.all([
-          conversations.getConversation(conversationId),
-          conversations.listMessages(conversationId),
-        ]);
-        if (controller.signal.aborted) return;
-        queryClient.setQueryData(queryKeys.conversation(conversationId), metadata);
-        queryClient.setQueryData<ConversationMessage[]>(
-          queryKeys.conversationMessages(conversationId),
-          (current) => mergeMessages(current, messages),
-        );
-        if (highestRosterRevisionSeen > metadata.rosterRevision) {
-          await queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversationId), exact: true });
-        }
-        reconnectStreak.current = 0;
-        setConnection("live");
-        await stream;
-      } catch {
-        if (controller.signal.aborted) return;
-        setConnection("disconnected");
-        const delay = Math.min(1_000 * (2 ** reconnectStreak.current), MAX_RECONNECT_DELAY_MS);
-        reconnectStreak.current += 1;
-        retryTimer = setTimeout(() => setAttempt((current) => current + 1), delay);
-      }
-    })();
 
     return () => {
       controller.abort();
       if (retryTimer) clearTimeout(retryTimer);
-      rejectReady(new Error("Conversation changed"));
       void stream.catch(() => undefined);
     };
-  }, [attempt, conversationId, queryClient]);
+  }, [attempt, conversationId, identityId, queryClient]);
 
   return {
     connection,

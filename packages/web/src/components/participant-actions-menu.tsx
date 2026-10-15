@@ -12,37 +12,71 @@ export function ParticipantActionsMenu({
   onStart,
   onStop,
   onDismissError,
+  onViewDiagnostics,
 }: {
   startEligible: number;
   stopEligible: number;
   pendingAction?: "start" | "stop";
   disabled?: boolean;
-  onStart?(): void;
+  onStart?(): void | Promise<void>;
   onStop?(): Promise<void>;
   onDismissError?(): void;
+  onViewDiagnostics?(trigger: HTMLElement | null): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const pending = disabled || pendingAction !== undefined;
-  const start = () => {
+  const [submitting, setSubmitting] = useState(false);
+  const submission = useRef(false);
+  const confirmationVersion = useRef(0);
+  const openingDetails = useRef(false);
+  const busy = pendingAction !== undefined || submitting;
+  const pending = disabled || busy;
+  const closeConfirmation = () => {
+    confirmationVersion.current += 1;
+    setConfirmOpen(false);
+  };
+  const viewDiagnostics = () => {
+    openingDetails.current = confirmOpen;
+    closeConfirmation();
     setMenuOpen(false);
-    onStart?.();
+    onViewDiagnostics?.(triggerRef.current);
+  };
+  const start = () => {
+    if (pending || submission.current) return;
+    submission.current = true;
+    setSubmitting(true);
+    setMenuOpen(false);
+    void Promise.resolve().then(() => onStart?.()).catch(() => undefined).finally(() => {
+      submission.current = false;
+      setSubmitting(false);
+    });
   };
   const openStopConfirmation = () => {
+    if (pending || submission.current) return;
+    confirmationVersion.current += 1;
     setMenuOpen(false);
     setError(undefined);
     setConfirmOpen(true);
   };
   const stop = async () => {
+    if (pending || submission.current) return;
+    const version = confirmationVersion.current;
+    submission.current = true;
+    setSubmitting(true);
     setError(undefined);
     try {
       await onStop?.();
-      setConfirmOpen(false);
+      if (version === confirmationVersion.current) closeConfirmation();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to stop active agents.");
+      if (version === confirmationVersion.current) {
+        setError(cause instanceof Error ? cause.message : "Unable to stop active agents.");
+      }
+    } finally {
+      submission.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -50,7 +84,7 @@ export function ParticipantActionsMenu({
     <Dialog.Root
       open={confirmOpen}
       onOpenChange={(open) => {
-        if (open || !pending) setConfirmOpen(open);
+        if (!open) closeConfirmation();
       }}
     >
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
@@ -61,7 +95,6 @@ export function ParticipantActionsMenu({
             className="icon-button inline-flex shrink-0"
             aria-label="Open participant actions"
             title="Participant actions"
-            disabled={pending}
           >
             <EllipsisVertical className="h-4 w-4" />
           </button>
@@ -72,6 +105,7 @@ export function ParticipantActionsMenu({
             sideOffset={6}
             className="z-50 min-w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none"
           >
+            {pending ? <p className="max-w-64 px-2.5 py-2 text-xs text-[var(--muted)]">An agent action is pending. Details remain available.</p> : null}
             {onStart ? (
               <button
                 type="button"
@@ -94,6 +128,7 @@ export function ParticipantActionsMenu({
                 Stop active agents ({stopEligible})
               </button>
             ) : null}
+            {onViewDiagnostics ? <button type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]" onClick={viewDiagnostics}>View diagnostics</button> : null}
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
@@ -107,21 +142,24 @@ export function ParticipantActionsMenu({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            triggerRef.current?.focus();
+            if (!openingDetails.current) triggerRef.current?.focus();
+            openingDetails.current = false;
           }}
         >
           <Dialog.Title className="text-base font-semibold">Stop active agents?</Dialog.Title>
           <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
             Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back.
           </Dialog.Description>
+          {busy ? <p className="mt-3 text-xs text-[var(--muted)]">Closing this dialog does not cancel the operation.</p> : null}
           {error ? <ErrorNotice className="mt-3" onDismiss={() => {
             setError(undefined);
             onDismissError?.();
           }}>{error}</ErrorNotice> : null}
           <div className="mt-5 flex justify-end gap-2">
             <Dialog.Close asChild>
-              <button ref={cancelRef} type="button" className="button-secondary" disabled={pending}>Cancel</button>
+              <button ref={cancelRef} type="button" className="button-secondary">{busy ? "Close" : "Cancel"}</button>
             </Dialog.Close>
+            {busy && onViewDiagnostics ? <button type="button" className="button-secondary" onClick={viewDiagnostics}>View diagnostics</button> : null}
             <button
               type="button"
               className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded border border-[var(--danger)] px-3 text-xs font-semibold text-[var(--danger)] hover:bg-[var(--danger)]/10 disabled:cursor-not-allowed disabled:opacity-50"
