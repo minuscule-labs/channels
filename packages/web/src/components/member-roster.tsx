@@ -9,6 +9,7 @@ import { AlertCircle, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, Chevr
 import { useEffect, useId, useRef, useState } from "react";
 import { activityLabel, elapsedLabel, runtimeStateLabel, runtimeStatusTone } from "../lib/participant-status";
 import { participantLabel } from "../lib/participants";
+import { pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions } from "../lib/agent-diagnostics";
 import { shortId } from "../lib/messages";
 import { queuedTurnsSummary } from "./conversation-activity-strip";
 import { ParticipantActionsMenu } from "./participant-actions-menu";
@@ -47,15 +48,15 @@ export function MemberRoster({
   onStopAllAgents,
   onDismissAgentError,
   onDismissBulkError,
-  pendingAgentAction,
-  pendingBulkAction,
-  pendingBulkIdentityIds,
+  pendingActions = {},
+  diagnosticsSnapshot,
   bulkResultAction,
   bulkResults,
   bulkResultsExpanded = true,
   onToggleBulkResults,
   onDismissBulkResults,
   participantActionError,
+  bulkActionError,
   turnFailures,
 }: {
   participants: Participant[];
@@ -71,19 +72,19 @@ export function MemberRoster({
   onReplaceAgent?(identityId: string, contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onCancelAgent?(identityId: string): void | Promise<unknown>;
   onStopAgent?(identityId: string): void | Promise<unknown>;
-  onStartAllAgents?(): void;
+  onStartAllAgents?(): void | Promise<void>;
   onStopAllAgents?(): Promise<void>;
   onDismissAgentError?(): void;
   onDismissBulkError?(): void;
-  pendingAgentAction?: { action: "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel"; identityId: string };
-  pendingBulkAction?: "start" | "stop";
-  pendingBulkIdentityIds?: ReadonlySet<string>;
+  pendingActions?: PendingAgentActions;
+  diagnosticsSnapshot?: AgentDiagnosticsSnapshot;
   bulkResultAction?: "start" | "stop";
   bulkResults?: readonly LocalBulkAgentLifecycleResult[];
   bulkResultsExpanded?: boolean;
   onToggleBulkResults?(): void;
   onDismissBulkResults?(): void;
   participantActionError?: { identityId: string; message: string };
+  bulkActionError?: string;
   turnFailures?: readonly LocalTurnFailureDiagnostic[];
 }) {
   const bulkResultsId = useId();
@@ -119,31 +120,42 @@ export function MemberRoster({
   const [now, setNow] = useState(() => Date.now());
   const agentValues = [...(localAgents?.values() ?? [])];
   const hasActivity = agentValues.some((agent) => agent.activity);
+  const hasPendingAction = Boolean(pendingActions.individual || pendingActions.bulk);
+  const openBulkDiagnostics = (trigger: HTMLElement | null) => {
+    const participant = visibleParticipants.find(({ id }) => pendingActions.bulk?.identityIds.has(id))
+      ?? visibleParticipants.find(({ type }) => type === "agent");
+    if (participant) openDetails(participant.id, trigger);
+  };
   const startEligible = agentValues.filter(({ state }) => state === "unbound" || state === "stopped").length;
   const stopEligible = agentValues.filter(({ state }) => state === "idle" || state === "running" || state === "disconnected" || state === "offline").length;
   const participantActionsMenu = !readOnly && (onStartAllAgents || onStopAllAgents) ? (
     <ParticipantActionsMenu
       startEligible={startEligible}
       stopEligible={stopEligible}
-      pendingAction={pendingBulkAction}
-      disabled={Boolean(pendingAgentAction)}
+      pendingAction={pendingActions.bulk?.action}
+      disabled={Boolean(pendingActions.individual)}
+      onViewDiagnostics={visibleParticipants.some(({ type }) => type === "agent") ? openBulkDiagnostics : undefined}
       onStart={onStartAllAgents}
       onStop={onStopAllAgents}
       onDismissError={onDismissBulkError}
     />
   ) : null;
   useEffect(() => {
-    if (!hasActivity) return;
+    if (!hasActivity && !hasPendingAction) return;
+    setNow(Date.now());
     const interval = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(interval);
-  }, [hasActivity]);
+  }, [hasActivity, hasPendingAction]);
   return (
     <aside aria-label="Participants sidebar" data-minimized={minimized} className={`flex h-full min-h-0 shrink-0 flex-col border-l border-[var(--border)] bg-[var(--panel)] ${drawer ? "w-full" : minimized ? "w-16" : "w-72"}`}>
       <div className={`flex min-h-14 shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] py-2 ${minimized ? "justify-center px-2" : "px-4"}`}>
         <div className={minimized ? "sr-only" : "min-w-0"}>
           <h2 className="text-sm font-semibold">Participants</h2>
           {localStatus === "unavailable" ? (
-            <p className="text-[10px] text-[var(--warning)]">Runtime status unavailable</p>
+            <div className="text-[10px] text-[var(--warning)]" role="status">
+              <p>{diagnosticsSnapshot?.receivedAt ? "Runtime status refresh failed" : "Runtime status unavailable"}</p>
+              {diagnosticsSnapshot?.refreshError ? <p className="mt-1">{diagnosticsSnapshot.refreshError}</p> : null}
+            </div>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -226,6 +238,7 @@ export function MemberRoster({
           const localAgent = localAgents?.get(participant.id);
           const label = participantLabel(participant, participant.id);
           const phase = activityLabel(localAgent);
+          const pendingInspection = pendingAgentInspection(participant.id, pendingActions);
           const status = participant.type === "agent"
             ? localAgent ? `Runtime: ${runtimeStateLabel(localAgent)}` : localStatus === "loading" ? "Runtime: Loading status" : "Runtime: Status unavailable"
             : participant.status === "disabled" ? "Disabled membership" : "Active membership";
@@ -240,11 +253,14 @@ export function MemberRoster({
           return (
             <li key={participant.id} data-participant-id={participant.id} className={`relative rounded-lg border border-transparent py-2 hover:border-[var(--border)] hover:bg-[var(--hover)] ${minimized ? "flex justify-center px-0" : "px-2"}`}>
               <div className={`relative ${minimized ? "h-8 w-8" : "min-w-0"}`}>
-                {renderMenu(<button type="button" className={minimized ? "avatar relative" : "flex h-8 w-full min-w-0 items-center gap-2 text-left"} aria-label={`Open actions for ${label}`} title={`${label} · ${status.replace(/^Runtime: /, "")}${phase ? ` · ${phase}` : ""}`}>
+                {renderMenu(<button type="button" className={minimized ? "avatar relative" : "flex h-8 w-full min-w-0 items-center gap-2 text-left"} aria-label={`Open actions for ${label}`} title={`${label} · ${status.replace(/^Runtime: /, "")}${phase ? ` · ${phase}` : ""}${pendingInspection ? ` · Pending: ${pendingInspection.label}` : ""}`}>
                   {avatar}
                   {!minimized ? <><span className="min-w-0 flex-1 truncate text-sm font-medium">{label}</span><EllipsisVertical aria-hidden="true" className="h-4 w-4 shrink-0 text-[var(--muted)]" /></> : null}
                 </button>)}
               </div>
+              {!minimized && pendingInspection ? <p aria-label="Pending participant action" className="mt-1 pl-10 text-[11px] text-[var(--muted)]">
+                Pending: {pendingInspection.label} · {elapsedLabel(new Date(pendingInspection.requestedAt).toISOString(), now)}
+              </p> : null}
               {!minimized && actionError ? <button
                 type="button"
                 className="participant-issue-notice mt-1 flex min-h-6 items-center gap-1.5 pl-10 text-left text-[11px] font-medium hover:underline"
@@ -270,8 +286,8 @@ export function MemberRoster({
               canReplace={!readOnly && Boolean(localAgent?.capabilities.replace && onReplaceAgent)}
               canCancel={!readOnly && Boolean(localAgent?.capabilities.interrupt && onCancelAgent)}
               canStop={!readOnly && Boolean(localAgent?.capabilities.stop && onStopAgent)}
-              pendingAction={pendingAgentAction?.identityId === participant.id ? pendingAgentAction.action : undefined}
-              disabled={Boolean(pendingAgentAction && pendingAgentAction.identityId !== participant.id) || pendingBulkIdentityIds?.has(participant.id)}
+              pendingAction={pendingActions.individual?.identityId === participant.id ? pendingActions.individual.action : undefined}
+              actionsDisabled={hasPendingAction}
               onStart={onStartAgent ? (contextMode) => onStartAgent(participant.id, contextMode) : undefined}
               onReconnect={onReconnectAgent ? () => onReconnectAgent(participant.id) : undefined}
               onReplace={onReplaceAgent ? (contextMode) => onReplaceAgent(participant.id, contextMode) : undefined}
@@ -289,7 +305,8 @@ export function MemberRoster({
         messages={messages}
         localStatus={localStatus}
         showDiagnostics={showDiagnostics}
-        now={now}
+        pendingAction={pendingAgentInspection(selectedParticipant.id, pendingActions)}
+        diagnosticsSnapshot={diagnosticsSnapshot}
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
         onCloseAutoFocus={(event) => {
@@ -297,7 +314,7 @@ export function MemberRoster({
           const target = detailsTrigger.current?.isConnected ? detailsTrigger.current : detailsFallbackTrigger.current;
           if (target?.isConnected) target.focus();
         }}
-        actionError={actionErrorFor(selectedParticipant.id)}
+        actionError={actionErrorFor(selectedParticipant.id) ?? bulkActionError}
         failures={turnFailures?.filter(({ participant }) => participant.identityId === selectedParticipant.id)}
       /> : null}
     </aside>

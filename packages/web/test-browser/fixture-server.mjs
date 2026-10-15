@@ -15,6 +15,14 @@ const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
 const service = new ConversationService();
+const activeEventStreams = new Set();
+const subscribeMany = service.subscribeMany.bind(service);
+service.subscribeMany = async (ids, listener) => {
+  const unsubscribe = await subscribeMany(ids, listener);
+  const stream = { ids: [...ids] };
+  activeEventStreams.add(stream);
+  return () => { activeEventStreams.delete(stream); unsubscribe(); };
+};
 const listWorkspaces = service.listWorkspaces.bind(service);
 let hideWorkspaces = false;
 service.listWorkspaces = async () => hideWorkspaces ? [] : listWorkspaces();
@@ -233,6 +241,11 @@ const localControl = await createLocalControlHttpServer({
 
 const controlServer = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${fixturePort}`);
+  if (request.method === "GET" && url.pathname === "/stream-metrics") {
+    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify({ active: activeEventStreams.size, topics: [...activeEventStreams].map(({ ids }) => ids) }));
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/control-launch") {
     browserSessions.currentHumanIdentityId = url.searchParams.get("actor") === "member" ? member.id : human.id;
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Share one multiplexed live-update connection across same-identity browser tabs so HTTP/1 stream limits cannot starve status/actions; reconcile on reconnect or suspended-tab overflow and use explicitly labeled snapshot polling when SharedWorker is unavailable.
+- Keep participant inspection available during pending individual and bulk agent actions; allow busy confirmations to close or open diagnostics without canceling work, while retaining mutation guards and adding local request timing, status freshness, and read-only refresh.
 - Use the short Bell fifth notification sound at its original pitch with increased gain; unlock saved sound preferences on trusted interaction after reload and notify when the browser window is unfocused while keeping a focused chat at its latest messages quiet.
 - Persist a lease-clearing Stop intent before draining so crashes and uncertain pauses cannot auto-resume; preserve managed sessions for explicit Start, discard work through the stop boundary, and apply persisted per-session context modes including Fresh-session history exclusion.
 - Place brief red turn-failure notices after their triggering messages in the Conversation timeline, with safe in-app diagnostics available to owners/admins from the notice and participant details; remove acknowledgment controls and avatar issue badges.

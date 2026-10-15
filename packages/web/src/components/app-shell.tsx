@@ -7,6 +7,7 @@ import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { mergeMessages } from "../lib/messages";
 import { runBackgroundConversationsConnection } from "../lib/background-conversation";
+import { sharedConversationEvents } from "../lib/shared-conversation-events";
 import { playNotificationSound } from "../lib/notification-sound";
 import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
 import { Drawer } from "./ui/drawer";
@@ -262,7 +263,7 @@ export function AppShell() {
           await runBackgroundConversationsConnection({
             signal: controller.signal,
             conversations: connections,
-            events: (options) => conversations.eventsMany(backgroundConversations.map(({ id }) => id), options),
+            events: (options) => sharedConversationEvents(identityId, backgroundConversations.map(({ id }) => id), options),
           });
         } catch {
           // The next bounded catch-up reconciles messages missed while disconnected.

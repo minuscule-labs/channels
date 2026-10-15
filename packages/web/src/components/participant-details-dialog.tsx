@@ -2,14 +2,16 @@ import type { LocalConversationAgent, LocalTurnFailureDiagnostic } from "@minu/c
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { statusSnapshotIsStale, type AgentDiagnosticsSnapshot, type PendingAgentInspection } from "../lib/agent-diagnostics";
 import { participantLabel } from "../lib/participants";
 import { activityLabel, elapsedLabel, liveCapabilityLabel, runtimeStateLabel } from "../lib/participant-status";
 import { queuedTurnsSummary } from "./conversation-activity-strip";
 import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 
 export function ParticipantDetailsDialog({
-  participant, agent, messages, participants, localStatus, showDiagnostics, now,
-  open, onOpenChange, onCloseAutoFocus, actionError, failures,
+  participant, agent, messages, participants, localStatus, showDiagnostics,
+  open, onOpenChange, onCloseAutoFocus, actionError, failures, pendingAction, diagnosticsSnapshot,
 }: {
   participant: Participant;
   agent?: LocalConversationAgent;
@@ -17,13 +19,21 @@ export function ParticipantDetailsDialog({
   participants: readonly Participant[];
   localStatus: "loading" | "available" | "unavailable";
   showDiagnostics: boolean;
-  now: number;
+  pendingAction?: PendingAgentInspection;
+  diagnosticsSnapshot?: AgentDiagnosticsSnapshot;
   open: boolean;
   onOpenChange(open: boolean): void;
   onCloseAutoFocus(event: Event): void;
   actionError?: string;
   failures?: readonly LocalTurnFailureDiagnostic[];
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!open) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [open]);
   const label = participantLabel(participant, participant.id);
   const trigger = agent?.activity ? messages.find(({ id }) => id === agent.activity!.triggerMessageId) : undefined;
   const author = trigger ? participants.find(({ id }) => id === trigger.participantId) : undefined;
@@ -51,6 +61,19 @@ export function ParticipantDetailsDialog({
               {participant.role ? <p className="mt-2 font-medium">{participant.role}</p> : null}
               {participant.profile ? <p className="mt-1 whitespace-pre-wrap leading-5 text-[var(--muted)]">{participant.profile}</p> : null}
             </section>
+            {pendingAction ? <section aria-label="Pending participant action">
+              <h3 className="font-semibold">Pending: {pendingAction.label} · {elapsedLabel(new Date(pendingAction.requestedAt).toISOString(), now)}</h3>
+              <p className="mt-2 text-[var(--muted)]">Requested from this browser; host acceptance and progress are not verified.</p>
+            </section> : null}
+            {participant.type === "agent" ? <section aria-label="Status freshness">
+              <h3 className="font-semibold">Status freshness</h3>
+              {diagnosticsSnapshot?.receivedAt ? <p className="mt-2 text-[var(--muted)]">
+                Status snapshot received <time dateTime={new Date(diagnosticsSnapshot.receivedAt).toISOString()}>{new Date(diagnosticsSnapshot.receivedAt).toLocaleTimeString()}</time> · {elapsedLabel(new Date(diagnosticsSnapshot.receivedAt).toISOString(), now)} ago.
+              </p> : <p className="mt-2 text-[var(--muted)]">No successful status snapshot received.</p>}
+              {diagnosticsSnapshot?.refreshFailed ? <p className="mt-2 text-[var(--warning)]">Latest status refresh failed. {diagnosticsSnapshot.refreshError} {diagnosticsSnapshot.receivedAt ? "Showing the previous snapshot; current Runtime state is not verified." : "Current Runtime state is not verified."}</p>
+                : diagnosticsSnapshot && statusSnapshotIsStale(diagnosticsSnapshot.receivedAt, now) ? <p className="mt-2 text-[var(--warning)]">This snapshot may be stale; current Runtime state is not verified.</p> : null}
+              {diagnosticsSnapshot ? <button type="button" className="button-secondary mt-2" disabled={diagnosticsSnapshot.refreshing} onClick={diagnosticsSnapshot.refresh}>{diagnosticsSnapshot.refreshing ? "Refreshing status…" : "Refresh status"}</button> : null}
+            </section> : null}
             {participant.type === "agent" ? (
               <section aria-label="Runtime details">
                 <h3 className="font-semibold">Runtime</h3>
@@ -83,7 +106,7 @@ export function ParticipantDetailsDialog({
                 </dl>
               </section>
             ) : null}
-            {actionError ? <section aria-label="Failed participant action"><h3 className="font-semibold text-[var(--danger)]">Last action failed</h3><p className="mt-2 break-words text-[var(--muted)]">{actionError}</p></section> : null}
+            {actionError ? <section aria-label="Failed participant action"><h3 className="font-semibold text-[var(--danger)]">Last action failed</h3><p className="mt-2 break-words text-[var(--muted)]">{actionError}</p><p className="mt-2 text-[var(--muted)]">A request error may leave the final outcome unknown. Refresh status before retrying.</p></section> : null}
             {failures?.length ? <TurnFailureDiagnostics diagnostics={failures} /> : null}
           </div>
         </Dialog.Content>

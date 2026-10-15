@@ -25,7 +25,7 @@ export function ParticipantSessionActionsMenu({
   canCancel,
   canStop,
   pendingAction,
-  disabled = false,
+  actionsDisabled = false,
   onStart,
   onReconnect,
   onReplace,
@@ -43,7 +43,7 @@ export function ParticipantSessionActionsMenu({
   canCancel: boolean;
   canStop: boolean;
   pendingAction?: ParticipantSessionAction;
-  disabled?: boolean;
+  actionsDisabled?: boolean;
   onStart?(contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onReconnect?(): void | Promise<unknown>;
   onReplace?(contextMode: LocalSessionContextMode): void | Promise<unknown>;
@@ -58,31 +58,62 @@ export function ParticipantSessionActionsMenu({
   const [error, setError] = useState<string>();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  const pending = pendingAction !== undefined;
+  const [submitting, setSubmitting] = useState(false);
+  const submission = useRef(false);
+  const confirmationVersion = useRef(0);
+  const openingDetails = useRef(false);
+  const pending = pendingAction !== undefined || submitting;
+  const blocked = actionsDisabled || pending;
   const hasActions = canStart || canResume || canReconnect || canReplace || canCancel || canStop;
 
   if (!hasActions && !onDetails) return null;
 
-  const invoke = (action: () => void | Promise<unknown>) => {
+  const closeConfirmation = () => {
+    confirmationVersion.current += 1;
+    setConfirmedAction(undefined);
+  };
+  const viewDetails = () => {
+    openingDetails.current = confirmedAction !== undefined;
+    closeConfirmation();
     setMenuOpen(false);
-    void Promise.resolve(action()).catch(() => undefined);
+    onDetails?.(triggerRef.current);
+  };
+  const invoke = (action: () => void | Promise<unknown>) => {
+    if (blocked || submission.current) return;
+    submission.current = true;
+    setSubmitting(true);
+    setMenuOpen(false);
+    void Promise.resolve().then(action).catch(() => undefined).finally(() => {
+      submission.current = false;
+      setSubmitting(false);
+    });
   };
   const requestConfirmation = (action: ConfirmedAction) => {
+    if (blocked || submission.current) return;
+    confirmationVersion.current += 1;
     setMenuOpen(false);
     setError(undefined);
     setConfirmedAction(action);
   };
   const confirm = async () => {
-    if (!confirmedAction) return;
+    if (!confirmedAction || blocked || submission.current) return;
+    const version = confirmationVersion.current;
+    submission.current = true;
+    setSubmitting(true);
     setError(undefined);
     try {
       if (confirmedAction === "replace") await onReplace?.("with_context");
       else if (confirmedAction === "fresh") await onReplace?.("fresh");
       else if (confirmedAction === "start-fresh") await onStart?.("fresh");
       else await onStop?.();
-      setConfirmedAction(undefined);
+      if (version === confirmationVersion.current) closeConfirmation();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to complete the participant action.");
+      if (version === confirmationVersion.current) {
+        setError(cause instanceof Error ? cause.message : "Unable to complete the participant action.");
+      }
+    } finally {
+      submission.current = false;
+      setSubmitting(false);
     }
   };
   const replacing = confirmedAction === "replace" || confirmedAction === "fresh" || confirmedAction === "start-fresh";
@@ -93,17 +124,16 @@ export function ParticipantSessionActionsMenu({
     <Dialog.Root
       open={confirmedAction !== undefined}
       onOpenChange={(open) => {
-        if (!open && !pending) setConfirmedAction(undefined);
+        if (!open) closeConfirmation();
       }}
     >
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
-        <Popover.Trigger asChild ref={triggerRef} disabled={disabled || pending}>
+        <Popover.Trigger asChild ref={triggerRef}>
           {trigger ?? <button
             type="button"
             className="icon-button inline-flex shrink-0"
             aria-label={`Open actions for ${participantName}`}
             title={`Actions for ${participantName}`}
-            disabled={disabled || pending}
           >
             {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <EllipsisVertical className="h-4 w-4" />}
           </button>}
@@ -114,87 +144,85 @@ export function ParticipantSessionActionsMenu({
             sideOffset={6}
             className="z-50 min-w-52 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none"
           >
-            {canResume && onStart ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => invoke(() => onStart("with_context"))}
-              >
-                <Play className="h-4 w-4" /> Start agent
-              </button>
-            ) : null}
-            {canStart && onStart ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => invoke(() => onStart("with_context"))}
-              >
-                <Play className="h-4 w-4" /> Start agent
-              </button>
-            ) : null}
-            {canStart && onStart ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => requestConfirmation("start-fresh")}
-              >
-                <Play className="h-4 w-4" /> Fresh session
-              </button>
-            ) : null}
-            {canReconnect && onReconnect ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => invoke(onReconnect)}
-              >
-                <RefreshCw className="h-4 w-4" /> Reconnect
-              </button>
-            ) : null}
-            {canReplace && onReplace ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => requestConfirmation("replace")}
-              >
-                <RefreshCw className="h-4 w-4" /> New session with context
-              </button>
-            ) : null}
-            {canReplace && onReplace ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                onClick={() => requestConfirmation("fresh")}
-              >
-                <Play className="h-4 w-4" /> Fresh session
-              </button>
-            ) : null}
-            {canCancel && onCancel ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm text-[var(--warning)] hover:bg-[var(--hover)]"
-                onClick={() => invoke(onCancel)}
-              >
-                <CircleX className="h-4 w-4" /> Cancel current
-              </button>
-            ) : null}
-            {canStop && onStop ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm text-[var(--danger)] hover:bg-[var(--hover)]"
-                onClick={() => requestConfirmation("stop")}
-              >
-                <Square className="h-4 w-4" /> Stop agent
-              </button>
-            ) : null}
+            {blocked ? <p className="max-w-64 px-2.5 py-2 text-xs text-[var(--muted)]">An agent action is pending. Session actions are unavailable; details remain available.</p> : null}
+            <div className={blocked ? "[&_button]:cursor-not-allowed [&_button]:opacity-50" : undefined}>
+              {(canResume || canStart) && onStart ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)] disabled:opacity-50"
+                  disabled={blocked}
+                  onClick={() => invoke(() => onStart("with_context"))}
+                >
+                  <Play className="h-4 w-4" /> Start agent
+                </button>
+              ) : null}
+              {canStart && onStart ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                  disabled={blocked}
+                  onClick={() => requestConfirmation("start-fresh")}
+                >
+                  <Play className="h-4 w-4" /> Fresh session
+                </button>
+              ) : null}
+              {canReconnect && onReconnect ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                  disabled={blocked}
+                  onClick={() => invoke(onReconnect)}
+                >
+                  <RefreshCw className="h-4 w-4" /> Reconnect
+                </button>
+              ) : null}
+              {canReplace && onReplace ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                  disabled={blocked}
+                  onClick={() => requestConfirmation("replace")}
+                >
+                  <RefreshCw className="h-4 w-4" /> New session with context
+                </button>
+              ) : null}
+              {canReplace && onReplace ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
+                  disabled={blocked}
+                  onClick={() => requestConfirmation("fresh")}
+                >
+                  <Play className="h-4 w-4" /> Fresh session
+                </button>
+              ) : null}
+              {canCancel && onCancel ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm text-[var(--warning)] hover:bg-[var(--hover)]"
+                  disabled={blocked}
+                  onClick={() => invoke(onCancel)}
+                >
+                  <CircleX className="h-4 w-4" /> Cancel current
+                </button>
+              ) : null}
+              {canStop && onStop ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm text-[var(--danger)] hover:bg-[var(--hover)]"
+                  disabled={blocked}
+                  onClick={() => requestConfirmation("stop")}
+                >
+                  <Square className="h-4 w-4" /> Stop agent
+                </button>
+              ) : null}
+            </div>
             {onDetails ? (
               <div className={hasActions ? "mt-1 border-t border-[var(--border)] pt-1" : undefined}>
                 <button
                   type="button"
                   className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDetails(triggerRef.current);
-                  }}
+                  onClick={viewDetails}
                 >
                   <Info className="h-4 w-4" /> Details &amp; diagnostics
                 </button>
@@ -213,7 +241,8 @@ export function ParticipantSessionActionsMenu({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            triggerRef.current?.focus();
+            if (!openingDetails.current) triggerRef.current?.focus();
+            openingDetails.current = false;
           }}
         >
           <Dialog.Title className="text-base font-semibold">
@@ -232,14 +261,16 @@ export function ParticipantSessionActionsMenu({
                   ? "Starts a Runtime session with no handoff and excludes all earlier Conversation messages. Saved agent/project instructions and configuration still apply; messages posted after it starts are included."
                 : "Active work will be interrupted and queued turns through the stop boundary discarded. The same Runtime session is kept; messages posted while stopped wait until you resume it. External tool or filesystem effects cannot be rolled back."}
           </Dialog.Description>
+          {pending ? <p className="mt-3 text-xs text-[var(--muted)]">Closing this dialog does not cancel the operation.</p> : null}
           {error ? <ErrorNotice className="mt-3" onDismiss={() => {
             setError(undefined);
             onDismissError?.();
           }}>{error}</ErrorNotice> : null}
           <div className="mt-5 flex justify-end gap-2">
             <Dialog.Close asChild>
-              <button ref={cancelRef} type="button" className="button-secondary" disabled={pending}>Cancel</button>
+              <button ref={cancelRef} type="button" className="button-secondary">{pending ? "Close" : "Cancel"}</button>
             </Dialog.Close>
+            {pending && onDetails ? <button type="button" className="button-secondary" onClick={viewDetails}>View diagnostics</button> : null}
             <button
               type="button"
               className={`inline-flex min-h-8 items-center justify-center gap-1.5 rounded border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -247,7 +278,7 @@ export function ParticipantSessionActionsMenu({
                   ? "border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]"
                   : "border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--danger)]/10"
               }`}
-              disabled={pending}
+              disabled={blocked}
               onClick={() => void confirm()}
             >
               {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
