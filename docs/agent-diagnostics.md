@@ -309,6 +309,8 @@ Observed on the current branch after implementation:
 - `pnpm web:build` passed; Vite reports its large-chunk advisory.
 - `git diff --check` passed.
 
+CI timing follow-up: the freshness test originally counted a legitimate idle poll when navigation/locator time plus a four-second jump crossed its five-second interval. It now pauses after bootstrap, settles the poll, and measures opening diagnostics in a controlled window; resumed refresh checks allow normal polling. The corrected test passed 20 consecutive runs alongside a full browser-suite rerun (78 passed). Application polling behavior is unchanged.
+
 The status-error follow-up distinguishes missing/expired local browser sessions, denied access, HTTP failures, and client timeouts without rendering raw transport errors. A failed refresh with retained data is labeled **Runtime status refresh failed**, rather than implying the last known agent state was lost.
 
 No application backend API, migration, durable operation timeline, raw-log/export capability, or Runtime change is included. Fixture-only stream metrics support browser assertions. Real Pi Start/Stop/replacement smoke has not been performed: existing live agents were deliberately left untouched. A guarded live-dev UI check intercepted both Stop and New session with context before network delivery, held them pending, verified View diagnostics and read-only refresh, then returned simulated failures. Both real status snapshots remained Idle; zero lifecycle mutations reached the host.

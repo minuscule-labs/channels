@@ -389,20 +389,34 @@ test("freshness preserves the received snapshot after a failed refresh and does 
   });
   await page.clock.install();
   await launch(page, request, data);
-  const beforeOpen = reads;
   const modal = await details(page, data.agent.displayName!);
-  const timestamp = await modal.getByRole("region", { name: "Status freshness" }).locator("time").getAttribute("datetime");
+  const snapshotTime = modal.getByRole("region", { name: "Status freshness" }).locator("time");
+  const initialTimestamp = await snapshotTime.getAttribute("datetime");
+  // install() keeps ticking during navigation/locator waits. Pause only after
+  // bootstrap, let the resulting normal poll settle, then measure a known window.
+  await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 60_000));
+  await expect.poll(async () => {
+    // Query's async response notification needs a timer tick even with time paused.
+    await page.clock.runFor(1);
+    return snapshotTime.getAttribute("datetime");
+  }).not.toBe(initialTimestamp);
+  await modal.getByRole("button", { name: "Close participant details" }).click();
+  const beforeOpen = reads;
+  await details(page, data.agent.displayName!);
+  const timestamp = await snapshotTime.getAttribute("datetime");
   await expect(modal.getByRole("region", { name: "Participant diagnostics" })).toContainText("Checking backlog");
   await expect(modal.getByRole("region", { name: "Participant diagnostics" })).not.toContainText("0 queued");
   await page.clock.fastForward(4_000);
   expect(reads).toBe(beforeOpen);
   fail = true;
+  await page.clock.resume();
   await modal.getByRole("button", { name: "Refresh status", exact: true }).click();
   await expect(modal.getByRole("region", { name: "Status freshness" })).toContainText("Latest status refresh failed");
   await expect(modal.getByRole("region", { name: "Status freshness" }).locator("time")).toHaveAttribute("datetime", timestamp!);
   await expect(modal.getByRole("region", { name: "Runtime details" })).toContainText("Idle");
   await expect(modal).toContainText("current Runtime state is not verified");
-  expect(reads).toBe(beforeOpen + 1);
+  // Normal polling may also run while real-time locator waits are resumed.
+  expect(reads).toBeGreaterThan(beforeOpen);
   fail = false;
   await modal.getByRole("button", { name: "Refresh status", exact: true }).click();
   await expect(modal).not.toContainText("Latest status refresh failed");
