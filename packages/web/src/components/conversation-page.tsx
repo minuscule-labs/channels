@@ -7,6 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
 import { queryKeys } from "../lib/query-keys";
+import { agentStatusRequestError, pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions } from "../lib/agent-diagnostics";
 import { readSequence, resetReadSequence, writeReadSequence } from "../lib/conversation-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
 import { ConversationActivityStrip } from "./conversation-activity-strip";
@@ -82,13 +83,16 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
   });
   const localAgents = useQuery({
     queryKey: queryKeys.localConversationAgents(conversationId),
-    queryFn: async () => (await localControl.listConversationAgents(conversationId)).agents,
+    queryFn: async () => {
+      const { agents } = await localControl.listConversationAgents(conversationId);
+      return { agents, receivedAt: Date.now() };
+    },
     retry: false,
     refetchInterval: (query) => query.state.status === "error"
       ? 30_000
-      : query.state.data?.some((agent) => agent.activity) ? 1_000 : 5_000,
+      : query.state.data?.agents.some((agent) => agent.activity) ? 1_000 : 5_000,
   });
-  const { connection, retry } = useLiveConversation(conversationId);
+  const { connection, retry } = useLiveConversation(conversationId, currentSession.data?.identityId);
   const agentAction = useMutation({
     mutationFn: ({ action, identityId }: {
       action: "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
@@ -110,9 +114,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       if (action !== "cancel") return undefined;
       const previous = localAgents.data;
       queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), (current: typeof localAgents.data) =>
-        current?.map((agent) => agent.identityId === identityId && agent.activity
+        current ? { ...current, agents: current.agents.map((agent) => agent.identityId === identityId && agent.activity
           ? { ...agent, activity: { ...agent.activity, phase: "canceling" as const }, capabilities: { ...agent.capabilities, interrupt: false } }
-          : agent),
+          : agent) } : current,
       );
       return { previous };
     },
@@ -148,9 +152,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     onMutate: (action) => {
       setBulkResults(undefined);
       setBulkResultsExpanded(true);
-      setPendingBulkTargets(new Set((localAgents.data ?? [])
+      setPendingBulkTargets(new Set((localAgents.data?.agents ?? [])
         .filter(({ state }) => action === "start"
-          ? state === "unbound" || state === "disabled"
+          ? state === "unbound" || state === "stopped"
           : state === "idle" || state === "running" || state === "disconnected" || state === "offline")
         .map(({ identityId }) => identityId)));
     },
@@ -162,7 +166,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     },
     onSettled: () => setPendingBulkTargets(undefined),
   });
-  const startAllAgents = () => bulkAgentAction.mutate("start");
+  const startAllAgents = async () => {
+    await bulkAgentAction.mutateAsync("start");
+  };
   const stopAllAgents = async () => {
     await bulkAgentAction.mutateAsync("stop");
   };
@@ -188,7 +194,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     return [...byId.values()];
   }, [identities.data, participants, workspaceMembers.data]);
   const localAgentMap = useMemo(
-    () => localAgents.data ? new Map(localAgents.data.map((agent) => [agent.identityId, agent])) : undefined,
+    () => localAgents.data ? new Map(localAgents.data.agents.map((agent) => [agent.identityId, agent])) : undefined,
     [localAgents.data],
   );
   const localStatus = localAgents.isSuccess ? "available" : localAgents.isError ? "unavailable" : "loading";
@@ -207,7 +213,27 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     retry: false,
     refetchInterval: 10_000,
   });
+  const pendingActions: PendingAgentActions = {
+    individual: agentAction.isPending && agentAction.variables
+      ? { ...agentAction.variables, requestedAt: agentAction.submittedAt } : undefined,
+    bulk: bulkAgentAction.isPending && bulkAgentAction.variables ? {
+      action: bulkAgentAction.variables,
+      requestedAt: bulkAgentAction.submittedAt,
+      identityIds: pendingBulkTargets ?? new Set(),
+    } : undefined,
+  };
+  const diagnosticsSnapshot: AgentDiagnosticsSnapshot = {
+    // Keep actual receipt time separate from React Query's optimistic cache updates.
+    receivedAt: localAgents.data?.receivedAt ?? 0,
+    refreshing: localAgents.isFetching,
+    refreshFailed: localAgents.isError,
+    refreshError: localAgents.isError ? agentStatusRequestError(localAgents.error) : undefined,
+    refresh: () => { void localAgents.refetch(); },
+  };
   const participantFeedback = {
+    pendingActions,
+    diagnosticsSnapshot,
+    bulkActionError: bulkAgentAction.isError ? `Conversation-wide bulk request failed: ${bulkAgentAction.error.message}` : undefined,
     participantActionError: agentAction.isError && agentAction.variables
       ? { identityId: agentAction.variables.identityId, message: agentAction.error.message } : undefined,
     turnFailures: canOpenDiagnostics ? turnFailures.data?.diagnostics : undefined,
@@ -326,7 +352,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               messages={messages.data ?? []}
               localAgents={localAgentMap}
               localStatus={localStatus}
-              showDiagnostics={currentSession.isSuccess}
+              showDiagnostics={canOpenDiagnostics}
               {...participantFeedback}
               drawer
               readOnly={settled}
@@ -343,9 +369,6 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
               onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
-              pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
-              pendingBulkAction={bulkAgentAction.isPending ? bulkAgentAction.variables : undefined}
-              pendingBulkIdentityIds={pendingBulkTargets}
               bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
               onDismissAgentError={() => { if (agentAction.isError) agentAction.reset(); }}
               onDismissBulkError={() => { if (bulkAgentAction.isError) bulkAgentAction.reset(); }}
@@ -356,6 +379,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
             />
           </Drawer>
         </header>
+        {connection === "polling" ? <p role="status" className="border-b border-[var(--border)] px-4 py-2 text-xs text-[var(--muted)]">Live updates are unavailable in this browser. Checking periodically; notification sounds are unavailable in this fallback mode.</p> : null}
         {settled ? (
           <div className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-xs text-[var(--muted)]" role="status">
             This Conversation is archived and read-only. Reopen it to send messages, edit participants, or manage agents.
@@ -432,7 +456,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           conversationId={conversationId}
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
-          activity={<ConversationActivityStrip agents={localAgents.data ?? []} participants={participants} />}
+          activity={<ConversationActivityStrip agents={localAgents.data?.agents ?? []} participants={participants} />}
           readOnlyReason={settled ? "This Conversation is archived. Reopen it to send a message." : undefined}
         />
       </section>
@@ -443,7 +467,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           messages={messages.data ?? []}
           localAgents={localAgentMap}
           localStatus={localStatus}
-          showDiagnostics={currentSession.isSuccess}
+          showDiagnostics={canOpenDiagnostics}
           {...participantFeedback}
           readOnly={settled}
           onStartAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
@@ -459,9 +483,6 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
           onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
-          pendingAgentAction={agentAction.isPending ? agentAction.variables : undefined}
-          pendingBulkAction={bulkAgentAction.isPending ? bulkAgentAction.variables : undefined}
-          pendingBulkIdentityIds={pendingBulkTargets}
           bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
           onDismissAgentError={() => { if (agentAction.isError) agentAction.reset(); }}
           onDismissBulkError={() => { if (bulkAgentAction.isError) bulkAgentAction.reset(); }}
@@ -477,15 +498,16 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
         messages={messages.data ?? []}
         participants={participants}
         localStatus={localStatus}
-        showDiagnostics={currentSession.isSuccess}
-        now={Date.now()}
+        showDiagnostics={canOpenDiagnostics}
+        pendingAction={pendingAgentInspection(issueDialogParticipant.id, pendingActions)}
+        diagnosticsSnapshot={diagnosticsSnapshot}
         open={issueDialogOpen}
         onOpenChange={setIssueDialogOpen}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           if (issueNoticeTriggerRef.current?.isConnected) issueNoticeTriggerRef.current.focus();
         }}
-        actionError={agentAction.isError && agentAction.variables?.identityId === issueDialogParticipant.id ? agentAction.error.message : undefined}
+        actionError={agentAction.isError && agentAction.variables?.identityId === issueDialogParticipant.id ? agentAction.error.message : participantFeedback.bulkActionError}
         failures={canOpenDiagnostics ? turnFailures.data?.diagnostics.filter(({ participant }) => participant.identityId === issueDialogParticipant.id) : undefined}
       /> : null}
     </div>
