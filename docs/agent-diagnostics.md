@@ -1,8 +1,8 @@
 # Agent diagnostics and operation review
 
-**Status:** Product direction and Phase 1 Close / View diagnostics interaction approved. Phase 1 and the multi-tab transport fix are implemented and automated checks pass; real Pi lifecycle acceptance remains pending. Phases 2–3 remain proposed and gated as below.
+**Status:** Phase 1 and the multi-tab transport fix merged in PR #39. Real Pi lifecycle acceptance remains pending. The [Phase 2 storage and failure-isolation design](agent-diagnostics-phase2.md) is approved. The journal/recorder is connected to daemon-owned individual lifecycle/Relay actions and retired-session cleanup. Bulk parent/target grouping and bounded missing-child coverage are also connected. Protocol-v19 authorized history/detail/report APIs and exact targeted-trigger failure relations are implemented; the privileged timeline/report UI and revocation-safe open-surface browser state are also implemented. Completed-feature review and real-Pi acceptance remain pending. Phase 3 remains proposed and gated below.
 
-**Branch:** `fix/diagnostics-during-pending-actions`
+**Branch:** `feat/agent-diagnostics-phase2`
 
 **Scope:** Reachable inspection, lifecycle evidence, failure review, diagnostic reports, and progressively deeper session/log inspection.
 
@@ -25,8 +25,8 @@ These are confirmed implementation facts, not new features:
 - `packages/control/src/contracts.ts` defines presentation-safe agent state, activity phase, triggering message, elapsed-start timestamp, exact/inexact queue counts, connection, verification time, and live capability states.
 - Durable turn-failure projections include failure category, failure time, duration, attempt count, delivery outcome, and remediation. Minimal notices are visible to active Conversation participants; detailed failure records are restricted to active Workspace owners/admins.
 - `participant-details-dialog.tsx` renders participant information, Runtime/activity information, triggering messages when loaded, connection/capability diagnostics, and failures.
-- `participant-session-actions-menu.tsx` disables the whole trigger while pending or externally disabled. Its confirmation dialog cannot currently close while an operation is pending.
-- `member-roster.tsx` also disables other participant triggers during individual operations and targeted participants during bulk operations.
+- Phase 1 keeps `participant-session-actions-menu.tsx` triggers usable during pending operations while disabling conflicting mutations; busy confirmations can Close or View diagnostics without canceling work.
+- `member-roster.tsx` preserves affected/other participant inspection during individual and bulk requests, with browser-local timing and status-snapshot freshness.
 - `docs/web-client-mvp.md` requires sanitized owner/admin diagnostics and details access in read-only Conversations.
 - Existing lifecycle audit callbacks are not a durable, complete per-step operation timeline. Runtime activity events expose phases, not tool arguments or a general log/transcript feed.
 
@@ -66,7 +66,7 @@ The details surface has progressively disclosed sections:
 
 Keep the initial overview compact. Unsupported later sections show a clear availability explanation, not an empty panel that implies nothing happened. Mobile uses the same information and permission model, with scrollable content and responsive section navigation.
 
-### Pending confirmation behavior — proposed decision
+### Pending confirmation behavior — implemented in Phase 1
 
 Separate confirmation presentation from the in-flight mutation:
 
@@ -105,7 +105,7 @@ Manual **Refresh** is read-only. Phase 1 reuses existing Runtime-status polling 
 - Channels agent-host owns lifecycle operations and emits its own milestones.
 - Relay owns turn-admission/drain/delivery observations.
 - Runtime adapters own harness-specific status, acknowledgment, and optional diagnostic evidence.
-- The private Relay store retains operation/event records. The public Conversation message store does not receive these records.
+- The original proposal placed operation/event records in the private Relay store. The approved [Phase 2 design](agent-diagnostics-phase2.md) uses an optional companion journal to isolate diagnostic failures from authoritative Relay writes. The public Conversation message store must not receive these records.
 - The local-control server authenticates, authorizes, scopes, and projects safe records for the browser.
 
 Do not move Pi transcript parsing or harness log discovery into the web client or generic Channels lifecycle code.
@@ -167,7 +167,7 @@ Bulk requests have a parent operation with per-participant child operations and 
 - Imported/current audit entries without correlation are labeled legacy/uncorrelated; never join unrelated operations solely by timestamp proximity.
 - Use event sequence for order and monotonic elapsed durations while running. Wall-clock timestamps alone are insufficient if clocks change.
 
-**Proposed bounded defaults:** retain terminal operation records for seven days; cap terminal operations at 1,000 per installation and events at 128 per operation; paginate history at 50 records per response. Protect active-operation summaries, preserve final outcomes, and expose truncation/expiry explicitly. Final storage/indexing details must be reviewed before Phase 2 implementation.
+**Approved Phase 2 defaults:** retain terminal operation records for seven days; cap terminal operations at 1,000 per installation and events at 128 per operation; paginate history at 50 records per response. Protect active-operation summaries, preserve final outcomes, and expose truncation/expiry explicitly. The approved [Phase 2 design](agent-diagnostics-phase2.md) supplies storage/indexing, active/queue bounds, and failure-isolation details. These are implementation requirements, not a claim that durable diagnostics is already available.
 
 ## Turn-failure review
 
@@ -281,7 +281,7 @@ Adapter contracts and source availability must be verified rather than assumed.
 - Cross-Workspace/session leakage, path traversal, symlink redirection, hostile content, oversized inputs, and secret-containing fixtures are covered.
 - Raw export remains disabled until its capability and delivery-security review are complete; sanitized reports never silently include it.
 
-Each phase gets its own verification checkpoint and scoped commit/PR. Phase 1 is the next implementation target; approving the full direction does not require implementing all three phases in one change.
+Each phase gets its own verification checkpoint and scoped commit/PR. Phase 1 is merged; Phase 2 implementation has begun following design approval. Approving the full direction does not require implementing all three phases in one change.
 
 ## Verification plan
 
@@ -294,7 +294,7 @@ Each phase gets its own verification checkpoint and scoped commit/PR. Phase 1 is
 ## Review gates / unresolved details
 
 - Busy-confirmation **Close / View diagnostics** interaction approved; preserve pending guards and verify focus/late-response behavior in Phase 1.
-- Review event retention limits and the storage/error-isolation design before Phase 2.
+- Phase 2 companion-journal placement and bounded best-effort recording are approved; verify each implementation checkpoint against the [approved design](agent-diagnostics-phase2.md).
 - Decide which adapters can actually supply safe current-session launch metadata and scoped logs before Phase 3; current phase-only activity events are insufficient for detailed tool review.
 - Review a concrete raw-export threat model and delivery mechanism before enabling that capability.
 

@@ -1,4 +1,12 @@
 export {
+  DIAGNOSTIC_ACTIONS, DIAGNOSTIC_STAGES, DIAGNOSTIC_REASONS, DIAGNOSTIC_LIMITS, DIAGNOSTIC_TARGET_REASONS,
+  diagnosticRecord, diagnosticSummary, safeDiagnosticObservation,
+  type DiagnosticAction, type DiagnosticStage, type DiagnosticReason, type DiagnosticOutcome, type DiagnosticRequestDisposition,
+  type DiagnosticEvent, type DiagnosticSummary, type DiagnosticScope, type DiagnosticRecord,
+  type DiagnosticHistory, type DiagnosticDetail, type DiagnosticObservation, type DiagnosticCorrelations,
+  type DiagnosticBulkProgress, type DiagnosticTargetResult, type DiagnosticTurnReference,
+} from "./diagnostics.ts";
+export {
   DEFAULT_HANDOFF_SUMMARY_TOKENS,
   DEFAULT_RECENT_CONTEXT_MESSAGES,
   DEFAULT_RECENT_CONTEXT_TOKENS,

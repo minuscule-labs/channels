@@ -21,10 +21,10 @@ test("working folders recover from an initial load failure and save previewed, d
     if (route.request().method() === "GET") {
       folderLoads += 1;
       if (folderLoads === 1) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
-      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 18, workspaceId, conversationId, inheritedFromWorkspace: true, folders: [], changesApplyToNewSessions: true, enforcement: "advisory" }) });
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 19, workspaceId, conversationId, inheritedFromWorkspace: true, folders: [], changesApplyToNewSessions: true, enforcement: "advisory" }) });
     }
     puts.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 18, workspaceId, conversationId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 19, workspaceId, conversationId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
   });
   await page.route(`**/local/conversations/${conversationId}/working-folders/preview`, (route) => {
     const { path } = route.request().postDataJSON() as { path: string };

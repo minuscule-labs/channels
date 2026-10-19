@@ -19,6 +19,11 @@ import {
   type TurnFailureDiagnosticRecord,
   type RuntimeSessionContextMode,
   type WorkspaceAgentConfig,
+  type DiagnosticAction,
+  type DiagnosticObservation,
+  type DiagnosticScope,
+  type DiagnosticBulkProgress,
+  type DiagnosticOutcome,
 } from "@minu/channels-relay";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
@@ -35,6 +40,9 @@ import type {
   LocalTurnFailureDiagnostic,
 } from "./contracts.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
+import { beginLifecycleObservation, type LifecycleDiagnostics } from "./lifecycle-diagnostics.ts";
+import type { RecordedOperation } from "./diagnostics-recorder.ts";
+import { authorizeDiagnosticAccess } from "./agent-diagnostic-reads.ts";
 
 export interface ManagedRuntimeStartConfig {
   cwd: string;
@@ -70,6 +78,12 @@ interface BulkLifecycleTarget {
   identityId: string;
   binding?: ConversationAgentBindingRecord;
   duplicate: boolean;
+}
+
+interface BulkDiagnosticContext {
+  parentOperationId?: string;
+  operation?: RecordedOperation;
+  outcome?: Exclude<DiagnosticOutcome, "pending">;
 }
 
 class BulkSnapshotChangedError extends Error {}
@@ -139,6 +153,7 @@ export interface LocalAgentHostOptions {
   recoveryBackoffMs?: readonly number[];
   /** Local product owner allowed to replace stale offline sessions during startup. */
   autoResumeActorIdentityId?: string;
+  diagnostics?: LifecycleDiagnostics;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
   onError?(error: Error): void;
@@ -317,6 +332,7 @@ export class LocalAgentHost {
     sessionId: string;
     runtimeOwnerId?: string;
     generation: number;
+    diagnosticScope?: DiagnosticScope & { relatedOperationId?: string };
   }>();
   private sessionCleanupTask: Promise<void> | undefined;
   private idleSleepTimer: NodeJS.Timeout | undefined;
@@ -732,11 +748,13 @@ export class LocalAgentHost {
     actorIdentityId: string,
     contextMode: RuntimeSessionContextMode = "with_context",
     expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state"> | null,
+    diagnostic?: BulkDiagnosticContext,
   ): Promise<void> {
     const key = this.bindingKey(conversationId, agentIdentityId);
     this.startingBindings.add(key);
     try {
       return await this.exclusive(key, async () => {
+      let observation: RecordedOperation | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         await this.assertConversationAdmission(conversationId);
@@ -789,6 +807,8 @@ export class LocalAgentHost {
           );
         }
         if (existingBindings[0]?.state === "paused") {
+          observation = this.observeLifecycle(conversation.workspaceId, conversationId, agentIdentityId, "resume", existingBindings[0], undefined, diagnostic);
+          observation?.event("resume_requested", "started");
           if (await this.attachBinding(conversationId, existingBindings[0].id, true) !== "attached") {
             throw new LocalConfigurationRequestError(
               "Stopped Runtime session could not be resumed; use New session instead",
@@ -804,6 +824,10 @@ export class LocalAgentHost {
             conversationId,
             targetIdentityId: agentIdentityId,
           });
+          observation?.event("session_verified", "confirmed");
+          observation?.event("route_attached", "confirmed");
+          observation?.requestFinished("handler_returned");
+          observation?.finish("succeeded");
           return;
         }
         if (existingBindings.length > 0) {
@@ -832,12 +856,15 @@ export class LocalAgentHost {
         }
         const launch = await this.resolveWorkingFolderLaunch(workspaceConfig, conversationId);
         const runtimeOwnerId = await this.options.store.getOrCreateRuntimeOwnerId();
+        observation = this.observeLifecycle(conversation.workspaceId, conversationId, agentIdentityId, "start", undefined, undefined, diagnostic);
         let session: ManagedRuntimeSession | undefined;
         let sessionOwnerId: string | undefined;
         let bindingId: string | undefined;
         try {
           const messages = await this.options.client.listMessages(conversationId);
           const conversationSequence = messages.at(-1)?.sequence ?? 0;
+          observation?.event("activation_boundary", "confirmed");
+          observation?.event("launch_requested", "started");
           const started = await startRuntimeSession(runtime, {
             cwd: launch.cwd,
             appendSystemPrompt: this.appendWorkingFolderGuidance(agentConfig.personaPrompt, launch.workingFolderGuidance),
@@ -849,6 +876,7 @@ export class LocalAgentHost {
           }, runtimeOwnerId);
           session = started.session;
           sessionOwnerId = started.runtimeOwnerId;
+          observation?.event("launch_requested", "confirmed");
           await this.options.store.setCursor(conversationId, agentIdentityId, conversationSequence);
           const binding = await this.directory.bindAgent({
             conversationId,
@@ -861,15 +889,19 @@ export class LocalAgentHost {
             origin: "started",
           });
           bindingId = binding.id;
+          observation?.correlate({ targetBinding: { id: binding.id, generation: binding.generation } });
+          observation?.event("binding_committed", "confirmed");
           if (await this.attachBinding(conversationId, binding.id) !== "attached") {
             throw new Error("Agent binding could not be attached to the Conversation Relay");
           }
+          observation?.event("route_attached", "confirmed");
           this.startedSessions.set(this.sessionKey(binding.id, session.id), {
             bindingId: binding.id,
             runtime,
             sessionId: session.id,
             runtimeOwnerId: sessionOwnerId,
             generation: binding.generation,
+            diagnosticScope: { workspaceId: conversation.workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId },
           });
         } catch (error) {
           if (bindingId) {
@@ -888,6 +920,7 @@ export class LocalAgentHost {
               bindingId,
               bindingId ? 1 : undefined,
               bindingId ? "suspend" : "destroy",
+              { workspaceId: conversation.workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId },
             );
           }
           if (error instanceof LocalConfigurationRequestError) throw error;
@@ -905,7 +938,11 @@ export class LocalAgentHost {
           conversationId,
           targetIdentityId: agentIdentityId,
         });
+        observation?.requestFinished("handler_returned");
+        observation?.finish("succeeded");
       } catch (error) {
+        observation?.requestFinished("handler_failed");
+        observation?.finish("unknown");
         const conversation = await this.options.client.getConversation(conversationId).catch(() => undefined);
         this.audit({
           action: "agent.session.started",
@@ -940,6 +977,7 @@ export class LocalAgentHost {
       let sessionOwnerId: string | undefined;
       let runtime: (AgentRuntimePort & LocalManagedRuntimePort & Required<Pick<LocalManagedRuntimePort, "start">>) | undefined;
       let committed = false;
+      let observation: RecordedOperation | undefined;
       let previousBinding: ConversationAgentBindingRecord | undefined;
       let previousRuntime: LocalManagedRuntimePort | undefined;
       let previousSessionId: string | undefined;
@@ -970,15 +1008,23 @@ export class LocalAgentHost {
         previousRuntime = this.options.runtimes[previous.runtimeAdapter];
         previousSessionId = previous.runtimeSessionId;
         await this.assertBindingsIdle([previous], previous.id);
+        observation = this.observeLifecycle(workspaceId, conversationId, agentIdentityId, contextMode === "fresh" ? "replace_fresh" : "replace", previous);
         // Fence the old route durably before selecting the activation boundary. A
         // failed launch stays fenced and can be resolved by explicit replacement.
         if (previous.state !== "disabled" && previous.state !== "paused" && previous.state !== "stopping") {
           const fenced = await this.options.store.beginStopBinding(
             previous.id, previous.generation, previous.state, this.now().toISOString(),
           );
-          if (!fenced) throw new LocalConfigurationRequestError("Agent binding changed; reload before replacing", 409, "unavailable");
-        }
+          if (!fenced) {
+            observation?.event("delivery_fenced", "failed", { reasonCode: "target_changed" });
+            observation?.requestFinished("handler_failed");
+            observation?.finish("failed");
+            throw new LocalConfigurationRequestError("Agent binding changed; reload before replacing", 409, "unavailable");
+          }
+          observation?.event("delivery_fenced", "confirmed");
+        } else observation?.event("delivery_fenced", "skipped", { reasonCode: "not_required" });
         await this.retireBinding(conversationId, agentIdentityId);
+        observation?.event("route_detached", "confirmed");
         await this.assertBindingsIdle([previous], previous.id);
         runtime = context.runtime;
         const handoffBrief = contextMode === "fresh" || previous.state === "offline"
@@ -990,9 +1036,13 @@ export class LocalAgentHost {
             conversationId,
             context.agentConfig,
           ).catch(() => undefined);
+        observation?.event("handoff_prepared", handoffBrief ? "confirmed" : contextMode === "fresh" || previous.state === "offline" ? "skipped" : "unknown",
+          handoffBrief ? {} : { reasonCode: contextMode === "fresh" ? "fresh_context" : previous.state === "offline" ? "not_required" : "unavailable" });
         const runtimeOwnerId = await this.options.store.getOrCreateRuntimeOwnerId();
         const messages = await this.options.client.listMessages(conversationId);
         const conversationSequence = messages.at(-1)?.sequence ?? 0;
+        observation?.event("activation_boundary", "confirmed");
+        observation?.event("launch_requested", "started");
         const started = await startRuntimeSession(runtime, {
           cwd: context.cwd,
           appendSystemPrompt: this.appendWorkingFolderGuidance(
@@ -1012,6 +1062,7 @@ export class LocalAgentHost {
         }, runtimeOwnerId);
         session = started.session;
         sessionOwnerId = started.runtimeOwnerId;
+        observation?.event("launch_requested", "confirmed");
         const replaced = await this.directory.replaceSession({
           bindingId: previous.id,
           expectedGeneration: previous.generation,
@@ -1023,6 +1074,8 @@ export class LocalAgentHost {
           origin: "started",
         });
         committed = true;
+        observation?.correlate({ targetBinding: { id: replaced.id, generation: replaced.generation } });
+        observation?.event("binding_committed", "confirmed");
         // The durable replacement now owns the new Runtime even if Relay reconciliation fails.
         this.startedSessions.set(this.sessionKey(replaced.id, session.id), {
           bindingId: replaced.id,
@@ -1030,9 +1083,11 @@ export class LocalAgentHost {
           sessionId: session.id,
           runtimeOwnerId: sessionOwnerId,
           generation: replaced.generation,
+          diagnosticScope: { workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId },
         });
         await this.options.store.setCursor(conversationId, agentIdentityId, conversationSequence);
-        await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
+        await this.retireBinding(conversationId, agentIdentityId).then(() => observation?.event("route_detached", "confirmed")).catch((error) => {
+          observation?.event("route_detached", "unknown", { reasonCode: "uncertain" });
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
         });
         if (await this.attachBinding(conversationId, replaced.id) !== "attached") {
@@ -1042,6 +1097,7 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
+        observation?.event("route_attached", "confirmed");
         await this.stopRuntimeBestEffort(
           previousRuntime,
           previousSessionId,
@@ -1049,6 +1105,7 @@ export class LocalAgentHost {
           previous.id,
           previous.generation,
           "destroy",
+          { workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId },
         );
         this.startedSessions.delete(this.sessionKey(previous.id, previous.runtimeSessionId));
         this.audit({
@@ -1059,9 +1116,14 @@ export class LocalAgentHost {
           conversationId,
           targetIdentityId: agentIdentityId,
         });
+        observation?.requestFinished("handler_returned");
+        observation?.finish("succeeded");
       } catch (error) {
+        observation?.requestFinished("handler_failed");
+        observation?.finish("unknown");
         if (!committed && session) {
-          await this.stopRuntimeBestEffort(runtime, session.id, sessionOwnerId, undefined, undefined, "destroy");
+          await this.stopRuntimeBestEffort(runtime, session.id, sessionOwnerId, undefined, undefined, "destroy",
+            workspaceId ? { workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId } : undefined);
         }
         if (committed && previousSessionId) {
           await this.stopRuntimeBestEffort(
@@ -1071,6 +1133,7 @@ export class LocalAgentHost {
             previousBinding?.id,
             previousBinding?.generation,
             "destroy",
+            workspaceId ? { workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId } : undefined,
           );
           const records = await this.options.store.listConversationBindings(conversationId).catch(() => []);
           const binding = records.find((candidate) => candidate.agentIdentityId === agentIdentityId);
@@ -1117,6 +1180,7 @@ export class LocalAgentHost {
   ): Promise<void> {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
+      let observation: RecordedOperation | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         await this.assertConversationAdmission(conversationId);
@@ -1134,8 +1198,9 @@ export class LocalAgentHost {
         if (this.isAttached(conversationId, agentIdentityId)) {
           throw new LocalConfigurationRequestError("Agent session is already connected", 409, "unavailable");
         }
+        observation = this.observeLifecycle(workspaceId, conversationId, agentIdentityId, "reconnect", binding);
         if (binding.state === "offline" && binding.runtimeOwnerId) {
-          await this.resumeManagedBinding(binding);
+          await this.resumeManagedBinding(binding, observation);
         }
         if (await this.attachBinding(conversationId, binding.id) !== "attached") {
           const current = await this.options.store.getBinding(binding.id);
@@ -1147,6 +1212,10 @@ export class LocalAgentHost {
             "unavailable",
           );
         }
+        observation?.event("session_verified", "confirmed");
+        observation?.event("route_attached", "confirmed");
+        observation?.requestFinished("handler_returned");
+        observation?.finish("succeeded");
         this.audit({
           action: "agent.session.reconnected",
           outcome: "accepted",
@@ -1156,6 +1225,8 @@ export class LocalAgentHost {
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
+        observation?.requestFinished("handler_failed");
+        observation?.finish("unknown");
         this.audit({
           action: "agent.session.reconnected",
           outcome: "rejected",
@@ -1177,6 +1248,7 @@ export class LocalAgentHost {
   ): Promise<void> {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
+      let observation: RecordedOperation | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
@@ -1185,7 +1257,11 @@ export class LocalAgentHost {
         if (!runner) {
           throw new LocalConfigurationRequestError("Agent Conversation session is unavailable", 409, "unavailable");
         }
-        await runner.relay.cancelCurrent(agentIdentityId, actorIdentityId);
+        await runner.relay.cancelCurrent(agentIdentityId, actorIdentityId, () => {
+          observation = this.observeLifecycle(workspaceId!, conversationId, agentIdentityId, "cancel_current");
+          return observation;
+        });
+        observation?.requestFinished("handler_returned");
         this.audit({
           action: "agent.turn.cancel.requested",
           outcome: "accepted",
@@ -1195,6 +1271,8 @@ export class LocalAgentHost {
           targetIdentityId: agentIdentityId,
         });
       } catch (error) {
+        observation?.requestFinished("handler_failed");
+        observation?.finish("unknown");
         this.audit({
           action: "agent.turn.cancel.requested",
           outcome: "rejected",
@@ -1239,6 +1317,7 @@ export class LocalAgentHost {
       const displayLabel = participant?.displayName ?? (participant?.handle ? `@${participant.handle}` : record.participantId);
       return {
         participant: { identityId: record.participantId, displayLabel },
+        triggerSequence: record.triggerSequence,
         causeCategory: record.causeCategory,
         failedAt: record.failedAt,
         elapsedMs: record.elapsedMs,
@@ -1341,6 +1420,7 @@ export class LocalAgentHost {
     agentIdentityId: string,
     actorIdentityId: string,
     expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state">,
+    diagnostic?: BulkDiagnosticContext,
   ): Promise<void> {
     return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
       let workspaceId: string | undefined;
@@ -1348,6 +1428,7 @@ export class LocalAgentHost {
       let stopFenceAttempted = false;
       let interruptionConfirmed = false;
       let stopTarget: ConversationAgentBindingRecord | undefined;
+      let observation: RecordedOperation | undefined;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
@@ -1373,6 +1454,8 @@ export class LocalAgentHost {
         if (target.state === "stopping") {
           throw new LocalConfigurationRequestError("Agent Conversation session is uncertain", 409, "unavailable");
         }
+        observation = this.observeLifecycle(workspaceId, conversationId, agentIdentityId, "stop", target, undefined, diagnostic);
+        observation?.event("delivery_fenced", "started");
         const stopping = await this.options.store.beginStopBinding(
           target.id,
           target.generation,
@@ -1380,18 +1463,22 @@ export class LocalAgentHost {
           this.now().toISOString(),
         );
         if (!stopping) {
+          observation?.event("delivery_fenced", "failed", { reasonCode: "target_changed" });
+          observation?.requestFinished("handler_failed");
+          observation?.finish("failed");
           throw new LocalConfigurationRequestError("Agent binding changed; reload before stopping", 409, "unavailable");
         }
         stopFenceAttempted = true;
+        observation?.event("delivery_fenced", "confirmed");
         const relay = this.runners.get(conversationId)?.relay;
         if (this.isAttached(conversationId, agentIdentityId) && relay) {
-          await relay.stopBinding(agentIdentityId, actorIdentityId, { leaseAlreadyFenced: true });
+          await relay.stopBinding(agentIdentityId, actorIdentityId, { leaseAlreadyFenced: true, observation, expectedBinding: { id: target.id, generation: target.generation } });
         }
         const runtime = this.options.runtimes[target.runtimeAdapter];
         if (!runtime) {
           throw new LocalConfigurationRequestError("Agent Runtime is unavailable; session was not stopped", 409, "unavailable");
         }
-        await this.interruptRuntimeForStop(runtime, target.runtimeSessionId, target.state);
+        await this.interruptRuntimeForStop(runtime, target.runtimeSessionId, target.state, observation);
         interruptionConfirmed = true;
         const messages = await this.options.client.listMessages(conversationId);
         const stopBoundary = messages.at(-1)?.sequence ?? 0;
@@ -1409,10 +1496,14 @@ export class LocalAgentHost {
           );
         }
         committed = true;
+        observation?.event("pause_committed", "confirmed");
         this.startedSessions.delete(this.sessionKey(target.id, target.runtimeSessionId));
-        await this.retireBinding(conversationId, agentIdentityId).catch((error) => {
+        await this.retireBinding(conversationId, agentIdentityId).then(() => observation?.event("route_detached", "confirmed")).catch((error) => {
+          observation?.event("route_detached", "unknown", { reasonCode: "uncertain" });
           this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
         });
+        observation?.requestFinished("handler_returned");
+        observation?.finish("succeeded");
         this.audit({
           action: "agent.session.stopped",
           outcome: "accepted",
@@ -1433,7 +1524,12 @@ export class LocalAgentHost {
           conversationId,
           targetIdentityId: agentIdentityId,
         });
-        if (committed) return;
+        if (committed) {
+          observation?.requestFinished("handler_returned");
+          observation?.finish("succeeded");
+          return;
+        }
+        observation?.requestFinished("handler_failed");
         let fencedStopped = false;
         if (stopFenceAttempted && stopTarget) {
           try {
@@ -1448,6 +1544,7 @@ export class LocalAgentHost {
               )
               : undefined;
             if (paused) {
+              observation?.event("pause_committed", "confirmed");
               fencedStopped = true;
             } else {
               const current = await this.options.store.getBinding(stopTarget.id);
@@ -1466,11 +1563,13 @@ export class LocalAgentHost {
           }
           if (fencedStopped) {
             this.startedSessions.delete(this.sessionKey(stopTarget.id, stopTarget.runtimeSessionId));
-            await this.retireBinding(conversationId, agentIdentityId).catch((detachError) => {
+            await this.retireBinding(conversationId, agentIdentityId).then(() => observation?.event("route_detached", "confirmed")).catch((detachError) => {
+              observation?.event("route_detached", "unknown", { reasonCode: "uncertain" });
               this.options.onError?.(detachError instanceof Error ? detachError : new Error(String(detachError)));
             });
           }
         }
+        observation?.finish("unknown");
         if (fencedStopped) {
           throw new LocalConfigurationRequestError(
             "Stop could not be confirmed; the session is held stopped and will not auto-resume",
@@ -1508,9 +1607,9 @@ export class LocalAgentHost {
     if (this.options.stopStartedSessionsOnClose) {
       const sessions = [...this.startedSessions.values()];
       this.startedSessions.clear();
-      await Promise.allSettled(sessions.map(async ({ bindingId, generation, runtime, sessionId, runtimeOwnerId }) => {
+      await Promise.allSettled(sessions.map(async ({ bindingId, generation, runtime, sessionId, runtimeOwnerId, diagnosticScope }) => {
         await this.options.store.deleteBinding(bindingId);
-        await this.stopRuntimeBestEffort(runtime, sessionId, runtimeOwnerId, bindingId, generation);
+        await this.stopRuntimeBestEffort(runtime, sessionId, runtimeOwnerId, bindingId, generation, "suspend", diagnosticScope);
       }));
     }
   }
@@ -1521,22 +1620,48 @@ export class LocalAgentHost {
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResult[]> {
     let workspaceId: string | undefined;
+    let observation: RecordedOperation | undefined;
+    const progress: DiagnosticBulkProgress = { targets: 0, completed: 0, started: 0, stopped: 0, skipped: 0, failed: 0, unknown: 0, childrenUnrecorded: 0 };
+    let unfulfilled = false;
     const aggregateAction = action === "start" ? "agents.bulk-started" : "agents.bulk-stopped";
     const itemAction = action === "start" ? "agent.session.bulk-started" : "agent.session.bulk-stopped";
     try {
       const targets = await this.bulkTargets(conversationId, actorIdentityId);
       workspaceId = targets.workspaceId;
+      // The aggregate is scoped to its initiating human; children retain each target's scope.
+      observation = this.observeLifecycle(workspaceId, conversationId, actorIdentityId, action === "start" ? "bulk_start" : "bulk_stop");
+      progress.targets = targets.targets.length;
+      observation?.bulkProgress(progress);
       const results = await this.mapBounded(targets.targets, 3, async (target) => {
+        const diagnostic: BulkDiagnosticContext = { parentOperationId: observation?.operationId };
         let result: LocalBulkAgentLifecycleResult;
         try {
           result = action === "start"
-            ? await this.bulkStartOne(conversationId, targets.workspaceId, target, actorIdentityId)
-            : await this.bulkStopOne(conversationId, target, actorIdentityId);
+            ? await this.bulkStartOne(conversationId, targets.workspaceId, target, actorIdentityId, diagnostic)
+            : await this.bulkStopOne(conversationId, target, actorIdentityId, diagnostic);
         } catch {
           // Target-local storage, configuration, and Runtime failures are partial results.
           // Shared discovery/authorization above are the only aggregate rejection boundary.
           result = { identityId: target.identityId, outcome: "failed", reason: "unavailable" };
         }
+        const knownSatisfied = result.outcome === "started" || result.outcome === "stopped"
+          || (result.outcome === "skipped" && (result.reason === "already_idle" || result.reason === "already_running"));
+        const outcome = diagnostic.outcome ?? (knownSatisfied ? "succeeded" : result.reason === "unconfigured" || result.reason === "new_session_required" ? "failed" : "unknown");
+        if (!diagnostic.operation) {
+          // Skips and pre-admission snapshot/configuration failures still get explicit children.
+          diagnostic.operation = this.observeLifecycle(targets.workspaceId, conversationId, target.identityId,
+            action === "stop" ? "stop" : !target.duplicate && target.binding?.state === "paused" ? "resume" : "start", target.duplicate ? undefined : target.binding,
+            { parentOperationId: diagnostic.parentOperationId });
+          diagnostic.operation?.requestFinished("not_applicable");
+          diagnostic.operation?.targetResult(result);
+          diagnostic.operation?.finish(outcome);
+        } else diagnostic.operation.targetResult(result);
+        progress.completed++;
+        progress[result.outcome]++;
+        if (outcome === "unknown") progress.unknown++;
+        if (!diagnostic.operation?.recorded) progress.childrenUnrecorded++;
+        if (!knownSatisfied) unfulfilled = true;
+        observation?.bulkProgress(progress);
         this.audit({
           action: itemAction,
           outcome: result.outcome === "failed" ? "rejected" : "accepted",
@@ -1555,8 +1680,12 @@ export class LocalAgentHost {
         workspaceId,
         conversationId,
       });
+      observation?.requestFinished("handler_returned");
+      observation?.finish(progress.unknown ? "unknown" : unfulfilled || progress.failed ? "failed" : "succeeded");
       return results;
     } catch (error) {
+      observation?.requestFinished("handler_failed");
+      observation?.finish("unknown");
       this.audit({
         action: aggregateAction,
         outcome: "rejected",
@@ -1606,6 +1735,7 @@ export class LocalAgentHost {
     workspaceId: string,
     target: BulkLifecycleTarget,
     actorIdentityId: string,
+    diagnostic: BulkDiagnosticContext,
   ): Promise<LocalBulkAgentLifecycleResult> {
     const { identityId, binding } = target;
     if (target.duplicate || binding?.state === "replacing" || binding?.state === "stopping") {
@@ -1636,9 +1766,9 @@ export class LocalAgentHost {
     }
     try {
       if (binding?.state === "paused") {
-        await this.startConversationAgent(conversationId, identityId, actorIdentityId, "with_context", binding);
+        await this.startConversationAgent(conversationId, identityId, actorIdentityId, "with_context", binding, diagnostic);
       } else {
-        await this.startConversationAgent(conversationId, identityId, actorIdentityId, "with_context", null);
+        await this.startConversationAgent(conversationId, identityId, actorIdentityId, "with_context", null, diagnostic);
       }
       return { identityId, outcome: "started" };
     } catch (error) {
@@ -1652,6 +1782,7 @@ export class LocalAgentHost {
     conversationId: string,
     target: BulkLifecycleTarget,
     actorIdentityId: string,
+    diagnostic: BulkDiagnosticContext,
   ): Promise<LocalBulkAgentLifecycleResult> {
     const { identityId, binding } = target;
     if (target.duplicate || binding?.state === "replacing" || binding?.state === "stopping") {
@@ -1661,7 +1792,7 @@ export class LocalAgentHost {
       return { identityId, outcome: "skipped", reason: "already_idle" };
     }
     try {
-      await this.stopConversationAgent(conversationId, identityId, actorIdentityId, binding);
+      await this.stopConversationAgent(conversationId, identityId, actorIdentityId, binding, diagnostic);
       return { identityId, outcome: "stopped" };
     } catch (error) {
       return error instanceof BulkSnapshotChangedError
@@ -1689,26 +1820,7 @@ export class LocalAgentHost {
   }
 
   private async authorizeTurnFailureAccess(conversationId: string, actorIdentityId: string) {
-    try {
-      const conversation = await this.options.client.getConversation(conversationId);
-      const [workspace, members, actor] = await Promise.all([
-        this.options.client.getWorkspace(conversation.workspaceId),
-        this.options.client.listWorkspaceMembers(conversation.workspaceId),
-        this.options.client.getIdentity(actorIdentityId),
-      ]);
-      const membership = members.find(({ identityId }) => identityId === actorIdentityId);
-      const participant = conversation.participants.find(({ id }) => id === actorIdentityId);
-      if (workspace.status !== "active" || actor.type !== "human" || actor.status !== "active"
-        || membership?.status !== "active" || !participant || participant.status === "disabled") {
-        throw new Error("not authorized");
-      }
-      return {
-        conversation,
-        canViewDiagnostics: membership.accessRole === "owner" || membership.accessRole === "admin",
-      };
-    } catch {
-      throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
-    }
+    return authorizeDiagnosticAccess(this.options.client, conversationId, actorIdentityId);
   }
 
   private async baseContext(
@@ -1923,8 +2035,12 @@ export class LocalAgentHost {
     runtime: LocalManagedRuntimePort,
     sessionId: string,
     bindingState: ConversationAgentBindingRecord["state"],
+    observation?: DiagnosticObservation,
   ): Promise<void> {
-    if (bindingState === "sleeping") return;
+    if (bindingState === "sleeping") {
+      observation?.event("interrupt_requested", "skipped", { reasonCode: "not_required" });
+      return;
+    }
     let status = await this.runtimeStatus(runtime, sessionId);
     if (status === "offline") {
       throw new LocalConfigurationRequestError(
@@ -1933,7 +2049,11 @@ export class LocalAgentHost {
         "unavailable",
       );
     }
-    if (status !== "working") return;
+    if (status !== "working") {
+      observation?.event("runtime_verified", "confirmed");
+      observation?.event("interrupt_requested", "skipped", { reasonCode: "not_required" });
+      return;
+    }
     if (!runtime.interrupt) {
       throw new LocalConfigurationRequestError(
         "Runtime cannot interrupt active work; session was not stopped",
@@ -1941,7 +2061,14 @@ export class LocalAgentHost {
         "unavailable",
       );
     }
-    await this.withTimeout(runtime.interrupt(sessionId), 5_000, "Runtime interruption timed out");
+    observation?.event("interrupt_requested", "started");
+    try {
+      await this.withTimeout(runtime.interrupt(sessionId), 5_000, "Runtime interruption timed out");
+      observation?.event("interrupt_acknowledged", "confirmed");
+    } catch (error) {
+      observation?.event("interrupt_acknowledged", "unknown", { reasonCode: "uncertain" });
+      throw error;
+    }
     const deadline = Date.now() + 15_000;
     while (status === "working" && Date.now() < deadline) {
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
@@ -1954,9 +2081,10 @@ export class LocalAgentHost {
         "unavailable",
       );
     }
+    observation?.event("runtime_verified", "confirmed");
   }
 
-  private async resumeManagedBinding(binding: ConversationAgentBindingRecord): Promise<boolean> {
+  private async resumeManagedBinding(binding: ConversationAgentBindingRecord, observation?: DiagnosticObservation): Promise<boolean> {
     if (binding.runtimeOwnerId === undefined) return false;
     if (!binding.runtimeOwnerId.trim()) throw new Error("Stored Runtime owner scope is invalid");
     const runtime = this.options.runtimes[binding.runtimeAdapter];
@@ -1969,6 +2097,8 @@ export class LocalAgentHost {
     const existing = sessions.find((candidate) =>
       candidate.id === binding.runtimeSessionId && candidate.ownerId === binding.runtimeOwnerId);
     if (!existing || existing.state === "unavailable") return false;
+    observation?.event("session_verified", "confirmed");
+    observation?.event("resume_requested", "started");
     const resumed = await this.withTimeout(
       runtime.resume(binding.runtimeSessionId, binding.runtimeOwnerId),
       30_000,
@@ -1977,6 +2107,7 @@ export class LocalAgentHost {
     if (resumed.id !== binding.runtimeSessionId || resumed.ownerId !== binding.runtimeOwnerId) {
       throw new Error("Runtime resumed a different managed session or owner scope");
     }
+    observation?.event("resume_requested", "confirmed");
     return true;
   }
 
@@ -1987,7 +2118,13 @@ export class LocalAgentHost {
     bindingId?: string,
     bindingGeneration?: number,
     cleanupAction: "suspend" | "destroy" = "suspend",
+    diagnostic?: DiagnosticScope & { relatedOperationId?: string },
   ): Promise<void> {
+    const observation = diagnostic ? this.observeLifecycle(diagnostic.workspaceId, diagnostic.conversationId, diagnostic.participantIdentityId, "cleanup",
+      bindingId && bindingGeneration !== undefined ? { id: bindingId, generation: bindingGeneration } : undefined,
+      { relatedOperationId: diagnostic.relatedOperationId }) : undefined;
+    observation?.requestFinished("not_applicable");
+    let invoked = false;
     if (runtimeOwnerId !== undefined) {
       let outcome: "succeeded" | "failed" = "failed";
       let observedRuntimeStatus: "idle" | "working" | "offline" | "unknown" = "unknown";
@@ -2005,6 +2142,8 @@ export class LocalAgentHost {
           errorCategory = "operation_unsupported";
           throw new Error("Managed Runtime does not support the required owner-scoped cleanup operation");
         }
+        observation?.event("cleanup_requested", "started", { reasonCode: cleanupAction });
+        invoked = true;
         const cleanup = cleanupAction === "destroy"
           ? runtime.destroy!(sessionId, runtimeOwnerId)
           : runtime.suspend!(sessionId, runtimeOwnerId);
@@ -2015,9 +2154,12 @@ export class LocalAgentHost {
         );
         outcome = "succeeded";
         observedRuntimeStatus = "offline";
+        observation?.event("cleanup_requested", "confirmed", { reasonCode: cleanupAction });
       } catch (error) {
+        observation?.event("cleanup_requested", invoked ? "unknown" : "failed", { reasonCode: invoked ? "uncertain" : "unavailable" });
         this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
+      let cleanupRecordFailed = false;
       if (bindingId && bindingGeneration !== undefined) {
         await this.options.store.recordSessionCleanupAttempt({
           bindingId,
@@ -2029,15 +2171,32 @@ export class LocalAgentHost {
           ...(outcome === "succeeded" && cleanupAction === "destroy"
             ? { retentionOutcome: "destroyed" as const }
             : {}),
-        }).catch((error) => this.options.onError?.(error instanceof Error ? error : new Error(String(error))));
+        }).then(() => observation?.event("cleanup_recorded", "confirmed")).catch((error) => {
+          cleanupRecordFailed = true;
+          observation?.event("cleanup_recorded", "unknown", { reasonCode: "uncertain" });
+          this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
+        });
       }
+      observation?.finish(cleanupRecordFailed ? "unknown" : outcome === "succeeded" ? "succeeded" : invoked ? "unknown" : "failed");
       return;
     }
-    if (!runtime?.stop) return;
+    if (!runtime?.stop) {
+      observation?.event("cleanup_requested", "skipped", { reasonCode: "unavailable" });
+      observation?.finish("unknown");
+      return;
+    }
     try {
-      if ((await this.runtimeStatus(runtime, sessionId)) === "offline") return;
+      if ((await this.runtimeStatus(runtime, sessionId)) === "offline") {
+        observation?.event("cleanup_requested", "skipped", { reasonCode: "already_settled" });
+        observation?.finish("succeeded");
+        return;
+      }
+      observation?.event("cleanup_requested", "started");
       await this.withTimeout(runtime.stop(sessionId), 15_000, "Runtime stop timed out");
+      observation?.event("cleanup_requested", "confirmed");
+      observation?.finish("succeeded");
     } catch (error) {
+      observation?.finish("unknown");
       this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
     }
   }
@@ -2047,6 +2206,10 @@ export class LocalAgentHost {
     for (const record of pending) {
       if (this.closed) return;
       const attemptedAt = this.now().toISOString();
+      const observation = this.observeLifecycle(record.workspaceId, record.conversationId, record.agentIdentityId, "cleanup", { id: record.bindingId, generation: record.bindingGeneration });
+      observation?.correlate({ cleanupHistoryId: record.id });
+      observation?.requestFinished("not_applicable");
+      let invoked = false;
       let outcome: "succeeded" | "failed" = "failed";
       let observedRuntimeStatus: "idle" | "working" | "offline" | "unknown" = "unknown";
       let errorCategory: "runtime_unavailable" | "session_unavailable" | "operation_unsupported" | "operation_failed" = "operation_failed";
@@ -2087,6 +2250,8 @@ export class LocalAgentHost {
         } else {
           // An explicit destroy intent may be retrying a Runtime manifest left in `destroying` by a crash.
           // Runtime.destroy is owner-scoped and safe to retry even when listing labels it unavailable.
+          observation?.event("cleanup_requested", "started", { reasonCode: record.cleanupAction === "destroy" ? "destroy" : "suspend" });
+          invoked = true;
           const cleanup = record.cleanupAction === "destroy"
             ? runtime.destroy!(record.managedSessionId, record.runtimeOwnerId)
             : runtime.suspend!(record.managedSessionId, record.runtimeOwnerId);
@@ -2101,6 +2266,8 @@ export class LocalAgentHost {
       } catch (error) {
         this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
+      observation?.event("cleanup_requested", outcome === "succeeded" ? invoked ? "confirmed" : "skipped" : invoked ? "unknown" : "failed",
+        { reasonCode: outcome === "succeeded" ? invoked ? record.cleanupAction === "destroy" ? "destroy" : "suspend" : "already_settled" : invoked ? "uncertain" : "unavailable" });
       await this.options.store.recordSessionCleanupAttempt({
         bindingId: record.bindingId,
         bindingGeneration: record.bindingGeneration,
@@ -2111,7 +2278,12 @@ export class LocalAgentHost {
         ...(outcome === "succeeded" && record.retentionStatus === "destroy_pending"
           ? { retentionOutcome: "destroyed" as const }
           : {}),
+      }).then(() => observation?.event("cleanup_recorded", "confirmed")).catch((error) => {
+        observation?.event("cleanup_recorded", "unknown", { reasonCode: "uncertain" });
+        observation?.finish("unknown");
+        throw error;
       });
+      observation?.finish(outcome === "succeeded" ? "succeeded" : invoked ? "unknown" : "failed");
     }
   }
 
@@ -2491,6 +2663,28 @@ export class LocalAgentHost {
     if (lifecycle.state !== "active") {
       throw new LocalConfigurationRequestError("Conversation is not active", 409, "unavailable");
     }
+  }
+
+  private observeLifecycle(workspaceId: string, conversationId: string, participantIdentityId: string, action: DiagnosticAction, source?: Pick<ConversationAgentBindingRecord, "id" | "generation">,
+    relation?: { relatedOperationId?: string; parentOperationId?: string }, diagnostic?: BulkDiagnosticContext): RecordedOperation | undefined {
+    const observation = beginLifecycleObservation(this.options.diagnostics, { workspaceId, conversationId, participantIdentityId }, action,
+      diagnostic ? { ...relation, parentOperationId: diagnostic.parentOperationId } : relation);
+    if (source) observation?.correlate({ sourceBinding: { id: source.id, generation: source.generation } });
+    if (diagnostic && observation) {
+      diagnostic.operation = observation;
+      observation.requestFinished("not_applicable");
+      // These are internal target handlers, not independent HTTP requests.
+      observation.requestFinished = () => {};
+      const finish = observation.finish;
+      let closed = false;
+      observation.finish = (outcome) => {
+        if (closed) return;
+        closed = true;
+        diagnostic.outcome = outcome;
+        finish(outcome);
+      };
+    }
+    return observation;
   }
 
   private bindingKey(conversationId: string, agentIdentityId: string): string {

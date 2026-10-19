@@ -51,9 +51,11 @@ export {
   type LocalControlBrowserSessionsOptions,
   type LocalControlLaunchExchange,
 } from "./session.ts";
+import type { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalAgentActivity,
+  type LocalAgentOperationHistory, type LocalAgentOperationDetail, type LocalAgentDiagnosticReport,
   type LocalAgentRuntimeOptions,
   type LocalBulkAgentLifecycleResponse,
   type LocalBulkAgentLifecycleResult,
@@ -235,6 +237,7 @@ export interface LocalControlServiceOptions {
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
   configuration?: LocalControlConfigurationPort;
   lifecycle?: LocalControlAgentLifecyclePort;
+  diagnosticReads?: Pick<LocalAgentDiagnosticReads, "history" | "detail" | "report">;
   statusTimeoutMs?: number;
 }
 
@@ -687,6 +690,29 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
     }
     return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, limit);
+  }
+
+  async agentOperationHistory(conversationId: string, identityId: string, actorIdentityId: string, cursor?: string): Promise<LocalAgentOperationHistory> {
+    if (!this.options.diagnosticReads) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    return this.options.diagnosticReads.history(conversationId, identityId, actorIdentityId, cursor);
+  }
+
+  async agentOperationDetail(conversationId: string, identityId: string, actorIdentityId: string, operationId: string): Promise<LocalAgentOperationDetail> {
+    if (!this.options.diagnosticReads) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    return this.options.diagnosticReads.detail(conversationId, identityId, actorIdentityId, operationId);
+  }
+
+  async agentDiagnosticReport(conversationId: string, identityId: string, actorIdentityId: string, operationId: string): Promise<LocalAgentDiagnosticReport> {
+    if (!this.options.diagnosticReads) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    return this.options.diagnosticReads.report(conversationId, identityId, actorIdentityId, operationId,
+      async () => {
+        const [conversation, records] = await Promise.all([
+          this.options.conversations.getConversation(conversationId),
+          this.options.bindings.listConversationBindings(conversationId),
+        ]);
+        const participant = conversation.participants.find(({ id, type }) => id === identityId && (type === "agent" || type === "service"));
+        return participant ? this.presentAgent(conversation, identityId, participant.status, records) : undefined;
+      });
   }
 
   private async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
@@ -1208,6 +1234,25 @@ export async function createLocalControlHttpServer(
       }
       if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
+        return;
+      }
+      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report)$/);
+      if (diagnosticMatch && request.method === "GET" && browserSession) {
+        const conversationId = decodeURIComponent(diagnosticMatch[1]!);
+        const identityId = decodeURIComponent(diagnosticMatch[2]!);
+        const operationId = diagnosticMatch[4] ? decodeURIComponent(diagnosticMatch[4]) : undefined;
+        const value = diagnosticMatch[3] === "diagnostic-report"
+          ? await options.service.agentDiagnosticReport(conversationId, identityId, browserSession.identityId, url.searchParams.get("operationId") ?? "")
+          : operationId
+            ? await options.service.agentOperationDetail(conversationId, identityId, browserSession.identityId, operationId)
+            : await options.service.agentOperationHistory(conversationId, identityId, browserSession.identityId, url.searchParams.get("cursor") ?? undefined);
+        // Do not release a privileged response after the authenticating session expired/rebound during I/O.
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        json(response, 200, value, origin);
         return;
       }
       const turnFailuresMatch = path.match(/^\/local\/conversations\/([^/]+)\/turn-failures$/);

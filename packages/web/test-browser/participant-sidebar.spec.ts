@@ -35,7 +35,7 @@ async function launch(page: Page, request: APIRequestContext, data: Fixture, act
 }
 async function mockAgent(page: Page, data: Fixture, view: () => LocalConversationAgent) {
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 18, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
+    json: { protocolVersion: 19, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
   }));
 }
 async function expectTokenColor(locator: Locator, property: string, token: string) {
@@ -232,7 +232,7 @@ async function inspectionAgents(page: Page, data: Fixture, view: () => LocalConv
     json: { conversation: { ...data.primary, participants: [...data.primary.participants, other] } },
   }));
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 18, conversationId: data.primary.id, agents: [view(), { ...agentView(data, "unbound"), identityId: other.id }] },
+    json: { protocolVersion: 19, conversationId: data.primary.id, agents: [view(), { ...agentView(data, "unbound"), identityId: other.id }] },
   }));
   return other;
 }
@@ -337,7 +337,7 @@ for (const action of ["start", "stop"] as const) {
       calls += 1;
       await gate.promise;
       view = { ...view, state: action === "start" ? "idle" : "stopped" };
-      await route.fulfill({ json: { protocolVersion: 18, conversationId: data.primary.id, results: [{ identityId: data.agent.id, outcome: action === "start" ? "started" : "stopped" }] } });
+      await route.fulfill({ json: { protocolVersion: 19, conversationId: data.primary.id, results: [{ identityId: data.agent.id, outcome: action === "start" ? "started" : "stopped" }] } });
     });
     try {
       await launch(page, request, data);
@@ -385,7 +385,7 @@ test("freshness preserves the received snapshot after a failed refresh and does 
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => {
     reads += 1;
     return fail ? route.fulfill({ status: 503, json: { error: "Status unavailable" } })
-      : route.fulfill({ json: { protocolVersion: 18, conversationId: data.primary.id, agents: [view] } });
+      : route.fulfill({ json: { protocolVersion: 19, conversationId: data.primary.id, agents: [view] } });
   });
   await page.clock.install();
   await launch(page, request, data);
@@ -516,7 +516,7 @@ for (const [status, label] of [
     let fail = true;
     await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => fail
       ? route.fulfill({ status, json: { error: "PRIVATE_STATUS_ERROR_MUST_NOT_RENDER" } })
-      : route.fulfill({ json: { protocolVersion: 18, conversationId: data.primary.id, agents: [agentView(data)] } }));
+      : route.fulfill({ json: { protocolVersion: 19, conversationId: data.primary.id, agents: [agentView(data)] } }));
     await launch(page, request, data);
     const sidebar = page.getByRole("complementary", { name: "Participants sidebar" });
     await expect(sidebar).toContainText(label);

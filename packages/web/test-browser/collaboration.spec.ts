@@ -93,7 +93,8 @@ test("shows brief turn issue notices in chat while keeping detailed diagnostics 
     await expect(failures).toContainText("2 attempts");
     await expect(failures).toContainText("Recommended: Retry request");
     await expect(failures.getByRole("button", { name: "Open diagnostic", exact: true })).toHaveCount(0);
-    expect(await failures.innerText()).not.toMatch(/trigger|binding|session|fixture-turn-failure-token/i);
+    await expect(failures.getByRole("button", { name: "View triggering message #1", exact: true })).toBeVisible();
+    expect(await failures.innerText()).not.toMatch(/triggerMessageId|binding|session|fixture-turn-failure-token/i);
 
     await diagnostics.getByRole("button", { name: "Close participant details" }).click();
     await openParticipantActions(page, "Builder Agent");
@@ -657,7 +658,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 18,
+      protocolVersion: 19,
       conversationId,
       agents: [
         {
@@ -681,7 +682,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 18,
+        protocolVersion: 19,
         conversationId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -738,7 +739,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 18,
+      protocolVersion: 19,
       features: {
         currentSession: true,
         conversationAgentStatus: true,
@@ -936,7 +937,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 18,
+        protocolVersion: 19,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,

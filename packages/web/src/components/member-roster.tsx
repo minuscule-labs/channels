@@ -16,6 +16,7 @@ import { ParticipantActionsMenu } from "./participant-actions-menu";
 import { ParticipantSessionActionsMenu } from "./participant-session-actions-menu";
 import { ParticipantDetailsDialog } from "./participant-details-dialog";
 import { DrawerCloseButton } from "./ui/drawer";
+import type { DiagnosticBrowserScope } from "../lib/operation-diagnostics";
 
 function bulkReasonLabel(reason: LocalBulkAgentLifecycleResult["reason"]): string | undefined {
   switch (reason) {
@@ -58,6 +59,8 @@ export function MemberRoster({
   participantActionError,
   bulkActionError,
   turnFailures,
+  diagnosticScope,
+  onViewMessage,
 }: {
   participants: Participant[];
   currentHumanIdentityId?: string;
@@ -65,6 +68,8 @@ export function MemberRoster({
   localAgents?: ReadonlyMap<string, LocalConversationAgent>;
   localStatus?: "loading" | "available" | "unavailable";
   showDiagnostics?: boolean;
+  diagnosticScope?: DiagnosticBrowserScope;
+  onViewMessage?(sequence: number): void;
   drawer?: boolean;
   readOnly?: boolean;
   onStartAgent?(identityId: string, contextMode: LocalSessionContextMode): void | Promise<unknown>;
@@ -305,6 +310,8 @@ export function MemberRoster({
         messages={messages}
         localStatus={localStatus}
         showDiagnostics={showDiagnostics}
+        diagnosticScope={diagnosticScope}
+        onViewMessage={onViewMessage}
         pendingAction={pendingAgentInspection(selectedParticipant.id, pendingActions)}
         diagnosticsSnapshot={diagnosticsSnapshot}
         open={detailsOpen}
