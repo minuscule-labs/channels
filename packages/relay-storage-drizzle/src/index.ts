@@ -1,3 +1,4 @@
+export { DiagnosticJournal, DiagnosticQueryError } from "./diagnostics.ts";
 export {
   defaultRelayMigrationsFolder,
   DrizzleLibSqlRelayStorage,

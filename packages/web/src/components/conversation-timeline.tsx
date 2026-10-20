@@ -30,6 +30,8 @@ function MessageRow({
 
   return (
     <article
+      data-message-sequence={message.sequence}
+      tabIndex={-1}
       className={`group px-4 sm:px-6 ${continuation ? "py-2" : "border-t border-[var(--border-subtle)] py-4 first:border-t-0"}`}
       aria-label={`Message ${message.sequence} from ${participantLabel(author, message.participantId)}`}
     >
@@ -87,7 +89,7 @@ function TimelineRowView({ row, participants, broadcastTargetLabel }: {
 function TurnFailureNoticeRow({ notice, canOpenDetails, onViewDetails }: {
   notice: LocalTurnFailureNotice;
   canOpenDetails: boolean;
-  onViewDetails?(identityId: string, trigger: HTMLButtonElement): void;
+  onViewDetails?(identityId: string, trigger: HTMLButtonElement, notice: LocalTurnFailureNotice): void;
 }) {
   const name = notice.participant.displayLabel;
   const timestamp = new Date(notice.failedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
@@ -107,7 +109,7 @@ function TurnFailureNoticeRow({ notice, canOpenDetails, onViewDetails }: {
       type="button"
       className={`${box} my-2 text-left hover:bg-[var(--hover)]`}
       aria-label={`View Runtime issue details for ${name}`}
-      onClick={(event) => onViewDetails(notice.participant.identityId, event.currentTarget)}
+      onClick={(event) => onViewDetails(notice.participant.identityId, event.currentTarget, notice)}
     >{content}</button> : <article className={`${box} my-2`} role="status" aria-label={`Issue notice for ${name}`}>{content}</article>}
   </div>;
 }
@@ -125,7 +127,7 @@ export function ConversationTimeline({
   attributionParticipants?: Participant[];
   turnFailureNotices?: LocalTurnFailureNotice[];
   canOpenIssueDetails?: boolean;
-  onViewIssueDetails?(identityId: string, trigger: HTMLButtonElement): void;
+  onViewIssueDetails?(identityId: string, trigger: HTMLButtonElement, notice: LocalTurnFailureNotice): void;
 }) {
   const rows = useMemo(() => projectTimeline(messages), [messages]);
   // Broadcast names follow the live roster; historical identities only label authors/recipients.

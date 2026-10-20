@@ -1,4 +1,6 @@
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 18 as const;
+import type { DiagnosticDetail, DiagnosticHistory } from "@minu/channels-relay";
+
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 19 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -266,8 +268,50 @@ export interface LocalTurnFailureNotice {
   failedAt: string;
 }
 
+export interface LocalAgentOperationHistory extends DiagnosticHistory {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  conversationId: string;
+  participantIdentityId: string;
+  capturedAt: string;
+}
+
+export interface LocalAgentOperationDetail {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  conversationId: string;
+  participantIdentityId: string;
+  capturedAt: string;
+  coverage: "available" | "unavailable";
+  /** Missing can mean unrecorded, pruned, expired, or not yet persisted. */
+  detail?: DiagnosticDetail;
+  relations: Array<{ kind: "bulk_parent" | "retired_session_cleanup"; operationId: string }>;
+  failures: LocalOperationTurnFailure[];
+  failuresUnavailable: boolean;
+}
+
+export interface LocalOperationTurnFailure extends LocalTurnFailureDiagnostic {
+  /** Correlation is evidence of a targeted turn, not causation. */
+  operationRelation: "targeted_trigger" | "uncorrelated" | "unavailable";
+}
+
+export interface LocalAgentDiagnosticReport {
+  formatVersion: 1;
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  capturedAt: string;
+  conversationId: string;
+  participant: { identityId: string; displayLabel: string; availability: "current" | "historical_or_unavailable" };
+  snapshot?: Pick<LocalConversationAgent, "state" | "diagnostics" | "lastVerifiedAt">;
+  selected: LocalAgentOperationDetail;
+  coverage: {
+    snapshotUnavailable: boolean;
+    truncated: boolean;
+    notes: string[];
+  };
+}
+
 /** Safe local projection of one durable Relay turn-failure record. */
 export interface LocalTurnFailureDiagnostic {
+  /** Public Conversation trigger; never the private trigger message reference. */
+  triggerSequence: number;
   participant: {
     identityId: string;
     displayLabel: string;

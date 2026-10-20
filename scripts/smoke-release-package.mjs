@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import { Worker } from "node:worker_threads";
 
 const root = resolve(import.meta.dirname, "..");
 const artifacts = resolve(root, "release/artifacts");
@@ -85,6 +86,36 @@ async function startAndStop(expectedSetup, portBase, options = {}) {
   });
 }
 
+async function diagnosticWorkerSmoke() {
+  const epoch = "release-smoke-epoch";
+  const worker = new Worker(join(installRoot, "node_modules/@minu/channels/dist/bin/diagnostics-worker.js"), {
+    workerData: { path: join(temporary, "diagnostic-smoke.db"), epoch },
+  });
+  await new Promise((resolveSmoke, reject) => {
+    let closed = false;
+    const fail = (error) => { clearTimeout(timeout); void worker.terminate().catch(() => {}); reject(error); };
+    const timeout = setTimeout(() => fail(new Error("Packaged diagnostic worker timed out")), 5_000);
+    worker.on("error", fail);
+    worker.on("message", (message) => {
+      if (message.epoch !== epoch) return fail(new Error("Packaged diagnostic worker epoch mismatch"));
+      if (message.type === "ready") worker.postMessage({ type: "history", epoch, requestId: 1,
+        scope: { workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent" } });
+      else if (message.type === "read") {
+        if (message.requestId !== 1 || message.value?.coverage !== "available" || !Array.isArray(message.value.operations) || message.value.operations.length !== 0) {
+          return fail(new Error("Packaged diagnostic journal read failed"));
+        }
+        worker.postMessage({ type: "close", epoch });
+      } else if (message.type === "closed") closed = true;
+      else fail(new Error("Packaged diagnostic journal unavailable"));
+    });
+    worker.on("exit", (code) => {
+      clearTimeout(timeout);
+      if (code === 0 && closed) resolveSmoke();
+      else reject(new Error("Packaged diagnostic worker did not close cleanly"));
+    });
+  });
+}
+
 try {
   await Promise.all([
     mkdir(workspace, { recursive: true }),
@@ -92,6 +123,7 @@ try {
   ]);
   console.log(`Installing ${basename(tarball)} into ${installRoot}`);
   await run("npm", ["install", "--prefix", installRoot, tarball]);
+  await diagnosticWorkerSmoke();
   const executable = join(installRoot, "node_modules/.bin/minu-channels");
   const version = (await capture(executable, ["--version"])).trim();
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Packaged CLI returned an invalid version: ${version}`);

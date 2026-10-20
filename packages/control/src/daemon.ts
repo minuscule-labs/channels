@@ -4,7 +4,9 @@ import {
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
 import { chmod, mkdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { DiagnosticRecorder } from "./diagnostics-recorder.ts";
+import { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
 import {
   LocalAgentHost,
   type LocalAgentHostDiagnosticEvent,
@@ -33,6 +35,8 @@ export interface LocalControlDaemonOptions {
   withConversationMessageAdmission?<T>(conversationId: string, operation: () => Promise<T>): Promise<T>;
   relayDatabasePath?: string;
   relayMigrationsFolder?: string;
+  /** Optional diagnostics never shares the authoritative Relay file or gates startup. */
+  recordAgentDiagnostics?: boolean;
   webUrl?: string;
   host?: "127.0.0.1" | "::1";
   port?: number;
@@ -55,6 +59,8 @@ export interface LocalControlDaemon {
   issueBrowserLaunchUrl(destinationPath?: string): string;
   authenticateBrowser(cookieHeader: string | undefined): { identityId: string; renewalCookie?: string } | undefined;
   workSnapshot(): LocalAgentHostWorkSnapshot;
+  /** Process-local health only; no unauthenticated HTTP diagnostic surface. */
+  diagnosticsStatus(): { available: boolean; recordingGap: boolean };
   waitForQuiesced(): Promise<LocalAgentHostWorkSnapshot>;
   close(): Promise<void>;
 }
@@ -76,6 +82,7 @@ export async function createLocalControlDaemon(
   });
   let server: LocalControlHttpServer | undefined;
   let agentHost: LocalAgentHost | undefined;
+  let diagnostics: DiagnosticRecorder | undefined;
   try {
     for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
       await chmod(path, 0o600).catch((error: NodeJS.ErrnoException) => {
@@ -94,10 +101,17 @@ export async function createLocalControlDaemon(
     const client = new ConversationClient(options.conversationsEndpoint ?? `http://127.0.0.1:${DEFAULT_CHANNELS_PORT}`, {
       serviceToken: options.conversationsServiceToken,
     });
+    if (options.recordAgentDiagnostics !== false) {
+      try {
+        const journalName = basename(databasePath) === "relay.db" ? "agent-diagnostics.db" : `${basename(databasePath)}.agent-diagnostics.db`;
+        diagnostics = new DiagnosticRecorder({ path: join(dirname(databasePath), journalName), now: options.now });
+      } catch { /* Optional diagnostics cannot fail startup. */ }
+    }
     agentHost = new LocalAgentHost({
       client,
       store,
       runtimes: options.runtimes ?? {},
+      diagnostics,
       now: options.now,
       stopStartedSessionsOnClose: options.stopStartedSessionsOnClose,
       autoResumeActorIdentityId: options.autoResumeOfflineAgents ? options.currentHumanIdentityId : undefined,
@@ -111,6 +125,7 @@ export async function createLocalControlDaemon(
       bindings: store,
       runtimes: options.runtimes ?? {},
       lifecycle: agentHost,
+      diagnosticReads: new LocalAgentDiagnosticReads({ client, store, reader: diagnostics, now: options.now }),
       configuration: new LocalAgentHostConfiguration({
         client,
         store,
@@ -133,16 +148,22 @@ export async function createLocalControlDaemon(
         browserSessions.issueLaunchUrl(server!.endpoint, destinationPath),
       authenticateBrowser: (cookieHeader) => browserSessions.authenticate(cookieHeader),
       workSnapshot: () => agentHost!.workSnapshot(),
+      diagnosticsStatus: () => ({ available: diagnostics?.available ?? false, recordingGap: diagnostics?.recordingGap ?? true }),
       waitForQuiesced: () => agentHost!.waitForQuiesced(),
       async close() {
-        await server!.close();
-        await agentHost!.close();
+        try {
+          await server!.close();
+          await agentHost!.close();
+        } finally {
+          await diagnostics?.close().catch(() => undefined);
+        }
         await store.close();
       },
     };
   } catch (error) {
     await server?.close().catch(() => undefined);
     await agentHost?.close().catch(() => undefined);
+    await diagnostics?.close().catch(() => undefined);
     await store.close();
     throw error;
   }

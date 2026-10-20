@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { LocalAgentHostConfiguration } from "../../control/dist/src/configuration.js";
+import { LocalAgentDiagnosticReads } from "../../control/dist/src/agent-diagnostic-reads.js";
 import {
   createLocalControlHttpServer,
   LocalControlBrowserSessions,
@@ -206,10 +207,10 @@ const localControl = await createLocalControlHttpServer({
       },
       async listConversationTurnFailures(conversationId) {
         if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 18, conversationId, notices: [], diagnostics: [] };
+          return { protocolVersion: 19, conversationId, notices: [], diagnostics: [] };
         }
         return {
-          protocolVersion: 18,
+          protocolVersion: 19,
           conversationId,
           notices: [{
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },
@@ -217,6 +218,7 @@ const localControl = await createLocalControlHttpServer({
             failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
           }],
           diagnostics: [{
+            triggerSequence: initialTrigger.sequence,
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },
             causeCategory: "runtime_request_timeout",
             failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
@@ -231,6 +233,7 @@ const localControl = await createLocalControlHttpServer({
         return conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
       },
     },
+    diagnosticReads: new LocalAgentDiagnosticReads({ client: conversationClient, store: privateStore }),
     configuration: new LocalAgentHostConfiguration({
       client: conversationClient,
       store: privateStore,

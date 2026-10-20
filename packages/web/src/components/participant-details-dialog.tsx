@@ -1,8 +1,10 @@
-import type { LocalConversationAgent, LocalTurnFailureDiagnostic } from "@minu/channels-control/contracts";
+import type { LocalConversationAgent, LocalTurnFailureDiagnostic, LocalTurnFailureNotice } from "@minu/channels-control/contracts";
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { DiagnosticBrowserScope } from "../lib/operation-diagnostics";
+import { OperationDiagnostics } from "./operation-diagnostics";
 import { statusSnapshotIsStale, type AgentDiagnosticsSnapshot, type PendingAgentInspection } from "../lib/agent-diagnostics";
 import { participantLabel } from "../lib/participants";
 import { activityLabel, elapsedLabel, liveCapabilityLabel, runtimeStateLabel } from "../lib/participant-status";
@@ -11,7 +13,7 @@ import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 
 export function ParticipantDetailsDialog({
   participant, agent, messages, participants, localStatus, showDiagnostics,
-  open, onOpenChange, onCloseAutoFocus, actionError, failures, pendingAction, diagnosticsSnapshot,
+  open, onOpenChange, onCloseAutoFocus, actionError, failures, pendingAction, diagnosticsSnapshot, diagnosticScope, onViewMessage, selectedIssue,
 }: {
   participant: Participant;
   agent?: LocalConversationAgent;
@@ -19,6 +21,9 @@ export function ParticipantDetailsDialog({
   participants: readonly Participant[];
   localStatus: "loading" | "available" | "unavailable";
   showDiagnostics: boolean;
+  diagnosticScope?: DiagnosticBrowserScope;
+  selectedIssue?: LocalTurnFailureNotice;
+  onViewMessage?(sequence: number): void;
   pendingAction?: PendingAgentInspection;
   diagnosticsSnapshot?: AgentDiagnosticsSnapshot;
   open: boolean;
@@ -28,6 +33,15 @@ export function ParticipantDetailsDialog({
   failures?: readonly LocalTurnFailureDiagnostic[];
 }) {
   const [now, setNow] = useState(() => Date.now());
+  const messageNavigation = useRef<number | undefined>(undefined);
+  const loadedSequences = new Set(messages.map(({ sequence }) => sequence));
+  const selectedFailures = selectedIssue ? failures?.filter((failure) => failure.participant.identityId === selectedIssue.participant.identityId
+    && failure.triggerSequence === selectedIssue.triggerSequence && failure.failedAt === selectedIssue.failedAt) : failures;
+  const viewMessage = (sequence: number) => {
+    if (!onViewMessage) return;
+    messageNavigation.current = sequence;
+    onOpenChange(false);
+  };
   useEffect(() => {
     if (!open) return;
     setNow(Date.now());
@@ -43,7 +57,14 @@ export function ParticipantDetailsDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
         <Dialog.Content
-          onCloseAutoFocus={onCloseAutoFocus}
+          onCloseAutoFocus={(event) => {
+            const sequence = messageNavigation.current;
+            if (sequence !== undefined) {
+              event.preventDefault();
+              messageNavigation.current = undefined;
+              onViewMessage?.(sequence);
+            } else onCloseAutoFocus(event);
+          }}
           className="fixed left-1/2 top-1/2 z-[71] flex max-h-[90vh] w-[min(36rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-xl outline-none"
         >
           <header className="flex items-start justify-between gap-3 border-b border-[var(--border)] px-5 py-4">
@@ -107,7 +128,14 @@ export function ParticipantDetailsDialog({
               </section>
             ) : null}
             {actionError ? <section aria-label="Failed participant action"><h3 className="font-semibold text-[var(--danger)]">Last action failed</h3><p className="mt-2 break-words text-[var(--muted)]">{actionError}</p><p className="mt-2 text-[var(--muted)]">A request error may leave the final outcome unknown. Refresh status before retrying.</p></section> : null}
-            {failures?.length ? <TurnFailureDiagnostics diagnostics={failures} /> : null}
+            {showDiagnostics && selectedIssue ? <p>Selected issue: triggering message #{selectedIssue.triggerSequence} · {selectedIssue.failedAt}. {selectedFailures?.length ? "" : "Detailed evidence is unavailable or no longer retained; no operation is inferred from timestamps."}</p> : null}
+            {showDiagnostics && selectedFailures?.length ? <TurnFailureDiagnostics diagnostics={selectedFailures} loadedSequences={loadedSequences} onViewMessage={onViewMessage ? viewMessage : undefined} /> : null}
+            {showDiagnostics && open && diagnosticScope && participant.type === "agent" ? <OperationDiagnostics
+              scope={{ ...diagnosticScope, participantIdentityId: participant.id }}
+              requestPending={Boolean(pendingAction)}
+              loadedSequences={loadedSequences}
+              onViewMessage={viewMessage}
+            /> : null}
           </div>
         </Dialog.Content>
       </Dialog.Portal>

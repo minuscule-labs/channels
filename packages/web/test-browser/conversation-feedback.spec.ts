@@ -48,7 +48,7 @@ function localAgent(data: Fixture, state: LocalConversationAgent["state"] = "unb
 
 async function mockAgents(page: Page, data: Fixture, state: () => LocalConversationAgent["state"] = () => "unbound") {
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 18, conversationId: data.primary.id, agents: [localAgent(data, state())] },
+    json: { protocolVersion: 19, conversationId: data.primary.id, agents: [localAgent(data, state())] },
   }));
 }
 
@@ -59,7 +59,7 @@ async function startAll(page: Page) {
 
 function bulkResponse(data: Fixture) {
   return {
-    protocolVersion: 18,
+    protocolVersion: 19,
     conversationId: data.primary.id,
     results: [
       { identityId: data.agent.id, outcome: "failed" },

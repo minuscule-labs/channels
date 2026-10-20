@@ -4,6 +4,7 @@ import type {
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
+  LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport,
   LocalBulkAgentLifecycleResponse,
   LocalConversationAgent,
   LocalConversationAgentsResponse,
@@ -87,6 +88,20 @@ export class LocalControlClient {
     return this.get<LocalConversationTurnFailuresResponse>(
       `/local/conversations/${encodeURIComponent(conversationId)}/turn-failures${search}`,
     );
+  }
+
+  async agentOperationHistory(conversationId: string, identityId: string, options: { cursor?: string; signal?: AbortSignal } = {}): Promise<LocalAgentOperationHistory> {
+    const search = options.cursor === undefined ? "" : `?cursor=${encodeURIComponent(options.cursor)}`;
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/operations${search}`, { signal: options.signal });
+  }
+
+  async agentOperationDetail(conversationId: string, identityId: string, operationId: string, signal?: AbortSignal): Promise<LocalAgentOperationDetail> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/operations/${encodeURIComponent(operationId)}`, { signal });
+  }
+
+  /** Every preview/copy call obtains a new permission-checked snapshot; never a cached export. */
+  async agentDiagnosticReport(conversationId: string, identityId: string, operationId: string, signal?: AbortSignal): Promise<LocalAgentDiagnosticReport> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/diagnostic-report?operationId=${encodeURIComponent(operationId)}`, { signal });
   }
 
   async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
@@ -276,6 +291,9 @@ export class LocalControlClient {
     timeoutMs = this.timeoutMs,
   ): Promise<T> {
     const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (init.signal?.aborted) controller.abort();
+    else init.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${this.endpoint}${path}`, {
@@ -293,9 +311,10 @@ export class LocalControlClient {
         throw new LocalControlClientError(body.error ?? `Local control request failed (${response.status})`, response.status);
       }
       if (response.status === 204) return undefined as T;
-      return response.json() as Promise<T>;
+      return await response.json() as T;
     } finally {
       clearTimeout(timer);
+      init.signal?.removeEventListener("abort", abort);
     }
   }
 }

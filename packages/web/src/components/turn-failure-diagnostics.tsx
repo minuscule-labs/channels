@@ -1,4 +1,5 @@
-import type { LocalTurnFailureDiagnostic } from "@minu/channels-control/contracts";
+import type { LocalOperationTurnFailure, LocalTurnFailureDiagnostic } from "@minu/channels-control/contracts";
+import { TriggerLink } from "./trigger-message-link";
 
 function elapsedLabel(elapsedMs: number): string {
   const seconds = Math.max(0, Math.round(elapsedMs / 1_000));
@@ -27,7 +28,11 @@ function deliveryLabel(outcome: LocalTurnFailureDiagnostic["deliveryOutcome"]): 
   }
 }
 
-export function TurnFailureDiagnostics({ diagnostics }: { diagnostics: readonly LocalTurnFailureDiagnostic[] }) {
+export function TurnFailureDiagnostics({ diagnostics, loadedSequences, onViewMessage }: {
+  diagnostics: readonly (LocalTurnFailureDiagnostic | LocalOperationTurnFailure)[];
+  loadedSequences?: ReadonlySet<number>;
+  onViewMessage?(sequence: number): void;
+}) {
   return (
     <section className="border-b border-[var(--border)] bg-[var(--panel)] px-4 py-3" aria-label="Issue diagnostics">
       <div className="mb-2 flex items-baseline justify-between gap-3">
@@ -45,6 +50,8 @@ export function TurnFailureDiagnostics({ diagnostics }: { diagnostics: readonly 
               {elapsedLabel(diagnostic.elapsedMs)} · {diagnostic.attemptCount} {diagnostic.attemptCount === 1 ? "attempt" : "attempts"} · {deliveryLabel(diagnostic.deliveryOutcome)}
             </p>
             <p className="mt-1 text-[11px] text-[var(--muted)]">Recommended: {diagnostic.remediation.label}</p>
+            {"operationRelation" in diagnostic ? <p className="mt-1">Relation: {diagnostic.operationRelation === "targeted_trigger" ? "Exact targeted trigger (not causation)" : diagnostic.operationRelation === "uncorrelated" ? "Uncorrelated" : "Correlation unavailable"}</p> : null}
+            {onViewMessage && diagnostic.triggerSequence !== undefined ? <TriggerLink sequence={diagnostic.triggerSequence} loaded={Boolean(loadedSequences?.has(diagnostic.triggerSequence))} onView={onViewMessage} /> : null}
           </li>
         ))}
       </ul>

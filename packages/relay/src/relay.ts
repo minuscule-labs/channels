@@ -1,5 +1,6 @@
 import type { ConversationCursorStore, ConversationMessage, ConversationMetadata, Participant } from "@minu/channels-core";
 import { ConversationClient, ConversationClientError } from "@minu/channels-core";
+import { safeDiagnosticObservation, type DiagnosticObservation, type DiagnosticStage, type DiagnosticEvent } from "./diagnostics.ts";
 export interface RuntimePortMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -279,6 +280,15 @@ export interface RelayAgentWorkSnapshot {
   stopRequested: boolean;
 }
 
+interface TurnObservation {
+  observer: DiagnosticObservation;
+  binding: AgentConversationBinding;
+  bindingId?: string;
+  generation?: number;
+  triggerId?: string;
+  triggerSequence?: number;
+}
+
 interface BindingState {
   binding: AgentConversationBinding;
   lastProcessedSequence: number;
@@ -311,6 +321,8 @@ interface BindingState {
   /** Retained for the legacy interrupt-and-replace operation. */
   interruptedTriggerId?: string;
   cancelActorId?: string;
+  cancelObservation?: TurnObservation;
+  stopObservation?: TurnObservation;
   stopRequested?: boolean;
   stopError?: boolean;
   runtimeTurnAccepted?: boolean;
@@ -837,11 +849,18 @@ export class ConversationRuntimeRelay {
    * Once the Runtime call has been initiated, ambiguous transport failures remain visibly
    * canceling and are reconciled by the active turn handler; they are never blindly retried.
    */
-  async cancelCurrent(participantId: string, actorId: string): Promise<void> {
+  async cancelCurrent(participantId: string, actorId: string, observe?: () => DiagnosticObservation | undefined): Promise<void> {
     const state = this.stateFor(participantId);
-    if (state.phase === "canceling" && state.activeTrigger) return;
+    if (state.phase === "canceling" && state.activeTrigger) {
+      const duplicate = this.captureTurnObservation(state, observe);
+      duplicate?.observer.event("interrupt_requested", "skipped", { source: "relay", reasonCode: "already_requested", triggerSequence: duplicate.triggerSequence });
+      // Do not retain an unbounded observer list, issue another interrupt, or assert settlement.
+      duplicate?.observer.finish("unknown");
+      return;
+    }
     await this.assertInterruptible(state, participantId);
     if (!state.activeTrigger) throw new Error(`Agent has no active Conversation turn: ${participantId}`);
+    state.cancelObservation = this.captureTurnObservation(state, observe);
     this.clearActivitySilence(state);
     state.phase = "canceling";
     state.cancelActorId = actorId;
@@ -852,9 +871,18 @@ export class ConversationRuntimeRelay {
   async stopBinding(
     participantId: string,
     actorId: string,
-    options: { leaseAlreadyFenced?: boolean } = {},
+    options: { leaseAlreadyFenced?: boolean; observation?: DiagnosticObservation; expectedBinding?: { id: string; generation: number } } = {},
   ): Promise<void> {
     const state = this.stateFor(participantId);
+    let observation: TurnObservation | undefined;
+    const binding = state.binding.diagnosticBinding;
+    if (!options.expectedBinding || (binding?.id === options.expectedBinding.id && binding.generation === options.expectedBinding.generation)) {
+      observation = this.captureTurnObservation(state, () => options.observation);
+    } else {
+      safeDiagnosticObservation(options.observation)?.event("turn_settled", "unknown", { source: "relay", reasonCode: "target_changed" });
+    }
+    state.stopObservation = observation;
+    const hadActiveTurn = state.activeTrigger !== undefined;
     state.stopRequested = true;
     state.stopInterruptPromise = state.interruptPromise;
     state.stopError = false;
@@ -871,7 +899,35 @@ export class ConversationRuntimeRelay {
     await state.drainTask?.catch(() => undefined);
     const interruptSettled = await state.stopInterruptPromise;
     if (interruptSettled === false || state.stopError || state.activeTrigger) {
+      observation?.observer.event("turn_settled", "unknown", { source: "relay", reasonCode: "uncertain", triggerSequence: observation.triggerSequence });
       throw new Error(`Agent turn could not be safely stopped: ${participantId}`);
+    }
+    observation?.observer.event("turn_settled", hadActiveTurn ? "confirmed" : "skipped", { source: "relay", ...(hadActiveTurn ? {} : { reasonCode: "not_required" as const }), triggerSequence: observation.triggerSequence });
+    if (!hadActiveTurn) observation?.observer.event("interrupt_requested", "skipped", { source: "relay", reasonCode: "not_required" });
+    state.stopObservation = undefined;
+  }
+
+  private captureTurnObservation(state: BindingState, create?: () => DiagnosticObservation | undefined): TurnObservation | undefined {
+    try {
+      const observer = safeDiagnosticObservation(create?.());
+      if (!observer) return undefined;
+      const ref = state.binding.diagnosticBinding;
+      const trigger = state.activeTrigger;
+      observer.correlate({ ...(ref ? { sourceBinding: { id: ref.id, generation: ref.generation } } : {}),
+        ...(trigger ? { trigger: { messageId: trigger.id, sequence: trigger.sequence } } : {}) });
+      return { observer, binding: state.binding, bindingId: ref?.id, generation: ref?.generation,
+        triggerId: trigger?.id, triggerSequence: trigger?.sequence };
+    } catch { return undefined; }
+  }
+
+  private observeInterrupt(state: BindingState, target: Omit<TurnObservation, "observer">, stage: DiagnosticStage, result: DiagnosticEvent["result"]): void {
+    for (const entry of [state.cancelObservation, state.stopObservation]) {
+      if (entry && entry.binding === target.binding && entry.bindingId === target.bindingId
+        && entry.generation === target.generation && entry.triggerId === target.triggerId) {
+        entry.observer.event(stage, result, { source: "relay", triggerSequence: entry.triggerSequence,
+          ...(result === "unknown" ? { reasonCode: "uncertain" as const } : {}) });
+        if (result === "unknown" && entry === state.cancelObservation) entry.observer.finish("unknown");
+      }
     }
   }
 
@@ -905,6 +961,8 @@ export class ConversationRuntimeRelay {
   private requestRuntimeInterrupt(state: BindingState, participantId: string): void {
     if (!state.runtimeTurnAccepted || state.interruptIssued) return;
     state.interruptIssued = true;
+    const ref = state.binding.diagnosticBinding;
+    this.observeInterrupt(state, { binding: state.binding, bindingId: ref?.id, generation: ref?.generation, triggerId: state.activeTrigger?.id }, "interrupt_requested", "started");
     state.interruptPromise = this.invokeCancellation(state, participantId, state.retryDeadline);
     if (state.stopRequested) state.stopInterruptPromise = state.interruptPromise;
   }
@@ -914,6 +972,8 @@ export class ConversationRuntimeRelay {
     participantId: string,
     deadline?: number,
   ): Promise<boolean> {
+    const ref = state.binding.diagnosticBinding;
+    const target = { binding: state.binding, bindingId: ref?.id, generation: ref?.generation, triggerId: state.activeTrigger?.id };
     try {
       if (deadline !== undefined) this.assertBeforeDeadline(deadline);
       await this.awaitRuntime(
@@ -922,8 +982,10 @@ export class ConversationRuntimeRelay {
         undefined,
         deadline,
       );
+      this.observeInterrupt(state, target, "interrupt_acknowledged", "confirmed");
       return true;
     } catch (error) {
+      this.observeInterrupt(state, target, "interrupt_acknowledged", "unknown");
       // The invocation may have reached Runtime even when its acknowledgement was lost.
       // Do not let a later queued turn share this session until shutdown/recovery resolves it.
       this.options.onError?.(
@@ -1476,6 +1538,10 @@ export class ConversationRuntimeRelay {
   }
 
   private clearActive(state: BindingState): void {
+    state.cancelObservation?.observer.event("observer_lost", "unknown", { source: "relay", reasonCode: "observer_lost", triggerSequence: state.cancelObservation.triggerSequence });
+    state.cancelObservation?.observer.finish("unknown");
+    state.cancelObservation = undefined;
+    state.stopObservation = undefined;
     this.clearActivitySilence(state);
     state.activeTrigger = undefined;
     state.startedAt = undefined;
@@ -1686,11 +1752,19 @@ export class ConversationRuntimeRelay {
       while (!this.controller?.signal.aborted) await delay(1_000, this.controller?.signal);
       return;
     }
+    if (interrupted === undefined) {
+      state.cancelObservation?.observer.event("interrupt_requested", "skipped", { source: "relay", reasonCode: "not_required", triggerSequence: trigger.sequence });
+    }
     if (state.stopRequested) {
       await this.markProcessed(state, trigger.sequence, deadline);
-      return;
+    } else {
+      await this.commitCancellation(state, trigger, deadline);
     }
-    await this.commitCancellation(state, trigger, deadline);
+    // A return caused by fencing/shutdown is not proof of a committed terminal outcome.
+    if (!this.controller?.signal.aborted && this.states.includes(state) && state.lastProcessedSequence >= trigger.sequence) {
+      state.cancelObservation?.observer.event("turn_settled", "confirmed", { source: "relay", triggerSequence: trigger.sequence });
+      state.cancelObservation?.observer.finish("succeeded");
+    }
   }
 
   private async commitCancellation(

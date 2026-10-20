@@ -54,6 +54,10 @@ await Promise.all([
     join(binDirectory, "minu-channels.js"),
   ),
   bundle(
+    resolve(root, "packages/control/dist/src/diagnostics-worker.js"),
+    join(binDirectory, "diagnostics-worker.js"),
+  ),
+  bundle(
     resolve(runtimeRoot, "packages/pi/dist/src/index.js"),
     join(binDirectory, "runtime-pi.js"),
   ),

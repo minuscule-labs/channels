@@ -1,4 +1,4 @@
-import type { LocalBulkAgentLifecycleResult, LocalSessionContextMode } from "@minu/channels-control/contracts";
+import type { LocalBulkAgentLifecycleResult, LocalSessionContextMode, LocalTurnFailureNotice } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
@@ -34,7 +34,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
   const [pendingBulkTargets, setPendingBulkTargets] = useState<ReadonlySet<string>>();
   const [issueDialogParticipantId, setIssueDialogParticipantId] = useState<string>();
   const [issueDialogOpen, setIssueDialogOpen] = useState(false);
+  const [selectedIssue, setSelectedIssue] = useState<LocalTurnFailureNotice>();
   const issueNoticeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const drawerMessageFocus = useRef<number | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearEndRef = useRef(true);
   const scrollLayoutRef = useRef({ scrollHeight: 0, clientHeight: 0 });
@@ -202,10 +204,25 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     ({ identityId }) => identityId === currentSession.data?.identityId,
   );
   const currentParticipant = participants.find(({ id }) => id === currentSession.data?.identityId);
-  const canViewTurnFailureNotices = currentMembership?.status === "active"
+  const currentIdentity = identities.data?.find(({ id }) => id === currentSession.data?.identityId);
+  const canViewTurnFailureNotices = currentSession.isSuccess && workspaceMembers.isSuccess && metadata.isSuccess
+    && currentMembership?.status === "active"
     && Boolean(currentParticipant && currentParticipant.status !== "disabled");
-  const canOpenDiagnostics = currentMembership?.status === "active"
-    && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
+  const canOpenDiagnostics = canViewTurnFailureNotices && workspace.isSuccess && workspace.data.status === "active" && identities.isSuccess
+    && currentIdentity?.type === "human" && currentIdentity.status === "active"
+    && (currentMembership?.accessRole === "owner" || currentMembership?.accessRole === "admin");
+  useLayoutEffect(() => {
+    if (!canOpenDiagnostics) return;
+    const humanId = currentSession.data!.identityId;
+    return () => {
+      // Purge privileged Phase 1 projections on observed access/identity loss and navigation.
+      // New history/detail/report data never enters this shared cache.
+      for (const queryKey of [queryKeys.localConversationTurnFailures(conversationId, humanId), queryKeys.localConversationAgents(conversationId)]) {
+        void queryClient.cancelQueries({ queryKey, exact: true });
+        queryClient.removeQueries({ queryKey, exact: true });
+      }
+    };
+  }, [canOpenDiagnostics, currentSession.data?.identityId, conversationId, queryClient]);
   const turnFailures = useQuery({
     queryKey: queryKeys.localConversationTurnFailures(conversationId, currentSession.data?.identityId),
     queryFn: () => localControl.listConversationTurnFailures(conversationId),
@@ -230,7 +247,22 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     refreshError: localAgents.isError ? agentStatusRequestError(localAgents.error) : undefined,
     refresh: () => { void localAgents.refetch(); },
   };
+  const focusMessage = (sequence: number) => {
+    const target = scrollRef.current?.querySelector<HTMLElement>(`[data-message-sequence="${sequence}"]`);
+    target?.scrollIntoView({ block: "center" });
+    target?.focus({ preventScroll: true });
+  };
+  const viewMessage = (sequence: number) => {
+    // Called by the details dialog after its focus scope has closed. On mobile,
+    // pass ownership to the outer drawer rather than racing its focus restoration.
+    if (rosterOpen) {
+      drawerMessageFocus.current = sequence;
+      setRosterOpen(false);
+    } else focusMessage(sequence);
+  };
   const participantFeedback = {
+    diagnosticScope: canOpenDiagnostics ? { humanIdentityId: currentSession.data!.identityId, workspaceId, conversationId } : undefined,
+    onViewMessage: viewMessage,
     pendingActions,
     diagnosticsSnapshot,
     bulkActionError: bulkAgentAction.isError ? `Conversation-wide bulk request failed: ${bulkAgentAction.error.message}` : undefined,
@@ -337,6 +369,13 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           <Drawer
             open={rosterOpen}
             onOpenChange={setRosterOpen}
+            onCloseAutoFocus={(event) => {
+              const sequence = drawerMessageFocus.current;
+              if (sequence === undefined) return;
+              event.preventDefault();
+              drawerMessageFocus.current = undefined;
+              focusMessage(sequence);
+            }}
             side="right"
             title="Participants"
             description="Public members of this Conversation."
@@ -427,8 +466,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               attributionParticipants={attributionParticipants}
               turnFailureNotices={turnFailures.data?.notices}
               canOpenIssueDetails={canOpenDiagnostics}
-              onViewIssueDetails={(identityId, trigger) => {
+              onViewIssueDetails={(identityId, trigger, notice) => {
                 issueNoticeTriggerRef.current = trigger;
+                setSelectedIssue(notice);
                 setIssueDialogParticipantId(identityId);
                 setIssueDialogOpen(true);
               }}
@@ -499,6 +539,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
         participants={participants}
         localStatus={localStatus}
         showDiagnostics={canOpenDiagnostics}
+        diagnosticScope={participantFeedback.diagnosticScope}
+        selectedIssue={selectedIssue}
+        onViewMessage={viewMessage}
         pendingAction={pendingAgentInspection(issueDialogParticipant.id, pendingActions)}
         diagnosticsSnapshot={diagnosticsSnapshot}
         open={issueDialogOpen}
