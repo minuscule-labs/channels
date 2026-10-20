@@ -1,6 +1,6 @@
 # Agent diagnostics Phase 2 — storage and failure-isolation review
 
-**Status:** User-approved implementation is locally verified; publication/PR remains separately gated. Daemon-owned individual/bulk/Relay/cleanup recording and protocol-v19 authorized history/detail/report reads are implemented. Safe failure projections expose the public trigger sequence; selected-operation detail/report reads distinguish exact targeted-trigger evidence from uncorrelated failures. The privileged open-surface timeline/report UI and revocation-safe browser state are implemented. Author completed-feature security/integration review is recorded below with no actionable findings. User-approved isolated real-Pi acceptance passed; see the live acceptance record below.
+**Status:** Merged in PR #40 as `3c3da28`; the checkpoints below preserve the implementation, review and acceptance evidence. Daemon-owned individual/bulk/Relay/cleanup recording and protocol-v19 authorized history/detail/report reads are implemented. Safe failure projections expose the public trigger sequence; selected-operation detail/report reads distinguish exact targeted-trigger evidence from uncorrelated failures. The privileged open-surface timeline/report UI and revocation-safe browser state are implemented. Author completed-feature security/integration review is recorded below with no actionable findings. User-approved isolated real-Pi acceptance passed; see the live acceptance record below.
 
 **Baseline:** `a2e9dd3` (merged Phase 1, PR #39). Working branch: `feat/agent-diagnostics-phase2`.
 

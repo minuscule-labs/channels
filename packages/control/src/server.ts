@@ -52,6 +52,7 @@ export {
   type LocalControlLaunchExchange,
 } from "./session.ts";
 import type { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
+import type { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalAgentActivity,
@@ -108,6 +109,7 @@ export interface LocalControlRuntimeSessionCapabilities {
 
 export interface LocalControlRuntimePort {
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
+  inspectSessionProfile?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   sessionCapabilities?(
     sessionId: string,
   ): Promise<LocalControlRuntimeSessionCapabilities>;
@@ -238,6 +240,7 @@ export interface LocalControlServiceOptions {
   configuration?: LocalControlConfigurationPort;
   lifecycle?: LocalControlAgentLifecyclePort;
   diagnosticReads?: Pick<LocalAgentDiagnosticReads, "history" | "detail" | "report">;
+  sessionInspections?: Pick<LocalAgentSessionInspections, "read">;
   statusTimeoutMs?: number;
 }
 
@@ -690,6 +693,11 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
     }
     return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, limit);
+  }
+
+  async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string) {
+    if (!this.options.sessionInspections) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId);
   }
 
   async agentOperationHistory(conversationId: string, identityId: string, actorIdentityId: string, cursor?: string): Promise<LocalAgentOperationHistory> {
@@ -1236,12 +1244,14 @@ export async function createLocalControlHttpServer(
         json(response, 200, options.service.capabilities(), origin);
         return;
       }
-      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report)$/);
+      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report|session-inspection)$/);
       if (diagnosticMatch && request.method === "GET" && browserSession) {
         const conversationId = decodeURIComponent(diagnosticMatch[1]!);
         const identityId = decodeURIComponent(diagnosticMatch[2]!);
         const operationId = diagnosticMatch[4] ? decodeURIComponent(diagnosticMatch[4]) : undefined;
-        const value = diagnosticMatch[3] === "diagnostic-report"
+        const value = diagnosticMatch[3] === "session-inspection"
+          ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId)
+          : diagnosticMatch[3] === "diagnostic-report"
           ? await options.service.agentDiagnosticReport(conversationId, identityId, browserSession.identityId, url.searchParams.get("operationId") ?? "")
           : operationId
             ? await options.service.agentOperationDetail(conversationId, identityId, browserSession.identityId, operationId)

@@ -909,7 +909,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 19 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 20 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -991,7 +991,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 19, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 20, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -1191,7 +1191,7 @@ test("serves bounded, private turn-failure projections without Conversation infe
         }
         limits.push(limit);
         return {
-          protocolVersion: 19,
+          protocolVersion: 20,
           conversationId,
           notices: [{ participant: { identityId: "agent-running", displayLabel: "Builder" }, triggerSequence: 9, failedAt: "2026-08-28T00:00:00.000Z" }],
           diagnostics: [{
@@ -1467,7 +1467,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 19,
+      protocolVersion: 20,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/conversations/${app.conversationId}/agents`, {
@@ -2003,7 +2003,7 @@ test("private configuration keeps lists redacted and returns agent details only 
     }]);
     const detail = await configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id);
     assert.deepEqual(detail, {
-      protocolVersion: 19,
+      protocolVersion: 20,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "PRIVATE PERSONA: build and verify carefully" },
@@ -2099,7 +2099,7 @@ test("Conversation working folders are private, canonical, and owner-controlled"
     });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
     assert.deepEqual(await configuration.getConversationWorkingFolders(conversation.id, owner.id), {
-      protocolVersion: 19,
+      protocolVersion: 20,
       workspaceId: workspace.id,
       conversationId: conversation.id,
       inheritedFromWorkspace: true,
@@ -4782,7 +4782,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     assert.equal(agentConfigurationResponse.status, 200);
     assert.equal(agentConfigurationResponse.headers.get("cache-control"), "no-store");
     assert.deepEqual(await agentConfigurationResponse.json(), {
-      protocolVersion: 19,
+      protocolVersion: 20,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "DAEMON PRIVATE PERSONA" },
@@ -4800,7 +4800,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 19,
+      protocolVersion: 20,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -4815,7 +4815,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 19,
+      protocolVersion: 20,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

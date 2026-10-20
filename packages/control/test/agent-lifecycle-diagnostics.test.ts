@@ -467,7 +467,7 @@ test("real worker records lifecycle outcomes and daemon journal failure cannot p
       const publicHistory = await (await fetch(`${diagnosticBase}/operations`, { headers: readHeaders })).json() as {
         protocolVersion: number; coverage: string; operations: Array<{ operationId: string }>;
       };
-      assert.equal(publicHistory.protocolVersion, 19);
+      assert.equal(publicHistory.protocolVersion, 20);
       assert.equal(publicHistory.coverage, broken ? "unavailable" : "available");
       const selectedId = publicHistory.operations[0]?.operationId ?? "operation-unrecorded";
       const report = await fetch(`${diagnosticBase}/diagnostic-report?operationId=${selectedId}`, { headers: readHeaders });

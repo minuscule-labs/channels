@@ -7,6 +7,7 @@ import { chmod, mkdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { DiagnosticRecorder } from "./diagnostics-recorder.ts";
 import { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
+import { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
 import {
   LocalAgentHost,
   type LocalAgentHostDiagnosticEvent,
@@ -119,13 +120,15 @@ export async function createLocalControlDaemon(
       onDiagnostic: options.onDiagnostic,
     });
     await agentHost.restore();
+    const sessionInspections = new LocalAgentSessionInspections({ client, store, runtimes: options.runtimes ?? {}, now: options.now });
     const service = new LocalControlService({
       conversations: client,
       withConversationMessageAdmission: options.withConversationMessageAdmission,
       bindings: store,
       runtimes: options.runtimes ?? {},
       lifecycle: agentHost,
-      diagnosticReads: new LocalAgentDiagnosticReads({ client, store, reader: diagnostics, now: options.now }),
+      diagnosticReads: new LocalAgentDiagnosticReads({ client, store, reader: diagnostics, now: options.now, sessionInspections }),
+      sessionInspections,
       configuration: new LocalAgentHostConfiguration({
         client,
         store,

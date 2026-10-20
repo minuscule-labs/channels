@@ -222,6 +222,8 @@ export interface RelayBindingStore extends RelayCursorStore {
   ): Promise<ConversationAgentBindingRecord>;
   getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined>;
   deleteBinding(bindingId: string): Promise<void>;
+  /** Bounded current-resource lookup for read-only inspection; no lifecycle mutations. */
+  getSessionInspectionRecords(workspaceId: string, conversationId: string, agentIdentityId: string): Promise<{ bindings: ConversationAgentBindingRecord[]; activation?: RuntimeSessionHistoryRecord }>;
   listSessionHistory(conversationId: string, agentIdentityId?: string): Promise<RuntimeSessionHistoryRecord[]>;
   listPendingSessionCleanups(limit: number): Promise<RuntimeSessionHistoryRecord[]>;
   recordSessionCleanupAttempt(input: RuntimeSessionCleanupAttempt): Promise<void>;
@@ -543,6 +545,13 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     const binding = this.bindings.get(bindingId);
     if (binding) this.retireSessionActivation(binding, new Date().toISOString(), "recovered");
     this.bindings.delete(bindingId);
+  }
+
+  async getSessionInspectionRecords(workspaceId: string, conversationId: string, agentIdentityId: string) {
+    const bindings = [...this.bindings.values()].filter(row => row.workspaceId === workspaceId && row.conversationId === conversationId && row.agentIdentityId === agentIdentityId).slice(0, 2).map(copyBinding);
+    const binding = bindings.length === 1 ? bindings[0] : undefined;
+    const activation = binding ? this.sessionHistory.get(`${binding.id}\0${binding.generation}`) : undefined;
+    return { bindings, ...(activation ? { activation: { ...activation } } : {}) };
   }
 
   async listSessionHistory(
