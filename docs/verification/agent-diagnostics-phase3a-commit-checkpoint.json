@@ -1,0 +1,44 @@
+{
+  "kind": "author-commit-checkpoint",
+  "recordedAt": "2026-10-20T13:47:32.542Z",
+  "status": "committed-current-pin-compatible-new-runtime-integration-pending",
+  "commits": {
+    "runtime": "c535afb04d6db3b6dcee2bcfa099e1102d627271",
+    "channels": "37217d5d230319caabf235872167f1f3c6f8b1f3"
+  },
+  "packaging": {
+    "release": {
+      "channelsCommit": "37217d5d230319caabf235872167f1f3c6f8b1f3",
+      "runtimeCommit": "05b700a5e73e9031fe5dc5d67dc2d0f6922582fc",
+      "builtAt": "2026-10-20T13:45:08.216Z"
+    },
+    "tarball": "minu-channels-0.0.12.tgz",
+    "sha256": "e84f68cb9247f8ae1fbfd3dd1f42cef2166eb630d1b809800b46fe1e1b26b09f",
+    "scope": "Current pinned older Runtime only; this is not certification of the new live-profile adapter.",
+    "environment": "Clean independent temporary local clones; offline frozen-lockfile installs; no dirty-release override. PI_COMMAND set to a nonexistent isolated path; private temporary HOME/data/registry.",
+    "checks": [
+      {
+        "command": "pnpm release:pack",
+        "status": "passed"
+      },
+      {
+        "command": "pnpm release:smoke",
+        "status": "passed"
+      }
+    ]
+  },
+  "preview": {
+    "command": "MINU_TEST_WEB_PREVIEW=1 pnpm --filter @minu/channels-web exec playwright test test-browser/operation-diagnostics.spec.ts --project=chromium --grep 'session inspection is open-only|loaded public activation|closing and reopening|unsupported live evidence|denied session inspection'",
+    "status": "passed",
+    "tests": 5,
+    "scope": "Production web build with temporary browser fixtures and mocked profile responses; not a real-Pi or packaged-adapter acceptance run."
+  },
+  "evidenceReuse": "Implementation source hashes matched the prior author verification before committing. No application source was changed while creating these commits/checks; full prior regression evidence remains applicable.",
+  "remaining": [
+    "Publish/review/merge the Runtime change.",
+    "Update and verify the Channels Runtime pin only after merge.",
+    "Repeat final packaging and acceptance against that integrated pin.",
+    "Fresh scoped approval before any real-Pi acceptance."
+  ],
+  "constraints": "No remote push/PR/merge, deployment, real-agent start, existing-service restart or real-database modification by these checks. Preserve docs/image-support.md."
+}
