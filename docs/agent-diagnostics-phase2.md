@@ -1,6 +1,6 @@
 # Agent diagnostics Phase 2 — storage and failure-isolation review
 
-**Status:** Approved by the user; implementation in progress. Daemon-owned individual/bulk/Relay/cleanup recording and protocol-v19 authorized history/detail/report reads are implemented. Safe failure projections expose the public trigger sequence; selected-operation detail/report reads distinguish exact targeted-trigger evidence from uncorrelated failures. The privileged open-surface timeline/report UI and revocation-safe browser state are implemented. Author completed-feature security/integration review is recorded below with no actionable findings. Real-Pi acceptance remains outstanding.
+**Status:** User-approved implementation is locally verified; publication/PR remains separately gated. Daemon-owned individual/bulk/Relay/cleanup recording and protocol-v19 authorized history/detail/report reads are implemented. Safe failure projections expose the public trigger sequence; selected-operation detail/report reads distinguish exact targeted-trigger evidence from uncorrelated failures. The privileged open-surface timeline/report UI and revocation-safe browser state are implemented. Author completed-feature security/integration review is recorded below with no actionable findings. User-approved isolated real-Pi acceptance passed; see the live acceptance record below.
 
 **Baseline:** `a2e9dd3` (merged Phase 1, PR #39). Working branch: `feat/agent-diagnostics-phase2`.
 
@@ -257,7 +257,7 @@ Author work-review **Gate: PASS** for the bounded browser package; no known requ
 
 Artifacts: `/tmp/diagnostics-ui-tests.log`, `/tmp/diagnostics-ui-web-tests-final.log`, `/tmp/diagnostics-ui-browser-verified.log`, `/tmp/diagnostics-ui-browser-polling-final.log`, `/tmp/diagnostics-ui-browser-production.log`, `/tmp/diagnostics-ui-mobile-focus.log`, `/tmp/diagnostics-ui-release-{build,pack,smoke}-final.log`, and `/tmp/channels-diagnostics-ui-package/minu-channels-0.0.12.tgz`. Do not reproduce temporary authentication/bootstrap material from test logs.
 
-This implementation checkpoint was prepared on `feat/agent-diagnostics-phase2` from baseline `a2e9dd3`; the user has authorized committing it and continuing review. No existing dev/production service or agent was restarted, no real database was modified, and no real agent was started. The running dev backend may still predate protocol 19; this is source/package verification, not a deployment claim. **Phase 2 remains incomplete:** explicitly authorized real-Pi acceptance (or an explicit acceptance-gap decision) and separately authorized publication/PR preparation remain outstanding. The subsequent author completed-feature review is recorded below.
+This implementation checkpoint was prepared on `feat/agent-diagnostics-phase2` from baseline `a2e9dd3`; the user has authorized committing it and continuing review. No existing dev/production service or agent was restarted, no real database was modified, and no real agent was started. The running dev backend may still predate protocol 19; this is source/package verification, not a deployment claim. At this pre-acceptance checkpoint, real-Pi acceptance and separately authorized publication/PR preparation were outstanding. The subsequent author completed-feature review and approved live acceptance are recorded below.
 
 ## Completed-feature author security/integration review
 
@@ -273,6 +273,35 @@ This implementation checkpoint was prepared on `feat/agent-diagnostics-phase2` f
 
 Review logs: `/tmp/diagnostics-feature-review-focused.log` and `/tmp/diagnostics-feature-review-web.log`. No existing service, agent, binding/history, real database, or unrelated draft was changed; nothing was pushed and no PR was created.
 
-### Remaining acceptance decision
+### Acceptance authorization — resolved
 
-Do not run real agents or restart an existing service under the current constraints. The next acceptance package requires explicit user approval for **new temporary Pi agents in an isolated disposable Workspace/data directory only**, leaving existing services, identities, bindings and history untouched. The package should exercise Start, Stop, exact-session resume, Cancel with actual turn settlement, and replacement/Fresh with separately labeled retired cleanup; inspect the timeline/report while requests are pending and preserve the distinction between handler return, acknowledgment, settlement and binding commit. Use a temporary working directory and keep prompts/tool work confined to fixture data. Stop only the temporary agents and remove only owned temporary data afterward; retain sanitized results without bootstrap credentials or raw prompts/logs. Alternatively, the user can explicitly accept the documented real-Pi verification gap before publication. Neither option is implied by the code-review verdict.
+The user explicitly approved **new temporary Pi agents in an isolated disposable Workspace/data directory only**, leaving existing services, identities, bindings and history untouched. That approval enabled the acceptance package below; it did not authorize restarting an existing service, altering existing agents/data, publishing, or creating a PR. No verification-gap waiver was used.
+
+## Approved real-Pi acceptance — passed
+
+**Result: all nine bounded acceptance checks passed.** This closes the previously recorded real-Pi gate for the tested Phase 2 flows. The implementation is ready for separately authorized publication/PR preparation, not claimed deployed or release-approved.
+
+- **Tested source:** `74bd372` (application implementation remains `a96fa5b`); Runtime `05b700a5e73e9031fe5dc5d67dc2d0f6922582fc`, matching `runtime-source.json`; installed Pi **0.99.1**; `openai-codex/gpt-6.1-sol` with the model-verified **minimal** reasoning level. Runtime and Channels were built before the run. No application or Runtime source changes were needed.
+- **Real boundaries:** fresh disposable Conversation service, private Relay database and companion journal, daemon, production-built web server and Chromium, plus actual Runtime-owned Pi workers and real provider replies. All private data, working directories, Runtime registrations, Pi configuration and credentials were isolated under an owned temporary root. Unrelated secret environment variables, normal Pi extensions/skills/configuration and global session/registry paths were not supplied to the workers.
+
+| Check | Observed result |
+| --- | --- |
+| Isolated setup | Private services/stores and diagnostic worker ready; temporary Runtime registry initially empty. |
+| Start and inspection | Actual managed Pi session launched; journal confirmed binding commit and route attachment; timeline/selected report available through the real UI/APIs. |
+| Real provider turn | Synthetic acknowledgment reached Pi and returned an agent response to the temporary Conversation. |
+| Stop → Start | Intentional pause followed by explicit Start preserved the exact managed-session ID, binding ID and generation; a subsequent real reply succeeded. This was logical-session reuse, not a forced cold-worker restart. |
+| Cancel active turn | Pi executed a short wait tool; real interruption acknowledgment and targeted turn settlement were recorded separately and in that sequence, followed by a succeeded Cancel outcome. |
+| Stop active turn | Real work was interrupted; delivery fencing, interruption acknowledgment, settlement and pause commit were confirmed separately; the binding was held paused. |
+| New session with context | New managed ID and incremented generation; handoff preparation and replacement attachment confirmed; retired-generation cleanup independently succeeded and the old managed registration was absent. |
+| Fresh session | Another new managed ID/incremented generation; private history recorded Fresh context policy; handoff was explicitly skipped with `fresh_context`; related retired cleanup independently succeeded. |
+| Final generation | Fresh generation 3 returned a real response; only its current managed session remained before final teardown. |
+
+**Report/UI checks:** operation selection, local preview and Copy were exercised against the real production-built UI and authorized report APIs during the lifecycle package. Each preview/Copy pair required two fresh report GETs; the copied snapshot matched the selected operation, used format 1/protocol 19, stayed within 64 KiB UTF-8, and omitted the temporary root plus private binding/owner/managed-session identifiers. An isolated **in-memory clipboard sink** avoided altering the user clipboard; this is not a claim of native OS clipboard testing. Real requests were not delayed or mocked to manufacture pending states; deterministic long-pending, denial/late-result, clipboard rejection, and failure-injection behavior retains the preceding browser/unit evidence.
+
+**Earlier attempts are not counted as passes:** the initially selected API-key provider rejected inference with HTTP 401 after worker Start/report checks. A subsequent Codex fixture requested unsupported reasoning `off`; startup was correctly rejected and diagnostics remained unknown rather than inventing success. An RPC capability probe confirmed this model supports `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`; the corrected fixture selected `minimal`. Both earlier attempts cleaned up completely. The final Codex run used a private copy of an already-valid access token **without a usable refresh token**, so it could not rotate credentials used by existing sessions. No original credential/configuration file was written.
+
+**Cleanup:** all three observed managed-worker PIDs exited; no temporary Runtime registrations or acceptance worker/Pi processes remained; the temporary root, databases, native transcripts/logs and copied credentials were removed. Existing product/dev listening endpoints and PIDs matched the pre-run baseline; the acceptance web listener was gone. The Runtime working tree remained clean, and unrelated `docs/image-support.md` was untouched. No existing service/agent was restarted or existing real database modified; nothing was pushed and no PR was created.
+
+**Limits:** one local Chromium platform, Pi version, provider/model and supported launch profile. No cold-worker reopen, crash recovery, lost-ack transport fault, remote Linux CI, other browser engine or native OS clipboard was newly tested here. Prior fake-runtime/fault tests are still distinguished from this positive real-Pi acceptance; this is not an independent/delegated review or deployment evidence.
+
+Durable sanitized evidence: [nine-check real-Pi acceptance result](verification/agent-diagnostics-phase2-real-pi.json). The one-off harness and sanitized console log are `/tmp/channels-pi-acceptance.mjs` and `/tmp/channels-pi-acceptance.log`; neither contains copied credential values. These temporary harness files are not part of the product or a new CI dependency.

@@ -1,0 +1,463 @@
+{
+  "status": "passed",
+  "sourceCommit": "74bd372a9385a271b51f423033af3dd69782da0a",
+  "runtimeCommit": "05b700a5e73e9031fe5dc5d67dc2d0f6922582fc",
+  "piVersion": "0.99.1",
+  "model": {
+    "provider": "openai-codex",
+    "id": "gpt-6.1-sol"
+  },
+  "reasoningLevel": "minimal",
+  "checks": [
+    {
+      "name": "isolated setup",
+      "status": "passed",
+      "elapsedMs": 682
+    },
+    {
+      "name": "real Pi Start and pending inspection",
+      "status": "passed",
+      "elapsedMs": 1088
+    },
+    {
+      "name": "real provider reply and transcript persistence",
+      "status": "passed",
+      "elapsedMs": 2177
+    },
+    {
+      "name": "Stop then exact-session Start resume",
+      "status": "passed",
+      "elapsedMs": 2094
+    },
+    {
+      "name": "Cancel real active tool turn with acknowledgment and settlement",
+      "status": "passed",
+      "elapsedMs": 4244
+    },
+    {
+      "name": "Stop real active tool turn without invented acknowledgment",
+      "status": "passed",
+      "elapsedMs": 2088
+    },
+    {
+      "name": "real Pi New session with context and separate retired cleanup",
+      "status": "passed",
+      "elapsedMs": 5833
+    },
+    {
+      "name": "real Pi Fresh session and separate retired cleanup",
+      "status": "passed",
+      "elapsedMs": 1223
+    },
+    {
+      "name": "Fresh generation responds and public reports remain sanitized",
+      "status": "passed",
+      "elapsedMs": 1862
+    }
+  ],
+  "observations": [
+    {
+      "action": "start",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "activation_boundary",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 3,
+          "stage": "launch_requested",
+          "result": "started"
+        },
+        {
+          "sequence": 4,
+          "stage": "launch_requested",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 5,
+          "stage": "binding_committed",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 6,
+          "stage": "route_attached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 7,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    },
+    {
+      "action": "stop",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "delivery_fenced",
+          "result": "started"
+        },
+        {
+          "sequence": 3,
+          "stage": "delivery_fenced",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 4,
+          "stage": "turn_settled",
+          "result": "skipped",
+          "reasonCode": "not_required"
+        },
+        {
+          "sequence": 5,
+          "stage": "interrupt_requested",
+          "result": "skipped",
+          "reasonCode": "not_required"
+        },
+        {
+          "sequence": 6,
+          "stage": "runtime_verified",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 7,
+          "stage": "interrupt_requested",
+          "result": "skipped",
+          "reasonCode": "not_required"
+        },
+        {
+          "sequence": 8,
+          "stage": "pause_committed",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 9,
+          "stage": "route_detached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 10,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    },
+    {
+      "action": "resume",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "resume_requested",
+          "result": "started"
+        },
+        {
+          "sequence": 3,
+          "stage": "session_verified",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 4,
+          "stage": "route_attached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 5,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    },
+    {
+      "action": "cancel_current",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "interrupt_requested",
+          "result": "started"
+        },
+        {
+          "sequence": 3,
+          "stage": "interrupt_acknowledged",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 4,
+          "stage": "turn_settled",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 5,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    },
+    {
+      "action": "stop",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "delivery_fenced",
+          "result": "started"
+        },
+        {
+          "sequence": 3,
+          "stage": "delivery_fenced",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 4,
+          "stage": "interrupt_requested",
+          "result": "started"
+        },
+        {
+          "sequence": 5,
+          "stage": "interrupt_acknowledged",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 6,
+          "stage": "turn_settled",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 7,
+          "stage": "runtime_verified",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 8,
+          "stage": "interrupt_requested",
+          "result": "skipped",
+          "reasonCode": "not_required"
+        },
+        {
+          "sequence": 9,
+          "stage": "pause_committed",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 10,
+          "stage": "route_detached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 11,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    },
+    {
+      "action": "replace",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "delivery_fenced",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 3,
+          "stage": "route_detached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 4,
+          "stage": "handoff_prepared",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 5,
+          "stage": "activation_boundary",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 6,
+          "stage": "launch_requested",
+          "result": "started"
+        },
+        {
+          "sequence": 7,
+          "stage": "launch_requested",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 8,
+          "stage": "binding_committed",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 9,
+          "stage": "route_detached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 10,
+          "stage": "route_attached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 11,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    },
+    {
+      "action": "replace_fresh",
+      "outcome": "succeeded",
+      "requestDisposition": "handler_returned",
+      "events": [
+        {
+          "sequence": 1,
+          "stage": "accepted",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 2,
+          "stage": "delivery_fenced",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 3,
+          "stage": "route_detached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 4,
+          "stage": "handoff_prepared",
+          "result": "skipped",
+          "reasonCode": "fresh_context"
+        },
+        {
+          "sequence": 5,
+          "stage": "activation_boundary",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 6,
+          "stage": "launch_requested",
+          "result": "started"
+        },
+        {
+          "sequence": 7,
+          "stage": "launch_requested",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 8,
+          "stage": "binding_committed",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 9,
+          "stage": "route_detached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 10,
+          "stage": "route_attached",
+          "result": "confirmed"
+        },
+        {
+          "sequence": 11,
+          "stage": "completed",
+          "result": "confirmed"
+        }
+      ]
+    }
+  ],
+  "isolation": {
+    "temporaryData": true,
+    "temporaryWorkspace": true,
+    "temporaryRuntimeRegistry": true,
+    "temporaryPiConfig": true,
+    "usableRefreshTokenExcluded": true,
+    "clipboard": "in-memory browser test sink; fresh real report API",
+    "existingProductDevListenersUnchanged": true
+  },
+  "cleanup": {
+    "complete": true,
+    "temporaryRootRemoved": true,
+    "remainingRegistrations": 0,
+    "observedWorkerCount": 3,
+    "problems": []
+  },
+  "recordedAt": "2026-10-20T00:10:13.498Z",
+  "earlierAttempts": [
+    {
+      "classification": "provider_authentication_failure",
+      "provider": "opencode-go",
+      "httpStatus": 401,
+      "verifiedModelTurn": false,
+      "cleanupComplete": true
+    },
+    {
+      "classification": "unsupported_fixture_reasoning_profile",
+      "provider": "openai-codex",
+      "model": "gpt-6.1-sol",
+      "requestedReasoningLevel": "off",
+      "discoveredSupportedLevels": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "diagnosticOutcome": "unknown",
+      "verifiedModelTurn": false,
+      "cleanupComplete": true
+    }
+  ],
+  "limits": [
+    "One Pi version, provider/model and local Chromium platform only.",
+    "Stop/Start verified stable managed-session ID, binding ID and generation; no cold worker restart or crash recovery was forced.",
+    "Real requests were not delayed or mocked to manufacture pending states. Lost acknowledgments, journal faults and revocation races retain their separate fake-runtime/fixture evidence.",
+    "Copy used an isolated in-memory clipboard sink; the report GETs were real and fresh."
+  ]
+}
