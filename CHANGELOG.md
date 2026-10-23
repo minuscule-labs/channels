@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.13
+
+Release overview: [smoother chat, safer agent controls, and clearer diagnostics](docs/releases/v0.0.13.md).
+
+- Add a private, bounded local timeline of agent operations, observed milestones, targeted failures and unknown outcomes, with owner/admin report preview and fresh-read Copy. Reports exclude raw logs, prompts, credentials, native session identifiers and private paths.
+- Add read-only Session & context inspection that separates recorded context policy, observed running model/reasoning/skill-command availability, saved future launch settings and saved host context limits. Unsupported or older workers remain explicitly Not verified; no agent is started or resumed for inspection.
+- Pin merged Runtime session-profile inspection and its managed-transcript compatibility fix. Revalidate owner, binding and generation before delivering inspection evidence; clear privileged browser state on access loss or navigation.
+- Preserve the documented intermittent native database CI crash limitation: subsequent Linux/macOS, browser and packaging checks pass, but its root cause is unproven. Native backtraces are enabled without weakening test gates. Fresh real-Pi acceptance of the newest inspection feature remains outstanding.
+
 - Share one multiplexed live-update connection across same-identity browser tabs so HTTP/1 stream limits cannot starve status/actions; reconcile on reconnect or suspended-tab overflow and use explicitly labeled snapshot polling when SharedWorker is unavailable.
 - Keep participant inspection available during pending individual and bulk agent actions; allow busy confirmations to close or open diagnostics without canceling work, while retaining mutation guards and adding local request timing, status freshness, and read-only refresh.
 - Use the short Bell fifth notification sound at its original pitch with increased gain; unlock saved sound preferences on trusted interaction after reload and notify when the browser window is unfocused while keeping a focused chat at its latest messages quiet.
