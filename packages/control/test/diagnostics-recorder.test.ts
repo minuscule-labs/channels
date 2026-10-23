@@ -4,7 +4,8 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Worker } from "node:worker_threads";
+import { Worker } from "node:worker_threads";
+import { DiagnosticJournal } from "@minu/channels-relay-storage-drizzle";
 import type { DiagnosticRecord } from "@minu/channels-relay";
 import { DiagnosticRecorder } from "../src/diagnostics-recorder.ts";
 
@@ -14,17 +15,21 @@ class FakeWorker extends EventEmitter {
   epoch = "";
   packets: Packet[] = [];
   autoAck = true;
+  autoExit = true;
   terminated = 0;
   unref() { return this; }
   postMessage(input: unknown) {
     const packet = structuredClone(input) as Packet;
     this.packets.push(packet);
     if (packet.type === "put" && this.autoAck) queueMicrotask(() => this.ack(packet));
-    if (packet.type === "close") queueMicrotask(() => this.emit("message", { type: "closed", epoch: this.epoch }));
+    if (packet.type === "close") queueMicrotask(() => {
+      this.emit("message", { type: "closed", epoch: this.epoch });
+      if (this.autoExit) this.emit("exit", 0);
+    });
   }
   ack(packet: Packet) { this.emit("message", { type: "written", epoch: this.epoch, id: packet.record?.operationId, revision: packet.record?.revision }); }
   ready() { this.emit("message", { type: "ready", epoch: this.epoch }); }
-  async terminate() { this.terminated++; this.emit("exit", 0); return 0; }
+  async terminate() { this.terminated++; if (this.autoExit) this.emit("exit", 0); return 0; }
 }
 function fake(options: { startupTimeoutMs?: number; ioTimeoutMs?: number; now?: () => Date; monotonicNow?: () => number } = {}) {
   const worker = new FakeWorker();
@@ -168,6 +173,59 @@ test("clean recorder shutdown rejects outstanding reads instead of leaving their
   await recorder.close();
   assert.equal((await request)[0]?.status, "rejected");
   assert.equal(worker.terminated, 0);
+});
+
+test("shutdown waits for worker exit after a clean acknowledgment or forced termination", async () => {
+  for (const mode of ["clean", "failed"] as const) {
+    const { worker, recorder } = fake();
+    worker.autoExit = false;
+    worker.ready();
+    if (mode === "failed") worker.emit("error", new Error("simulated worker failure"));
+    let closed = false;
+    const closing = recorder.close().then(() => { closed = true; });
+    try {
+      await until(() => mode === "clean" ? worker.packets.some(packet => packet.type === "close") : worker.terminated === 1);
+      await new Promise(resolve => setTimeout(resolve, 15));
+      assert.equal(closed, false, `${mode}: acknowledgment/terminate request is not physical worker exit`);
+      assert.equal(recorder.begin(scope, "start").recorded, false, "observation calls remain nonblocking during shutdown");
+    } finally { worker.emit("exit", 0); await closing; }
+    assert.equal(closed, true);
+  }
+});
+
+test("a worker that acknowledges close but never exits cannot hold shutdown indefinitely", { timeout: 3_000 }, async () => {
+  const { worker, recorder } = fake();
+  worker.autoExit = false;
+  worker.ready();
+  const started = performance.now();
+  await recorder.close();
+  assert.ok(performance.now() - started < 1_500);
+  assert.equal(worker.terminated, 1);
+  assert.equal(recorder.recordingGap, true);
+  worker.emit("exit", 0);
+});
+
+test("real worker has exited before its journal is immediately reopened after clean shutdown", { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "channels-recorder-exit-"));
+  let exited = false;
+  const recorder = new DiagnosticRecorder({ path: join(directory, "journal.db"), workerFactory: (url, options) => {
+    const worker = new Worker(url, options);
+    worker.once("exit", () => { exited = true; });
+    return worker;
+  } });
+  try {
+    const operation = recorder.begin(scope, "stop");
+    operation.requestFinished("handler_returned"); operation.finish("succeeded");
+    await until(async () => recorder.available && (await recorder.history(scope)).operations[0]?.outcome === "succeeded");
+    await recorder.close();
+    assert.equal(exited, true, "journal acknowledgment alone must not complete shutdown");
+    const journal = await DiagnosticJournal.open(join(directory, "journal.db"), "reopen-after-exit");
+    try {
+      const history = await journal.history(scope);
+      assert.equal(history.operations.length, 1);
+      assert.equal(history.operations[0]?.outcome, "succeeded");
+    } finally { await journal.close(); }
+  } finally { await recorder.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("private observation scope cannot change after it is captured", async () => {
