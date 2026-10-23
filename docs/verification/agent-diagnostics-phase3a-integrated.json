@@ -1,0 +1,86 @@
+{
+  "kind": "author-integrated-pin-verification",
+  "recordedAt": "2026-10-23T00:07:41.243Z",
+  "status": "verified-for-pr-review-not-deployed",
+  "target": {
+    "channels": "35872c28fe2f581b395f8e111660225f08faa1c8",
+    "runtime": "6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d",
+    "runtimePullRequest": "https://github.com/minuscule-labs/runtime/pull/9",
+    "runtimeCi": "Ubuntu and macOS verify jobs passed on merged PR head; merge tree matches that head"
+  },
+  "environment": "Clean independent temporary local clones; offline frozen-lockfile installs; no dirty-release override. Sentinel PI_COMMAND prevented unintended real Pi launch; temporary servers, databases, HOME and registry only.",
+  "checks": [
+    {
+      "command": "pnpm check && pnpm test",
+      "repository": "runtime",
+      "status": "passed",
+      "tests": 37
+    },
+    {
+      "command": "pnpm check && pnpm test",
+      "repository": "channels",
+      "status": "passed",
+      "tests": 248
+    },
+    {
+      "command": "pnpm web:check && pnpm web:test",
+      "repository": "channels",
+      "status": "passed",
+      "tests": 145
+    },
+    {
+      "command": "pnpm release:pack",
+      "status": "passed",
+      "tarball": "minu-channels-0.0.12.tgz",
+      "sha256": "2cdc85fe5999cdaac711b94798cd90ad57ff1e375c1067440e7c5e07c5df0430",
+      "metadata": {
+        "channelsCommit": "35872c28fe2f581b395f8e111660225f08faa1c8",
+        "runtimeCommit": "6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d",
+        "builtAt": "2026-10-23T00:05:53.327Z"
+      }
+    },
+    {
+      "command": "pnpm release:smoke",
+      "status": "passed",
+      "scope": "Packaged installation, diagnostic worker, CLI, fresh/reopened/browser-first temporary startup; no real agent."
+    },
+    {
+      "command": "PHASE3A_ROOT=<clean-clones> PHASE3A_RUNTIME_BUNDLE=<release/package/dist/bin/runtime-pi.js> node /tmp/channels-phase3a-compat.mjs",
+      "status": "passed",
+      "scope": "Actual packaged Runtime client with merged source bridge, Channels authorized HTTP inspection/report, temporary SQLite and deterministic fake RPC.",
+      "assertions": [
+        "current observed model/reasoning/skill commands differ from saved future settings",
+        "recorded Fresh zero boundary stays zero",
+        "wrong owner and missing browser session denied",
+        "read-only HTTP methods and fresh report RPC read",
+        "no private extensions in inspection or report; report <=64 KiB",
+        "registration/binding/history/configuration unchanged; lifecycle/discovery/message methods guarded"
+      ]
+    },
+    {
+      "command": "MINU_TEST_WEB_PREVIEW=1 playwright test test-browser/operation-diagnostics.spec.ts --project=chromium --grep <five-session-inspection-cases>",
+      "status": "passed",
+      "tests": 5,
+      "scope": "Production web build, temporary fixtures and mocked profile responses. Open-only read; public-boundary navigation; close/reopen fencing; unsupported evidence; denial clears old state."
+    }
+  ],
+  "evidenceReused": {
+    "browserRegressionTests": 102,
+    "source": "agent-diagnostics-phase3a-author.json",
+    "reason": "All 24 Channels implementation/test file hashes and nine Runtime implementation/test hashes matched the prior successful evidence; only the merged Runtime pin and documentation changed. The Runtime README-only follow-up is excluded. Full browser regression remains required in PR CI."
+  },
+  "earlierFailure": {
+    "observation": "Clean-clone web type checking was initially scheduled in parallel before workspace build completed, causing missing workspace declaration/module errors.",
+    "resolution": "Corrected verification order: wait for workspace build, then web:check and web:test. Both passed with no source changes."
+  },
+  "limitations": [
+    "Author verification, not independent review or release approval.",
+    "No real-Pi/LLM acceptance; fresh scoped approval required.",
+    "Channels PR CI and review remain pending; no merge or deployment authorized by opening the PR."
+  ],
+  "preserved": {
+    "path": "docs/image-support.md",
+    "sha256": "5fe3cd095c3606b3da9551a39b46d730e29968231fa11c453ea43990ade257e7"
+  },
+  "cleanup": "Temporary integration clones and owned test servers/data removed after recording evidence."
+}
