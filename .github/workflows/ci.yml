@@ -26,6 +26,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
+        env:
+          RUST_BACKTRACE: full
       - run: pnpm web:test
 
   browser:
