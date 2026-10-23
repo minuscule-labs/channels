@@ -36,6 +36,8 @@ export class DiagnosticRecorder {
   private gap = false;
   private startup?: ReturnType<typeof setTimeout>;
   private stopped?: Promise<number>;
+  private workerExit?: Promise<void>;
+  private workerExited = false;
   private closing = false;
   private readonly now: () => Date;
   private readonly monotonic: () => number;
@@ -50,7 +52,13 @@ export class DiagnosticRecorder {
       );
       this.worker.on("message", (message) => { try { this.receive(message); } catch { this.disable(); } });
       this.worker.on("error", () => this.disable());
-      this.worker.on("exit", () => { if (this.state !== "closed") this.disable(); });
+      this.workerExit = new Promise(resolve => {
+        this.worker!.on("exit", () => {
+          this.workerExited = true;
+          resolve();
+          if (this.state !== "closed") this.disable();
+        });
+      });
       this.worker.unref();
       this.startup = setTimeout(() => this.disable(), options.startupTimeoutMs ?? 5_000);
     } catch { this.disable(); }
@@ -304,7 +312,18 @@ export class DiagnosticRecorder {
       while (this.state === "ready" && performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
     }
     if (this.state !== "closed") this.disable();
-    // terminate() is asynchronous. It never gates lifecycle work, and no restart races it.
-    void this.stopped;
+    // A journal acknowledgment or terminate() request is not physical exit. Join
+    // native teardown before a caller reopens/removes the file, with a separate
+    // bounded exit budget so an optional worker cannot hold shutdown forever.
+    if (this.workerExit && !this.workerExited) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([this.workerExit, new Promise<void>(resolve => { timer = setTimeout(resolve, 500); })]);
+      } finally { clearTimeout(timer); }
+      if (!this.workerExited) {
+        this.gap = true;
+        try { this.stopped ??= this.worker!.terminate().catch(() => -1); } catch { /* optional diagnostics only */ }
+      }
+    }
   }
 }

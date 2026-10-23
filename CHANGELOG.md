@@ -2,7 +2,15 @@
 
 ## Unreleased
 
+## 0.0.14
+
+- Publish the accumulated chat, agent-control and diagnostics improvements described in the [plain-English release overview](docs/releases/v0.0.14.md).
+- Fix diagnostics shutdown returning before physical worker exit, which allowed journal reopening to race native database teardown. Keep the 500-ms flush budget and add a separate bounded 500-ms exit join; disclose incomplete shutdown rather than waiting indefinitely.
+- Add regression coverage for delayed/failed worker exit, unresponsive exit, and immediate journal reopening after a real worker stops. This does not establish or claim to fix the earlier native Rust panic.
+
 ## 0.0.13
+
+Tagged but not published: the release workflow stopped on a diagnostic journal `SQLITE_BUSY` test failure. Superseded by 0.0.14; the tag remains unchanged.
 
 Release overview: [smoother chat, safer agent controls, and clearer diagnostics](docs/releases/v0.0.13.md).
 
