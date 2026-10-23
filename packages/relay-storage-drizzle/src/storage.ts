@@ -448,6 +448,23 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     });
   }
 
+  async getSessionInspectionRecords(workspaceId: string, conversationId: string, agentIdentityId: string) {
+    const rows = await this.database.select().from(schema.conversationAgentBindings).where(and(
+      eq(schema.conversationAgentBindings.workspaceId, workspaceId), eq(schema.conversationAgentBindings.conversationId, conversationId),
+      eq(schema.conversationAgentBindings.agentIdentityId, agentIdentityId),
+    )).limit(2);
+    const bindings = rows.map(binding);
+    if (bindings.length !== 1) return { bindings };
+    const current = bindings[0]!;
+    const history = await this.database.select().from(schema.conversationAgentSessionHistory).where(and(
+      eq(schema.conversationAgentSessionHistory.bindingId, current.id), eq(schema.conversationAgentSessionHistory.bindingGeneration, current.generation),
+      eq(schema.conversationAgentSessionHistory.workspaceId, workspaceId), eq(schema.conversationAgentSessionHistory.conversationId, conversationId),
+      eq(schema.conversationAgentSessionHistory.agentIdentityId, agentIdentityId),
+    )).limit(2);
+    if (history.length > 1) throw new Error("Session activation is ambiguous");
+    return { bindings, ...(history[0] ? { activation: sessionHistory(history[0]) } : {}) };
+  }
+
   async listSessionHistory(
     conversationId: string,
     agentIdentityId?: string,

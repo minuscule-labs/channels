@@ -1,5 +1,6 @@
 import type { ConversationClient } from "@minu/channels-core/client";
 import { DIAGNOSTIC_LIMITS, type DiagnosticScope, type RelayBindingStore } from "@minu/channels-relay";
+import type { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
 import type { DiagnosticRecorder } from "./diagnostics-recorder.ts";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import {
@@ -34,6 +35,7 @@ export class LocalAgentDiagnosticReads {
     client: Directory;
     store: Pick<RelayBindingStore, "listTurnFailures">;
     reader?: DiagnosticReader;
+    sessionInspections?: Pick<LocalAgentSessionInspections, "read">;
     now?: () => Date;
   }) {}
 
@@ -140,9 +142,10 @@ export class LocalAgentDiagnosticReads {
     snapshot?: () => Promise<LocalConversationAgent | undefined>): Promise<LocalAgentDiagnosticReport> {
     const conversation = await this.authorize(conversationId, identityId, actorIdentityId);
     if (!validId(operationId)) throw notFound();
-    const [selected, current] = await Promise.all([
+    const [selected, current, session] = await Promise.all([
       this.selected(this.scope(conversation.workspaceId, conversationId, identityId), operationId),
       Promise.resolve().then(() => snapshot?.()).catch(() => undefined),
+      this.options.sessionInspections?.read(conversationId, identityId, actorIdentityId).catch(() => undefined),
     ]);
     const participant = conversation.participants.find(({ id }) => id === identityId);
     const report: LocalAgentDiagnosticReport = {
@@ -162,6 +165,7 @@ export class LocalAgentDiagnosticReads {
             },
           } } : {}),
         } } : {}),
+      ...(session ? { session } : {}),
       selected, coverage: { snapshotUnavailable: !current, truncated: false, notes: [
         "Observations are not lifecycle authority. Handler return is not acknowledgment or settlement.",
         "Missing history may be unrecorded, pruned, expired, or not yet persisted; no exact expiry is asserted.",
@@ -171,6 +175,7 @@ export class LocalAgentDiagnosticReads {
       ] },
     };
     report.coverage.snapshotUnavailable = !report.snapshot;
+    if (session) report.coverage.notes.push("Session metadata is a separately timed current snapshot, not the selected operation\'s historical profile. Saved launch settings and host context limits are not evidence of the currently applied profile or budgets.");
     report.coverage.notes.push("Failure summaries use bounded retained evidence; absence is not proof that no failure occurred.");
     if (!selected.detail) report.coverage.notes.push("Selected operation is unavailable.");
     if (selected.coverage === "unavailable") report.coverage.notes.push("Diagnostic journal is unavailable.");
@@ -179,7 +184,8 @@ export class LocalAgentDiagnosticReads {
     // Bound UTF-8 JSON bytes, retaining the first and final timeline observations where possible.
     while (Buffer.byteLength(JSON.stringify(report)) > DIAGNOSTIC_LIMITS.reportBytes) {
       report.coverage.truncated = true;
-      if ((selected.detail?.events.length ?? 0) > 2) selected.detail!.events.splice(1, 1);
+      if (report.session) { delete report.session; report.coverage.notes.push("Session metadata omitted to preserve the report byte budget."); }
+      else if ((selected.detail?.events.length ?? 0) > 2) selected.detail!.events.splice(1, 1);
       else if (selected.failures.length) selected.failures.pop();
       else if (report.snapshot) { delete report.snapshot; report.coverage.snapshotUnavailable = true; }
       else throw new LocalConfigurationRequestError("Diagnostic report unavailable", 413, "unavailable");

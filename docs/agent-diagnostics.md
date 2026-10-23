@@ -1,8 +1,8 @@
 # Agent diagnostics and operation review
 
-**Status:** Phase 1 and the multi-tab transport fix merged in PR #39. User-approved isolated real-Pi lifecycle acceptance has passed for the scoped Phase 2 cases. The [Phase 2 storage and failure-isolation design](agent-diagnostics-phase2.md) is approved. The journal/recorder is connected to daemon-owned individual lifecycle/Relay actions and retired-session cleanup. Bulk parent/target grouping and bounded missing-child coverage are also connected. Protocol-v19 authorized history/detail/report APIs and exact targeted-trigger failure relations are implemented; the privileged timeline/report UI and revocation-safe open-surface browser state are also implemented. Author completed-feature security/integration review found no actionable issues, and the scoped real-Pi acceptance is recorded in the Phase 2 document. Publication/PR remains separately gated. Phase 3 remains proposed and gated below.
+**Status:** Phases 1 and 2 merged in PRs #39 and #40. [Phase 2](agent-diagnostics-phase2.md) delivers bounded private lifecycle recording, protocol-v19 authorized history/detail/report APIs, exact targeted-trigger failure relations, and the privileged timeline/report UI with revocation-safe browser state. Author integration review and user-approved isolated real-Pi acceptance are recorded there. The user approved Phase 3a with the optional Runtime read; [session/context inspection](agent-diagnostics-phase3a.md) is implemented in local Runtime and Channels branches. Runtime PR #9 is merged and Channels now pins `6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d`; integrated packaging, inspection and production-preview author checks pass. Channels PR CI and review remain pending. It is not shipped. Unavailable or older workers still show **Not verified** rather than saved settings. Logs and raw export remain separately proposed/gated.
 
-**Branch:** `feat/agent-diagnostics-phase2`
+**Branch:** `feat/agent-diagnostics-phase3a`
 
 **Scope:** Reachable inspection, lifecycle evidence, failure review, diagnostic reports, and progressively deeper session/log inspection.
 
@@ -281,7 +281,7 @@ Adapter contracts and source availability must be verified rather than assumed.
 - Cross-Workspace/session leakage, path traversal, symlink redirection, hostile content, oversized inputs, and secret-containing fixtures are covered.
 - Raw export remains disabled until its capability and delivery-security review are complete; sanitized reports never silently include it.
 
-Each phase gets its own verification checkpoint and scoped commit/PR. Phase 1 is merged; Phase 2 implementation has begun following design approval. Approving the full direction does not require implementing all three phases in one change.
+Each phase gets its own verification checkpoint and scoped commit/PR. Phases 1 and 2 are merged; Phase 3a is at capability-audit and contract-planning stage. Approving session/context inspection does not approve logs, raw export, or implementing all remaining Phase 3 capabilities in one change.
 
 ## Verification plan
 

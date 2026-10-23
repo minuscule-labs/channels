@@ -5,6 +5,7 @@ import { DiagnosticSurface, diagnosticScopeKey, observationLabel, requestDisposi
 import { queryKeys } from "../lib/query-keys";
 import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 import { TriggerLink } from "./trigger-message-link";
+import { SessionContextInspection } from "./session-context-inspection";
 
 /** Mounted only for an open privileged agent surface. Shared queries contain public
  * authorization inputs only; diagnostic projections stay in the disposable child. */
@@ -50,6 +51,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
     const opened = new DiagnosticSurface(scope, localControl, setState);
     setSurface(opened);
     void opened.history();
+    void opened.inspectSession();
     return () => opened.dispose();
   }, [key]);
   useEffect(() => {
@@ -71,6 +73,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
       if (performance.now() >= pollBudget) { setPollEnded(true); return; }
       if (!surface.state.historyBusy) void surface.history();
       if (!surface.state.detailBusy) void surface.refreshDetail();
+      if (!surface.state.inspectionBusy && !surface.state.reportBusy) void surface.inspectSession();
     }, 5_000);
     return () => window.clearTimeout(timer);
   }, [pending, state, surface, pollBudget]);
@@ -80,12 +83,13 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
     setPollEnded(false);
     void surface.history();
     void surface.refreshDetail();
+    if (!surface.state.inspectionBusy && !surface.state.reportBusy) void surface.inspectSession();
   };
   if (!surface) return <p role="status">Opening operation history…</p>;
   if (state.revoked) return <p role="status">Privileged diagnostics cleared: access or the requested diagnostic resource is unavailable, or the browser session expired. Close and reopen after verifying access. Previously copied data cannot be revoked.</p>;
   const detail = state.detail?.detail;
   const operation = detail?.operation;
-  return <section aria-label="Operation history" className="space-y-3">
+  return <><SessionContextInspection state={state} surface={surface} loadedSequences={loadedSequences} onViewMessage={onViewMessage} /><section aria-label="Operation history" className="space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="font-semibold">Operation history</h3>
       <button type="button" className="button-secondary" onClick={refresh} disabled={state.historyBusy || state.detailBusy}>Refresh operations</button>
@@ -160,5 +164,5 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
       {state.reportMessage ? <p role="status">{state.reportMessage}</p> : null}
       {state.preview ? <pre aria-label="Report preview" className="minu-scroll max-h-80 overflow-auto whitespace-pre-wrap break-all rounded border border-[var(--border)] p-3">{state.preview}</pre> : null}
     </section> : null}
-  </section>;
+  </section></>;
 }

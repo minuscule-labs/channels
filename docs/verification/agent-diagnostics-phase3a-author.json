@@ -1,0 +1,231 @@
+{
+  "kind": "author-verification",
+  "status": "implemented-and-verified-locally-not-shipped",
+  "recordedAt": "2026-10-20T11:34:50.562Z",
+  "target": {
+    "channels": {
+      "branch": "feat/agent-diagnostics-phase3a",
+      "baseline": "3c3da28cbb9b100ca9a9748e89c4ebac89e92980",
+      "files": [
+        {
+          "path": "packages/control/src/agent-diagnostic-reads.ts",
+          "sha256": "11bdd15b7090403e223d5a8b11ee30585d8557c813525eba2e00770662fe908b"
+        },
+        {
+          "path": "packages/control/src/agent-session-inspection.ts",
+          "sha256": "1e9537e29d5ebcfa175af14db21bafc793ce60c63619a11b551cea4465404d60"
+        },
+        {
+          "path": "packages/control/src/client.ts",
+          "sha256": "6d44a851026e6266b027b9a5a8b2d893a8379d179029c84ba2e3f47a9e401e16"
+        },
+        {
+          "path": "packages/control/src/contracts.ts",
+          "sha256": "fcff697763d80d535d69d1b0f92102b5f069ffc4c6def8b288bc52ead2b229e2"
+        },
+        {
+          "path": "packages/control/src/daemon.ts",
+          "sha256": "1ae8aaafa56d39c002ceb2d3d7c4a883ff48ffe0dd2c3d23c0a221259d3bf868"
+        },
+        {
+          "path": "packages/control/src/server.ts",
+          "sha256": "8f6e8bfb244f004bd6a8d2d9dd608c604cca83e2c855bcee279ac858964a27a0"
+        },
+        {
+          "path": "packages/control/test/agent-diagnostic-reads.test.ts",
+          "sha256": "67bb8140471b95c4a79c6cd60192be6f564407182d7ce205272b70a2bf869d1b"
+        },
+        {
+          "path": "packages/control/test/agent-lifecycle-diagnostics.test.ts",
+          "sha256": "ee2ccafd6bd39f78d173576cee6d755506b8334383e07c82753acc688d2ea2ec"
+        },
+        {
+          "path": "packages/control/test/control.test.ts",
+          "sha256": "b2d1f3db2fa6f07024e7427c87e60f0a685b2e4ce01d9f512b1aa0073872c0e5"
+        },
+        {
+          "path": "packages/relay-storage-drizzle/src/storage.ts",
+          "sha256": "12165eab09d9c9dd4ae7f24a7d563dfda32b3672cfcf43dc8605f4a79acc9031"
+        },
+        {
+          "path": "packages/relay-storage-drizzle/test/session-inspection.test.ts",
+          "sha256": "468e72d23c78ec4fe3bed244606df107367b617549d1f882dd265f3ca5ed35fb"
+        },
+        {
+          "path": "packages/relay/src/binding-store.ts",
+          "sha256": "9050682bcc3f3213e10507262ee75b0f5ecccbd74b99aaa6485b3485762398ac"
+        },
+        {
+          "path": "packages/web/src/components/operation-diagnostics.tsx",
+          "sha256": "2b2f17eba30101d7390392bd3a9b79866b0d71b1b1820e0eb88920bdbd9e7226"
+        },
+        {
+          "path": "packages/web/src/components/session-context-inspection.tsx",
+          "sha256": "212ce86bcf7d536c0f6dbce64c48c5febb70899c7c332d7ae1e52fb695d191bc"
+        },
+        {
+          "path": "packages/web/src/components/trigger-message-link.tsx",
+          "sha256": "2133ba22f85b987d659c78144c5f20b0d4d4bbb377cc670343a5bd2b550c0693"
+        },
+        {
+          "path": "packages/web/src/lib/operation-diagnostics.ts",
+          "sha256": "175db0e6e3503b357cd235e39165acfcd181bea1b276c624ba66ed271a605de2"
+        },
+        {
+          "path": "packages/web/test-browser/collaboration.spec.ts",
+          "sha256": "5e9e9019dd77fe22c640ca1cd17f7a7e3a4d354c5f3ef4801fec37915e03f47a"
+        },
+        {
+          "path": "packages/web/test-browser/conversation-feedback.spec.ts",
+          "sha256": "57cd272b0faef988e80110845bf797fe67a1062e85de8f7f5ff29409ac155313"
+        },
+        {
+          "path": "packages/web/test-browser/fixture-server.mjs",
+          "sha256": "1cb533a3e49c821ca344f3a57ba232511310c3a6854f06743a976358d5ea3927"
+        },
+        {
+          "path": "packages/web/test-browser/operation-diagnostics.spec.ts",
+          "sha256": "c8a20c436dd973580d6eca09c02a28901c0dfb658a5754345a39c9d01b6c4771"
+        },
+        {
+          "path": "packages/web/test-browser/participant-sidebar.spec.ts",
+          "sha256": "18a694709b749a3342c35ebe9f6e873e05d2fff62a39c99d1dee41e3405f249f"
+        },
+        {
+          "path": "packages/web/test-browser/working-folders.spec.ts",
+          "sha256": "4c5d6d07be318b4608a76055b261de10bdbe9f97444af954c604582d5f29c6a8"
+        },
+        {
+          "path": "packages/web/test/launch-profile.test.ts",
+          "sha256": "45d93948ccb5ceb4fced27165ce8594b66db0911e689eaa823760672573d1050"
+        },
+        {
+          "path": "packages/web/test/operation-diagnostics.test.ts",
+          "sha256": "6e92d019b2a8ee864fd3ba093ef713844a6c7af836ae8edaee85df550081383d"
+        }
+      ]
+    },
+    "runtime": {
+      "branch": "feat/session-profile-inspection",
+      "baseline": "05b700a5e73e9031fe5dc5d67dc2d0f6922582fc",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "6bdf22b42de5f31a50f5538afdfee4c6a6a7d0c5b66195394db383a67041c4ca"
+        },
+        {
+          "path": "packages/core/src/index.ts",
+          "sha256": "75a2c7f536cdeeadb211e805378dec9ad7f84b4fc7406d56e13a4f119cf82779"
+        },
+        {
+          "path": "packages/core/src/session-profile.ts",
+          "sha256": "1960011bc5eb7c1623c36ea4b5a994c0d9597cffcef408842ff96dd2f6f6b75e"
+        },
+        {
+          "path": "packages/pi/src/client.ts",
+          "sha256": "2bf05ddbceb6277155ad9d1f8a7070a7bae869b5fdf1058c9338c7317ff30768"
+        },
+        {
+          "path": "packages/pi/src/owned-worker.ts",
+          "sha256": "9a64d198b2f52facb9239ac55bb715e73c348cf400dc1d9ea12e220b2a41eed6"
+        },
+        {
+          "path": "packages/pi/src/registry.ts",
+          "sha256": "a8bc914389a535576855571330d62f13c7e1132198c01486f43075e5a2b446bb"
+        },
+        {
+          "path": "packages/pi/src/server.ts",
+          "sha256": "428e1904a1ed09895482dab46c9d5b0fcdad0e8701efb6cd6fd397375c00819b"
+        },
+        {
+          "path": "packages/pi/src/session-profile.ts",
+          "sha256": "315c294e81e49299b8c8ad0b76b2415e6a8cf826ff6f953992984007c3ee6bb7"
+        },
+        {
+          "path": "packages/pi/test/runtime.test.ts",
+          "sha256": "73fef737339b96e9ebbadacf7d71adc510b5c37bbdd5e45b72348520b03a5d9e"
+        },
+        {
+          "path": "packages/pi/test/session-profile.test.ts",
+          "sha256": "567d56514559cd5c6f30eaee2eac093ce4d8c9e816a35ff431348aee7cccd1e4"
+        }
+      ]
+    }
+  },
+  "requirements": [
+    "read-only existing exact-owner session observations",
+    "separate recorded context, observed profile, future launch settings, and saved host context limits",
+    "no logs, prompts, transcripts, historical reconstruction, lifecycle authority or live discovery"
+  ],
+  "checks": [
+    {
+      "command": "pnpm --dir ../runtime check",
+      "status": "passed"
+    },
+    {
+      "command": "pnpm --dir ../runtime test",
+      "status": "passed",
+      "tests": 37
+    },
+    {
+      "command": "pnpm test",
+      "status": "passed",
+      "tests": 248
+    },
+    {
+      "command": "pnpm web:check",
+      "status": "passed"
+    },
+    {
+      "command": "pnpm web:test",
+      "status": "passed",
+      "tests": 145
+    },
+    {
+      "command": "pnpm --filter @minu/channels-web exec playwright test --project=chromium",
+      "status": "passed",
+      "tests": 102
+    },
+    {
+      "command": "pnpm web:build",
+      "status": "passed",
+      "warning": "Non-fatal Vite chunk-size warning"
+    },
+    {
+      "command": "node /tmp/channels-phase3a-compat.mjs",
+      "status": "passed",
+      "scope": "Actual local Runtime client/bridge, Channels HTTP/browser authorization, temporary SQLite and deterministic in-process fake RPC; no Pi or LLM. Validated current/future divergence, zero Fresh boundary, fresh bounded report, owner isolation, private-field omission and unchanged registration/logical store. Guarded lifecycle/discovery/message methods."
+    },
+    {
+      "command": "git diff --check; git -C ../runtime diff --check",
+      "status": "passed"
+    }
+  ],
+  "earlierFailures": [
+    {
+      "observation": "Initial Runtime full run cancelled the stalled-bridge test at its six-second aggregate timeout.",
+      "resolution": "Isolated and full reruns passed; added explicit <3-second read completion and <1-second status checks plus fake send-admission assertion, separate from a ten-second fixture-cleanup/test allowance. Final complete suite passed."
+    },
+    {
+      "observation": "Initial Chromium full run passed 99/100; sequence #9 was legitimately loaded by previous fixtures, contradicting the new unavailable-boundary assertion.",
+      "resolution": "Absent-boundary fixture now uses #999999; added actual loaded-public-boundary navigation and close/reopen fencing cases. Final full run passed 102/102."
+    }
+  ],
+  "reviewCorrections": [
+    "Reject Runtime redirects and use non-blocking/no-follow bounded registration reads.",
+    "Recheck native identity/model/reasoning after skill-command observation; retain physical read slots after abort/timeout.",
+    "Exclude volatile lease timestamp updates from identity fences.",
+    "Do not label saved recent-context budgets as requiring a new Runtime session: Relay reads them at attachment.",
+    "Keep last Stop boundary not recorded despite delivery cursor progress; never substitute saved settings for observed values."
+  ],
+  "limitations": [
+    "Author checks only; no independent review approval.",
+    "No real-Pi acceptance; fresh scoped approval is required.",
+    "Runtime pin remains 05b700a5e73e9031fe5dc5d67dc2d0f6922582fc. Its older adapter provides no live profile; the Channels consumer safely shows not verified.",
+    "Runtime review/merge, reviewed Channels pin integration, final release build/pack/smoke and production-preview acceptance remain pending.",
+    "At evidence capture, no commit, push, PR, deployment, existing-service restart or real-database modification. The user subsequently authorized commits; Runtime implementation is c535afb04d6db3b6dcee2bcfa099e1102d627271."
+  ],
+  "preserved": [
+    "docs/image-support.md"
+  ]
+}

@@ -1,4 +1,4 @@
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
@@ -28,13 +28,13 @@ async function open(page: Page, data: Fixture) {
 }
 function history(data: Fixture): LocalAgentOperationHistory {
   return {
-    protocolVersion: 19, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
+    protocolVersion: 20, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
     nextCursor: "2:2", retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 },
     operations: [{ operationId: "selected-stop", conversationId: data.primary.id, participantIdentityId: data.agent.id, action: "stop", requestedAt: "2026-10-01T09:59:00.000Z", acceptedAt: "2026-10-01T09:59:00.000Z", outcome: "unknown", requestDisposition: "handler_failed", observedAt: "2026-10-01T09:59:01.000Z", closedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, eventsDropped: 1, recordingGap: true, lastConfirmedStage: "delivery_fenced" }],
   };
 }
 function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperationDetail {
-  return { protocolVersion: 19, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
+  return { protocolVersion: 20, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
     operation: { ...history(data).operations[0]!, operationId, ...(operationId === "parent" ? {
       action: "bulk_stop", participantIdentityId: data.ownerId,
       bulk: { targets: 4, completed: 3, started: 0, stopped: 1, skipped: 1, failed: 1, unknown: 1, childrenUnrecorded: 1, childrenUnavailable: 2 },
@@ -47,10 +47,21 @@ function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperati
   failures: [{ triggerSequence: 1, participant: { identityId: data.agent.id, displayLabel: "Builder Agent" }, causeCategory: "runtime_request_timeout", failedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, attemptCount: 1, deliveryOutcome: "pending", remediation: { code: "retry_request", label: "Retry request" }, operationRelation: "targeted_trigger" }] };
 }
 function report(data: Fixture, count = 1): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 19, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
+  return { formatVersion: 1, protocolVersion: 20, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
+}
+function inspection(data: Fixture): LocalAgentSessionInspection {
+  return { protocolVersion: 20, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+    recorded: { bindingState: "paused", origin: "started", adapter: "pi", contextMode: "fresh", activationSequence: 999999, activatedAt: "2026-10-01T09:00:00.000Z" },
+    running: { status: "available", profile: { version: 1, capturedAt: "2026-10-01T10:00:00.000Z",
+      model: { status: "verified", provider: "provider", id: "running-model" }, reasoning: { status: "verified", level: "low" },
+      skills: { status: "verified", commandIds: ["skill:live"], complete: true } } },
+    saved: { status: "available", profile: { adapter: "pi", model: { provider: "provider", id: "future-model" }, reasoningLevel: "high",
+      skills: { selection: "explicit", ids: ["future-skill"], complete: true } } },
+    latestStart: "not_verified", lastStopBoundary: "not_recorded" };
 }
 async function mocks(page: Page, data: Fixture) {
-  const counts = { history: 0, detail: 0, report: 0, mutations: 0 };
+  const counts = { history: 0, detail: 0, report: 0, inspection: 0, mutations: 0 };
+  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/session-inspection`, route => { counts.inspection++; return route.fulfill({ json: inspection(data) }); });
   page.on("request", (request) => { if (request.method() !== "GET" && /\/local\/conversations\//.test(request.url())) counts.mutations++; });
   await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/operations?*`, (route) => {
     counts.history++;
@@ -62,6 +73,81 @@ async function mocks(page: Page, data: Fixture) {
   return counts;
 }
 function gate() { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; }
+
+test("session inspection is open-only and separates recorded, observed and future evidence without mutations", async ({ page, request }) => {
+  const data = await fixture(request); const counts = await mocks(page, data);
+  await launch(page, request, data); expect(counts.inspection).toBe(0);
+  const modal = await open(page, data);
+  const session = modal.getByRole("region", { name: "Session and context", exact: true });
+  await expect(session).toContainText("Recorded context policy: Fresh");
+  await expect(session).toContainText("Last Stop boundary: Not recorded");
+  await expect(session).toContainText("Latest Start behavior: Not verified");
+  await expect(session).toContainText("Activation boundary message #999999 is not in loaded history");
+  const live = session.getByRole("region", { name: "Observed running profile", exact: true });
+  const future = session.getByRole("region", { name: "Saved future session settings", exact: true });
+  await expect(live).toContainText("provider/running-model (verified)");
+  await expect(live).not.toContainText("future-model"); await expect(future).toContainText("provider/future-model");
+  await expect(live).toContainText("not evidence that skill instructions were loaded or used");
+  const previous = counts.inspection;
+  await session.getByRole("button", { name: "Refresh session", exact: true }).click();
+  await expect.poll(() => counts.inspection).toBeGreaterThan(previous);
+  expect(counts.mutations).toBe(0);
+  await page.keyboard.press("Escape");
+  await expect(modal).not.toBeVisible();
+});
+
+test("loaded public activation boundaries navigate without reading private context or mutating lifecycle", async ({ page, request }) => {
+  const data = await fixture(request); const counts = await mocks(page, data);
+  const response = await request.post(`${conversationsBase}/conversations/${data.primary.id}/messages`, { data: { participantId: data.ownerId, body: "Public activation boundary navigation" } });
+  const { message } = await response.json() as { message: { sequence: number } };
+  await page.route(`**/agents/${data.agent.id}/session-inspection`, route => route.fulfill({ json: { ...inspection(data), recorded: { ...inspection(data).recorded, activationSequence: message.sequence } } }));
+  await launch(page, request, data); const modal = await open(page, data);
+  await expect(modal.getByRole("region", { name: "Saved host context limits", exact: true })).toContainText("Stop/Start can refresh those host limits");
+  await modal.getByRole("button", { name: `View activation boundary message #${message.sequence}`, exact: true }).click();
+  await expect(modal).not.toBeVisible(); await expect(page.getByText("Public activation boundary navigation", { exact: true })).toBeVisible();
+  expect(counts.mutations).toBe(0);
+});
+
+test("closing and reopening the same participant fences late session observations", async ({ page, request }) => {
+  const data = await fixture(request); await mocks(page, data);
+  const entered = gate(), pending = gate(), delivered = gate(); let reads = 0;
+  await page.route(`**/agents/${data.agent.id}/session-inspection`, async route => {
+    const first = ++reads === 1;
+    if (first) { entered.release(); await pending.promise; }
+    const value = inspection(data);
+    if (value.running.status === "available") value.running.profile.model = { status: "verified", provider: "provider", id: first ? "late-old-model" : "reopened-model" };
+    await route.fulfill({ json: value }); if (first) delivered.release();
+  });
+  await launch(page, request, data); const modal = await open(page, data); await entered.promise;
+  try {
+    await page.keyboard.press("Escape"); await expect(modal).not.toBeVisible();
+    await open(page, data); await expect(modal).toContainText("reopened-model");
+  } finally { pending.release(); }
+  await delivered.promise; await expect(modal).not.toContainText("late-old-model"); await expect(modal).toContainText("reopened-model");
+});
+
+test("unsupported live evidence stays unverified even when future settings are populated", async ({ page, request }) => {
+  const data = await fixture(request); await mocks(page, data);
+  await page.route(`**/agents/${data.agent.id}/session-inspection`, route => route.fulfill({ json: { ...inspection(data), running: { status: "not_verified" } } }));
+  await launch(page, request, data); const modal = await open(page, data);
+  const live = modal.getByRole("region", { name: "Observed running profile", exact: true });
+  await expect(live).toContainText("Current model: Not verified");
+  await expect(live).not.toContainText("future-model");
+  await expect(modal.getByRole("region", { name: "Saved future session settings", exact: true })).toContainText("future-model");
+});
+
+test("denied session inspection clears already loaded report/history instead of exposing a previous profile", async ({ page, request }) => {
+  const data = await fixture(request); await mocks(page, data);
+  await launch(page, request, data); const modal = await open(page, data);
+  await expect(modal).toContainText("running-model");
+  await modal.getByRole("button", { name: "Preview report", exact: true }).click();
+  await expect(modal.locator('[aria-label="Report preview"]')).toBeVisible();
+  await page.route(`**/agents/${data.agent.id}/session-inspection`, route => route.fulfill({ status: 404, json: { error: "PRIVATE_AUTH_ERROR" } }));
+  await modal.getByRole("button", { name: "Refresh session", exact: true }).click();
+  await expect(modal).toContainText("Privileged diagnostics cleared");
+  await expect(modal).not.toContainText("running-model"); await expect(modal).not.toContainText("future-model");
+  await expect(modal.locator('[aria-label="Report preview"]')).toHaveCount(0); await expect(modal).not.toContainText("PRIVATE_AUTH_ERROR");
+});
 
 test("open-only timeline, explicit uncertainty, pagination, relations, escaped preview and fresh-read Copy", async ({ page, request }) => {
   const data = await fixture(request);
@@ -153,7 +239,7 @@ for (const loss of ["session", "identity", "participation", "disabled-human", "d
   const data = await fixture(request);
   await mocks(page, data);
   let lost = false;
-  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 19, identityId: lost ? data.agent.id : data.ownerId } }));
+  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 20, identityId: lost ? data.agent.id : data.ownerId } }));
   else if (loss === "participation") await page.route(`**/conversations/${data.primary.id}`, (route) => route.fulfill({ json: { conversation: { ...data.primary, participants: lost ? data.primary.participants.filter(({ id }) => id !== data.ownerId) : data.primary.participants } } }));
   else if (loss === "disabled-membership") await page.route(`**/workspaces/${data.workspaceId}/members`, (route) => route.fulfill({ json: { members: data.members.map((member) => member.identityId === data.ownerId && lost ? { ...member, status: "disabled" } : member) } }));
   else if (loss === "workspace") {
@@ -232,7 +318,7 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   const data = await fixture(request);
   const counts = await mocks(page, data);
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({ json: {
-    protocolVersion: 19, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
+    protocolVersion: 20, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
   } }));
   const pending = gate();
   let entered = false;
@@ -248,7 +334,7 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   await page.route(`**/local/conversations/${data.primary.id}/agents/${path}`, async (route) => {
     entered = true;
     await pending.promise;
-    await route.fulfill({ json: { protocolVersion: 19, conversationId: data.primary.id, results: [{ identityId: data.agent.id, outcome: "stopped" }] } });
+    await route.fulfill({ json: { protocolVersion: 20, conversationId: data.primary.id, results: [{ identityId: data.agent.id, outcome: "stopped" }] } });
   });
   try {
     await launch(page, request, data);
@@ -331,7 +417,7 @@ test("issue notices select exact public trigger evidence, not a matching timesta
   const first = { ...detail(data).failures[0]!, causeCategory: "runtime_offline" };
   const other = { ...first, triggerSequence: 999_999, causeCategory: "runtime_rejected" };
   await page.route(`**/local/conversations/${data.primary.id}/turn-failures`, (route) => route.fulfill({ json: {
-    protocolVersion: 19, conversationId: data.primary.id,
+    protocolVersion: 20, conversationId: data.primary.id,
     notices: [first, other].map(({ participant, failedAt, triggerSequence }) => ({ participant, failedAt, triggerSequence })),
     diagnostics: [first, other],
   } }));

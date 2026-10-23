@@ -4,7 +4,7 @@ import type {
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
-  LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport,
+  LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport, LocalAgentSessionInspection,
   LocalBulkAgentLifecycleResponse,
   LocalConversationAgent,
   LocalConversationAgentsResponse,
@@ -88,6 +88,10 @@ export class LocalControlClient {
     return this.get<LocalConversationTurnFailuresResponse>(
       `/local/conversations/${encodeURIComponent(conversationId)}/turn-failures${search}`,
     );
+  }
+
+  async agentSessionInspection(conversationId: string, identityId: string, signal?: AbortSignal): Promise<LocalAgentSessionInspection> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/session-inspection`, { signal });
   }
 
   async agentOperationHistory(conversationId: string, identityId: string, options: { cursor?: string; signal?: AbortSignal } = {}): Promise<LocalAgentOperationHistory> {

@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { LocalAgentHostConfiguration } from "../../control/dist/src/configuration.js";
 import { LocalAgentDiagnosticReads } from "../../control/dist/src/agent-diagnostic-reads.js";
+import { LocalAgentSessionInspections } from "../../control/dist/src/agent-session-inspection.js";
 import {
   createLocalControlHttpServer,
   LocalControlBrowserSessions,
@@ -207,10 +208,10 @@ const localControl = await createLocalControlHttpServer({
       },
       async listConversationTurnFailures(conversationId) {
         if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 19, conversationId, notices: [], diagnostics: [] };
+          return { protocolVersion: 20, conversationId, notices: [], diagnostics: [] };
         }
         return {
-          protocolVersion: 19,
+          protocolVersion: 20,
           conversationId,
           notices: [{
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },
@@ -234,6 +235,7 @@ const localControl = await createLocalControlHttpServer({
       },
     },
     diagnosticReads: new LocalAgentDiagnosticReads({ client: conversationClient, store: privateStore }),
+    sessionInspections: new LocalAgentSessionInspections({ client: conversationClient, store: privateStore, runtimes: fixtureRuntimes }),
     configuration: new LocalAgentHostConfiguration({
       client: conversationClient,
       store: privateStore,

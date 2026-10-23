@@ -1,6 +1,6 @@
 import type { DiagnosticDetail, DiagnosticHistory } from "@minu/channels-relay";
 
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 19 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 20 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -293,6 +293,39 @@ export interface LocalOperationTurnFailure extends LocalTurnFailureDiagnostic {
   operationRelation: "targeted_trigger" | "uncorrelated" | "unavailable";
 }
 
+/** Browser-safe structural contract; Runtime remains an optional, separately versioned adapter. */
+export interface LocalRuntimeSessionProfile {
+  version: 1;
+  capturedAt: string;
+  model: { status: "verified"; provider: string; id: string } | { status: "not_verified" };
+  reasoning: { status: "verified"; level: LocalReasoningLevel } | { status: "not_verified" };
+  skills: { status: "verified"; commandIds: string[]; complete: boolean } | { status: "not_verified" };
+}
+export interface LocalAgentSessionInspection {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  conversationId: string;
+  participantIdentityId: string;
+  capturedAt: string;
+  availability: "available" | "unbound" | "unavailable" | "changed" | "conflict" | "legacy";
+  recorded?: {
+    bindingState: "connected" | "sleeping" | "waking" | "offline" | "replacing" | "stopping" | "paused" | "disabled";
+    origin: "started" | "resumed" | "forked" | "restored" | "attached" | "migrated" | "unknown";
+    adapter?: string;
+    contextMode?: LocalSessionContextMode;
+    activationSequence?: number;
+    activatedAt?: string;
+  };
+  running: { status: "available"; profile: LocalRuntimeSessionProfile } | { status: "not_verified" };
+  /** Saved launch profile and host limits; recent limits apply on Relay attachment, not only new Runtime sessions. */
+  saved: { status: "unconfigured" | "unavailable" } | { status: "available"; profile: {
+    updatedAt?: string; adapter?: string; model?: { provider: string; id: string }; reasoningLevel?: LocalReasoningLevel;
+    skills: { selection: "default" | "explicit"; ids: string[]; complete: boolean };
+    recentContextTokens?: number; recentContextMessages?: number; handoffSummaryTokens?: number;
+  } };
+  latestStart: "not_verified";
+  lastStopBoundary: "not_recorded";
+}
+
 export interface LocalAgentDiagnosticReport {
   formatVersion: 1;
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
@@ -301,6 +334,8 @@ export interface LocalAgentDiagnosticReport {
   participant: { identityId: string; displayLabel: string; availability: "current" | "historical_or_unavailable" };
   snapshot?: Pick<LocalConversationAgent, "state" | "diagnostics" | "lastVerifiedAt">;
   selected: LocalAgentOperationDetail;
+  /** Optional independently authorized current-session snapshot; never inferred from selected history. */
+  session?: LocalAgentSessionInspection;
   coverage: {
     snapshotUnavailable: boolean;
     truncated: boolean;

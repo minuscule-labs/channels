@@ -1,5 +1,5 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection } from "@minu/channels-control/contracts";
 
 export interface DiagnosticBrowserScope {
   humanIdentityId: string;
@@ -12,11 +12,15 @@ export function diagnosticScopeKey(scope: DiagnosticTargetScope): string {
 }
 
 interface DiagnosticReads {
+  agentSessionInspection(conversation: string, identity: string, signal: AbortSignal): Promise<LocalAgentSessionInspection>;
   agentOperationHistory(conversation: string, identity: string, options: { cursor?: string; signal: AbortSignal }): Promise<LocalAgentOperationHistory>;
   agentOperationDetail(conversation: string, identity: string, operation: string, signal: AbortSignal): Promise<LocalAgentOperationDetail>;
   agentDiagnosticReport(conversation: string, identity: string, operation: string, signal: AbortSignal): Promise<LocalAgentDiagnosticReport>;
 }
 export interface DiagnosticSurfaceState {
+  inspection?: LocalAgentSessionInspection;
+  inspectionBusy?: boolean;
+  inspectionError?: string;
   history?: LocalAgentOperationHistory;
   selectedId?: string;
   detail?: LocalAgentOperationDetail;
@@ -30,7 +34,7 @@ export interface DiagnosticSurfaceState {
   revoked?: boolean;
 }
 
-type Lane = "history" | "detail" | "report";
+type Lane = "history" | "detail" | "report" | "inspection";
 /** Open-surface memory only: no QueryClient, browser storage, logs, or mutation endpoints.
  * Every lane is abortable AND fenced, including clients/clipboard implementations ignoring abort.
  * A new instance owns one human/resource scope; dispose destroys all retained projections.
@@ -77,6 +81,24 @@ export class DiagnosticSurface {
     this.closed = true;
     for (const lane of this.lanes.keys()) this.abort(lane);
     this.state = {};
+  }
+
+  async inspectSession() {
+    const controller = this.begin("inspection");
+    if (!controller) return;
+    this.update({ inspection: undefined, inspectionBusy: true, inspectionError: undefined });
+    try {
+      const inspection = await this.reads.agentSessionInspection(this.scope.conversationId, this.scope.participantIdentityId, controller.signal);
+      if (!this.current("inspection", controller)) return;
+      if (inspection.availability === "changed") {
+        this.abort("report");
+        this.update({ preview: undefined, reportBusy: false, reportMessage: "The session changed during inspection. Request a fresh report to inspect the new snapshot." });
+      }
+      this.update({ inspection, inspectionBusy: false });
+    } catch (error) {
+      if (!this.current("inspection", controller) || this.failure(error)) return;
+      this.update({ inspection: undefined, inspectionBusy: false, inspectionError: "Session inspection failed. Current context and profile are not verified; refresh to read again." });
+    }
   }
 
   latest() { this.cursor = undefined; return this.history(); }

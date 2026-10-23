@@ -1,13 +1,13 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection } from "@minu/channels-control/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { DiagnosticSurface, diagnosticReportText, diagnosticScopeKey, requestDispositionLabel } from "../src/lib/operation-diagnostics";
 
 const scope = { humanIdentityId: "owner", workspaceId: "workspace", conversationId: "conversation", participantIdentityId: "agent" };
-const history: LocalAgentOperationHistory = { protocolVersion: 19, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
-const detail: LocalAgentOperationDetail = { protocolVersion: 19, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
+const history: LocalAgentOperationHistory = { protocolVersion: 20, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
+const detail: LocalAgentOperationDetail = { protocolVersion: 20, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
 function report(capturedAt = "now"): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 19, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
+  return { formatVersion: 1, protocolVersion: 20, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,8 +15,11 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+const inspection: LocalAgentSessionInspection = { protocolVersion: 20, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
+  running: { status: "not_verified" }, saved: { status: "unavailable" }, latestStart: "not_verified", lastStopBoundary: "not_recorded" };
 function fixture() {
   const reads = {
+    agentSessionInspection: vi.fn(async (_conversation: string, _identity: string, _signal: AbortSignal) => inspection),
     agentOperationHistory: vi.fn(async (_conversation: string, _identity: string, _options: { cursor?: string; signal: AbortSignal }) => history),
     agentOperationDetail: vi.fn(async (_conversation: string, _identity: string, _operation: string, _signal: AbortSignal) => detail),
     agentDiagnosticReport: vi.fn(async (_conversation: string, _identity: string, _operation: string, _signal: AbortSignal) => report()),
@@ -26,6 +29,49 @@ function fixture() {
 }
 
 describe("open-surface diagnostic ownership", () => {
+  it("inspection supersession and disposal fence clients ignoring abort", async () => {
+    const { surface, reads } = fixture();
+    const late = deferred<LocalAgentSessionInspection>();
+    reads.agentSessionInspection.mockReturnValueOnce(late.promise);
+    const pending = surface.inspectSession();
+    await surface.inspectSession();
+    expect(reads.agentSessionInspection.mock.calls[0]?.[2].aborted).toBe(true);
+    late.resolve({ ...inspection, capturedAt: "late-private" }); await pending;
+    expect(surface.state.inspection?.capturedAt).toBe("now");
+    const closed = deferred<LocalAgentSessionInspection>();
+    reads.agentSessionInspection.mockReturnValueOnce(closed.promise);
+    const second = surface.inspectSession(); surface.dispose(); closed.resolve(inspection); await second;
+    expect(surface.state).toEqual({});
+  });
+  it("inspection denial revokes all lanes and clears other privileged projections", async () => {
+    const { surface, reads } = fixture();
+    await surface.history(); await surface.select("selected"); await surface.report();
+    reads.agentSessionInspection.mockRejectedValueOnce(new LocalControlClientError("SECRET", 404));
+    await surface.inspectSession();
+    expect(surface.state).toEqual({ revoked: true });
+    await surface.inspectSession(); expect(reads.agentSessionInspection).toHaveBeenCalledTimes(1);
+  });
+  it("failed session refresh drops the old profile and never shows transport error text", async () => {
+    const { surface, reads } = fixture();
+    await surface.inspectSession(); expect(surface.state.inspection).toBeDefined();
+    reads.agentSessionInspection.mockRejectedValueOnce(new Error("SECRET"));
+    await surface.inspectSession();
+    expect(surface.state.inspection).toBeUndefined();
+    expect(surface.state.inspectionError).toContain("not verified");
+    expect(JSON.stringify(surface.state)).not.toContain("SECRET");
+  });
+  it("a changed activation aborts late report delivery and clears its preview", async () => {
+    const { surface, reads } = fixture();
+    await surface.select("selected"); await surface.report(); expect(surface.state.preview).toBeDefined();
+    const late = deferred<LocalAgentDiagnosticReport>();
+    reads.agentDiagnosticReport.mockReturnValueOnce(late.promise);
+    const pending = surface.report();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, availability: "changed" });
+    await surface.inspectSession(); late.resolve(report("old-generation")); await pending;
+    expect(surface.state.preview).toBeUndefined(); expect(surface.state.reportMessage).toContain("session changed");
+    expect(surface.state.reportBusy).toBe(false);
+  });
+
   it("keeps preview/clipboard JSON inside the UTF-8 wire budget after formatting", () => {
     const value = report();
     value.coverage.notes = Array.from({ length: 2_000 }, () => "é".repeat(12));

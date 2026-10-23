@@ -658,7 +658,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 19,
+      protocolVersion: 20,
       conversationId,
       agents: [
         {
@@ -682,7 +682,7 @@ test("runs Conversation-scoped bulk lifecycle with one confirmation and visible 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 19,
+        protocolVersion: 20,
         conversationId,
         results: [
           { identityId: builder.id, outcome: "stopped" },
@@ -739,7 +739,7 @@ test("hides bulk lifecycle controls when the local capability is unavailable", a
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      protocolVersion: 19,
+      protocolVersion: 20,
       features: {
         currentSession: true,
         conversationAgentStatus: true,
@@ -937,7 +937,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        protocolVersion: 19,
+        protocolVersion: 20,
         workspaceId: workspace.id,
         rootConfigured: true,
         notesFolderConfigured: false,
