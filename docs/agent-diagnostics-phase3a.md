@@ -1,10 +1,10 @@
 # Agent diagnostics Phase 3a — session and context inspection
 
-**Status:** The user approved Runtime-plus-Channels implementation. Both changes are implemented locally and author-verified within the scope below; they are not shipped. Runtime implementation is committed as `c535afb04d6db3b6dcee2bcfa099e1102d627271`; the Channels companion is committed as `37217d5d230319caabf235872167f1f3c6f8b1f3` with the existing pin unchanged. Runtime is on `feat/session-profile-inspection`; Channels remains on `feat/agent-diagnostics-phase3a`. The release gate is still Runtime review/merge, then a reviewed Channels pin update. `runtime-source.json` is unchanged: the pinned Runtime cannot yet supply live profile evidence, so Channels honestly shows **Not verified** until that dependency is integrated. No real-agent acceptance, publication or deployment has been performed for 3a.
+**Status:** Runtime [PR #9](https://github.com/minuscule-labs/runtime/pull/9) is merged as `6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d`, with Ubuntu and macOS CI passing. Channels now pins that merged commit; integrated packaging and inspection verification are in progress before its PR is opened. The Channels implementation is `37217d5d230319caabf235872167f1f3c6f8b1f3` on `feat/agent-diagnostics-phase3a`. Optional live evidence remains **Not verified** for unavailable, unsafe or older workers. This work is not shipped or deployed; no Phase 3a real-Pi acceptance has been authorized or run.
 
 **Channels baseline:** `3c3da28` (merged PR #40). Working branch: `feat/agent-diagnostics-phase3a`.
 
-**Runtime baseline:** `05b700a5e73e9031fe5dc5d67dc2d0f6922582fc`, as pinned by `runtime-source.json`.
+**Runtime audit baseline:** `05b700a5e73e9031fe5dc5d67dc2d0f6922582fc`. **Integrated pin:** `6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d` in `runtime-source.json`.
 
 **References:** [Parent diagnostics specification](agent-diagnostics.md), [Phase 2 design and verification](agent-diagnostics-phase2.md), [Runtime session history](runtime-session-history.md).
 
@@ -61,7 +61,7 @@ Do not reconstruct a prior turn's supplied prompt/context from present settings 
 
 ## Read-only contract
 
-The following contract is implemented in the local working branches. Channels consumes a structural optional port; it does not import or pin the unmerged Runtime change. Delivery remains ordered even though the compatible consumer is staged locally.
+The following contract is implemented. Channels consumes a structural optional port and now pins the separately merged Runtime implementation. No unmerged dependency is used.
 
 ### Runtime optional API
 
