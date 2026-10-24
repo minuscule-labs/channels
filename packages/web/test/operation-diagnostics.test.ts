@@ -1,13 +1,13 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents } from "@minu/channels-control/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { DiagnosticSurface, diagnosticReportText, diagnosticScopeKey, requestDispositionLabel } from "../src/lib/operation-diagnostics";
 
 const scope = { humanIdentityId: "owner", workspaceId: "workspace", conversationId: "conversation", participantIdentityId: "agent" };
-const history: LocalAgentOperationHistory = { protocolVersion: 20, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
-const detail: LocalAgentOperationDetail = { protocolVersion: 20, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
+const history: LocalAgentOperationHistory = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
+const detail: LocalAgentOperationDetail = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
 function report(capturedAt = "now"): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 20, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
+  return { formatVersion: 1, protocolVersion: 21, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,10 +15,13 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const inspection: LocalAgentSessionInspection = { protocolVersion: 20, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
+const inspection: LocalAgentSessionInspection = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
   running: { status: "not_verified" }, saved: { status: "unavailable" }, latestStart: "not_verified", lastStopBoundary: "not_recorded" };
+const events: LocalAgentSessionEvents = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+  snapshot: { version: 1, source: "runtime_bridge", capturedAt: "now", recordingSince: "window", eventsDropped: 0, events: [{ sequence: 1, observedAt: "now", code: "turn_accepted" }] } };
 function fixture() {
   const reads = {
+    agentSessionEvents: vi.fn(async (_conversation: string, _identity: string, _signal: AbortSignal) => events),
     agentSessionInspection: vi.fn(async (_conversation: string, _identity: string, _signal: AbortSignal) => inspection),
     agentOperationHistory: vi.fn(async (_conversation: string, _identity: string, _options: { cursor?: string; signal: AbortSignal }) => history),
     agentOperationDetail: vi.fn(async (_conversation: string, _identity: string, _operation: string, _signal: AbortSignal) => detail),
@@ -29,6 +32,68 @@ function fixture() {
 }
 
 describe("open-surface diagnostic ownership", () => {
+  it("loads events only on explicit open/refresh and clears them on close", async () => {
+    const { surface, reads } = fixture();
+    await surface.history(); await surface.inspectSession();
+    expect(reads.agentSessionEvents).not.toHaveBeenCalled();
+    await surface.openEvents(); expect(surface.state.runtimeEvents).toEqual(events);
+    await surface.refreshEvents(); expect(reads.agentSessionEvents).toHaveBeenCalledTimes(2);
+    surface.closeEvents(); expect(surface.state.runtimeEvents).toBeUndefined();
+    await surface.refreshEvents(); expect(reads.agentSessionEvents).toHaveBeenCalledTimes(2);
+    expect(surface.state.eventsOpen).toBe(false);
+  });
+  it("event refresh/close fence clients ignoring cancellation and never retain late projections", async () => {
+    const { surface, reads } = fixture();
+    const first = deferred<LocalAgentSessionEvents>(); reads.agentSessionEvents.mockReturnValueOnce(first.promise);
+    const opening = surface.openEvents();
+    await surface.refreshEvents();
+    expect(reads.agentSessionEvents.mock.calls[0]?.[2].aborted).toBe(true);
+    first.resolve({ ...events, capturedAt: "late-private" }); await opening;
+    expect(surface.state.runtimeEvents?.capturedAt).toBe("now");
+    const pending = deferred<LocalAgentSessionEvents>(); reads.agentSessionEvents.mockReturnValueOnce(pending.promise);
+    const refreshing = surface.refreshEvents(); expect(surface.state.runtimeEvents).toBeUndefined();
+    surface.closeEvents(); pending.resolve(events); await refreshing;
+    expect(surface.state.runtimeEvents).toBeUndefined(); expect(surface.state.eventsOpen).toBe(false);
+  });
+  it("event denial revokes all projections; transient errors never show raw transport content", async () => {
+    const { surface, reads } = fixture();
+    await surface.openEvents(); reads.agentSessionEvents.mockRejectedValueOnce(new Error("SECRET_PATH"));
+    await surface.refreshEvents(); expect(surface.state.runtimeEvents).toBeUndefined();
+    expect(surface.state.eventsError).toBe("Unavailable");
+    reads.agentSessionEvents.mockRejectedValueOnce(new LocalControlClientError("SECRET", 401));
+    await surface.refreshEvents(); expect(surface.state).toEqual({ revoked: true });
+    await surface.openEvents(); expect(reads.agentSessionEvents).toHaveBeenCalledTimes(3);
+  });
+  it("event ownership is disposed during navigation and never caches across humans/resources", async () => {
+    const { surface, reads } = fixture();
+    const pending = deferred<LocalAgentSessionEvents>(); reads.agentSessionEvents.mockReturnValueOnce(pending.promise);
+    const opening = surface.openEvents(); surface.dispose();
+    expect(reads.agentSessionEvents.mock.calls[0]?.[2].aborted).toBe(true);
+    pending.resolve(events); await opening; expect(surface.state).toEqual({});
+    const next = new DiagnosticSurface({ ...scope, humanIdentityId: "other" }, reads, () => {});
+    expect(next.state.runtimeEvents).toBeUndefined(); expect(next.state.eventsOpen).toBeUndefined();
+  });
+  it("serializes optional Runtime reads without queuing profile/report work behind an event read", async () => {
+    const { surface, reads } = fixture(); await surface.select("selected");
+    const pending = deferred<LocalAgentSessionEvents>(); reads.agentSessionEvents.mockReturnValueOnce(pending.promise);
+    const opening = surface.openEvents(); await surface.inspectSession(); await surface.report();
+    expect(reads.agentSessionInspection).not.toHaveBeenCalled(); expect(reads.agentDiagnosticReport).not.toHaveBeenCalled();
+    pending.resolve(events); await opening;
+    const profile = deferred<LocalAgentSessionInspection>(); reads.agentSessionInspection.mockReturnValueOnce(profile.promise);
+    const inspecting = surface.inspectSession(); surface.closeEvents(); await surface.openEvents();
+    expect(reads.agentSessionEvents).toHaveBeenCalledTimes(1);
+    profile.resolve(inspection); await inspecting;
+  });
+  it("observed session changes clear recent events and changed-event responses clear old profiles/reports", async () => {
+    const { surface, reads } = fixture(); await surface.inspectSession(); await surface.openEvents();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, availability: "changed" });
+    await surface.inspectSession(); expect(surface.state.runtimeEvents).toBeUndefined(); expect(surface.state.eventsOpen).toBe(false);
+    await surface.select("selected"); await surface.report(); expect(surface.state.preview).toBeDefined();
+    reads.agentSessionEvents.mockResolvedValueOnce({ ...events, availability: "changed", snapshot: undefined });
+    await surface.openEvents(); expect(surface.state.preview).toBeUndefined(); expect(surface.state.inspection).toBeUndefined();
+    expect(surface.state.runtimeEvents?.availability).toBe("changed");
+  });
+
   it("inspection supersession and disposal fence clients ignoring abort", async () => {
     const { surface, reads } = fixture();
     const late = deferred<LocalAgentSessionInspection>();

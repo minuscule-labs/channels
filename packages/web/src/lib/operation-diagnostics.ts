@@ -1,5 +1,5 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents } from "@minu/channels-control/contracts";
 
 export interface DiagnosticBrowserScope {
   humanIdentityId: string;
@@ -12,12 +12,17 @@ export function diagnosticScopeKey(scope: DiagnosticTargetScope): string {
 }
 
 interface DiagnosticReads {
+  agentSessionEvents(conversation: string, identity: string, signal: AbortSignal): Promise<LocalAgentSessionEvents>;
   agentSessionInspection(conversation: string, identity: string, signal: AbortSignal): Promise<LocalAgentSessionInspection>;
   agentOperationHistory(conversation: string, identity: string, options: { cursor?: string; signal: AbortSignal }): Promise<LocalAgentOperationHistory>;
   agentOperationDetail(conversation: string, identity: string, operation: string, signal: AbortSignal): Promise<LocalAgentOperationDetail>;
   agentDiagnosticReport(conversation: string, identity: string, operation: string, signal: AbortSignal): Promise<LocalAgentDiagnosticReport>;
 }
 export interface DiagnosticSurfaceState {
+  runtimeEvents?: LocalAgentSessionEvents;
+  eventsOpen?: boolean;
+  eventsBusy?: boolean;
+  eventsError?: string;
   inspection?: LocalAgentSessionInspection;
   inspectionBusy?: boolean;
   inspectionError?: string;
@@ -34,7 +39,7 @@ export interface DiagnosticSurfaceState {
   revoked?: boolean;
 }
 
-type Lane = "history" | "detail" | "report" | "inspection";
+type Lane = "history" | "detail" | "report" | "inspection" | "events";
 /** Open-surface memory only: no QueryClient, browser storage, logs, or mutation endpoints.
  * Every lane is abortable AND fenced, including clients/clipboard implementations ignoring abort.
  * A new instance owns one human/resource scope; dispose destroys all retained projections.
@@ -83,13 +88,44 @@ export class DiagnosticSurface {
     this.state = {};
   }
 
+  async openEvents() {
+    if (this.closed || this.state.revoked || this.state.inspectionBusy || this.state.reportBusy) return;
+    this.update({ eventsOpen: true });
+    await this.refreshEvents();
+  }
+  closeEvents() {
+    this.abort("events");
+    this.update({ eventsOpen: false, runtimeEvents: undefined, eventsBusy: false, eventsError: undefined });
+  }
+  async refreshEvents() {
+    if (!this.state.eventsOpen || this.state.inspectionBusy || this.state.reportBusy) return;
+    const controller = this.begin("events");
+    if (!controller) return;
+    this.update({ runtimeEvents: undefined, eventsBusy: true, eventsError: undefined });
+    try {
+      const runtimeEvents = await this.reads.agentSessionEvents(this.scope.conversationId, this.scope.participantIdentityId, controller.signal);
+      if (!this.current("events", controller)) return;
+      if (runtimeEvents.availability === "changed") {
+        this.abort("inspection"); this.abort("report");
+        this.update({ inspection: undefined, inspectionBusy: false, preview: undefined, reportBusy: false });
+      }
+      this.update({ runtimeEvents, eventsBusy: false });
+    } catch (error) {
+      if (!this.current("events", controller) || this.failure(error)) return;
+      this.update({ runtimeEvents: undefined, eventsBusy: false, eventsError: "Unavailable" });
+    }
+  }
+
   async inspectSession() {
+    if (this.state.eventsBusy) return;
+    const previous = JSON.stringify(this.state.inspection?.recorded);
     const controller = this.begin("inspection");
     if (!controller) return;
     this.update({ inspection: undefined, inspectionBusy: true, inspectionError: undefined });
     try {
       const inspection = await this.reads.agentSessionInspection(this.scope.conversationId, this.scope.participantIdentityId, controller.signal);
       if (!this.current("inspection", controller)) return;
+      if (inspection.availability === "changed" || JSON.stringify(inspection.recorded) !== previous) this.closeEvents();
       if (inspection.availability === "changed") {
         this.abort("report");
         this.update({ preview: undefined, reportBusy: false, reportMessage: "The session changed during inspection. Request a fresh report to inspect the new snapshot." });
@@ -97,6 +133,7 @@ export class DiagnosticSurface {
       this.update({ inspection, inspectionBusy: false });
     } catch (error) {
       if (!this.current("inspection", controller) || this.failure(error)) return;
+      this.closeEvents();
       this.update({ inspection: undefined, inspectionBusy: false, inspectionError: "Session inspection failed. Current context and profile are not verified; refresh to read again." });
     }
   }
@@ -144,6 +181,7 @@ export class DiagnosticSurface {
   }
   /** Each invocation, including Copy after Preview, performs a fresh authorized report read. */
   async report(copy?: (text: string) => Promise<void>) {
+    if (this.state.eventsBusy) return;
     const id = this.state.selectedId;
     if (!id) return;
     const controller = this.begin("report");
@@ -152,6 +190,7 @@ export class DiagnosticSurface {
     try {
       const report = await this.reads.agentDiagnosticReport(this.scope.conversationId, this.scope.participantIdentityId, id, controller.signal);
       if (!this.current("report", controller)) return;
+      if (report.session?.availability === "changed" || (report.session?.recorded && JSON.stringify(report.session.recorded) !== JSON.stringify(this.state.inspection?.recorded))) this.closeEvents();
       const text = diagnosticReportText(report);
       if (copy) {
         try { await copy(text); }

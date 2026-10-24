@@ -1,8 +1,8 @@
 # Agent diagnostics and operation review
 
-**Status:** Phases 1 and 2 merged in PRs #39 and #40. [Phase 2](agent-diagnostics-phase2.md) delivers bounded private lifecycle recording, protocol-v19 authorized history/detail/report APIs, exact targeted-trigger failure relations, and the privileged timeline/report UI with revocation-safe browser state. Author integration review and user-approved isolated real-Pi acceptance are recorded there. The user approved Phase 3a with the optional Runtime read; [session/context inspection](agent-diagnostics-phase3a.md) is implemented in local Runtime and Channels branches. Runtime PR #9 is merged and Channels now pins `6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d`; integrated packaging, inspection and production-preview author checks pass. Channels PR CI and review remain pending. It is not shipped. Unavailable or older workers still show **Not verified** rather than saved settings. Logs and raw export remain separately proposed/gated.
+**Status:** Phases 1, 2 and [3a session/context inspection](agent-diagnostics-phase3a.md) are merged and shipped in [v0.0.14](releases/v0.0.14.md). [Phase 2](agent-diagnostics-phase2.md) delivers bounded private lifecycle recording, authorized history/detail/report APIs, exact targeted-trigger failure relations, and the privileged timeline/report UI with revocation-safe browser state. Phase 3a adds the optional Runtime profile read, with merged Runtime `6cd4fd25605a6b6260c50efa91bbc94e2f25dc9d` pinned by Channels and local-control protocol v20. Unavailable or older workers still show **Not verified** rather than saved settings. Fresh real-Pi acceptance of the newest inspection remains outstanding. The [recent-log source audit](agent-diagnostics-recent-logs.md) rejects raw stderr. The user approved bounded structured events focused on Channels/Runtime; Runtime PR #10 is merged, and this follow-up branch pins it and implements the authorized recent-event API/UI with protocol v21. Local full regression checks pass; package verification and Channels PR CI/merge are pending. No recent-events feature or raw export is released.
 
-**Branch:** `feat/agent-diagnostics-phase3a`
+**Current follow-up branch:** `feat/safe-recent-log-inspection`
 
 **Scope:** Reachable inspection, lifecycle evidence, failure review, diagnostic reports, and progressively deeper session/log inspection.
 
@@ -281,7 +281,7 @@ Adapter contracts and source availability must be verified rather than assumed.
 - Cross-Workspace/session leakage, path traversal, symlink redirection, hostile content, oversized inputs, and secret-containing fixtures are covered.
 - Raw export remains disabled until its capability and delivery-security review are complete; sanitized reports never silently include it.
 
-Each phase gets its own verification checkpoint and scoped commit/PR. Phases 1 and 2 are merged; Phase 3a is at capability-audit and contract-planning stage. Approving session/context inspection does not approve logs, raw export, or implementing all remaining Phase 3 capabilities in one change.
+Each phase gets its own verification checkpoint and scoped commit/PR. Phases 1–3a are merged and shipped in v0.0.14. Safe recent-log inspection is approved as bounded structured Channels/Runtime observations, not harness log lines; see the [agreed follow-up](agent-diagnostics-recent-logs.md). Raw export and implementing all remaining Phase 3 capabilities remain separate decisions.
 
 ## Verification plan
 
