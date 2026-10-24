@@ -1,6 +1,6 @@
 # Safe recent-event inspection — source audit and agreed contract
 
-**Status:** The user approved the structured-event slice, prioritizing what **Channels and Runtime** are doing over Pi/Codex internals. Runtime [PR #10](https://github.com/minuscule-labs/runtime/pull/10) passed Ubuntu/macOS CI and merged as `e92176054206d70e120d4b6641bda2a3d037eb84`. Channels pins that merged commit and locally implements the authorized API and disposable event view; clean-package verification passes, with Channels PR CI and merge pending. This feature is not released. Phases 1–3a shipped in v0.0.14; this is a separate follow-up to [agent diagnostics](agent-diagnostics.md).
+**Status:** The user approved the structured-event slice, prioritizing what **Channels and Runtime** are doing over Pi/Codex internals. Runtime [PR #10](https://github.com/minuscule-labs/runtime/pull/10) passed Ubuntu/macOS CI and merged as `e92176054206d70e120d4b6641bda2a3d037eb84`. Channels [PR #44](https://github.com/minuscule-labs/channels/pull/44) merged as `0cad35923391ae2103e6d9db1dfcbecff62ed318`, pinning that Runtime commit and implementing the authorized API and disposable event view. Clean-package verification, delegated integration review, PR CI and merged-main CI pass. The feature is prepared for [v0.0.15](releases/v0.0.15.md), not yet published. Phases 1–3a shipped in v0.0.14; this is a separate follow-up to [agent diagnostics](agent-diagnostics.md).
 
 ## Agreed direction
 
@@ -70,7 +70,7 @@ The existing fencing and disposable-state implementations are references, not ev
 1. **Source/contract agreed:** structured events, focused on Channels/Runtime rather than harness internals, current-worker-only retention and fixed bounds. No raw export authorization follows from this choice.
 2. **Runtime first (done):** producer/projection/client/bridge tests use temporary registrations, deterministic fake RPC and isolated servers. Author review found no unresolved actionable issue; PR #10 passed Ubuntu/macOS CI before merge. Channels pins only its merged commit.
 3. **Channels API/state/UI (locally implemented):** exact-scoped API, disposable UI and compatibility behavior. Temporary stores only; no schema or lifecycle changes.
-4. **Integration (in progress):** author code review against the agreed contract, full local regression/build and clean-package verification pass as recorded below; Channels PR CI/merge follow. Prior Phase 3a/release checks are not being substituted for this feature's tests.
+4. **Integration (done):** author and delegated reviews against the agreed contract, full local regression/build, clean-package verification and Channels PR/merged-main CI pass as recorded below. Prior Phase 3a/release checks are not being substituted for this feature's tests.
 
 Required negative cases:
 
@@ -104,5 +104,11 @@ Target: Channels `8fda4c47d74a496304f5051a55aab619ddc4da56` on `feat/safe-recent
 - Fresh clean local clones at those exact commits passed frozen-lockfile installs, `pnpm release:pack` and `pnpm release:smoke`, without a dirty-build override. The verification package metadata names both exact commits. This is not a version bump, publication, tag or deployment. Five event-view browser cases also passed against the actual production-built web preview.
 - The **packaged Runtime client** passed actual Channels HTTP/browser authorization and temporary real SQLite compatibility with the real Runtime bridge and deterministic in-process callbacks. It verified owner scope, fixed fields, no-store/size bounds, unchanged registration/logical data during reads, forbidden lifecycle/discovery/message fallbacks, and late role/generation suppression. This does not involve Pi or an LLM.
 - Channels PR CI/merge remain pending at this checkpoint. No real Pi/Codex agent, existing service or real database was used.
+
+### Integration review and merge
+
+The delegated contextual review approved Channels `e3fc111..8e612ee` and Runtime `6cd4fd2..e921760` with no actionable findings. It independently ran 28 Channels API/storage tests, 26 Runtime event/profile tests, one deterministic fake-RPC lifecycle test, 24 web diagnostic-state tests, web type checking and both diff checks. Confidence was Medium: broad browser/package checks were not independently repeated, and real-Pi acceptance remained outside scope.
+
+[PR #44 CI](https://github.com/minuscule-labs/channels/actions/runs/40137347815) passed Ubuntu/macOS, 107-case Chromium and release-package checks on the reviewed head. The merged tree is identical to that head; [merged-main CI](https://github.com/minuscule-labs/channels/actions/runs/40141396928) also passed. The approval and checks were recorded on PR #44 before merge. Neither the merge nor this review authorizes publication or claims release acceptance.
 
 Fresh real-Pi/clean-account acceptance still requires separate scoped approval. The unresolved native database panic is unchanged; see [v0.0.14 caveats](releases/v0.0.14.md) and [shutdown evidence](verification/diagnostic-shutdown-0.0.14.md).
