@@ -240,7 +240,7 @@ export interface LocalControlServiceOptions {
   configuration?: LocalControlConfigurationPort;
   lifecycle?: LocalControlAgentLifecyclePort;
   diagnosticReads?: Pick<LocalAgentDiagnosticReads, "history" | "detail" | "report">;
-  sessionInspections?: Pick<LocalAgentSessionInspections, "read">;
+  sessionInspections?: Pick<LocalAgentSessionInspections, "read" | "events">;
   statusTimeoutMs?: number;
 }
 
@@ -698,6 +698,11 @@ export class LocalControlService {
   async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string) {
     if (!this.options.sessionInspections) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
     return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId);
+  }
+
+  async agentSessionEvents(conversationId: string, identityId: string, actorIdentityId: string, signal?: AbortSignal) {
+    if (!this.options.sessionInspections) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    return this.options.sessionInspections.events(conversationId, identityId, actorIdentityId, { signal });
   }
 
   async agentOperationHistory(conversationId: string, identityId: string, actorIdentityId: string, cursor?: string): Promise<LocalAgentOperationHistory> {
@@ -1244,18 +1249,29 @@ export async function createLocalControlHttpServer(
         json(response, 200, options.service.capabilities(), origin);
         return;
       }
-      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report|session-inspection)$/);
+      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report|session-inspection|session-events)$/);
       if (diagnosticMatch && request.method === "GET" && browserSession) {
         const conversationId = decodeURIComponent(diagnosticMatch[1]!);
         const identityId = decodeURIComponent(diagnosticMatch[2]!);
         const operationId = diagnosticMatch[4] ? decodeURIComponent(diagnosticMatch[4]) : undefined;
-        const value = diagnosticMatch[3] === "session-inspection"
-          ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId)
-          : diagnosticMatch[3] === "diagnostic-report"
-          ? await options.service.agentDiagnosticReport(conversationId, identityId, browserSession.identityId, url.searchParams.get("operationId") ?? "")
-          : operationId
-            ? await options.service.agentOperationDetail(conversationId, identityId, browserSession.identityId, operationId)
-            : await options.service.agentOperationHistory(conversationId, identityId, browserSession.identityId, url.searchParams.get("cursor") ?? undefined);
+        const events = diagnosticMatch[3] === "session-events";
+        if (events && url.search) throw new LocalConfigurationRequestError("Invalid event query", 400, "invalid");
+        const controller = new AbortController();
+        const disconnected = () => controller.abort();
+        if (events) response.once("close", disconnected);
+        let value;
+        try {
+          value = events
+            ? await options.service.agentSessionEvents(conversationId, identityId, browserSession.identityId, controller.signal)
+            : diagnosticMatch[3] === "session-inspection"
+            ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId)
+            : diagnosticMatch[3] === "diagnostic-report"
+            ? await options.service.agentDiagnosticReport(conversationId, identityId, browserSession.identityId, url.searchParams.get("operationId") ?? "")
+            : operationId
+              ? await options.service.agentOperationDetail(conversationId, identityId, browserSession.identityId, operationId)
+              : await options.service.agentOperationHistory(conversationId, identityId, browserSession.identityId, url.searchParams.get("cursor") ?? undefined);
+        } finally { response.off("close", disconnected); }
+        if (response.destroyed) return;
         // Do not release a privileged response after the authenticating session expired/rebound during I/O.
         const fresh = options.browserSessions?.authenticate(request.headers.cookie);
         if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {

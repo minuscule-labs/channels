@@ -1,6 +1,6 @@
 import type { DiagnosticDetail, DiagnosticHistory } from "@minu/channels-relay";
 
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 20 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 21 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -301,6 +301,30 @@ export interface LocalRuntimeSessionProfile {
   reasoning: { status: "verified"; level: LocalReasoningLevel } | { status: "not_verified" };
   skills: { status: "verified"; commandIds: string[]; complete: boolean } | { status: "not_verified" };
 }
+export const LOCAL_RUNTIME_EVENT_CODES = [
+  "bridge_ready", "turn_accepted", "turn_reused", "turn_rejected_conflict",
+  "turn_dispatch_requested", "turn_dispatch_returned", "turn_dispatch_failed", "turn_completed", "turn_failed",
+  "request_rejected_busy", "steer_requested", "steer_acknowledged", "steer_failed",
+  "interrupt_requested", "interrupt_acknowledged", "interrupt_failed", "stop_requested",
+] as const;
+export type LocalRuntimeEventCode = typeof LOCAL_RUNTIME_EVENT_CODES[number];
+export interface LocalRuntimeSessionEvents {
+  version: 1;
+  source: "runtime_bridge";
+  capturedAt: string;
+  recordingSince: string;
+  eventsDropped: number;
+  events: Array<{ sequence: number; observedAt: string; code: LocalRuntimeEventCode }>;
+}
+export interface LocalAgentSessionEvents {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  conversationId: string;
+  participantIdentityId: string;
+  capturedAt: string;
+  availability: "available" | "unavailable" | "changed";
+  snapshot?: LocalRuntimeSessionEvents;
+}
+
 export interface LocalAgentSessionInspection {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   conversationId: string;

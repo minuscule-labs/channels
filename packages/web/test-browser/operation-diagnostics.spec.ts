@@ -1,4 +1,4 @@
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
@@ -28,13 +28,13 @@ async function open(page: Page, data: Fixture) {
 }
 function history(data: Fixture): LocalAgentOperationHistory {
   return {
-    protocolVersion: 20, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
+    protocolVersion: 21, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
     nextCursor: "2:2", retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 },
     operations: [{ operationId: "selected-stop", conversationId: data.primary.id, participantIdentityId: data.agent.id, action: "stop", requestedAt: "2026-10-01T09:59:00.000Z", acceptedAt: "2026-10-01T09:59:00.000Z", outcome: "unknown", requestDisposition: "handler_failed", observedAt: "2026-10-01T09:59:01.000Z", closedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, eventsDropped: 1, recordingGap: true, lastConfirmedStage: "delivery_fenced" }],
   };
 }
 function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperationDetail {
-  return { protocolVersion: 20, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
+  return { protocolVersion: 21, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
     operation: { ...history(data).operations[0]!, operationId, ...(operationId === "parent" ? {
       action: "bulk_stop", participantIdentityId: data.ownerId,
       bulk: { targets: 4, completed: 3, started: 0, stopped: 1, skipped: 1, failed: 1, unknown: 1, childrenUnrecorded: 1, childrenUnavailable: 2 },
@@ -47,10 +47,10 @@ function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperati
   failures: [{ triggerSequence: 1, participant: { identityId: data.agent.id, displayLabel: "Builder Agent" }, causeCategory: "runtime_request_timeout", failedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, attemptCount: 1, deliveryOutcome: "pending", remediation: { code: "retry_request", label: "Retry request" }, operationRelation: "targeted_trigger" }] };
 }
 function report(data: Fixture, count = 1): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 20, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
+  return { formatVersion: 1, protocolVersion: 21, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
 }
 function inspection(data: Fixture): LocalAgentSessionInspection {
-  return { protocolVersion: 20, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 21, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     recorded: { bindingState: "paused", origin: "started", adapter: "pi", contextMode: "fresh", activationSequence: 999999, activatedAt: "2026-10-01T09:00:00.000Z" },
     running: { status: "available", profile: { version: 1, capturedAt: "2026-10-01T10:00:00.000Z",
       model: { status: "verified", provider: "provider", id: "running-model" }, reasoning: { status: "verified", level: "low" },
@@ -59,8 +59,14 @@ function inspection(data: Fixture): LocalAgentSessionInspection {
       skills: { selection: "explicit", ids: ["future-skill"], complete: true } } },
     latestStart: "not_verified", lastStopBoundary: "not_recorded" };
 }
+function runtimeEvents(data: Fixture): LocalAgentSessionEvents {
+  return { protocolVersion: 21, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+    snapshot: { version: 1, source: "runtime_bridge", capturedAt: "2026-10-01T10:00:00.000Z", recordingSince: "2026-10-01T09:00:00.000Z", eventsDropped: 0,
+      events: [{ sequence: 1, observedAt: "2026-10-01T09:59:00.000Z", code: "turn_accepted" }, { sequence: 2, observedAt: "2026-10-01T09:59:01.000Z", code: "turn_dispatch_requested" }] } };
+}
 async function mocks(page: Page, data: Fixture) {
-  const counts = { history: 0, detail: 0, report: 0, inspection: 0, mutations: 0 };
+  const counts = { history: 0, detail: 0, report: 0, inspection: 0, events: 0, mutations: 0 };
+  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/session-events`, route => { counts.events++; return route.fulfill({ json: runtimeEvents(data) }); });
   await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/session-inspection`, route => { counts.inspection++; return route.fulfill({ json: inspection(data) }); });
   page.on("request", (request) => { if (request.method() !== "GET" && /\/local\/conversations\//.test(request.url())) counts.mutations++; });
   await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/operations?*`, (route) => {
@@ -73,6 +79,87 @@ async function mocks(page: Page, data: Fixture) {
   return counts;
 }
 function gate() { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; }
+
+for (const mobile of [false, true]) test(`recent Runtime events are explicit, read-only and keyboard accessible (${mobile ? "mobile" : "desktop"})`, async ({ page, request }) => {
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+  const data = await fixture(request), counts = await mocks(page, data);
+  await launch(page, request, data); expect(counts.events).toBe(0);
+  if (mobile) await page.getByRole("button", { name: "Show participants" }).click();
+  const modal = await open(page, data);
+  const region = modal.getByRole("region", { name: "Recent Runtime events", exact: true });
+  const show = region.getByRole("button", { name: "Show events", exact: true });
+  await expect(show).toBeEnabled(); expect(counts.events).toBe(0);
+  await show.focus(); await page.keyboard.press("Enter");
+  await expect(region.getByRole("list", { name: "Runtime observations" })).toContainText("Dispatch requested");
+  await expect(region).toContainText("Window since: 2026-10-01T09:00:00.000Z");
+  await expect(region).toContainText("Events evicted: 0");
+  expect(counts.events).toBe(1);
+  await region.getByRole("button", { name: "Refresh events" }).click();
+  await expect.poll(() => counts.events).toBe(2);
+  await modal.getByRole("button", { name: "Preview report" }).click();
+  await expect(modal.locator('[aria-label="Report preview"]')).not.toContainText("runtime_bridge");
+  await region.getByRole("button", { name: "Hide events" }).click();
+  await expect(region.getByRole("list")).toHaveCount(0);
+  await page.clock.install(); await page.clock.fastForward(15000);
+  expect(counts.events).toBe(2); expect(counts.mutations).toBe(0);
+  await region.getByRole("button", { name: "Show events" }).click();
+  await expect.poll(() => counts.events).toBe(3);
+  await modal.getByRole("button", { name: "Close participant details" }).click();
+  await page.clock.fastForward(15000); expect(counts.events).toBe(3);
+});
+
+test("closing and navigating fences delayed event reads without retaining a private cache", async ({ page, request }) => {
+  const data = await fixture(request); await mocks(page, data);
+  const pending = gate(); let entered = false;
+  await page.route(`**/agents/${data.agent.id}/session-events`, async route => { entered = true; await pending.promise; await route.fulfill({ json: runtimeEvents(data) }).catch(() => {}); });
+  try {
+    await launch(page, request, data); const modal = await open(page, data);
+    await modal.getByRole("button", { name: "Show events", exact: true }).click();
+    await expect.poll(() => entered).toBe(true);
+    await modal.getByRole("button", { name: "Hide events" }).click();
+    await expect(modal.getByRole("list", { name: "Runtime observations" })).toHaveCount(0);
+    await modal.getByRole("button", { name: "Close participant details" }).click();
+    await page.getByRole("link", { name: new RegExp(`^${data.alternate.name}`) }).first().click();
+    await expect(page.getByRole("heading", { name: `#${data.alternate.name}`, exact: true })).toBeVisible();
+    pending.release();
+    await expect(page.getByRole("list", { name: "Runtime observations" })).toHaveCount(0);
+    expect(await page.evaluate(() => Object.keys(localStorage).some(key => /runtime.?events/i.test(key)))).toBe(false);
+  } finally { pending.release(); }
+});
+
+test("event errors and observed session replacement clear earlier observations", async ({ page, request }) => {
+  const data = await fixture(request); await mocks(page, data); await launch(page, request, data);
+  const modal = await open(page, data), region = modal.getByRole("region", { name: "Recent Runtime events", exact: true });
+  await region.getByRole("button", { name: "Show events" }).click();
+  await expect(region).toContainText("Turn accepted");
+  await page.route(`**/agents/${data.agent.id}/session-inspection`, route => route.fulfill({ json: { ...inspection(data), recorded: { ...inspection(data).recorded, activatedAt: "2026-10-01T11:00:00.000Z" } } }));
+  await modal.getByRole("button", { name: "Refresh session" }).click();
+  await expect(region.getByRole("list")).toHaveCount(0); await expect(region.getByRole("button", { name: "Show events" })).toBeVisible();
+  await region.getByRole("button", { name: "Show events" }).click(); await expect(region).toContainText("Turn accepted");
+  await page.route(`**/agents/${data.agent.id}/session-events`, route => route.fulfill({ status: 503, json: { error: "PRIVATE_EVENT_ERROR" } }));
+  await region.getByRole("button", { name: "Refresh events" }).click();
+  await expect(region.getByRole("alert")).toHaveText("Unavailable"); await expect(region.getByRole("list")).toHaveCount(0);
+  await expect(modal).not.toContainText("PRIVATE_EVENT_ERROR");
+  await page.route(`**/agents/${data.agent.id}/session-events`, route => route.fulfill({ json: { ...runtimeEvents(data), availability: "changed", snapshot: undefined } }));
+  await region.getByRole("button", { name: "Refresh events" }).click(); await expect(region).toContainText("Changed during read");
+  await page.route(`**/agents/${data.agent.id}/session-events`, route => route.fulfill({ status: 404, json: { error: "PRIVATE_EVENT_ERROR" } }));
+  await region.getByRole("button", { name: "Refresh events" }).click();
+  await expect(modal.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
+});
+
+test("event labels are curated, timestamps are literal text and empty/clipped windows stay explicit", async ({ page, request }) => {
+  const data = await fixture(request); await mocks(page, data);
+  await page.route(`**/agents/${data.agent.id}/session-events`, route => route.fulfill({ json: { ...runtimeEvents(data), snapshot: { ...runtimeEvents(data).snapshot,
+    eventsDropped: 7, events: [{ sequence: 8, observedAt: '<img src=x onerror="window.EVENT_XSS=true">', code: "<script>SECRET</script>" }] } } }));
+  await launch(page, request, data); const modal = await open(page, data);
+  const region = modal.getByRole("region", { name: "Recent Runtime events", exact: true });
+  await region.getByRole("button", { name: "Show events" }).click();
+  await expect(region).toContainText("Events evicted: 7"); await expect(region).toContainText("<img src=x");
+  await expect(region).not.toContainText("SECRET"); expect(await page.evaluate(() => (window as unknown as { EVENT_XSS?: boolean }).EVENT_XSS)).toBeUndefined();
+  expect(await region.locator("img,script").count()).toBe(0);
+  await page.route(`**/agents/${data.agent.id}/session-events`, route => route.fulfill({ json: { ...runtimeEvents(data), snapshot: { ...runtimeEvents(data).snapshot, eventsDropped: 0, events: [] } } }));
+  await region.getByRole("button", { name: "Refresh events" }).click(); await expect(region).toContainText("No retained events");
+});
 
 test("session inspection is open-only and separates recorded, observed and future evidence without mutations", async ({ page, request }) => {
   const data = await fixture(request); const counts = await mocks(page, data);
@@ -239,7 +326,7 @@ for (const loss of ["session", "identity", "participation", "disabled-human", "d
   const data = await fixture(request);
   await mocks(page, data);
   let lost = false;
-  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 20, identityId: lost ? data.agent.id : data.ownerId } }));
+  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 21, identityId: lost ? data.agent.id : data.ownerId } }));
   else if (loss === "participation") await page.route(`**/conversations/${data.primary.id}`, (route) => route.fulfill({ json: { conversation: { ...data.primary, participants: lost ? data.primary.participants.filter(({ id }) => id !== data.ownerId) : data.primary.participants } } }));
   else if (loss === "disabled-membership") await page.route(`**/workspaces/${data.workspaceId}/members`, (route) => route.fulfill({ json: { members: data.members.map((member) => member.identityId === data.ownerId && lost ? { ...member, status: "disabled" } : member) } }));
   else if (loss === "workspace") {
@@ -253,10 +340,13 @@ for (const loss of ["session", "identity", "participation", "disabled-human", "d
   const modal = await open(page, data);
   await modal.getByRole("button", { name: "Preview report" }).click();
   await expect(modal.locator('[aria-label="Report preview"]')).toBeVisible();
+  await modal.getByRole("button", { name: "Show events", exact: true }).click();
+  await expect(modal.getByRole("list", { name: "Runtime observations" })).toBeVisible();
   lost = true;
   await expect(modal.locator('[aria-label="Report preview"]')).toHaveCount(0, { timeout: 10_000 });
   await expect(modal.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("PRIVATE_AUTH_ERROR");
+  await expect(page.getByRole("list", { name: "Runtime observations" })).toHaveCount(0);
 });
 
 test("server denial clears existing history and report; clipboard and report faults are safe", async ({ page, request }) => {
@@ -318,7 +408,7 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   const data = await fixture(request);
   const counts = await mocks(page, data);
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({ json: {
-    protocolVersion: 20, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
+    protocolVersion: 21, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
   } }));
   const pending = gate();
   let entered = false;
@@ -334,7 +424,7 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   await page.route(`**/local/conversations/${data.primary.id}/agents/${path}`, async (route) => {
     entered = true;
     await pending.promise;
-    await route.fulfill({ json: { protocolVersion: 20, conversationId: data.primary.id, results: [{ identityId: data.agent.id, outcome: "stopped" }] } });
+    await route.fulfill({ json: { protocolVersion: 21, conversationId: data.primary.id, results: [{ identityId: data.agent.id, outcome: "stopped" }] } });
   });
   try {
     await launch(page, request, data);
@@ -400,7 +490,7 @@ test("members never query privileged history; unavailable and missing timelines 
     await launch(page, request, data, "member");
     const modal = await open(page, data);
     await expect(modal.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
-    expect(counts.history).toBe(0);
+    expect(counts.history).toBe(0); expect(counts.events).toBe(0);
   } finally { await request.post(`${fixtureBase}/member-participant?value=false`); }
   await launch(page, request, data);
   await page.route("**/operations/selected-stop", (route) => route.fulfill({ json: { ...detail(data), detail: undefined } }));
@@ -417,7 +507,7 @@ test("issue notices select exact public trigger evidence, not a matching timesta
   const first = { ...detail(data).failures[0]!, causeCategory: "runtime_offline" };
   const other = { ...first, triggerSequence: 999_999, causeCategory: "runtime_rejected" };
   await page.route(`**/local/conversations/${data.primary.id}/turn-failures`, (route) => route.fulfill({ json: {
-    protocolVersion: 20, conversationId: data.primary.id,
+    protocolVersion: 21, conversationId: data.primary.id,
     notices: [first, other].map(({ participant, failedAt, triggerSequence }) => ({ participant, failedAt, triggerSequence })),
     diagnostics: [first, other],
   } }));

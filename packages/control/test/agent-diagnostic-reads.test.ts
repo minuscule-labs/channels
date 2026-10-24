@@ -11,7 +11,7 @@ import { LocalAgentDiagnosticReads, type DiagnosticReader } from "../src/agent-d
 import { LocalControlService, createLocalControlHttpServer } from "../src/server.ts";
 import { LocalControlBrowserSessions } from "../src/session.ts";
 import { LocalControlClient } from "../src/client.ts";
-import type { LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentDiagnosticReport, LocalConversationAgent, LocalAgentSessionInspection } from "../src/contracts.ts";
+import type { LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentDiagnosticReport, LocalConversationAgent, LocalAgentSessionInspection, LocalAgentSessionEvents } from "../src/contracts.ts";
 
 function gate() {
   let release!: () => void;
@@ -66,7 +66,14 @@ async function fixture() {
     reasoning: { status: "verified", level: "low" }, skills: { status: "verified", commandIds: ["skill:live"], complete: true }, prompt: "SECRET_PROMPT", nativeSessionId: "SECRET_NATIVE" });
   let profileReads = 0;
   let profileReader: (id: string, owner: string, options?: { signal?: AbortSignal }) => Promise<unknown> = async () => profile();
-  const runtime = { status: async () => "idle" as const, inspectSessionProfile: async (id: string, owner: string, options?: { signal?: AbortSignal }) => { profileReads++; return profileReader(id, owner, options); } };
+  const events = () => ({ version: 1, source: "runtime_bridge", capturedAt: now, recordingSince: now, eventsDropped: 0,
+    events: [{ sequence: 1, observedAt: now, code: "turn_accepted", prompt: "SECRET_PROMPT", nativeId: "SECRET_NATIVE" }], token: "SECRET_TOKEN" });
+  let eventReads = 0;
+  let eventReader: typeof profileReader = async () => events();
+  const runtime = { status: async () => "idle" as const,
+    inspectSessionProfile: async (id: string, owner: string, options?: { signal?: AbortSignal }) => { profileReads++; return profileReader(id, owner, options); },
+    inspectSessionEvents: async (id: string, owner: string, options?: { signal?: AbortSignal }) => { eventReads++; return eventReader(id, owner, options); },
+  };
   const sessionInspections = new LocalAgentSessionInspections({ client: directoryClient, store, runtimes: { pi: runtime } });
   const reads = () => new LocalAgentDiagnosticReads({ client: directoryClient, store, reader, sessionInspections });
   // Delegation permits changing a read source while retaining the same authenticated HTTP fixture.
@@ -84,6 +91,7 @@ async function fixture() {
   const get = (path = "/operations", init?: RequestInit) => fetch(`${server.endpoint}${base}${path}`, { ...init, headers: { ...headers, ...init?.headers } });
   return { client, directoryClient, owner, agent, otherAgent, workspace, conversation, journal, store, scope, record, reads, server, get, base, headers, binding, profile, sessionInspections,
     profileReads: () => profileReads, profileReader(value: typeof profileReader) { profileReader = value; },
+    events, eventReads: () => eventReads, eventReader(value: typeof eventReader) { eventReader = value; },
     source(value: DiagnosticReader | undefined) { reader = value; }, expire() { clock += 120_000; },
     actorState(value: typeof actorState) { actorState = value; },
     member(input: { accessRole?: "owner" | "admin" | "member"; status?: "active" | "disabled" }) {
@@ -94,6 +102,170 @@ async function fixture() {
     }); },
     async close() { await server.close(); await journal.close(); await core.close(); await rm(directory, { recursive: true, force: true }); } };
 }
+
+test("recent Runtime events are scoped, independently projected, bounded, read-only and excluded from reports", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const before = JSON.stringify(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id));
+  f.eventReader(async (id, owner, options) => { assert.equal(id, "SECRET_MANAGED"); assert.equal(owner, "SECRET_OWNER"); assert.ok(options?.signal); return f.events(); });
+  const response = await f.get("/session-events");
+  assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
+  const value = await response.json() as LocalAgentSessionEvents;
+  assert.equal(value.availability, "available");
+  assert.deepEqual(value.snapshot?.events.map(event => event.code), ["turn_accepted"]);
+  assert.ok(Buffer.byteLength(JSON.stringify(value)) <= 32 * 1024);
+  assert.doesNotMatch(JSON.stringify(value), /SECRET|token|nativeId|prompt|runtimeOwner|bindingId|generation/);
+  assert.equal(f.profileReads(), 0);
+  assert.equal(JSON.stringify(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id)), before);
+  assert.equal((await f.get("/session-events?path=/SECRET")).status, 400);
+  const count = f.eventReads();
+  const report = await (await f.get("/diagnostic-report?operationId=operation-selected")).json();
+  assert.equal(f.eventReads(), count); assert.doesNotMatch(JSON.stringify(report), /runtime_bridge|turn_accepted|recordingSince/);
+  await f.member({ accessRole: "member" });
+  assert.equal((await f.get("/session-events")).status, 404); assert.equal(f.eventReads(), count);
+});
+
+test("recent-event projection rejects unsupported/malformed/oversized evidence without fallbacks", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  for (const result of [undefined, { ...f.events(), version: 2 }, { ...f.events(), source: "pi_stderr" }, { ...f.events(), capturedAt: "SECRET" },
+    { ...f.events(), eventsDropped: 1 }, { ...f.events(), events: Array(201).fill(f.events().events[0]) },
+    { ...f.events(), events: [{ ...f.events().events[0], sequence: 0 }] },
+    { ...f.events(), events: [{ ...f.events().events[0], code: "SECRET" }] },
+    { ...f.events(), events: [{ ...f.events().events[0], observedAt: "/SECRET" }] }]) {
+    f.eventReader(async () => result);
+    const value = await (await f.get("/session-events")).json() as LocalAgentSessionEvents;
+    assert.equal(value.availability, "unavailable"); assert.equal(value.snapshot, undefined);
+    assert.doesNotMatch(JSON.stringify(value), /SECRET|running-model|future-model/);
+  }
+  f.eventReader(async () => { throw new Error("SECRET_PATH"); });
+  assert.equal((await (await f.get("/session-events")).json() as LocalAgentSessionEvents).availability, "unavailable");
+  f.eventReader(async () => ({ ...f.events(), eventsDropped: 7, events: Array.from({ length: 200 }, (_, i) => ({ sequence: i + 8, observedAt: f.events().capturedAt, code: "turn_accepted" })) }));
+  const bounded = await (await f.get("/session-events")).json() as LocalAgentSessionEvents;
+  assert.equal(bounded.snapshot?.events.length, 200); assert.equal(bounded.snapshot?.eventsDropped, 7);
+  const unsupported = new LocalAgentSessionInspections({ client: f.directoryClient, store: f.store, runtimes: { pi: {} } });
+  assert.equal((await unsupported.events(f.conversation.id, f.agent.id, f.owner.id)).availability, "unavailable");
+});
+
+test("events cannot wake transitional/offline sessions or cross ambiguous/legacy/foreign activation scopes", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const snapshot = await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id);
+  assert.ok(snapshot.activation);
+  const sources = [
+    { ...snapshot, bindings: [] }, { ...snapshot, bindings: [f.binding, f.binding] }, { ...snapshot, activation: undefined },
+    ...["sleeping", "waking", "offline", "replacing", "stopping", "disabled"].map(state => ({ ...snapshot, bindings: [{ ...f.binding, state }] })),
+    ...[{ workspaceId: "foreign" }, { conversationId: "foreign" }, { agentIdentityId: "foreign" }, { bindingId: "foreign" }, { bindingGeneration: 4 },
+      { runtimeOwnerId: "foreign" }, { managedSessionId: "foreign" }, { runtimeAdapter: "foreign" }, { state: "retired" }, { mapping: "legacy_unmapped" }]
+      .map(patch => ({ ...snapshot, activation: { ...snapshot.activation, ...patch } })),
+    ...[{ workspaceId: "foreign" }, { conversationId: "foreign" }, { agentIdentityId: "foreign" }, { runtimeOwnerId: undefined }]
+      .map(patch => ({ ...snapshot, bindings: [{ ...f.binding, ...patch }] })),
+  ];
+  let calls = 0;
+  for (const source of sources) {
+    const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
+      getSessionInspectionRecords: async () => source as typeof snapshot,
+      getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
+    }, runtimes: { pi: { inspectSessionEvents: async () => { calls++; return f.events(); } } } });
+    assert.equal((await inspector.events(f.conversation.id, f.agent.id, f.owner.id)).availability, "unavailable");
+  }
+  assert.equal(calls, 0);
+});
+
+test("replacement, binding-state and owner changes fence late recent events", async context => {
+  for (const mode of ["generation", "state", "owner"] as const) {
+    const f = await fixture(); context.after(() => f.close());
+    const entered = gate(), pending = gate();
+    f.eventReader(async () => { entered.release(); await pending.promise; return f.events(); });
+    const reading = f.get("/session-events"); await entered.promise;
+    try {
+      if (mode === "state") {
+        const now = new Date().toISOString();
+        assert.ok(await f.store.acquireBindingLease(f.binding.id, "event-state", now, new Date(Date.now() + 60000).toISOString()));
+        assert.ok(await f.store.updateBindingState(f.binding.id, 3, "event-state", "stopping", undefined, now));
+      } else assert.ok(await f.store.replaceBindingSession(f.binding.id, 3, "pi", "SECRET_REPLACEMENT", new Date().toISOString(), mode === "owner" ? "NEW_OWNER" : "SECRET_OWNER"));
+    } finally { pending.release(); }
+    const value = await (await reading).json() as LocalAgentSessionEvents;
+    assert.equal(value.availability, "changed"); assert.equal(value.snapshot, undefined);
+    assert.doesNotMatch(JSON.stringify(value), /SECRET|NEW_OWNER|turn_accepted/);
+  }
+});
+
+test("event reads reauthorize roles, actor/target participation, human identity and browser expiry before delivery", async context => {
+  for (const mode of ["role", "identity", "roster", "target", "session"] as const) {
+    const f = await fixture(); context.after(() => f.close());
+    const entered = gate(), pending = gate();
+    f.eventReader(async () => { entered.release(); await pending.promise; return f.events(); });
+    const reading = f.get("/session-events"); await entered.promise;
+    try {
+      if (mode === "role") await f.member({ accessRole: "member" });
+      else if (mode === "identity") f.actorState({ status: "disabled" });
+      else if (mode === "roster") await f.roster([f.agent.id]);
+      else if (mode === "target") await f.roster([f.owner.id]);
+      else f.expire();
+    } finally { pending.release(); }
+    const response = await reading;
+    assert.equal(response.status, mode === "session" ? 401 : 404);
+    assert.doesNotMatch(await response.text(), /SECRET|runtime_bridge|turn_accepted/);
+  }
+});
+
+test("event timeouts retain physical slots shared with profile reads and discard late evidence", { timeout: 8000 }, async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const entered = gate(), pending = gate();
+  f.eventReader(async () => { entered.release(); await pending.promise; return f.events(); });
+  try {
+    const reading = f.get("/session-events"); await entered.promise;
+    const started = performance.now();
+    assert.equal((await (await reading).json() as LocalAgentSessionEvents).availability, "unavailable");
+    assert.ok(performance.now() - started < 3000);
+    assert.equal((await (await f.get("/session-events")).json() as LocalAgentSessionEvents).availability, "unavailable");
+    assert.equal((await (await f.get("/session-inspection")).json() as LocalAgentSessionInspection).availability, "unavailable");
+    assert.equal(f.eventReads(), 1); assert.equal(f.profileReads(), 0);
+  } finally { pending.release(); }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await (await f.get("/session-events")).json() as LocalAgentSessionEvents).availability, "available");
+});
+
+test("disconnecting the event HTTP request aborts the source and suppresses late follow-up reads", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const entered = gate(), canceled = gate(), pending = gate();
+  f.eventReader(async (_id, _owner, options) => { options!.signal!.addEventListener("abort", canceled.release, { once: true }); entered.release(); await pending.promise; return f.events(); });
+  const abort = new AbortController();
+  const reading = f.get("/session-events", { signal: abort.signal }); await entered.promise;
+  abort.abort(); await assert.rejects(reading, { name: "AbortError" }); await canceled.promise;
+  assert.equal((await (await f.get("/session-events")).json() as LocalAgentSessionEvents).availability, "unavailable");
+  pending.release(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await (await f.get("/session-events")).json() as LocalAgentSessionEvents).availability, "available");
+});
+
+test("the final event identity fence follows delayed authorization reads", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const entered = gate(), pending = gate();
+  const original = f.directoryClient.getIdentity; let calls = 0;
+  f.directoryClient.getIdentity = async id => { if (++calls === 2) { entered.release(); await pending.promise; } return original(id); };
+  const reading = f.get("/session-events"); await entered.promise;
+  try { assert.ok(await f.store.replaceBindingSession(f.binding.id, 3, "pi", "SECRET_REPLACEMENT", new Date().toISOString(), "SECRET_OWNER")); }
+  finally { pending.release(); }
+  const value = await (await reading).json() as LocalAgentSessionEvents;
+  assert.equal(value.availability, "changed"); assert.equal(value.snapshot, undefined);
+});
+
+test("event inspection caps total physical metadata work and retains canceled slots until settlement", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const pending = gate(), entered = gate(); let calls = 0;
+  const targets = Array.from({ length: 17 }, (_, i) => ({ ...f.conversation.participants.find(participant => participant.id === f.agent.id)!, id: `target-${i}` }));
+  const inspector = new LocalAgentSessionInspections({ client: { ...f.directoryClient, getConversation: async () => ({ ...f.conversation, participants: [...f.conversation.participants, ...targets] }) }, store: {
+    getSessionInspectionRecords: async () => { if (++calls === 16) entered.release(); await pending.promise; return { bindings: [] }; },
+    getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
+  }, runtimes: {} });
+  const controllers = targets.slice(0, 16).map(() => new AbortController());
+  const reads = controllers.map((controller, i) => inspector.events(f.conversation.id, targets[i]!.id, f.owner.id, { signal: controller.signal }));
+  await entered.promise;
+  controllers.forEach(controller => controller.abort());
+  assert.ok((await Promise.allSettled(reads)).every(result => result.status === "rejected" && result.reason.name === "AbortError"));
+  assert.equal((await inspector.events(f.conversation.id, targets[16]!.id, f.owner.id)).availability, "unavailable");
+  assert.equal(calls, 16);
+  pending.release(); await new Promise(resolve => setImmediate(resolve));
+  await inspector.events(f.conversation.id, targets[16]!.id, f.owner.id); assert.equal(calls, 17);
+});
 
 test("session inspection separates recorded policy, live observations and saved future settings without private extensions or writes", async context => {
   const f = await fixture(); context.after(() => f.close());
@@ -248,14 +420,14 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
 test("diagnostic GETs require a live browser, active human, owner/admin and Conversation participation on every read", async (context) => {
   const f = await fixture(); context.after(() => f.close());
   assert.equal((await fetch(`${f.server.endpoint}${f.base}/operations`)).status, 401);
-  for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection"]) {
+  for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events"]) {
     const response = await f.get(path);
     assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 20);
+    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 21);
     assert.equal((await f.get(path, { method: "POST" })).status, 405);
   }
   await f.member({ accessRole: "member" });
-  for (const path of ["/operations", "/operations/operation-selected", "/operations/missing", "/diagnostic-report?operationId=operation-selected", "/session-inspection"]) {
+  for (const path of ["/operations", "/operations/operation-selected", "/operations/missing", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events"]) {
     const response = await f.get(path); assert.equal(response.status, 404); assert.deepEqual(await response.json(), { error: "Not found" });
   }
   await f.member({ accessRole: "admin" });
@@ -449,11 +621,13 @@ test("client encodes diagnostic scopes and passes caller read cancellation witho
     await client.agentOperationDetail("conv/one", "agent/one", "op/one");
     await client.agentDiagnosticReport("conv/one", "agent/one", "op/one");
     await client.agentSessionInspection("conv/one", "agent/one");
+    await client.agentSessionEvents("conv/one", "agent/one");
     const abort = new AbortController(); abort.abort();
     await assert.rejects(client.agentDiagnosticReport("conv", "agent", "op", abort.signal), { name: "AbortError" });
     assert.ok(requests[0]!.url.endsWith("conv%2Fone/agents/agent%2Fone/operations?cursor=50%3A1"));
     assert.ok(requests[2]!.url.endsWith("diagnostic-report?operationId=op%2Fone"));
     assert.ok(requests[3]!.url.endsWith("conv%2Fone/agents/agent%2Fone/session-inspection"));
+    assert.ok(requests[4]!.url.endsWith("conv%2Fone/agents/agent%2Fone/session-events"));
     assert.ok(requests.every(({ method }) => method === undefined));
   } finally { globalThis.fetch = original; }
 });

@@ -6,6 +6,7 @@ import { queryKeys } from "../lib/query-keys";
 import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 import { TriggerLink } from "./trigger-message-link";
 import { SessionContextInspection } from "./session-context-inspection";
+import { RecentRuntimeEvents } from "./recent-runtime-events";
 
 /** Mounted only for an open privileged agent surface. Shared queries contain public
  * authorization inputs only; diagnostic projections stay in the disposable child. */
@@ -66,6 +67,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
     }
   }, [state.revoked, key, queryClient]);
   const pending = requestPending || state.history?.operations.some(({ outcome }) => outcome === "pending") || state.detail?.detail?.operation.outcome === "pending";
+  useEffect(() => { if (pending) surface?.closeEvents(); }, [pending, surface]);
   useEffect(() => {
     if (!surface || !pending || state.revoked || state.historyError || state.detailError) return;
     if (performance.now() >= pollBudget) { setPollEnded(true); return; }
@@ -73,7 +75,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
       if (performance.now() >= pollBudget) { setPollEnded(true); return; }
       if (!surface.state.historyBusy) void surface.history();
       if (!surface.state.detailBusy) void surface.refreshDetail();
-      if (!surface.state.inspectionBusy && !surface.state.reportBusy) void surface.inspectSession();
+      if (!surface.state.inspectionBusy && !surface.state.reportBusy && !surface.state.eventsBusy) void surface.inspectSession();
     }, 5_000);
     return () => window.clearTimeout(timer);
   }, [pending, state, surface, pollBudget]);
@@ -83,7 +85,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
     setPollEnded(false);
     void surface.history();
     void surface.refreshDetail();
-    if (!surface.state.inspectionBusy && !surface.state.reportBusy) void surface.inspectSession();
+    if (!surface.state.inspectionBusy && !surface.state.reportBusy && !surface.state.eventsBusy) void surface.inspectSession();
   };
   if (!surface) return <p role="status">Opening operation history…</p>;
   if (state.revoked) return <p role="status">Privileged diagnostics cleared: access or the requested diagnostic resource is unavailable, or the browser session expired. Close and reopen after verifying access. Previously copied data cannot be revoked.</p>;
@@ -157,12 +159,12 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
       <h4 className="font-semibold">Diagnostic report</h4>
       <p className="text-[var(--muted)]">Sanitized local JSON. Copy always requests a fresh authorized snapshot, not the preview. Nothing is published to the Conversation or saved in browser storage. Previously copied or disclosed data cannot be revoked.</p>
       <div className="flex flex-wrap gap-2">
-        <button className="button-secondary" type="button" disabled={state.reportBusy} onClick={() => void surface.report()}>Preview report</button>
-        <button className="button-secondary" type="button" disabled={state.reportBusy} onClick={() => void surface.report((text) => navigator.clipboard.writeText(text))}>Copy fresh report</button>
+        <button className="button-secondary" type="button" disabled={state.reportBusy || state.eventsBusy} onClick={() => void surface.report()}>Preview report</button>
+        <button className="button-secondary" type="button" disabled={state.reportBusy || state.eventsBusy} onClick={() => void surface.report((text) => navigator.clipboard.writeText(text))}>Copy fresh report</button>
       </div>
       {state.reportBusy ? <p role="status">Reading a fresh report…</p> : null}
       {state.reportMessage ? <p role="status">{state.reportMessage}</p> : null}
       {state.preview ? <pre aria-label="Report preview" className="minu-scroll max-h-80 overflow-auto whitespace-pre-wrap break-all rounded border border-[var(--border)] p-3">{state.preview}</pre> : null}
     </section> : null}
-  </section></>;
+  </section><RecentRuntimeEvents state={state} surface={surface} /></>;
 }

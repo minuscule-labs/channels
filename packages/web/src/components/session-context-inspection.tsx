@@ -13,7 +13,7 @@ export function SessionContextInspection({ state, surface, loadedSequences, onVi
   return <section aria-label="Session and context" className="space-y-3 border-t border-[var(--border)] pt-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="font-semibold">Session &amp; context</h3>
-      <button className="button-secondary" type="button" disabled={state.inspectionBusy || state.reportBusy} onClick={() => void surface.inspectSession()}>Refresh session</button>
+      <button className="button-secondary" type="button" disabled={state.inspectionBusy || state.reportBusy || state.eventsBusy} onClick={() => void surface.inspectSession()}>Refresh session</button>
     </div>
     <p className="text-[var(--muted)]">Read-only snapshots. Refresh does not send a message, start or resume a worker, or read prompts, transcripts or logs.</p>
     {state.inspectionBusy ? <p role="status">Reading session metadata…</p> : null}

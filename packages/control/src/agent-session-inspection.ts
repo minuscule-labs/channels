@@ -2,10 +2,14 @@ import type { ConversationClient } from "@minu/channels-core/client";
 import type { ConversationAgentBindingRecord, RelayBindingStore, RuntimeSessionHistoryRecord, WorkspaceAgentConfig } from "@minu/channels-relay";
 import { authorizeDiagnosticAccess } from "./agent-diagnostic-reads.ts";
 import { LocalConfigurationRequestError } from "./configuration.ts";
-import { LOCAL_CONTROL_PROTOCOL_VERSION, type LocalAgentSessionInspection, type LocalRuntimeSessionProfile, type LocalReasoningLevel } from "./contracts.ts";
+import { safeSessionEvents } from "./agent-session-events.ts";
+import { LOCAL_CONTROL_PROTOCOL_VERSION, type LocalAgentSessionInspection, type LocalAgentSessionEvents, type LocalRuntimeSessionProfile, type LocalReasoningLevel } from "./contracts.ts";
 
 type Directory = Pick<ConversationClient, "getConversation" | "getWorkspace" | "listWorkspaceMembers" | "getIdentity">;
-export interface SessionProfilePort { inspectSessionProfile?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown> }
+export interface SessionProfilePort {
+  inspectSessionProfile?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  inspectSessionEvents?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+}
 type Store = Pick<RelayBindingStore, "getSessionInspectionRecords" | "getWorkspaceAgentConfig">;
 const unavailable = () => new LocalConfigurationRequestError("Not found", 404, "unavailable");
 const id = (value: unknown, max = 256): value is string => typeof value === "string" && value.length <= max && /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/.test(value) && !value.includes("..") && !value.includes("://") && !/^[a-zA-Z]:\//.test(value);
@@ -137,6 +141,63 @@ export class LocalAgentSessionInspections {
     } catch { result = base(); }
     finally { clearTimeout(timer); }
     await this.authorize(conversationId, identityId, actor);
+    return result;
+  }
+
+  /** Separate event projection: no saved configuration, raw logs, report inclusion or background subscription. */
+  async events(conversationId: string, identityId: string, actor: string, options: { signal?: AbortSignal } = {}): Promise<LocalAgentSessionEvents> {
+    const conversation = await this.authorize(conversationId, identityId, actor);
+    const base = (): LocalAgentSessionEvents => ({ protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, conversationId, participantIdentityId: identityId,
+      capturedAt: this.now(), availability: "unavailable" });
+    options.signal?.throwIfAborted();
+    const key = JSON.stringify([conversation.workspaceId, conversationId, identityId]);
+    if (this.reading.has(key) || this.reading.size >= 16) { await this.authorize(conversationId, identityId, actor); return base(); }
+    this.reading.add(key);
+    const signal = AbortSignal.any([AbortSignal.timeout(2000), ...(options.signal ? [options.signal] : [])]);
+    const task = (async (): Promise<LocalAgentSessionEvents> => {
+      try {
+        const before = await this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, identityId);
+        signal.throwIfAborted();
+        if (before.bindings.length !== 1) return base();
+        const binding = before.bindings[0]!, activation = before.activation;
+        if (binding.workspaceId !== conversation.workspaceId || binding.conversationId !== conversationId || binding.agentIdentityId !== identityId
+          || !binding.runtimeOwnerId || !["connected", "paused"].includes(binding.state)
+          || !activation || activation.state !== "active" || activation.mapping !== "managed"
+          || activation.workspaceId !== binding.workspaceId || activation.conversationId !== conversationId || activation.agentIdentityId !== identityId
+          || activation.bindingId !== binding.id || activation.bindingGeneration !== binding.generation || activation.runtimeAdapter !== binding.runtimeAdapter
+          || activation.managedSessionId !== binding.runtimeSessionId || activation.runtimeOwnerId !== binding.runtimeOwnerId) return base();
+        const runtime = this.options.runtimes[binding.runtimeAdapter];
+        if (!runtime?.inspectSessionEvents) return base();
+        let snapshot: LocalAgentSessionEvents["snapshot"];
+        try { snapshot = safeSessionEvents(await runtime.inspectSessionEvents(binding.runtimeSessionId, binding.runtimeOwnerId, { signal })); }
+        catch { signal.throwIfAborted(); }
+        signal.throwIfAborted();
+        // Authorize after content I/O, then take the final private identity fence with no later authorization await on success.
+        const fresh = await this.authorize(conversationId, identityId, actor);
+        signal.throwIfAborted();
+        if (fresh.workspaceId !== conversation.workspaceId) return { ...base(), availability: "changed" };
+        const after = await this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, identityId);
+        signal.throwIfAborted();
+        if (after.bindings.length !== 1 || bindingFence(after.bindings[0]) !== bindingFence(binding)
+          || activationFence(after.activation) !== activationFence(activation)) return { ...base(), availability: "changed" };
+        const result: LocalAgentSessionEvents = snapshot ? { ...base(), availability: "available", snapshot } : base();
+        return Buffer.byteLength(JSON.stringify(result)) <= 32 * 1024 ? result : base();
+      } finally { this.reading.delete(key); }
+    })();
+    let aborted: (() => void) | undefined, result: LocalAgentSessionEvents;
+    try {
+      result = await Promise.race([task, new Promise<never>((_, reject) => {
+        aborted = () => reject(new DOMException("Session events aborted", "AbortError"));
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) aborted();
+      })]);
+    } catch (error) {
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      result = base();
+    } finally { if (aborted) signal.removeEventListener("abort", aborted); }
+    options.signal?.throwIfAborted();
+    if (result.availability !== "available") await this.authorize(conversationId, identityId, actor);
+    options.signal?.throwIfAborted();
     return result;
   }
 }

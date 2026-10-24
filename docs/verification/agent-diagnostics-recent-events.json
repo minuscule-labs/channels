@@ -1,0 +1,40 @@
+{
+  "scope": "Bounded current-worker Runtime bridge observations alongside the existing Channels operation timeline; no raw harness logs or exports",
+  "target": {
+    "channelsCommit": "8fda4c47d74a496304f5051a55aab619ddc4da56",
+    "channelsBaseline": "e3fc1119a20479cb630c5fc31cd425d8578e9b86",
+    "runtimeCommit": "e92176054206d70e120d4b6641bda2a3d037eb84",
+    "runtimePullRequest": "https://github.com/minuscule-labs/runtime/pull/10",
+    "runtimeCi": "https://github.com/minuscule-labs/runtime/actions/runs/40135583889",
+    "runtimeCiResult": "Ubuntu and macOS passed before merge",
+    "protocolVersion": 21
+  },
+  "environment": { "node": "v22.23.0", "pnpm": "8.15.5", "localPlatform": "macOS" },
+  "authorChecks": [
+    { "command": "pnpm check", "result": "passed" },
+    { "command": "pnpm web:check", "result": "passed" },
+    { "command": "pnpm test", "result": "passed", "tests": 260 },
+    { "command": "pnpm web:test", "result": "passed", "tests": 151 },
+    { "command": "pnpm web:test:browser", "result": "passed", "tests": 107, "browser": "Chromium" },
+    { "command": "pnpm web:build", "result": "passed", "advisory": "Existing non-fatal chunk-size warning" },
+    { "command": "git diff --check", "result": "passed" },
+    { "check": "Documentation relative links and whitespace", "result": "passed" }
+  ],
+  "cleanCloneChecks": {
+    "setup": "Fresh local clones of the committed Channels target and merged Runtime pin, frozen-lockfile installs; no dirty-build override or worktree",
+    "commands": ["pnpm release:pack", "pnpm release:smoke"],
+    "result": "passed",
+    "packageMetadata": { "version": "0.0.14", "channelsCommit": "8fda4c47d74a496304f5051a55aab619ddc4da56", "runtimeCommit": "e92176054206d70e120d4b6641bda2a3d037eb84" },
+    "publication": "Verification package only; no version bump, tag, release or deployment",
+    "productionPreview": { "result": "passed", "tests": 5, "command": "MINU_TEST_WEB_PREVIEW=1 pnpm --filter @minu/channels-web exec playwright test test-browser/operation-diagnostics.spec.ts --grep 'recent Runtime events|closing and navigating fences delayed event|event errors|event labels'" }
+  },
+  "packagedRuntimeCompatibility": {
+    "result": "passed",
+    "boundary": "Actual bundled Runtime client and actual Runtime bridge with deterministic in-process callbacks, Channels HTTP browser authentication and a temporary real SQLite Relay store",
+    "checks": ["Owner isolation", "Exact current-activation lookup", "Fixed-field event projection", "32-KiB response and no-store", "Unchanged registration and logical store during reads", "Lifecycle/discovery/message fallbacks guarded against use", "Late role revocation", "Late generation replacement"],
+    "realPiAcceptance": false
+  },
+  "review": { "kind": "Author source/diff review", "result": "No unresolved actionable findings", "independentReview": false },
+  "limitations": ["Channels PR CI and merge are separate from these author checks", "Real-Pi and clean-account acceptance remain separately gated", "No real agents, existing services or real databases were changed", "Unresolved native database panic caveat is unchanged"],
+  "preservedUnrelatedFile": { "path": "docs/image-support.md", "sha256": "5fe3cd095c3606b3da9551a39b46d730e29968231fa11c453ea43990ade257e7", "included": false }
+}
