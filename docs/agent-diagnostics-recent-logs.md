@@ -1,6 +1,6 @@
 # Safe recent-event inspection — source audit and agreed contract
 
-**Status:** The user approved the structured-event slice, prioritizing what **Channels and Runtime** are doing over Pi/Codex internals. Runtime [PR #10](https://github.com/minuscule-labs/runtime/pull/10) passed Ubuntu/macOS CI and merged as `e92176054206d70e120d4b6641bda2a3d037eb84`. Channels pins that merged commit and locally implements the authorized API and disposable event view; Channels packaging/PR CI and merge remain pending. This feature is not released. Phases 1–3a shipped in v0.0.14; this is a separate follow-up to [agent diagnostics](agent-diagnostics.md).
+**Status:** The user approved the structured-event slice, prioritizing what **Channels and Runtime** are doing over Pi/Codex internals. Runtime [PR #10](https://github.com/minuscule-labs/runtime/pull/10) passed Ubuntu/macOS CI and merged as `e92176054206d70e120d4b6641bda2a3d037eb84`. Channels pins that merged commit and locally implements the authorized API and disposable event view; clean-package verification passes, with Channels PR CI and merge pending. This feature is not released. Phases 1–3a shipped in v0.0.14; this is a separate follow-up to [agent diagnostics](agent-diagnostics.md).
 
 ## Agreed direction
 
@@ -70,7 +70,7 @@ The existing fencing and disposable-state implementations are references, not ev
 1. **Source/contract agreed:** structured events, focused on Channels/Runtime rather than harness internals, current-worker-only retention and fixed bounds. No raw export authorization follows from this choice.
 2. **Runtime first (done):** producer/projection/client/bridge tests use temporary registrations, deterministic fake RPC and isolated servers. Author review found no unresolved actionable issue; PR #10 passed Ubuntu/macOS CI before merge. Channels pins only its merged commit.
 3. **Channels API/state/UI (locally implemented):** exact-scoped API, disposable UI and compatibility behavior. Temporary stores only; no schema or lifecycle changes.
-4. **Integration (in progress):** author code review against the agreed contract and full local regression/build checks pass as recorded below; clean-package verification and Channels PR CI/merge follow. Prior Phase 3a/release checks are not being substituted for this feature's tests.
+4. **Integration (in progress):** author code review against the agreed contract, full local regression/build and clean-package verification pass as recorded below; Channels PR CI/merge follow. Prior Phase 3a/release checks are not being substituted for this feature's tests.
 
 Required negative cases:
 
@@ -95,12 +95,14 @@ Target: Runtime implementation `68fe19a661df2b52507e616fec9504c0d50bf075`, merge
 
 ### Channels author verification
 
-Target: `feat/safe-recent-log-inspection` working change from Channels `e3fc1119a20479cb630c5fc31cd425d8578e9b86`, with merged Runtime pin `e92176054206d70e120d4b6641bda2a3d037eb84`.
+Target: Channels `8fda4c47d74a496304f5051a55aab619ddc4da56` on `feat/safe-recent-log-inspection`, from baseline `e3fc1119a20479cb630c5fc31cd425d8578e9b86`, with merged Runtime pin `e92176054206d70e120d4b6641bda2a3d037eb84`. See [structured evidence](verification/agent-diagnostics-recent-events.json).
 
 - `pnpm check`, `pnpm web:check`, `pnpm test` (**260 backend/storage tests**), `pnpm web:test` (**151 tests**), `pnpm web:test:browser` (**107 Chromium tests**) and `pnpm web:build` passed. The production build retains its existing non-fatal chunk-size advisory.
 - API checks include real Channels HTTP authentication with temporary stores, exact scope/owner/generation checks, fresh authorization and final metadata fencing, privacy, unsupported/unsafe sources, bounded retention, 16 physical slots surviving cancellation, response disconnects, deadline/late-result fencing and report exclusion. An initial check caught protocol-v20 test fixtures after the deliberate protocol bump; fixtures/expectations were updated before passing checks.
 - Browser checks include explicit open/Refresh only, close/navigation cancellation, disabled-human/membership/Workspace/role/session/participation loss, observed replacement, safe errors, literal-text rendering, curated labels, empty/evicted windows, mobile/keyboard access and no member queries. Existing lifecycle/timeline/report regression tests remain enabled.
 - Author source/diff review covers all changed/new production code and tests, including the independent Channels event allowlist and merged dependency. No unresolved change-related defect is known; this is not independent review or release approval.
-- Clean-package integration and Channels PR CI/merge are pending at this checkpoint. No real Pi/Codex agent, existing service or real database was used.
+- Fresh clean local clones at those exact commits passed frozen-lockfile installs, `pnpm release:pack` and `pnpm release:smoke`, without a dirty-build override. The verification package metadata names both exact commits. This is not a version bump, publication, tag or deployment. Five event-view browser cases also passed against the actual production-built web preview.
+- The **packaged Runtime client** passed actual Channels HTTP/browser authorization and temporary real SQLite compatibility with the real Runtime bridge and deterministic in-process callbacks. It verified owner scope, fixed fields, no-store/size bounds, unchanged registration/logical data during reads, forbidden lifecycle/discovery/message fallbacks, and late role/generation suppression. This does not involve Pi or an LLM.
+- Channels PR CI/merge remain pending at this checkpoint. No real Pi/Codex agent, existing service or real database was used.
 
 Fresh real-Pi/clean-account acceptance still requires separate scoped approval. The unresolved native database panic is unchanged; see [v0.0.14 caveats](releases/v0.0.14.md) and [shutdown evidence](verification/diagnostic-shutdown-0.0.14.md).
