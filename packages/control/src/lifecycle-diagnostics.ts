@@ -1,7 +1,7 @@
 import { safeDiagnosticObservation, type DiagnosticAction, type DiagnosticScope } from "@minu/channels-relay";
 import type { DiagnosticRecorder, RecordedOperation } from "./diagnostics-recorder.ts";
 
-export type LifecycleDiagnostics = Pick<DiagnosticRecorder, "begin">;
+export type LifecycleDiagnostics = Pick<DiagnosticRecorder, "begin"> & { delivery?: Pick<DiagnosticRecorder["delivery"], "begin" | "abandon"> };
 
 /** A synchronous, optional observer boundary; never await a recorder from lifecycle code. */
 export function beginLifecycleObservation(

@@ -53,6 +53,7 @@ export {
 } from "./session.ts";
 import type { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
 import type { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
+import type { LocalDeliveryReads } from "./delivery-reads.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalAgentActivity,
@@ -241,6 +242,7 @@ export interface LocalControlServiceOptions {
   lifecycle?: LocalControlAgentLifecyclePort;
   diagnosticReads?: Pick<LocalAgentDiagnosticReads, "history" | "detail" | "report">;
   sessionInspections?: Pick<LocalAgentSessionInspections, "read" | "events">;
+  deliveryReads?: Pick<LocalDeliveryReads, "read">;
   statusTimeoutMs?: number;
 }
 
@@ -698,6 +700,11 @@ export class LocalControlService {
   async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string) {
     if (!this.options.sessionInspections) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
     return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId);
+  }
+
+  async agentDeliveryTrails(conversationId: string, identityId: string, actorIdentityId: string, options: { cursor?: string; trailId?: string; signal?: AbortSignal }) {
+    if (!this.options.deliveryReads) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
+    return this.options.deliveryReads.read(conversationId, identityId, actorIdentityId, options);
   }
 
   async agentSessionEvents(conversationId: string, identityId: string, actorIdentityId: string, signal?: AbortSignal) {
@@ -1249,19 +1256,26 @@ export async function createLocalControlHttpServer(
         json(response, 200, options.service.capabilities(), origin);
         return;
       }
-      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report|session-inspection|session-events)$/);
+      const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report|session-inspection|session-events|delivery-trails)$/);
       if (diagnosticMatch && request.method === "GET" && browserSession) {
         const conversationId = decodeURIComponent(diagnosticMatch[1]!);
         const identityId = decodeURIComponent(diagnosticMatch[2]!);
         const operationId = diagnosticMatch[4] ? decodeURIComponent(diagnosticMatch[4]) : undefined;
         const events = diagnosticMatch[3] === "session-events";
+        const trails = diagnosticMatch[3] === "delivery-trails";
+        if (trails && [...url.searchParams.keys()].some(key => !["cursor", "trailId"].includes(key) || url.searchParams.getAll(key).length !== 1)) {
+          throw new LocalConfigurationRequestError("Invalid trail query", 400, "invalid");
+        }
         if (events && url.search) throw new LocalConfigurationRequestError("Invalid event query", 400, "invalid");
         const controller = new AbortController();
         const disconnected = () => controller.abort();
-        if (events) response.once("close", disconnected);
+        if (events || trails) response.once("close", disconnected);
         let value;
         try {
-          value = events
+          value = trails
+            ? await options.service.agentDeliveryTrails(conversationId, identityId, browserSession.identityId, { signal: controller.signal,
+              cursor: url.searchParams.get("cursor") ?? undefined, trailId: url.searchParams.get("trailId") ?? undefined })
+            : events
             ? await options.service.agentSessionEvents(conversationId, identityId, browserSession.identityId, controller.signal)
             : diagnosticMatch[3] === "session-inspection"
             ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId)

@@ -1619,7 +1619,8 @@ export async function restoreConversationBindings(
         : undefined,
       maxMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
       maxTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
-      diagnosticBinding: { id: connected.id, generation: connected.generation, workspaceId: connected.workspaceId },
+      diagnosticBinding: { id: connected.id, generation: connected.generation, workspaceId: connected.workspaceId,
+        runtimeAdapter: connected.runtimeAdapter, runtimeOwnerId: connected.runtimeOwnerId },
       isSleeping: remainsSleeping,
       verifyLease: async () => {
         const checkedAt = now();

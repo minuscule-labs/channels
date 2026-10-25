@@ -6,12 +6,14 @@ import { join } from "node:path";
 import { ConversationClient, createConversationHttpServer } from "@minu/channels-core";
 import { InMemoryRelayBindingStore, type DiagnosticRecord } from "@minu/channels-relay";
 import { DiagnosticJournal } from "@minu/channels-relay-storage-drizzle";
+import { LocalDeliveryReads } from "../src/delivery-reads.ts";
+import type { DiagnosticRecorder } from "../src/diagnostics-recorder.ts";
 import { LocalAgentSessionInspections } from "../src/agent-session-inspection.ts";
 import { LocalAgentDiagnosticReads, type DiagnosticReader } from "../src/agent-diagnostic-reads.ts";
 import { LocalControlService, createLocalControlHttpServer } from "../src/server.ts";
 import { LocalControlBrowserSessions } from "../src/session.ts";
 import { LocalControlClient } from "../src/client.ts";
-import type { LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentDiagnosticReport, LocalConversationAgent, LocalAgentSessionInspection, LocalAgentSessionEvents } from "../src/contracts.ts";
+import type { LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentDiagnosticReport, LocalConversationAgent, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails } from "../src/contracts.ts";
 
 function gate() {
   let release!: () => void;
@@ -82,7 +84,18 @@ async function fixture() {
     detail: (...args: Parameters<LocalAgentDiagnosticReads["detail"]>) => reads().detail(...args),
     report: (...args: Parameters<LocalAgentDiagnosticReads["report"]>) => reads().report(...args),
   };
-  const control = new LocalControlService({ conversations: client, bindings: store, runtimes: {}, diagnosticReads, sessionInspections });
+  const deliveryScope = { ...scope, bindingId: binding.id, generation: binding.generation, adapter: binding.runtimeAdapter, sessionId: binding.runtimeSessionId, ownerId: binding.runtimeOwnerId! };
+  const deliveryRecord = { ...deliveryScope, trailId: "trail-selected", triggerId: "SECRET_TRIGGER", triggerSequence: 9, epoch: "epoch-test", revision: 1, lastSequence: 1,
+    startedAt: now, observedAt: now, closedAt: now, outcome: "delivered" as const, eventsDropped: 0, recordingGap: false,
+    events: [{ sequence: 1, stage: "response_committed" as const, observedAt: now, elapsedMs: 10, responseSequence: 10 }] };
+  await journal.delivery.put(deliveryRecord);
+  let deliverySource: Pick<DiagnosticRecorder, "deliveryHistory" | "deliveryDetail"> = {
+    deliveryHistory: journal.delivery.history.bind(journal.delivery), deliveryDetail: journal.delivery.detail.bind(journal.delivery),
+  };
+  const deliveryReads = new LocalDeliveryReads({ client: directoryClient, store, reader: {
+    deliveryHistory: (...args) => deliverySource.deliveryHistory(...args), deliveryDetail: (...args) => deliverySource.deliveryDetail(...args),
+  } });
+  const control = new LocalControlService({ conversations: client, bindings: store, runtimes: {}, diagnosticReads, sessionInspections, deliveryReads });
   const server = await createLocalControlHttpServer({ service: control, port: 0, browserSessions: sessions, allowedOrigins: [sessions.browserOrigin] });
   const exchange = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
   const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0]!;
@@ -92,6 +105,7 @@ async function fixture() {
   return { client, directoryClient, owner, agent, otherAgent, workspace, conversation, journal, store, scope, record, reads, server, get, base, headers, binding, profile, sessionInspections,
     profileReads: () => profileReads, profileReader(value: typeof profileReader) { profileReader = value; },
     events, eventReads: () => eventReads, eventReader(value: typeof eventReader) { eventReader = value; },
+    deliveryRecord, deliveryScope, deliverySource(value: typeof deliverySource) { deliverySource = value; },
     source(value: DiagnosticReader | undefined) { reader = value; }, expire() { clock += 120_000; },
     actorState(value: typeof actorState) { actorState = value; },
     member(input: { accessRole?: "owner" | "admin" | "member"; status?: "active" | "disabled" }) {
@@ -102,6 +116,65 @@ async function fixture() {
     }); },
     async close() { await server.close(); await journal.close(); await core.close(); await rm(directory, { recursive: true, force: true }); } };
 }
+
+test("message delivery trails are exact-owned, projected, bounded, read-only and kept out of reports", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  const before = JSON.stringify(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id));
+  const response = await f.get("/delivery-trails"); assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
+  const value = await response.json() as LocalAgentDeliveryTrails;
+  assert.equal(value.availability, "available"); assert.equal(value.selected?.triggerSequence, 9); assert.equal(value.selected?.outcome, "delivered");
+  assert.deepEqual(value.retention, { days: 7, terminalLimit: 1000, eventLimit: 16 }); assert.ok(Buffer.byteLength(JSON.stringify(value)) <= 32768);
+  assert.doesNotMatch(JSON.stringify(value), /SECRET|bindingId|generation|epoch|sessionId|ownerId|triggerId/);
+  assert.equal(f.eventReads(), 0); assert.equal(f.profileReads(), 0);
+  assert.equal(JSON.stringify(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id)), before);
+  for (const key of ["workspaceId", "conversationId", "participantIdentityId", "bindingId", "adapter", "sessionId", "ownerId"] as const) {
+    await f.journal.delivery.put({ ...f.deliveryRecord, trailId: `foreign_${key}`, [key]: "foreign" });
+    const selected = await (await f.get(`/delivery-trails?trailId=foreign_${key}`)).json() as LocalAgentDeliveryTrails;
+    assert.equal(selected.selected, undefined); assert.equal(selected.history?.trails.length, 1);
+  }
+  const report = await (await f.get("/diagnostic-report?operationId=operation-selected")).json(); assert.doesNotMatch(JSON.stringify(report), /trail-selected|response_committed/);
+  for (const query of ["path=/private", "trailId=bad%2Fpath", "cursor=no", "trailId=one&trailId=two"]) assert.equal((await f.get(`/delivery-trails?${query}`)).status, 400);
+});
+
+test("trail reads independently remove hostile extensions and suppress malformed evidence", async context => {
+  const f = await fixture(); context.after(() => f.close());
+  f.deliverySource({ deliveryHistory: async () => ({ trails: [f.deliveryRecord], recordingGap: false, token: "SECRET" } as never),
+    deliveryDetail: async () => ({ ...f.deliveryRecord, body: "SECRET", events: [{ ...f.deliveryRecord.events[0], rawError: "SECRET" }] } as never) });
+  const clean = await (await f.get("/delivery-trails")).json() as LocalAgentDeliveryTrails;
+  assert.equal(clean.availability, "available"); assert.doesNotMatch(JSON.stringify(clean), /SECRET|rawError|body|triggerId|epoch/);
+  f.deliverySource({ deliveryHistory: async () => ({ trails: Array(51).fill(f.deliveryRecord), recordingGap: false }), deliveryDetail: async () => { throw new Error("must not read"); } });
+  assert.equal((await (await f.get("/delivery-trails")).json() as LocalAgentDeliveryTrails).availability, "unavailable");
+});
+
+test("role/session/roster loss and generation replacement suppress late message trails", async context => {
+  for (const mode of ["role", "session", "target", "generation"] as const) {
+    const f = await fixture(); context.after(() => f.close()); const entered = gate(), pending = gate();
+    f.deliverySource({ deliveryHistory: f.journal.delivery.history.bind(f.journal.delivery), deliveryDetail: async () => { entered.release(); await pending.promise; return f.deliveryRecord; } });
+    const reading = f.get("/delivery-trails"); await entered.promise;
+    try {
+      if (mode === "role") await f.member({ accessRole: "member" });
+      else if (mode === "session") f.expire();
+      else if (mode === "target") await f.roster([f.owner.id]);
+      else await f.store.replaceBindingSession(f.binding.id, 3, "pi", "SECRET_REPLACEMENT", new Date().toISOString(), "SECRET_OWNER");
+    } finally { pending.release(); }
+    const response = await reading;
+    if (mode === "generation") { const result = await response.json() as LocalAgentDeliveryTrails; assert.equal(result.availability, "changed"); assert.equal(result.history, undefined); assert.equal(result.selected, undefined); }
+    else { assert.equal(response.status, mode === "session" ? 401 : 404); assert.doesNotMatch(await response.text(), /trail-selected|SECRET|response_committed/); }
+  }
+});
+
+test("trail timeouts retain physical slots and late history cannot schedule a follow-up detail read", { timeout: 8000 }, async context => {
+  const f = await fixture(); context.after(() => f.close()); const entered = gate(), pending = gate(); let histories = 0, details = 0;
+  f.deliverySource({ deliveryHistory: async () => { histories++; entered.release(); await pending.promise; return { trails: [f.deliveryRecord], recordingGap: false }; },
+    deliveryDetail: async () => { details++; return f.deliveryRecord; } });
+  try {
+    const reading = f.get("/delivery-trails"); await entered.promise;
+    assert.equal((await (await reading).json() as LocalAgentDeliveryTrails).availability, "unavailable");
+    assert.equal((await (await f.get("/delivery-trails")).json() as LocalAgentDeliveryTrails).availability, "unavailable");
+    assert.equal(histories, 1); assert.equal(details, 0);
+  } finally { pending.release(); }
+  await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(details, 0);
+});
 
 test("recent Runtime events are scoped, independently projected, bounded, read-only and excluded from reports", async context => {
   const f = await fixture(); context.after(() => f.close());
@@ -420,14 +493,14 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
 test("diagnostic GETs require a live browser, active human, owner/admin and Conversation participation on every read", async (context) => {
   const f = await fixture(); context.after(() => f.close());
   assert.equal((await fetch(`${f.server.endpoint}${f.base}/operations`)).status, 401);
-  for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events"]) {
+  for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events", "/delivery-trails"]) {
     const response = await f.get(path);
     assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 21);
+    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 22);
     assert.equal((await f.get(path, { method: "POST" })).status, 405);
   }
   await f.member({ accessRole: "member" });
-  for (const path of ["/operations", "/operations/operation-selected", "/operations/missing", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events"]) {
+  for (const path of ["/operations", "/operations/operation-selected", "/operations/missing", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events", "/delivery-trails"]) {
     const response = await f.get(path); assert.equal(response.status, 404); assert.deepEqual(await response.json(), { error: "Not found" });
   }
   await f.member({ accessRole: "admin" });

@@ -1,6 +1,7 @@
 import type { ConversationCursorStore, ConversationMessage, ConversationMetadata, Participant } from "@minu/channels-core";
 import { ConversationClient, ConversationClientError } from "@minu/channels-core";
 import { safeDiagnosticObservation, type DiagnosticObservation, type DiagnosticStage, type DiagnosticEvent } from "./diagnostics.ts";
+import { safeDeliveryObservation, type DeliveryObservation } from "./delivery-diagnostics.ts";
 export interface RuntimePortMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
@@ -131,7 +132,7 @@ export interface AgentConversationBinding {
   /** Exclusive public Conversation sequence floor for a fresh session's context. */
   contextSequenceFloor?: number;
   /** Private binding snapshot used only for generation-gated local diagnostics. */
-  diagnosticBinding?: { id: string; generation: number; workspaceId?: string };
+  diagnosticBinding?: { id: string; generation: number; workspaceId?: string; runtimeAdapter?: string; runtimeOwnerId?: string };
   /** Private fencing check used to suppress work and responses after lease loss. */
   verifyLease?(): Promise<boolean>;
   /** Sleeping is private binding lifecycle state; the next eligible turn must wake first. */
@@ -172,6 +173,8 @@ export interface ConversationRuntimeRelayOptions {
   ): { cancel(): void };
   onBindingUnavailable?(binding: AgentConversationBinding): void;
   onAgentResponse?(binding: AgentConversationBinding, message: ConversationMessage): void;
+  onTurnDelivery?(binding: AgentConversationBinding, trigger: { id: string; sequence: number }): DeliveryObservation | undefined;
+  onTurnDeliveryClosed?(binding: AgentConversationBinding): void;
   onTurnFailureDiagnostic?(
     binding: AgentConversationBinding,
     event: {
@@ -290,6 +293,7 @@ interface TurnObservation {
 }
 
 interface BindingState {
+  delivery?: DeliveryObservation;
   binding: AgentConversationBinding;
   lastProcessedSequence: number;
   scanSequence: number;
@@ -614,6 +618,7 @@ export class ConversationRuntimeRelay {
     await this.waitForIdle();
     await Promise.all(this.states.map((state) => state.activityTask?.catch(() => undefined)));
     for (const state of this.states) {
+      this.closeDeliveryObservations(state);
       state.activityController = undefined;
       state.activityTask = undefined;
       state.drainController = undefined;
@@ -758,6 +763,7 @@ export class ConversationRuntimeRelay {
     const index = this.states.findIndex((state) => state.binding.participantId === participantId);
     if (index < 0) return;
     const [state] = this.states.splice(index, 1);
+    this.closeDeliveryObservations(state!);
     this.clearActivitySilence(state!);
     state!.activityController?.abort();
     state!.drainController?.abort();
@@ -1253,11 +1259,11 @@ export class ConversationRuntimeRelay {
       state.knownThroughSequence = Math.max(state.knownThroughSequence, pageEnd);
       if (messages.length < pageSize) state.needsHeadScan = false;
       const isActive = this.isActiveParticipant(state.binding.participantId);
-      state.queuedTurns += messages.reduce((count, message) => count + Number(
-        message.sequence > state.scanSequence
-          && isActive
-          && shouldWake(message, state.binding, this.roster?.participants ?? []),
-      ), 0);
+      state.queuedTurns += messages.reduce((count, message) => {
+        const eligible = message.sequence > state.scanSequence && isActive && shouldWake(message, state.binding, this.roster?.participants ?? []);
+        if (eligible) this.deliveryObservation(state, message);
+        return count + Number(eligible);
+      }, 0);
 
       for (const message of messages) {
         if (state.stopRequested || signal.aborted || !this.states.includes(state)) return;
@@ -1290,7 +1296,17 @@ export class ConversationRuntimeRelay {
     }
   }
 
+  private deliveryObservation(state: BindingState, trigger: ConversationMessage): DeliveryObservation | undefined {
+    try { return safeDeliveryObservation(this.options.onTurnDelivery?.(state.binding, { id: trigger.id, sequence: trigger.sequence })); }
+    catch { return undefined; }
+  }
+  private closeDeliveryObservations(state: BindingState): void {
+    try { this.options.onTurnDeliveryClosed?.(state.binding); } catch {}
+  }
+
   private async runTurn(state: BindingState, message: ConversationMessage): Promise<boolean> {
+    state.delivery = this.deliveryObservation(state, message);
+    state.delivery?.event("processing_started");
     this.clearActivitySilence(state);
     state.activeTrigger = message;
     state.startedAt = new Date().toISOString();
@@ -1302,9 +1318,11 @@ export class ConversationRuntimeRelay {
       await this.handleWithRetry(state, message);
     } catch (error) {
       if (error instanceof DeferredWakeError) {
+        state.delivery?.event("wake_deferred");
         completed = false;
         state.wakeRetryAttempt += 1;
       } else if (error instanceof MissingManagedSessionError) {
+        state.delivery?.finish("unknown");
         completed = false;
         state.wakeUnavailable = true;
       } else {
@@ -1320,6 +1338,7 @@ export class ConversationRuntimeRelay {
           this.options.onError?.(state.binding, new Error("Managed binding activity could not be persisted"));
         }
       }
+      if (completed) state.delivery?.finish("unknown");
       this.clearActive(state);
       if (completed) state.wakeRetryAttempt = 0;
     }
@@ -1370,6 +1389,7 @@ export class ConversationRuntimeRelay {
     state.retryDeadline = deadline;
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
       attempts += 1;
+      if (attempts > 1) state.delivery?.event("retrying", { attempt: attempts });
       try {
         await this.handle(state, message, deadline);
         return;
@@ -1544,6 +1564,7 @@ export class ConversationRuntimeRelay {
     state.stopObservation = undefined;
     this.clearActivitySilence(state);
     state.activeTrigger = undefined;
+    state.delivery = undefined;
     state.startedAt = undefined;
     state.startedMonotonicAt = undefined;
     state.failureDiagnostic = undefined;
@@ -1619,6 +1640,7 @@ export class ConversationRuntimeRelay {
         undefined,
         deadline,
       );
+      if (turn) state.delivery?.event("runtime_reused");
       if (!turn) {
         // Cancellation may win while the recoverable-turn lookup is in flight. Never
         // dispatch a new Runtime turn after that marker; no side effect has started.
@@ -1632,6 +1654,7 @@ export class ConversationRuntimeRelay {
           return;
         }
         this.assertBeforeDeadline(deadline);
+        state.delivery?.event("dispatch_requested");
         turn = await this.awaitRuntime(
           binding.runtime.startTurn(binding.sessionId, turnId, prompt),
           `start turn for ${binding.participantId}`,
@@ -1639,6 +1662,7 @@ export class ConversationRuntimeRelay {
           deadline,
         );
       }
+      state.delivery?.event("runtime_accepted");
       state.runtimeTurnAccepted = true;
       if (this.isCanceling(state)) this.requestRuntimeInterrupt(state, binding.participantId);
       turn = await this.waitForTurn(binding, turnId, turn, deadline);
@@ -1649,9 +1673,11 @@ export class ConversationRuntimeRelay {
         return;
       }
       if (turn.status === "failed") {
+        state.delivery?.event("runtime_failed");
         throw new RuntimeRejectedError(`Agent ${binding.participantId} turn was rejected`);
       }
-      if (turn.status === "interrupted") state.interruptedTriggerId = trigger.id;
+      if (turn.status === "interrupted") { state.delivery?.event("runtime_interrupted"); state.interruptedTriggerId = trigger.id; }
+      if (turn.status === "completed") state.delivery?.event("runtime_completed");
       response = turn.response;
     } else {
       // A legacy Runtime cannot expose a stable turn id. Once cancellation has begun,
@@ -1679,6 +1705,7 @@ export class ConversationRuntimeRelay {
         return;
       }
       state.runtimeTurnAccepted = true;
+      state.delivery?.event("dispatch_requested");
       try {
         this.assertBeforeDeadline(deadline);
         await this.awaitRuntime(
@@ -1703,6 +1730,7 @@ export class ConversationRuntimeRelay {
         deadline,
       );
       response = latestAssistant(after, before);
+      // Legacy response extraction is not evidence of a recoverable Runtime turn's status.
       if (ambiguousSendFailure && !response) {
         throw new PermanentTurnError(`Legacy Runtime send could not be reconciled: ${binding.participantId}`);
       }
@@ -1723,6 +1751,7 @@ export class ConversationRuntimeRelay {
     }
     if (state.interruptedTriggerId === trigger.id) {
       await this.markProcessed(state, trigger.sequence);
+      state.delivery?.finish("canceled");
       return;
     }
     if (!response) throw new Error(`Agent ${binding.participantId} produced no assistant response`);
@@ -1762,6 +1791,7 @@ export class ConversationRuntimeRelay {
     }
     // A return caused by fencing/shutdown is not proof of a committed terminal outcome.
     if (!this.controller?.signal.aborted && this.states.includes(state) && state.lastProcessedSequence >= trigger.sequence) {
+      state.delivery?.finish("canceled");
       state.cancelObservation?.observer.event("turn_settled", "confirmed", { source: "relay", triggerSequence: trigger.sequence });
       state.cancelObservation?.observer.finish("succeeded");
     }
@@ -1804,8 +1834,10 @@ export class ConversationRuntimeRelay {
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
       if (!await this.mayDeliverResponse(state) || state.stopRequested) return undefined;
       let committed;
+      const kind = state.failureDiagnostic ? "failure_notice" : terminal ? "cancellation_notice" : "reply";
       try {
         this.assertBeforeDeadline(deadline);
+        state.delivery?.event("delivery_requested", { kind });
         const terminalAttemptTimeout = terminal
           ? Math.max(1, Math.floor((deadline - this.monotonicNow()) / 2))
           : undefined;
@@ -1834,6 +1866,7 @@ export class ConversationRuntimeRelay {
           );
           return undefined;
         }
+        state.delivery?.event("delivery_retrying", { kind });
         if (permanent) throw new ResponseDeliveryFailedError("Conversation response was rejected");
         if (expired) throw new ResponseDeliveryFailedError("Conversation response delivery deadline expired");
         const retryAfterMs = error instanceof ConversationClientError ? error.retryAfterMs : undefined;
@@ -1852,6 +1885,10 @@ export class ConversationRuntimeRelay {
         }
         continue;
       }
+      const acknowledged = committed && typeof committed.created === "boolean" && Number.isSafeInteger(committed.message?.sequence) && committed.message.sequence > 0;
+      if (acknowledged) state.delivery?.event(committed.created ? "response_committed" : "response_reused", {
+        ...(committed.created ? { kind } : {}), responseSequence: committed.message.sequence,
+      });
       // postResponse atomically records the durable Conversation outcome and its public
       // cursor. Mirror that committed result into Relay's private recovery cursor only
       // after delivery succeeds; a retry uses the same idempotent response key.
@@ -1874,6 +1911,7 @@ export class ConversationRuntimeRelay {
             recordedAt: new Date().toISOString(),
           }), "finalize private turn failure", undefined, finalizationDeadline);
           state.lastProcessedSequence = Math.max(state.lastProcessedSequence, input.triggerSequence);
+          state.delivery?.event("cursor_committed");
           this.reportTurnFailureDiagnostic(state, "finalized", "delivered");
         } else {
           await this.markProcessed(state, input.triggerSequence, finalizationDeadline);
@@ -1881,6 +1919,8 @@ export class ConversationRuntimeRelay {
       } catch {
         throw new CommittedResponseCursorError("Committed response cursor could not be finalized");
       }
+      // A deduplicated response may predate this attempted notice/reply. Its content kind is not verified here.
+      state.delivery?.finish(!acknowledged ? "unknown" : !committed.created ? "response_reused" : kind === "failure_notice" ? "failed" : kind === "cancellation_notice" ? "canceled" : "delivered");
       return committed;
     }
     return undefined;
@@ -1906,6 +1946,8 @@ export class ConversationRuntimeRelay {
       requiresTurnFailure: state.failureDiagnostic !== undefined,
     }), "commit private delivery outcome", undefined, deadline);
     state.lastProcessedSequence = Math.max(state.lastProcessedSequence, input.triggerSequence);
+    state.delivery?.event("dead_letter", { reason });
+    state.delivery?.finish(reason === "cursor_commit_failed" ? "unknown" : "failed");
     this.reportTurnFailureDiagnostic(state, "finalized", reason);
   }
 
@@ -1930,6 +1972,7 @@ export class ConversationRuntimeRelay {
     );
     if (operation) {
       await this.awaitRuntime(operation, "advance private delivery cursor", undefined, deadline);
+      state.delivery?.event("cursor_committed");
     }
     state.lastProcessedSequence = Math.max(state.lastProcessedSequence, sequence);
   }
@@ -1982,6 +2025,7 @@ export class ConversationRuntimeRelay {
         );
         if (status === "idle") return;
         if (status === "offline") throw new RuntimeOfflineError("Agent Runtime is offline");
+        this.states.find(state => state.binding === binding)?.delivery?.event("runtime_waiting");
         await this.delayBeforeDeadline(this.options.turnPollIntervalMs ?? 250, deadline);
       }
     } catch (error) {

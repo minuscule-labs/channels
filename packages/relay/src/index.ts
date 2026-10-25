@@ -1,3 +1,5 @@
+export { DELIVERY_STAGES, DELIVERY_OUTCOMES, DELIVERY_KINDS, DELIVERY_REASONS, DELIVERY_LIMITS, deliveryRecord, deliveryDetail, deliverySummary, deliveryScope, deliveryEvent, safeDeliveryObservation,
+  type DeliveryScope, type DeliveryEvent, type DeliveryRecord, type DeliverySummary, type DeliveryDetail, type DeliveryHistory, type DeliveryObservation, type DeliveryStage, type DeliveryOutcome } from "./delivery-diagnostics.ts";
 export {
   DIAGNOSTIC_ACTIONS, DIAGNOSTIC_STAGES, DIAGNOSTIC_REASONS, DIAGNOSTIC_LIMITS, DIAGNOSTIC_TARGET_REASONS,
   diagnosticRecord, diagnosticSummary, safeDiagnosticObservation,

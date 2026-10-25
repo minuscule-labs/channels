@@ -22,6 +22,7 @@ import {
   type DiagnosticAction,
   type DiagnosticObservation,
   type DiagnosticScope,
+  type DeliveryScope,
   type DiagnosticBulkProgress,
   type DiagnosticOutcome,
 } from "@minu/channels-relay";
@@ -2411,6 +2412,14 @@ export class LocalAgentHost {
               conversationId,
               bindings: [binding],
               cursorStore: this.options.store,
+              onTurnDelivery: (attachedBinding, trigger) => {
+                const scope = this.turnDeliveryScope(conversationId, attachedBinding);
+                return scope ? this.options.diagnostics?.delivery?.begin(scope, trigger.id, trigger.sequence) : undefined;
+              },
+              onTurnDeliveryClosed: attachedBinding => {
+                const scope = this.turnDeliveryScope(conversationId, attachedBinding);
+                if (scope) this.options.diagnostics?.delivery?.abandon(scope);
+              },
               onTurnFailureDiagnostic: (attachedBinding, event) => this.diagnostic({
                 category: "turn_failure",
                 outcome: event.outcome,
@@ -2613,6 +2622,13 @@ export class LocalAgentHost {
     if (!recovery) return;
     clearTimeout(recovery.timer);
     this.recoveries.delete(bindingId);
+  }
+
+  private turnDeliveryScope(conversationId: string, binding: AgentConversationBinding): DeliveryScope | undefined {
+    const ref = binding.diagnosticBinding;
+    return ref?.workspaceId && ref.runtimeOwnerId && ref.runtimeAdapter ? { workspaceId: ref.workspaceId, conversationId,
+      participantIdentityId: binding.participantId, bindingId: ref.id, generation: ref.generation,
+      adapter: ref.runtimeAdapter, sessionId: binding.sessionId, ownerId: ref.runtimeOwnerId } : undefined;
   }
 
   private diagnostic(event: Omit<LocalAgentHostDiagnosticEvent, "timestamp">): void {

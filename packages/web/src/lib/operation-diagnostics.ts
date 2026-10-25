@@ -1,5 +1,5 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails } from "@minu/channels-control/contracts";
 
 export interface DiagnosticBrowserScope {
   humanIdentityId: string;
@@ -12,6 +12,7 @@ export function diagnosticScopeKey(scope: DiagnosticTargetScope): string {
 }
 
 interface DiagnosticReads {
+  agentDeliveryTrails(conversation: string, identity: string, options: { cursor?: string; trailId?: string; signal?: AbortSignal }): Promise<LocalAgentDeliveryTrails>;
   agentSessionEvents(conversation: string, identity: string, signal: AbortSignal): Promise<LocalAgentSessionEvents>;
   agentSessionInspection(conversation: string, identity: string, signal: AbortSignal): Promise<LocalAgentSessionInspection>;
   agentOperationHistory(conversation: string, identity: string, options: { cursor?: string; signal: AbortSignal }): Promise<LocalAgentOperationHistory>;
@@ -19,6 +20,10 @@ interface DiagnosticReads {
   agentDiagnosticReport(conversation: string, identity: string, operation: string, signal: AbortSignal): Promise<LocalAgentDiagnosticReport>;
 }
 export interface DiagnosticSurfaceState {
+  deliveryTrails?: LocalAgentDeliveryTrails;
+  trailsOpen?: boolean;
+  trailsBusy?: boolean;
+  trailsError?: string;
   runtimeEvents?: LocalAgentSessionEvents;
   eventsOpen?: boolean;
   eventsBusy?: boolean;
@@ -39,7 +44,7 @@ export interface DiagnosticSurfaceState {
   revoked?: boolean;
 }
 
-type Lane = "history" | "detail" | "report" | "inspection" | "events";
+type Lane = "history" | "detail" | "report" | "inspection" | "events" | "trails";
 /** Open-surface memory only: no QueryClient, browser storage, logs, or mutation endpoints.
  * Every lane is abortable AND fenced, including clients/clipboard implementations ignoring abort.
  * A new instance owns one human/resource scope; dispose destroys all retained projections.
@@ -49,6 +54,8 @@ export class DiagnosticSurface {
   private closed = false;
   private lanes = new Map<Lane, AbortController>();
   private cursor?: string;
+  private trailsCursor?: string;
+  private trailId?: string;
 
   constructor(readonly scope: DiagnosticTargetScope, private reads: DiagnosticReads,
     private changed: (state: DiagnosticSurfaceState) => void) {}
@@ -88,6 +95,39 @@ export class DiagnosticSurface {
     this.state = {};
   }
 
+  async openTrails() {
+    if (this.closed || this.state.revoked) return;
+    this.trailsCursor = undefined; this.trailId = undefined;
+    this.update({ trailsOpen: true });
+    await this.refreshTrails();
+  }
+  closeTrails() {
+    this.abort("trails"); this.trailsCursor = undefined; this.trailId = undefined;
+    this.update({ trailsOpen: false, deliveryTrails: undefined, trailsBusy: false, trailsError: undefined });
+  }
+  async refreshTrails(cursor = this.trailsCursor, trailId = this.trailId) {
+    if (!this.state.trailsOpen) return;
+    const controller = this.begin("trails"); if (!controller) return;
+    this.trailsCursor = cursor; this.trailId = trailId;
+    this.update({ deliveryTrails: undefined, trailsBusy: true, trailsError: undefined });
+    try {
+      const deliveryTrails = await this.reads.agentDeliveryTrails(this.scope.conversationId, this.scope.participantIdentityId, { cursor, trailId, signal: controller.signal });
+      if (!this.current("trails", controller)) return;
+      if (deliveryTrails.conversationId !== this.scope.conversationId || deliveryTrails.participantIdentityId !== this.scope.participantIdentityId) throw new Error("Unavailable");
+      if (deliveryTrails.availability === "changed") {
+        this.closeEvents(); this.abort("inspection"); this.abort("report");
+        this.update({ inspection: undefined, inspectionBusy: false, preview: undefined, reportBusy: false });
+      }
+      this.update({ deliveryTrails, trailsBusy: false });
+    } catch (error) {
+      if (!this.current("trails", controller) || this.failure(error)) return;
+      this.update({ deliveryTrails: undefined, trailsBusy: false, trailsError: "Unavailable" });
+    }
+  }
+  latestTrails() { this.trailsCursor = undefined; this.trailId = undefined; return this.refreshTrails(); }
+  selectTrail(id: string) { return this.refreshTrails(this.trailsCursor, id); }
+  moreTrails() { const cursor = this.state.deliveryTrails?.history?.nextCursor; if (cursor) { this.trailId = undefined; return this.refreshTrails(cursor); } }
+
   async openEvents() {
     if (this.closed || this.state.revoked || this.state.inspectionBusy || this.state.reportBusy) return;
     this.update({ eventsOpen: true });
@@ -106,6 +146,7 @@ export class DiagnosticSurface {
       const runtimeEvents = await this.reads.agentSessionEvents(this.scope.conversationId, this.scope.participantIdentityId, controller.signal);
       if (!this.current("events", controller)) return;
       if (runtimeEvents.availability === "changed") {
+        this.closeTrails();
         this.abort("inspection"); this.abort("report");
         this.update({ inspection: undefined, inspectionBusy: false, preview: undefined, reportBusy: false });
       }
@@ -125,7 +166,7 @@ export class DiagnosticSurface {
     try {
       const inspection = await this.reads.agentSessionInspection(this.scope.conversationId, this.scope.participantIdentityId, controller.signal);
       if (!this.current("inspection", controller)) return;
-      if (inspection.availability === "changed" || JSON.stringify(inspection.recorded) !== previous) this.closeEvents();
+      if (inspection.availability === "changed" || JSON.stringify(inspection.recorded) !== previous) { this.closeEvents(); this.closeTrails(); }
       if (inspection.availability === "changed") {
         this.abort("report");
         this.update({ preview: undefined, reportBusy: false, reportMessage: "The session changed during inspection. Request a fresh report to inspect the new snapshot." });
@@ -133,7 +174,7 @@ export class DiagnosticSurface {
       this.update({ inspection, inspectionBusy: false });
     } catch (error) {
       if (!this.current("inspection", controller) || this.failure(error)) return;
-      this.closeEvents();
+      this.closeEvents(); this.closeTrails();
       this.update({ inspection: undefined, inspectionBusy: false, inspectionError: "Session inspection failed. Current context and profile are not verified; refresh to read again." });
     }
   }
@@ -190,7 +231,7 @@ export class DiagnosticSurface {
     try {
       const report = await this.reads.agentDiagnosticReport(this.scope.conversationId, this.scope.participantIdentityId, id, controller.signal);
       if (!this.current("report", controller)) return;
-      if (report.session?.availability === "changed" || (report.session?.recorded && JSON.stringify(report.session.recorded) !== JSON.stringify(this.state.inspection?.recorded))) this.closeEvents();
+      if (report.session?.availability === "changed" || (report.session?.recorded && JSON.stringify(report.session.recorded) !== JSON.stringify(this.state.inspection?.recorded))) { this.closeEvents(); this.closeTrails(); }
       const text = diagnosticReportText(report);
       if (copy) {
         try { await copy(text); }

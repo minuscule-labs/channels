@@ -115,6 +115,26 @@ async function bulkFixture(diagnostics: LifecycleDiagnostics | undefined, count 
   return { f, agents, conversation };
 }
 
+test("actual host restoration wires managed message trails through the existing journal worker without changing public chat", async () => {
+  const f = await fixture();
+  const recorder = new DiagnosticRecorder({ path: join(f.directory, "diagnostics.db") });
+  try {
+    const messages = f.runtime.messages.bind(f.runtime); f.runtime.messages = async id => [...await messages(id)];
+    await until(() => recorder.available); await f.useDiagnostics(recorder);
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const trigger = await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "@builder SECRET_MESSAGE" });
+    const binding = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    const scope = { ...f.scope, bindingId: binding.id, generation: binding.generation, adapter: binding.runtimeAdapter, sessionId: binding.runtimeSessionId, ownerId: binding.runtimeOwnerId! };
+    await until(async () => (await recorder.deliveryHistory(scope)).trails[0]?.outcome === "delivered");
+    const history = await recorder.deliveryHistory(scope), detail = await recorder.deliveryDetail(scope, history.trails[0]!.trailId);
+    assert.equal(detail?.triggerSequence, trigger.sequence); assert.ok(detail?.events.some(event => event.stage === "response_committed"));
+    assert.ok(detail?.events.some(event => event.stage === "cursor_committed")); assert.ok(!detail?.events.some(event => event.stage === "runtime_accepted"), "legacy callback is not recoverable acceptance evidence");
+    assert.doesNotMatch(JSON.stringify(detail), /SECRET_MESSAGE|fixture response|sessionId|bindingId|ownerId/);
+    const chat = await f.client.listMessages(f.conversation.id); assert.equal(chat.length, 2); assert.equal(chat[1]?.body, "fixture response");
+    assert.ok((await recorder.history(f.scope)).operations.length > 0, "lifecycle history remains separate and available");
+  } finally { await f.host.close(); await recorder.close(); await f.close(); }
+});
+
 test("bulk diagnostics preserve three workers, ordered results, exact resume children and explicit idle skips", async () => {
   const collector = new LifecycleCollector();
   const { f, agents, conversation } = await bulkFixture(collector, 6);
@@ -467,7 +487,7 @@ test("real worker records lifecycle outcomes and daemon journal failure cannot p
       const publicHistory = await (await fetch(`${diagnosticBase}/operations`, { headers: readHeaders })).json() as {
         protocolVersion: number; coverage: string; operations: Array<{ operationId: string }>;
       };
-      assert.equal(publicHistory.protocolVersion, 21);
+      assert.equal(publicHistory.protocolVersion, 22);
       assert.equal(publicHistory.coverage, broken ? "unavailable" : "available");
       const selectedId = publicHistory.operations[0]?.operationId ?? "operation-unrecorded";
       const report = await fetch(`${diagnosticBase}/diagnostic-report?operationId=${selectedId}`, { headers: readHeaders });
