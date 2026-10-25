@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.15
+
+Release overview: [safe recent Runtime events](docs/releases/v0.0.15.md).
+
+- Add owner/admin-only **Recent Runtime events** in participant Details & diagnostics, alongside the existing Channels operation timeline. Inspect Runtime admission, dispatch, turn results, control acknowledgments and stop requests without exposing Pi/Codex logs or tool output.
+- Bound each current-worker snapshot to 200 structured events and 32 KiB, with a two-second resource-read deadline, capture/window times and explicit eviction coverage. Older, suspended or unavailable workers remain unavailable rather than being started or resumed.
+- Revalidate exact owner, binding and activation identity and fresh authorization before delivery. Keep event reads manual, cancel/fence late results and clear disposable browser state on close, navigation, access loss or observed replacement. Reports and clipboard actions do not include event content.
+- Pin merged Runtime `e92176054206d70e120d4b6641bda2a3d037eb84` and advance local-control protocol to v21. No new database migration, raw export or lifecycle-semantic change is included.
+- Preserve the outstanding real-Pi/clean-account acceptance and unresolved native database-panic caveats; automated, fake-RPC and packaged-integration evidence does not replace those gates.
+
 ## 0.0.14
 
 - Publish the accumulated chat, agent-control and diagnostics improvements described in the [plain-English release overview](docs/releases/v0.0.14.md).
