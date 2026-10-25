@@ -1,6 +1,6 @@
-import type { DiagnosticDetail, DiagnosticHistory } from "@minu/channels-relay";
+import type { DiagnosticDetail, DiagnosticHistory, DeliveryHistory, DeliveryDetail } from "@minu/channels-relay";
 
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 21 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 22 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -316,6 +316,17 @@ export interface LocalRuntimeSessionEvents {
   eventsDropped: number;
   events: Array<{ sequence: number; observedAt: string; code: LocalRuntimeEventCode }>;
 }
+export interface LocalAgentDeliveryTrails {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  conversationId: string;
+  participantIdentityId: string;
+  capturedAt: string;
+  availability: "available" | "unavailable" | "changed";
+  history?: DeliveryHistory;
+  selected?: DeliveryDetail;
+  retention: { days: number; terminalLimit: number; eventLimit: number };
+}
+
 export interface LocalAgentSessionEvents {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   conversationId: string;

@@ -101,10 +101,32 @@ async function diagnosticWorkerSmoke() {
       if (message.type === "ready") worker.postMessage({ type: "history", epoch, requestId: 1,
         scope: { workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent" } });
       else if (message.type === "read") {
+        if (message.requestId === 2) {
+          const trails = message.value?.trails;
+          if (!Array.isArray(trails) || trails.length !== 1 || trails[0].trailId !== "trail_smoke" || trails[0].triggerSequence !== 1
+            || trails[0].outcome !== "delivered" || /smoke-private|bindingId|sessionId|ownerId|triggerId/.test(JSON.stringify(message.value))) {
+            return fail(new Error("Packaged message-delivery journal projection failed"));
+          }
+          worker.postMessage({ type: "close", epoch });
+          return;
+        }
         if (message.requestId !== 1 || message.value?.coverage !== "available" || !Array.isArray(message.value.operations) || message.value.operations.length !== 0) {
           return fail(new Error("Packaged diagnostic journal read failed"));
         }
-        worker.postMessage({ type: "close", epoch });
+        const now = new Date().toISOString();
+        worker.postMessage({ type: "put_delivery", epoch, record: {
+          workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent",
+          bindingId: "smoke-private-binding", generation: 1, adapter: "pi", sessionId: "smoke-private-session", ownerId: "smoke-private-owner",
+          trailId: "trail_smoke", triggerId: "smoke-private-trigger", triggerSequence: 1, epoch, revision: 1, lastSequence: 1,
+          startedAt: now, observedAt: now, closedAt: now, outcome: "delivered", eventsDropped: 0, recordingGap: false,
+          events: [{ sequence: 1, stage: "response_committed", observedAt: now, elapsedMs: 0, kind: "reply", responseSequence: 2 }],
+        } });
+      } else if (message.type === "delivery_written") {
+        if (message.id !== "trail_smoke" || message.revision !== 1) return fail(new Error("Packaged message-delivery acknowledgment mismatch"));
+        worker.postMessage({ type: "delivery_history", epoch, requestId: 2, selection: {
+          workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent",
+          bindingId: "smoke-private-binding", generation: 1, adapter: "pi", sessionId: "smoke-private-session", ownerId: "smoke-private-owner",
+        } });
       } else if (message.type === "closed") closed = true;
       else fail(new Error("Packaged diagnostic journal unavailable"));
     });

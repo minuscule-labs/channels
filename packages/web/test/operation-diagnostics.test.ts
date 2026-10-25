@@ -1,13 +1,13 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails } from "@minu/channels-control/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { DiagnosticSurface, diagnosticReportText, diagnosticScopeKey, requestDispositionLabel } from "../src/lib/operation-diagnostics";
 
 const scope = { humanIdentityId: "owner", workspaceId: "workspace", conversationId: "conversation", participantIdentityId: "agent" };
-const history: LocalAgentOperationHistory = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
-const detail: LocalAgentOperationDetail = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
+const history: LocalAgentOperationHistory = { protocolVersion: 22, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
+const detail: LocalAgentOperationDetail = { protocolVersion: 22, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
 function report(capturedAt = "now"): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 21, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
+  return { formatVersion: 1, protocolVersion: 22, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,12 +15,15 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const inspection: LocalAgentSessionInspection = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
+const inspection: LocalAgentSessionInspection = { protocolVersion: 22, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
   running: { status: "not_verified" }, saved: { status: "unavailable" }, latestStart: "not_verified", lastStopBoundary: "not_recorded" };
-const events: LocalAgentSessionEvents = { protocolVersion: 21, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+const events: LocalAgentSessionEvents = { protocolVersion: 22, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
   snapshot: { version: 1, source: "runtime_bridge", capturedAt: "now", recordingSince: "window", eventsDropped: 0, events: [{ sequence: 1, observedAt: "now", code: "turn_accepted" }] } };
+const trails: LocalAgentDeliveryTrails = { protocolVersion: 22, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+  retention: { days: 7, terminalLimit: 1000, eventLimit: 16 }, history: { trails: [], recordingGap: false } };
 function fixture() {
   const reads = {
+    agentDeliveryTrails: vi.fn(async (_conversation: string, _identity: string, _options: { cursor?: string; trailId?: string; signal?: AbortSignal }) => trails),
     agentSessionEvents: vi.fn(async (_conversation: string, _identity: string, _signal: AbortSignal) => events),
     agentSessionInspection: vi.fn(async (_conversation: string, _identity: string, _signal: AbortSignal) => inspection),
     agentOperationHistory: vi.fn(async (_conversation: string, _identity: string, _options: { cursor?: string; signal: AbortSignal }) => history),
@@ -32,6 +35,31 @@ function fixture() {
 }
 
 describe("open-surface diagnostic ownership", () => {
+  it("message trails read only on explicit open/refresh and are cleared on close", async () => {
+    const { surface, reads } = fixture(); await surface.history(); await surface.inspectSession();
+    expect(reads.agentDeliveryTrails).not.toHaveBeenCalled(); await surface.openTrails(); expect(surface.state.deliveryTrails).toEqual(trails);
+    await surface.selectTrail("trail-one"); expect(reads.agentDeliveryTrails.mock.calls.at(-1)?.[2].trailId).toBe("trail-one");
+    surface.closeTrails(); expect(surface.state.deliveryTrails).toBeUndefined(); await surface.refreshTrails(); expect(reads.agentDeliveryTrails).toHaveBeenCalledTimes(2);
+  });
+  it("closing or navigating fences late trails from clients ignoring abort", async () => {
+    const { surface, reads } = fixture(); const pending = deferred<LocalAgentDeliveryTrails>(); reads.agentDeliveryTrails.mockReturnValueOnce(pending.promise);
+    const opening = surface.openTrails(); surface.closeTrails(); expect(reads.agentDeliveryTrails.mock.calls[0]?.[2].signal?.aborted).toBe(true);
+    pending.resolve(trails); await opening; expect(surface.state.deliveryTrails).toBeUndefined();
+    await surface.openTrails(); surface.dispose(); expect(surface.state).toEqual({});
+  });
+  it("trail refresh clears old evidence and denial revokes every privileged lane", async () => {
+    const { surface, reads } = fixture(); await surface.openTrails(); reads.agentDeliveryTrails.mockRejectedValueOnce(new Error("SECRET"));
+    await surface.refreshTrails(); expect(surface.state.deliveryTrails).toBeUndefined(); expect(surface.state.trailsError).toBe("Unavailable");
+    reads.agentDeliveryTrails.mockRejectedValueOnce(new LocalControlClientError("SECRET", 404)); await surface.refreshTrails(); expect(surface.state).toEqual({ revoked: true });
+    await surface.openTrails(); expect(reads.agentDeliveryTrails).toHaveBeenCalledTimes(3);
+  });
+  it("changed trails discard old report/profile and changed session inspection clears trails", async () => {
+    const { surface, reads } = fixture(); await surface.inspectSession(); await surface.select("operation"); await surface.report();
+    reads.agentDeliveryTrails.mockResolvedValueOnce({ ...trails, availability: "changed", history: undefined }); await surface.openTrails();
+    expect(surface.state.preview).toBeUndefined(); expect(surface.state.inspection).toBeUndefined();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, availability: "changed" }); await surface.inspectSession(); expect(surface.state.trailsOpen).toBe(false); expect(surface.state.deliveryTrails).toBeUndefined();
+  });
+
   it("loads events only on explicit open/refresh and clears them on close", async () => {
     const { surface, reads } = fixture();
     await surface.history(); await surface.inspectSession();

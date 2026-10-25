@@ -248,12 +248,13 @@ test("independent migration history is recorded and inconsistent ledgers disable
     await f.journal.close();
     const client = createClient({ url: `file:${f.path}` });
     try {
-      assert.equal((await client.execute("PRAGMA user_version")).rows[0]?.user_version, 1);
+      assert.equal((await client.execute("PRAGMA user_version")).rows[0]?.user_version, 2);
       const migrations = (await client.execute("SELECT version,applied_at FROM journal_migrations")).rows;
-      assert.equal(migrations.length, 1);
+      assert.equal(migrations.length, 2);
       assert.equal(migrations[0]?.version, 1);
+      assert.equal(migrations[1]?.version, 2);
       assert.ok(Number.isFinite(Date.parse(String(migrations[0]?.applied_at))));
-      await client.execute("UPDATE journal_migrations SET version=2");
+      await client.execute("UPDATE journal_migrations SET version=99 WHERE version=2");
     } finally { client.close(); }
     await assert.rejects(DiagnosticJournal.open(f.path, "epoch-b"), /Unsupported diagnostic migration history/);
   } finally { await f.close(); }

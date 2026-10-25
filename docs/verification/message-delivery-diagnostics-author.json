@@ -1,0 +1,42 @@
+{
+  "status": "implemented-locally-not-released",
+  "scope": "Advanced owner/admin-only message-delivery trails inside Details & diagnostics; no everyday UI changes",
+  "target": {
+    "baseline": "d132f2e04d282b2ddbee955589c6825ead232a50",
+    "implementationCommit": "427b527f66b145773c59c36e77383ab94bd52577",
+    "packagingCheckCommit": "7e209a76a3ceac34d5b2f771b9a45c8a962f7727",
+    "runtimePinUnchanged": "e92176054206d70e120d4b6641bda2a3d037eb84",
+    "protocolVersion": 22,
+    "optionalJournalSchemaVersion": 2
+  },
+  "bounds": { "retentionDays": 7, "completedTrailsInstallationWide": 1000, "independentLifecyclePool": true, "activeOrAwaitingWrite": 128, "eventsPerTrail": 16, "snapshotBytes": 8192, "page": 50, "responseBytes": 32768, "readMs": 2000 },
+  "authorChecks": [
+    { "command": "pnpm check", "result": "passed" },
+    { "command": "pnpm web:check", "result": "passed after backend declarations were built" },
+    { "command": "pnpm test", "result": "passed", "tests": 282 },
+    { "command": "pnpm check && node --test packages/control/dist/test/message-delivery-integration.test.js", "result": "passed", "additionalTests": 1, "scope": "Actual daemon, authenticated HTTP, real temporary Relay SQLite and native journal worker with a controlled managed fake Runtime" },
+    { "command": "pnpm web:test", "result": "passed", "tests": 157 },
+    { "command": "pnpm web:test:browser", "result": "passed", "tests": 111, "scope": "Full Chromium regression before the final small reused-response labeling correction; focused backend and rendering tests cover that correction" },
+    { "command": "pnpm web:build", "result": "passed", "advisory": "Existing non-fatal chunk-size warning" },
+    { "command": "node --check scripts/smoke-release-package.mjs", "result": "passed" },
+    { "command": "git diff --check", "result": "passed" }
+  ],
+  "cleanPackage": {
+    "result": "passed",
+    "targetCommit": "7e209a76a3ceac34d5b2f771b9a45c8a962f7727",
+    "setup": "Clean temporary local clones, exact unchanged merged Runtime pin, frozen-lockfile installs; no dirty-build override",
+    "commands": ["pnpm release:pack", "pnpm release:smoke"],
+    "newCoverage": "The actual packaged journal Worker accepts a delivery snapshot and returns a privacy-allowlisted trail history; lifecycle history and clean shutdown smoke remain enabled",
+    "productionPreview": { "result": "passed", "tests": 4, "command": "MINU_TEST_WEB_PREVIEW=1 pnpm --filter @minu/channels-web exec playwright test test-browser/operation-diagnostics.spec.ts --grep 'message delivery|message trail'" },
+    "publication": "Verification only; no new version, tag, release or installation update"
+  },
+  "review": {
+    "kind": "Author source/diff integration review",
+    "result": "No unresolved actionable findings",
+    "corrections": ["Deduplicated public responses have a separate acknowledged-existing outcome; do not infer an old reply/notice kind", "Restart reconciliation prunes the bounded active pool without temporarily exceeding the completed-trail cap", "Invalid diagnostic scope input cannot disable lifecycle diagnostics"],
+    "independentReview": false
+  },
+  "observedVerificationIssues": ["Protocol fixtures needed the intentional v21 to v22 update", "A synthetic clipping test initially exercised coalescing rather than overflow", "A lifecycle test fixture used an invalid zero sequence", "A parallel web type check raced generated Relay declarations; sequential checking passed without source changes", "The new daemon test initially expected HTTP 200 for Start; the established endpoint correctly returns 201 and the test was corrected"],
+  "limitations": ["PR CI is a separate integration gate", "Records start at observed eligible turns; detached/paused/unobserved messages are not reconstructed", "Older application versions cannot read the newer optional journal schema", "Logical expiry is not secure erasure of SQLite pages, WAL or backups", "No real agent or existing service/database was used or modified", "The earlier native database panic remains without a proven cause"],
+  "preservedUnrelatedFile": { "path": "docs/image-support.md", "sha256": "5fe3cd095c3606b3da9551a39b46d730e29968231fa11c453ea43990ade257e7", "included": false }
+}

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
+import { DeliveryRecorder } from "./delivery-recorder.ts";
+import { deliveryScope, type DeliveryScope, type DeliveryHistory, type DeliveryDetail } from "@minu/channels-relay";
 import {
   DIAGNOSTIC_LIMITS, DIAGNOSTIC_ACTIONS, DIAGNOSTIC_STAGES, DIAGNOSTIC_REASONS, diagnosticRecord, type DiagnosticCorrelations, type DiagnosticRequestDisposition, type DiagnosticAction, type DiagnosticRecord, type DiagnosticScope,
   type DiagnosticTurnReference, type DiagnosticObservation, type DiagnosticHistory, type DiagnosticDetail, type DiagnosticBulkProgress, type DiagnosticTargetResult,
@@ -26,11 +28,12 @@ interface ReadRequest { resolve(value: unknown): void; reject(error: Error): voi
 /** All I/O is off-thread. Neither begin(), event(), nor finish() waits or throws into lifecycle work. */
 export class DiagnosticRecorder {
   readonly epoch = randomUUID();
+  readonly delivery: DeliveryRecorder;
   private worker?: Worker;
   private state: "starting" | "ready" | "unavailable" | "closed" = "starting";
   private tracked = new Map<string, Tracked>();
   private dirty = new Map<string, DiagnosticRecord>();
-  private writing?: { id: string; revision: number; timer: ReturnType<typeof setTimeout> };
+  private writing?: { id: string; revision: number; delivery: boolean; timer: ReturnType<typeof setTimeout> };
   private reads = new Map<number, ReadRequest>();
   private requestId = 0;
   private gap = false;
@@ -45,6 +48,7 @@ export class DiagnosticRecorder {
   constructor(private options: DiagnosticRecorderOptions) {
     this.now = options.now ?? (() => new Date());
     this.monotonic = options.monotonicNow ?? (() => performance.now());
+    this.delivery = new DeliveryRecorder(this.epoch, () => !this.closing && (this.state === "ready" || this.state === "starting"), () => this.flush(), this.now, this.monotonic);
     try {
       if (typeof options.path !== "string" || options.path.length > 4096) throw new Error("Invalid diagnostic path");
       this.worker = (options.workerFactory ?? ((url, config) => new Worker(url, config)))(
@@ -215,25 +219,32 @@ export class DiagnosticRecorder {
   }
 
   private flush() {
-    if (this.state !== "ready" || this.writing || !this.dirty.size) return;
-    const [id, record] = this.dirty.entries().next().value!;
-    this.dirty.delete(id);
-    this.writing = { id, revision: record.revision, timer: setTimeout(() => this.disable(), this.options.ioTimeoutMs ?? 2_000) };
-    try { this.worker!.postMessage({ type: "put", epoch: this.epoch, record, gap: this.gap }); }
+    if (this.state !== "ready" || this.writing || (!this.dirty.size && !this.delivery.dirty.size)) return;
+    // A message flood cannot consume lifecycle capture slots or overtake a waiting lifecycle write.
+    const isDelivery = !this.dirty.size;
+    const queue = isDelivery ? this.delivery.dirty : this.dirty;
+    const [id, record] = queue.entries().next().value!;
+    queue.delete(id);
+    this.writing = { id, revision: record.revision, delivery: isDelivery, timer: setTimeout(() => this.disable(), this.options.ioTimeoutMs ?? 2_000) };
+    try { this.worker!.postMessage({ type: isDelivery ? "put_delivery" : "put", epoch: this.epoch, record, gap: isDelivery ? this.delivery.recordingGap : this.gap }); }
     catch { this.disable(); }
   }
 
-  private receive(message: { type?: string; epoch?: string; id?: string; revision?: number; requestId?: number; value?: unknown; gap?: boolean }) {
+  private receive(message: { type?: string; epoch?: string; id?: string; revision?: number; requestId?: number; value?: unknown; gap?: boolean; deliveryGap?: boolean }) {
     if (message.epoch !== this.epoch || this.state === "unavailable" || this.state === "closed") return;
     if (message.type === "ready") {
       clearTimeout(this.startup);
       this.state = "ready";
       this.gap ||= message.gap === true;
+      this.delivery.recordingGap ||= message.deliveryGap === true;
       this.flush();
-    } else if (message.type === "written") {
-      if (!this.writing || this.writing.id !== message.id || this.writing.revision !== message.revision) return;
+    } else if (message.type === "written" || message.type === "delivery_written" || message.type === "delivery_dropped") {
+      if (!this.writing || this.writing.id !== message.id || this.writing.revision !== message.revision
+        || this.writing.delivery !== (message.type !== "written")) return;
       clearTimeout(this.writing.timer);
       this.writing = undefined;
+      if (message.type === "delivery_dropped") this.delivery.disable();
+      if (message.type === "delivery_written") this.delivery.acknowledged(message.id!, message.revision!);
       const tracked = this.tracked.get(message.id!);
       if (tracked && tracked.record.outcome !== "pending" && tracked.record.revision === message.revision) this.tracked.delete(message.id!);
       this.flush();
@@ -247,6 +258,7 @@ export class DiagnosticRecorder {
       this.state = "closed";
       this.tracked.clear();
       this.dirty.clear();
+      this.delivery.disable();
       this.rejectReads();
     } else if (message.type === "unavailable") this.disable();
   }
@@ -260,6 +272,7 @@ export class DiagnosticRecorder {
     this.writing = undefined;
     this.dirty.clear();
     this.tracked.clear();
+    this.delivery.disable();
     this.rejectReads();
     // No replacement is started while an old worker might still be running.
     try { this.stopped = this.worker?.terminate().catch(() => -1); } catch { /* optional diagnostics only */ }
@@ -270,16 +283,19 @@ export class DiagnosticRecorder {
     this.reads.clear();
   }
 
-  private read(type: "history" | "detail" | "correlated", scope: DiagnosticScope, input?: string, reference?: DiagnosticTurnReference): Promise<unknown> {
+  private read(type: "history" | "detail" | "correlated" | "delivery_history" | "delivery_detail", scope: DiagnosticScope, input?: string, reference?: DiagnosticTurnReference, selection?: DeliveryScope): Promise<unknown> {
     if (!this.available || this.closing || this.reads.size >= 16) return Promise.reject(new Error("Diagnostic journal unavailable"));
     if (![scope.workspaceId, scope.conversationId, scope.participantIdentityId].every((id) => typeof id === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(id))
       || (input !== undefined && (typeof input !== "string" || input.length > 512))) return Promise.reject(new Error("Invalid diagnostic query"));
+    let safeSelection: DeliveryScope | undefined;
+    try { safeSelection = selection ? deliveryScope(selection) : undefined; }
+    catch { return Promise.reject(new Error("Invalid diagnostic query")); }
     return new Promise((resolve, reject) => {
       const requestId = ++this.requestId;
       const timer = setTimeout(() => this.disable(), this.options.ioTimeoutMs ?? 2_000);
       this.reads.set(requestId, { resolve, reject, timer });
       try { this.worker!.postMessage({ type, scope: { workspaceId: scope.workspaceId, conversationId: scope.conversationId,
-        participantIdentityId: scope.participantIdentityId }, input, reference, requestId, epoch: this.epoch }); }
+        participantIdentityId: scope.participantIdentityId }, input, reference, selection: safeSelection, requestId, epoch: this.epoch }); }
       catch { this.disable(); }
     });
   }
@@ -300,14 +316,24 @@ export class DiagnosticRecorder {
     }) as string[];
   }
 
+  async deliveryHistory(scope: DeliveryScope, cursor?: string): Promise<DeliveryHistory> {
+    const value = await this.read("delivery_history", scope, cursor, undefined, scope) as DeliveryHistory;
+    return { ...value, recordingGap: value.recordingGap || this.delivery.recordingGap };
+  }
+  async deliveryDetail(scope: DeliveryScope, id: string): Promise<DeliveryDetail | undefined> {
+    const value = await this.read("delivery_detail", scope, id, undefined, scope) as DeliveryDetail | undefined;
+    return value && { ...value, recordingGap: value.recordingGap || this.delivery.recordingGap };
+  }
+
   async close(): Promise<void> {
+    this.delivery.finishPending();
     this.closing = true;
     const deadline = performance.now() + 500;
-    while ((this.state === "starting" || this.writing || this.dirty.size) && this.state !== "unavailable" && performance.now() < deadline) {
+    while ((this.state === "starting" || this.writing || this.dirty.size || this.delivery.dirty.size) && this.state !== "unavailable" && performance.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    if (this.state === "ready" && !this.writing && !this.dirty.size) {
-      try { this.worker!.postMessage({ type: "close", epoch: this.epoch, gap: this.gap }); }
+    if (this.state === "ready" && !this.writing && !this.dirty.size && !this.delivery.dirty.size) {
+      try { this.worker!.postMessage({ type: "close", epoch: this.epoch, gap: this.gap, deliveryGap: this.delivery.recordingGap }); }
       catch { this.disable(); }
       while (this.state === "ready" && performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
     }

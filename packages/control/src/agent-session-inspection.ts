@@ -52,12 +52,12 @@ function savedProfile(config: WorkspaceAgentConfig | undefined): LocalAgentSessi
     ...(number(config.handoffSummaryTokens) ? { handoffSummaryTokens: config.handoffSummaryTokens } : {}),
   } };
 }
-function bindingFence(binding: ConversationAgentBindingRecord | undefined) {
+export function bindingFence(binding: ConversationAgentBindingRecord | undefined) {
   return binding && JSON.stringify([binding.workspaceId, binding.conversationId, binding.agentIdentityId, binding.id, binding.generation,
     binding.runtimeAdapter, binding.runtimeSessionId, binding.runtimeOwnerId, binding.state]);
 }
 
-function activationFence(row: RuntimeSessionHistoryRecord | undefined) {
+export function activationFence(row: RuntimeSessionHistoryRecord | undefined) {
   return row && JSON.stringify([row.id, row.workspaceId, row.conversationId, row.agentIdentityId, row.bindingId, row.bindingGeneration,
     row.runtimeAdapter, row.mapping, row.managedSessionId, row.runtimeOwnerId, row.legacyRuntimeSessionRef, row.state,
     row.origin, row.contextMode, row.conversationSequenceAtActivation, row.activatedAt]);

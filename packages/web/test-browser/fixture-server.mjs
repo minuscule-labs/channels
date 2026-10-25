@@ -208,10 +208,10 @@ const localControl = await createLocalControlHttpServer({
       },
       async listConversationTurnFailures(conversationId) {
         if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 21, conversationId, notices: [], diagnostics: [] };
+          return { protocolVersion: 22, conversationId, notices: [], diagnostics: [] };
         }
         return {
-          protocolVersion: 21,
+          protocolVersion: 22,
           conversationId,
           notices: [{
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },

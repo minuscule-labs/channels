@@ -4,7 +4,7 @@ import type {
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
-  LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport, LocalAgentSessionInspection, LocalAgentSessionEvents,
+  LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails,
   LocalBulkAgentLifecycleResponse,
   LocalConversationAgent,
   LocalConversationAgentsResponse,
@@ -92,6 +92,13 @@ export class LocalControlClient {
 
   async agentSessionInspection(conversationId: string, identityId: string, signal?: AbortSignal): Promise<LocalAgentSessionInspection> {
     return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/session-inspection`, { signal });
+  }
+
+  async agentDeliveryTrails(conversationId: string, identityId: string, options: { cursor?: string; trailId?: string; signal?: AbortSignal } = {}): Promise<LocalAgentDeliveryTrails> {
+    const search = new URLSearchParams();
+    if (options.cursor !== undefined) search.set("cursor", options.cursor);
+    if (options.trailId !== undefined) search.set("trailId", options.trailId);
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}/delivery-trails${search.size ? `?${search}` : ""}`, { signal: options.signal });
   }
 
   async agentSessionEvents(conversationId: string, identityId: string, signal?: AbortSignal): Promise<LocalAgentSessionEvents> {

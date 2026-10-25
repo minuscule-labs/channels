@@ -6,6 +6,7 @@ import {
 import { chmod, mkdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { DiagnosticRecorder } from "./diagnostics-recorder.ts";
+import { LocalDeliveryReads } from "./delivery-reads.ts";
 import { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
 import { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
 import {
@@ -129,6 +130,7 @@ export async function createLocalControlDaemon(
       lifecycle: agentHost,
       diagnosticReads: new LocalAgentDiagnosticReads({ client, store, reader: diagnostics, now: options.now, sessionInspections }),
       sessionInspections,
+      deliveryReads: new LocalDeliveryReads({ client, store, reader: diagnostics, now: options.now }),
       configuration: new LocalAgentHostConfiguration({
         client,
         store,

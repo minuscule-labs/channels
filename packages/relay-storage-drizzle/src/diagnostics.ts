@@ -5,6 +5,7 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DeliveryJournal, DELIVERY_SCHEMA } from "./delivery-diagnostics.ts";
 
 // Independent versioned schema. Never migrate or open relay.db through this store.
 const VERSION_ONE = [
@@ -50,7 +51,11 @@ export class DiagnosticQueryError extends Error {
 export class DiagnosticJournal {
   private gap: boolean;
   get recordingGap() { return this.gap; }
-  private constructor(private client: Client, readonly epoch: string, gap: boolean) { this.gap = gap; }
+  readonly delivery: DeliveryJournal;
+  private constructor(private client: Client, readonly epoch: string, gap: boolean, deliveryGap: boolean) {
+    this.gap = gap;
+    this.delivery = new DeliveryJournal(client, epoch, deliveryGap);
+  }
 
   static async open(path: string, epoch: string, now = new Date().toISOString()): Promise<DiagnosticJournal> {
     if (typeof path !== "string" || !isAbsolute(path) || path.length > 4096 || path.includes("\0")) throw new Error("Diagnostic journal requires an absolute local path");
@@ -72,22 +77,27 @@ export class DiagnosticJournal {
       const tables = (await client.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name")).rows.map((row) => String(row.name));
       if ((version === 0 && tables.length !== 0)
         || (version === 1 && tables.join(",") !== "correlations,epochs,events,journal_meta,journal_migrations,operations")
-        || (version !== 0 && version !== 1)) throw new Error("Unsupported diagnostic schema");
+        || (version === 2 && tables.join(",") !== "correlations,delivery_trails,epochs,events,journal_meta,journal_migrations,operations")
+        || ![0, 1, 2].includes(version)) throw new Error("Unsupported diagnostic schema");
       // Refuse existing non-journal databases before any persistent PRAGMA or DDL.
       await client.execute("PRAGMA journal_mode=WAL");
       if (version === 0) await client.batch(VERSION_ONE, "write");
       const migrations = (await client.execute("SELECT version FROM journal_migrations ORDER BY version")).rows;
-      if (migrations.length !== 1 || migrations[0]?.version !== 1) throw new Error("Unsupported diagnostic migration history");
+      if (migrations.length !== (version === 2 ? 2 : 1) || migrations[0]?.version !== 1
+        || (version === 2 && migrations[1]?.version !== 2)) throw new Error("Unsupported diagnostic migration history");
+      if (version < 2) await client.batch(DELIVERY_SCHEMA, "write");
       await client.batch([
         { sql: "UPDATE epochs SET closed_at=?,closure='observer_lost' WHERE closed_at IS NULL", args: [now] },
         { sql: "INSERT INTO epochs(epoch,started_at) VALUES(?,?)", args: [epoch, now] },
         { sql: `INSERT INTO journal_meta(singleton,epoch,clean,gap) VALUES(1,?,0,0)
           ON CONFLICT(singleton) DO UPDATE SET epoch=excluded.epoch,clean=0,
-          gap=CASE WHEN journal_meta.clean=0 OR journal_meta.gap=1 THEN 1 ELSE 0 END`, args: [epoch] },
+          gap=CASE WHEN journal_meta.clean=0 OR journal_meta.gap=1 THEN 1 ELSE 0 END,
+          delivery_gap=CASE WHEN journal_meta.clean=0 OR journal_meta.delivery_gap=1 THEN 1 ELSE 0 END`, args: [epoch] },
       ], "write");
-      const metadata = (await client.execute("SELECT epoch,gap FROM journal_meta WHERE singleton=1")).rows[0];
+      const metadata = (await client.execute("SELECT epoch,gap,delivery_gap FROM journal_meta WHERE singleton=1")).rows[0];
       if (metadata?.epoch !== epoch) throw new Error("Diagnostic epoch superseded");
-      const journal = new DiagnosticJournal(client, epoch, metadata.gap === 1);
+      const journal = new DiagnosticJournal(client, epoch, metadata.gap === 1, metadata.delivery_gap === 1);
+      await journal.delivery.recover(now);
       // Fence older writers before reconciling. This is observation loss, not lifecycle recovery.
       const pending = await client.execute("SELECT id FROM operations WHERE outcome='pending' LIMIT 129");
       if (pending.rows.length > DIAGNOSTIC_LIMITS.tracked) throw new Error("Diagnostic active capacity exceeded");
@@ -268,6 +278,7 @@ export class DiagnosticJournal {
   }
 
   async prune(now: string): Promise<void> {
+    await this.delivery.prune(now);
     const cutoff = new Date(Date.parse(now) - DIAGNOSTIC_LIMITS.days * 86_400_000).toISOString();
     await this.client.batch([{
       sql: `DELETE FROM operations WHERE id IN (SELECT id FROM operations WHERE outcome<>'pending'

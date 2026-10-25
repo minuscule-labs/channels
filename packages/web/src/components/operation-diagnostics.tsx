@@ -7,6 +7,7 @@ import { TurnFailureDiagnostics } from "./turn-failure-diagnostics";
 import { TriggerLink } from "./trigger-message-link";
 import { SessionContextInspection } from "./session-context-inspection";
 import { RecentRuntimeEvents } from "./recent-runtime-events";
+import { MessageDeliveryDiagnostics } from "./message-delivery-diagnostics";
 
 /** Mounted only for an open privileged agent surface. Shared queries contain public
  * authorization inputs only; diagnostic projections stay in the disposable child. */
@@ -67,7 +68,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
     }
   }, [state.revoked, key, queryClient]);
   const pending = requestPending || state.history?.operations.some(({ outcome }) => outcome === "pending") || state.detail?.detail?.operation.outcome === "pending";
-  useEffect(() => { if (pending) surface?.closeEvents(); }, [pending, surface]);
+  useEffect(() => { if (pending) { surface?.closeEvents(); surface?.closeTrails(); } }, [pending, surface]);
   useEffect(() => {
     if (!surface || !pending || state.revoked || state.historyError || state.detailError) return;
     if (performance.now() >= pollBudget) { setPollEnded(true); return; }
@@ -166,5 +167,5 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
       {state.reportMessage ? <p role="status">{state.reportMessage}</p> : null}
       {state.preview ? <pre aria-label="Report preview" className="minu-scroll max-h-80 overflow-auto whitespace-pre-wrap break-all rounded border border-[var(--border)] p-3">{state.preview}</pre> : null}
     </section> : null}
-  </section><RecentRuntimeEvents state={state} surface={surface} /></>;
+  </section><RecentRuntimeEvents state={state} surface={surface} /><MessageDeliveryDiagnostics state={state} surface={surface} loadedSequences={loadedSequences} onViewMessage={onViewMessage} /></>;
 }
