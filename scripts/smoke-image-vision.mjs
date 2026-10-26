@@ -9,7 +9,8 @@ import { DrizzleLibSqlConversationStorage, localLibSqlUrl } from "../packages/st
 import { ConversationRuntimeRelay } from "../packages/relay/dist/src/index.js";
 
 const runtimeRoot = resolve(process.env.MINU_RUNTIME_ROOT ?? fileURLToPath(new URL("../../runtime/", import.meta.url)));
-const { PiAgentRuntime } = await import(pathToFileURL(join(runtimeRoot, "packages/pi/dist/src/client.js")).href);
+const runtimeModule = resolve(process.env.MINU_RUNTIME_MODULE ?? join(runtimeRoot, "packages/pi/dist/src/client.js"));
+const { PiAgentRuntime } = await import(pathToFileURL(runtimeModule).href);
 const temporary = await mkdtemp(join(tmpdir(), "channels-image-vision-"));
 const fakePi = join(temporary, "controlled-pi.mjs");
 const requestsFile = join(temporary, "requests.jsonl");
