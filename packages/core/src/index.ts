@@ -7,13 +7,24 @@ export {
 } from "./client.ts";
 export { createResourceId, isResourceId, RESOURCE_ID_PREFIXES, type ResourceIdPrefix } from "./ids.ts";
 export {
+  FilesystemAttachmentContentStore,
+  InMemoryAttachmentContentStore,
+  type AttachmentContentStore,
+} from "./attachment-storage.ts";
+export { MAX_ATTACHMENTS_PER_MESSAGE, MAX_IMAGE_BYTES, MAX_MESSAGE_ATTACHMENT_BYTES } from "./image-validation.ts";
+export {
+  ConversationAttachmentStorageError,
   ConversationConflictError,
   ConversationNotFoundError,
+  ConversationPayloadTooLargeError,
   ConversationService,
   ConversationValidationError,
 } from "./conversation-service.ts";
 export {
+  ConversationAttachmentUnavailableError,
   InMemoryConversationStorage,
+  type ConversationAttachmentRecord,
+  type ConversationAttachmentStatus,
   type ConversationStorage,
   type ConversationRosterUpdateResult,
   type IdentityUpdateResult,
@@ -39,6 +50,7 @@ export type {
   EffectiveConversationLifecycle,
   ConversationUpdatedEvent,
   ConversationMessage,
+  MessageAttachment,
   ConversationMetadata,
   CreateConversationInput,
   CreateIdentityInput,

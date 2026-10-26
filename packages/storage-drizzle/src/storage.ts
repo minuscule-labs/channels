@@ -1,8 +1,9 @@
 import { createClient, type Client } from "@libsql/client";
-import { assertConversationLifecycle } from "@minu/channels-core";
+import { assertConversationLifecycle, ConversationAttachmentUnavailableError } from "@minu/channels-core";
 import { chmod, mkdir } from "node:fs/promises";
 import type {
   Conversation,
+  ConversationAttachmentRecord,
   ConversationCursorStore,
   ConversationLifecycle,
   ConversationMessage,
@@ -13,6 +14,7 @@ import type {
   IdentityUpdateResult,
   MessageCommitResult,
   MessageListOptions,
+  MessageAttachment,
   NewConversationMessage,
   NewResponseMessage,
   Participant,
@@ -21,7 +23,7 @@ import type {
   WorkspaceMember,
   WorkspaceMemberUpdateResult,
 } from "@minu/channels-core";
-import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
@@ -108,6 +110,35 @@ function conversationLifecycle(
     ...(row.settledAt ? { settledAt: row.settledAt } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function conversationAttachmentRecord(
+  row: typeof schema.conversationAttachments.$inferSelect,
+): ConversationAttachmentRecord {
+  return {
+    id: row.id,
+    conversationId: row.conversationId,
+    uploaderIdentityId: row.uploaderIdentityId,
+    filename: row.filename,
+    mimeType: row.mimeType,
+    size: row.size,
+    contentHash: row.contentHash,
+    status: row.status,
+    messageId: row.messageId ?? undefined,
+    position: row.position ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function messageAttachment(attachment: ConversationAttachmentRecord): MessageAttachment {
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    altText: attachment.filename,
+    contentUrl: `/conversations/${attachment.conversationId}/attachments/${attachment.id}/content`,
   };
 }
 
@@ -568,6 +599,27 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     }, { behavior: "immediate" });
   }
 
+  private async messageAttachments(messageIds: string[]): Promise<Map<string, MessageAttachment[]>> {
+    const grouped = new Map<string, MessageAttachment[]>();
+    for (let offset = 0; offset < messageIds.length; offset += 500) {
+      const rows = await this.database
+        .select()
+        .from(schema.conversationAttachments)
+        .where(and(
+          inArray(schema.conversationAttachments.messageId, messageIds.slice(offset, offset + 500)),
+          eq(schema.conversationAttachments.status, "attached"),
+        ))
+        .orderBy(asc(schema.conversationAttachments.position));
+      for (const row of rows) {
+        if (!row.messageId) continue;
+        const current = grouped.get(row.messageId) ?? [];
+        current.push(messageAttachment(conversationAttachmentRecord(row)));
+        grouped.set(row.messageId, current);
+      }
+    }
+    return grouped;
+  }
+
   async getConversation(conversationId: string): Promise<Conversation | undefined> {
     const conversation = await this.database.query.conversations.findFirst({
       where: eq(schema.conversations.id, conversationId),
@@ -585,6 +637,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         .where(eq(schema.messages.conversationId, conversationId))
         .orderBy(asc(schema.messages.sequence)),
     ]);
+    const attachmentsByMessage = await this.messageAttachments(messages.map(({ id }) => id));
     return {
       id: conversation.id,
       workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
@@ -609,6 +662,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         body: message.body,
         replyTo: message.replyTo ?? undefined,
         createdAt: message.createdAt,
+        attachments: attachmentsByMessage.get(message.id) ?? [],
       })),
     };
   }
@@ -632,6 +686,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       .orderBy(options.beforeSequence === undefined ? asc(schema.messages.sequence) : desc(schema.messages.sequence))
       .limit(options.limit ?? 2_147_483_647);
     if (options.beforeSequence !== undefined) rows.reverse();
+    const attachmentsByMessage = await this.messageAttachments(rows.map(({ id }) => id));
     return rows.map((message) => ({
       id: message.id,
       conversationId: message.conversationId,
@@ -641,10 +696,87 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       body: message.body,
       replyTo: message.replyTo ?? undefined,
       createdAt: message.createdAt,
+      attachments: attachmentsByMessage.get(message.id) ?? [],
     }));
   }
 
-  async appendMessage(message: NewConversationMessage): Promise<ConversationMessage> {
+  async stageAttachment(attachment: ConversationAttachmentRecord): Promise<void> {
+    if (attachment.status !== "staged" || attachment.messageId !== undefined || attachment.position !== undefined) {
+      throw new Error("New attachments must be staged without a message association");
+    }
+    await this.database.insert(schema.conversationAttachments).values({
+      id: attachment.id,
+      conversationId: attachment.conversationId,
+      uploaderIdentityId: attachment.uploaderIdentityId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      contentHash: attachment.contentHash,
+      status: "staged",
+      createdAt: attachment.createdAt,
+    });
+  }
+
+  async hasAttachment(attachmentId: string): Promise<boolean> {
+    return Boolean(await this.database.query.conversationAttachments.findFirst({
+      columns: { id: true }, where: eq(schema.conversationAttachments.id, attachmentId),
+    }));
+  }
+
+  async getAttachment(conversationId: string, attachmentId: string): Promise<ConversationAttachmentRecord | undefined> {
+    const [attachment] = await this.database
+      .select()
+      .from(schema.conversationAttachments)
+      .where(and(
+        eq(schema.conversationAttachments.conversationId, conversationId),
+        eq(schema.conversationAttachments.id, attachmentId),
+      ))
+      .limit(1);
+    return attachment ? conversationAttachmentRecord(attachment) : undefined;
+  }
+
+  async claimStagedAttachmentsForCleanup(cutoff: string, limit: number): Promise<ConversationAttachmentRecord[]> {
+    return await this.database.transaction(async (transaction) => {
+      const candidates = await transaction
+        .select()
+        .from(schema.conversationAttachments)
+        .where(or(
+          eq(schema.conversationAttachments.status, "deleting"),
+          and(eq(schema.conversationAttachments.status, "staged"), lt(schema.conversationAttachments.createdAt, cutoff)),
+        ))
+        .limit(Math.max(1, Math.min(limit, 500)));
+      const claimed: Array<typeof schema.conversationAttachments.$inferSelect> = [];
+      for (const candidate of candidates) {
+        if (candidate.status === "deleting") {
+          claimed.push(candidate);
+          continue;
+        }
+        const [updated] = await transaction
+          .update(schema.conversationAttachments)
+          .set({ status: "deleting" })
+          .where(and(
+            eq(schema.conversationAttachments.id, candidate.id),
+            eq(schema.conversationAttachments.status, "staged"),
+            lt(schema.conversationAttachments.createdAt, cutoff),
+          ))
+          .returning();
+        if (updated) claimed.push(updated);
+      }
+      return claimed.map(conversationAttachmentRecord);
+    });
+  }
+
+  async completeAttachmentDeletion(attachmentIds: string[]): Promise<void> {
+    if (attachmentIds.length === 0) return;
+    await this.database
+      .delete(schema.conversationAttachments)
+      .where(and(
+        inArray(schema.conversationAttachments.id, attachmentIds),
+        eq(schema.conversationAttachments.status, "deleting"),
+      ));
+  }
+
+  async appendMessage(message: NewConversationMessage, attachmentIds: string[] = []): Promise<ConversationMessage> {
     return await this.database.transaction(async (transaction) => {
       const [allocated] = await transaction
         .update(schema.conversations)
@@ -662,7 +794,33 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         replyTo: message.replyTo,
         createdAt: message.createdAt,
       });
-      return { ...message, sequence: allocated.sequence, to: [...message.to] };
+      const attachments: MessageAttachment[] = [];
+      for (const [position, attachmentId] of attachmentIds.entries()) {
+        const [candidate] = await transaction
+          .select()
+          .from(schema.conversationAttachments)
+          .where(and(
+            eq(schema.conversationAttachments.id, attachmentId),
+            eq(schema.conversationAttachments.conversationId, message.conversationId),
+            eq(schema.conversationAttachments.uploaderIdentityId, message.participantId),
+            eq(schema.conversationAttachments.status, "staged"),
+          ))
+          .limit(1);
+        if (!candidate) throw new ConversationAttachmentUnavailableError("One or more attachments are unavailable");
+        const [claimed] = await transaction
+          .update(schema.conversationAttachments)
+          .set({ status: "attached", messageId: message.id, position })
+          .where(and(
+            eq(schema.conversationAttachments.id, attachmentId),
+            eq(schema.conversationAttachments.conversationId, message.conversationId),
+            eq(schema.conversationAttachments.uploaderIdentityId, message.participantId),
+            eq(schema.conversationAttachments.status, "staged"),
+          ))
+          .returning();
+        if (!claimed) throw new ConversationAttachmentUnavailableError("One or more attachments are unavailable");
+        attachments.push(messageAttachment(conversationAttachmentRecord(claimed)));
+      }
+      return { ...message, sequence: allocated.sequence, to: [...message.to], attachments };
     });
   }
 
@@ -670,6 +828,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
+    attachmentIds: string[] = [],
   ): Promise<MessageCommitResult> {
     const requestKey = JSON.stringify([
       this.storageKey,
@@ -680,8 +839,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     const pending = pendingMessageCommits.get(requestKey);
     if (pending) {
       const result = await pending.commit;
-      if (result.outcome === "conflict" && pending.requestFingerprint !== requestFingerprint) {
-        return await this.commitMessageWithRetry(message, idempotencyKey, requestFingerprint);
+      if (pending.requestFingerprint !== requestFingerprint) {
+        return await this.commitMessageWithRetry(message, idempotencyKey, requestFingerprint, attachmentIds);
       }
       return {
         message: { ...result.message, to: [...result.message.to] },
@@ -692,7 +851,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             : "conflict",
       };
     }
-    const commit = this.commitMessageWithRetry(message, idempotencyKey, requestFingerprint);
+    const commit = this.commitMessageWithRetry(message, idempotencyKey, requestFingerprint, attachmentIds);
     pendingMessageCommits.set(requestKey, { requestFingerprint, commit });
     try {
       return await commit;
@@ -705,11 +864,12 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
+    attachmentIds: string[],
   ): Promise<MessageCommitResult> {
     let lastError: unknown;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        return await this.commitMessageOnce(message, idempotencyKey, requestFingerprint);
+        return await this.commitMessageOnce(message, idempotencyKey, requestFingerprint, attachmentIds);
       } catch (error) {
         lastError = error;
         const code = (error as { code?: string }).code;
@@ -724,11 +884,13 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
+    attachmentIds: string[],
   ): Promise<MessageCommitResult> {
     // A write transaction acquires the lock before the first read. Drizzle's libSQL
     // transaction wrapper currently always starts deferred transactions, which can
     // deadlock when two processes both read and then attempt this commit.
     const transaction = await this.client.transaction("write");
+    let result: MessageCommitResult;
     try {
       const existingResult = await transaction.execute({
         sql: `
@@ -743,8 +905,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       });
       const existing = existingResult.rows[0] as Record<string, unknown> | undefined;
       if (existing) {
-        await transaction.commit();
-        return {
+        result = {
           outcome: existing.request_fingerprint === requestFingerprint ? "replayed" : "conflict",
           message: {
             id: String(existing.id),
@@ -755,61 +916,91 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             body: String(existing.body),
             replyTo: existing.reply_to === null ? undefined : String(existing.reply_to),
             createdAt: String(existing.created_at),
+            attachments: existing.request_fingerprint === requestFingerprint ? [...(message.attachments ?? [])] : [],
           },
         };
+        await transaction.commit();
+      } else {
+        const allocatedResult = await transaction.execute({
+          sql: `
+            UPDATE conversations SET next_sequence = next_sequence + 1
+            WHERE id = ? RETURNING next_sequence - 1 AS sequence
+          `,
+          args: [message.conversationId],
+        });
+        const allocated = allocatedResult.rows[0] as Record<string, unknown> | undefined;
+        if (!allocated) throw new Error(`Conversation not found: ${message.conversationId}`);
+        const sequence = Number(allocated.sequence);
+        await transaction.execute({
+          sql: `
+            INSERT INTO messages
+              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          args: [
+            message.id,
+            message.conversationId,
+            sequence,
+            message.participantId,
+            JSON.stringify(message.to),
+            message.body,
+            message.replyTo ?? null,
+            message.createdAt,
+          ],
+        });
+        for (const [position, attachmentId] of attachmentIds.entries()) {
+          const attachmentResult = await transaction.execute({
+            sql: `
+              SELECT id, conversation_id, uploader_identity_id, filename, mime_type,
+                     size, content_hash, created_at
+              FROM conversation_attachments
+              WHERE id = ? AND conversation_id = ? AND uploader_identity_id = ? AND status = 'staged'
+              LIMIT 1
+            `,
+            args: [attachmentId, message.conversationId, message.participantId],
+          });
+          if (!attachmentResult.rows[0]) {
+            throw new ConversationAttachmentUnavailableError("One or more attachments are unavailable");
+          }
+          const claimed = await transaction.execute({
+            sql: `
+              UPDATE conversation_attachments
+              SET status = 'attached', message_id = ?, position = ?
+              WHERE id = ? AND conversation_id = ? AND uploader_identity_id = ? AND status = 'staged'
+            `,
+            args: [message.id, position, attachmentId, message.conversationId, message.participantId],
+          });
+          if (claimed.rowsAffected !== 1) {
+            throw new ConversationAttachmentUnavailableError("One or more attachments are unavailable");
+          }
+        }
+        await transaction.execute({
+          sql: `
+            INSERT INTO message_idempotency
+              (conversation_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `,
+          args: [
+            message.conversationId,
+            message.participantId,
+            idempotencyKey,
+            requestFingerprint,
+            message.id,
+            message.createdAt,
+          ],
+        });
+        await transaction.commit();
+        result = {
+          outcome: "created",
+          message: { ...message, sequence, to: [...message.to], attachments: [...(message.attachments ?? [])] },
+        };
       }
-
-      const allocatedResult = await transaction.execute({
-        sql: `
-          UPDATE conversations SET next_sequence = next_sequence + 1
-          WHERE id = ? RETURNING next_sequence - 1 AS sequence
-        `,
-        args: [message.conversationId],
-      });
-      const allocated = allocatedResult.rows[0] as Record<string, unknown> | undefined;
-      if (!allocated) throw new Error(`Conversation not found: ${message.conversationId}`);
-      const sequence = Number(allocated.sequence);
-      await transaction.execute({
-        sql: `
-          INSERT INTO messages
-            (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        args: [
-          message.id,
-          message.conversationId,
-          sequence,
-          message.participantId,
-          JSON.stringify(message.to),
-          message.body,
-          message.replyTo ?? null,
-          message.createdAt,
-        ],
-      });
-      await transaction.execute({
-        sql: `
-          INSERT INTO message_idempotency
-            (conversation_id, participant_id, idempotency_key, request_fingerprint, message_id, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `,
-        args: [
-          message.conversationId,
-          message.participantId,
-          idempotencyKey,
-          requestFingerprint,
-          message.id,
-          message.createdAt,
-        ],
-      });
-      await transaction.commit();
-      return {
-        outcome: "created",
-        message: { ...message, sequence, to: [...message.to] },
-      };
     } catch (error) {
       await transaction.rollback().catch(() => undefined);
       throw error;
     }
+    const attachments = await this.messageAttachments([result.message.id]);
+    return { ...result, message: { ...result.message, attachments: attachments.get(result.message.id) ?? [] } };
   }
 
   async commitResponse(
@@ -889,6 +1080,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             body: existing.body,
             replyTo: existing.replyTo ?? undefined,
             createdAt: existing.createdAt,
+            attachments: [],
           },
         };
       }
@@ -935,7 +1127,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       });
       return {
         created: true,
-        message: { ...message, sequence: allocated.sequence, to: [...message.to] },
+        message: { ...message, sequence: allocated.sequence, to: [...message.to], attachments: [] },
       };
     });
   }

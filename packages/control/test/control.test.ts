@@ -1744,6 +1744,7 @@ test("local product snapshots both databases before applying an update migration
   const workspaceRoot = await mkdtemp(join(tmpdir(), "minu-local-migration-workspace-"));
   const migrationsFolder = join(dataDirectory, "test-migrations");
   let app: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
+  let attachmentId = "";
   try {
     app = await createLocalProductApp({
       dataDirectory,
@@ -1754,6 +1755,17 @@ test("local product snapshots both databases before applying an update migration
       runtimeAdapter: "managed-test",
       runtime: new ManagedFakeRuntime(),
     });
+    assert.ok(app.conversationId);
+    const browserClient = new ConversationClient(app.conversationsEndpoint, {
+      serviceToken: app.conversationsServiceToken,
+      actorIdentityId: app.humanIdentityId,
+    });
+    const uploaded = await browserClient.uploadAttachment(app.conversationId, {
+      filename: "backup.png",
+      mimeType: "image/png",
+      bytes: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+    });
+    attachmentId = uploaded.id;
     await app.close();
     app = undefined;
 
@@ -1777,6 +1789,7 @@ test("local product snapshots both databases before applying an update migration
     await Promise.all([
       stat(join(dataDirectory, "backups", backups[0]!, "channels.db")),
       stat(join(dataDirectory, "backups", backups[0]!, "relay.db")),
+      stat(join(dataDirectory, "backups", backups[0]!, "attachments", attachmentId)),
     ]);
   } finally {
     await app?.close().catch(() => undefined);

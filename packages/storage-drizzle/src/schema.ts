@@ -1,4 +1,5 @@
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const identities = sqliteTable("identities", {
   id: text("id").primaryKey(),
@@ -161,4 +162,35 @@ export const agentCursors = sqliteTable(
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [primaryKey({ columns: [table.conversationId, table.participantId] })],
+);
+
+export const conversationAttachments = sqliteTable(
+  "conversation_attachments",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    messageId: text("message_id").references(() => messages.id, { onDelete: "cascade" }),
+    uploaderIdentityId: text("uploader_identity_id").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type", { enum: ["image/png", "image/jpeg", "image/gif", "image/webp"] }).notNull(),
+    size: integer("size").notNull(),
+    contentHash: text("content_hash").notNull(),
+    status: text("status", { enum: ["staged", "attached", "deleting"] }).notNull(),
+    position: integer("position"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("conversation_attachments_conversation_status_created_idx").on(table.conversationId, table.status, table.createdAt),
+    index("conversation_attachments_status_created_idx").on(table.status, table.createdAt),
+    uniqueIndex("conversation_attachments_message_position_unique").on(table.messageId, table.position),
+    check("conversation_attachments_size_check", sql`${table.size} BETWEEN 1 AND 10485760`),
+    check(
+      "conversation_attachments_state_check",
+      sql`(${table.status} = 'staged' AND ${table.messageId} IS NULL AND ${table.position} IS NULL)
+        OR (${table.status} = 'attached' AND ${table.messageId} IS NOT NULL AND ${table.position} IS NOT NULL AND ${table.position} >= 0)
+        OR ${table.status} = 'deleting'`,
+    ),
+  ],
 );

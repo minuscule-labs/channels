@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import {
   ConversationConflictError,
   ConversationNotFoundError,
+  ConversationPayloadTooLargeError,
   ConversationService,
   ConversationValidationError,
 } from "./conversation-service.ts";
@@ -22,6 +23,7 @@ import type {
   UpdateWorkspaceInput,
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
+import { MAX_IMAGE_BYTES } from "./image-validation.ts";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -39,6 +41,31 @@ export interface ConversationHttpServer {
   service: ConversationService;
   serviceToken: string;
   close(): Promise<void>;
+}
+
+async function readAttachmentBytes(request: IncomingMessage): Promise<Uint8Array> {
+  const contentLength = request.headers["content-length"];
+  if (contentLength !== undefined) {
+    if (Array.isArray(contentLength) || !/^\d+$/.test(contentLength)) {
+      throw new ConversationValidationError("Content-Length must be a valid integer");
+    }
+    if (Number(contentLength) > MAX_IMAGE_BYTES) {
+      request.resume();
+      throw new ConversationPayloadTooLargeError("Image is too large");
+    }
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_IMAGE_BYTES) {
+      request.resume();
+      throw new ConversationPayloadTooLargeError("Image is too large");
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -261,6 +288,39 @@ export async function createConversationHttpServer(
         return;
       }
 
+      const attachmentContentMatch = url.pathname.match(/^\/conversations\/([^/]+)\/attachments\/([^/]+)\/content$/);
+      if (attachmentContentMatch && request.method === "GET") {
+        const content = await service.readAttachmentContent(
+          attachmentContentMatch[1]!,
+          attachmentContentMatch[2]!,
+          actor,
+        );
+        response.writeHead(200, {
+          "content-type": content.mimeType,
+          "content-length": content.bytes.byteLength,
+          "cache-control": "private, no-store",
+          "content-security-policy": "default-src 'none'; sandbox",
+          "x-content-type-options": "nosniff",
+        });
+        response.end(Buffer.from(content.bytes));
+        return;
+      }
+      const attachmentsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/attachments$/);
+      if (attachmentsMatch && request.method === "POST") {
+        if (actor === undefined) throw new ConversationValidationError("An authenticated participant is required to upload images");
+        const contentType = request.headers["content-type"];
+        if (typeof contentType !== "string") throw new ConversationValidationError("Content-Type must declare the image type");
+        const attachment = await service.uploadAttachment(
+          attachmentsMatch[1]!,
+          actor,
+          url.searchParams.get("filename") ?? "",
+          contentType.split(";", 1)[0]!.trim().toLowerCase(),
+          await readAttachmentBytes(request),
+        );
+        json(response, 201, { attachment });
+        return;
+      }
+
       const lifecycleMatch = url.pathname.match(/^\/conversations\/([^/]+)\/lifecycle$/);
       if (lifecycleMatch && request.method === "GET") {
         json(response, 200, { lifecycle: await service.getConversationLifecycle(lifecycleMatch[1]!) });
@@ -379,7 +439,9 @@ export async function createConversationHttpServer(
       const status =
         error instanceof ConversationNotFoundError
           ? 404
-          : error instanceof ConversationConflictError
+          : error instanceof ConversationPayloadTooLargeError
+            ? 413
+            : error instanceof ConversationConflictError
             ? 409
             : error instanceof ConversationValidationError
               ? 400

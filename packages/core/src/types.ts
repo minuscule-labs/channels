@@ -99,6 +99,15 @@ export interface Participant {
   status?: WorkspaceMemberStatus;
 }
 
+export interface MessageAttachment {
+  id: string;
+  filename: string;
+  mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  size: number;
+  altText?: string;
+  contentUrl: string;
+}
+
 export interface ConversationMessage {
   id: string;
   conversationId: string;
@@ -108,6 +117,7 @@ export interface ConversationMessage {
   body: string;
   replyTo?: string;
   createdAt: string;
+  attachments?: MessageAttachment[];
 }
 
 export type ConversationLifecycleState = "active" | "snoozed" | "settled";
@@ -224,6 +234,7 @@ export interface CreateMessageInput {
   to?: string[];
   body: string;
   replyTo?: string;
+  attachmentIds?: string[];
 }
 
 export interface CreateResponseInput {

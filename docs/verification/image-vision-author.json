@@ -1,0 +1,61 @@
+{
+  "recordedAt": "2026-10-26T16:56:32Z",
+  "historicalNote": "Pre-review author-verification snapshot. The subsequent delegated review identified a HIGH pre-dispatch cancellation defect; see image-vision-cancellation-fix.json for its correction, refreshed Runtime pin and follow-up checks.",
+  "status": "stage-2-implemented-author-verified-not-released",
+  "scope": "Images attached to channel/Conversation messages reaching image-capable agents through bounded typed Runtime input; not public file sharing",
+  "branch": "feat/conversation-image-vision",
+  "channelsBaseline": "9c05e22",
+  "channelsImplementationCommit": "7a3bf0ea4799ac6ac1b60355c08ff7fa4e143512",
+  "channelsPackagedTarget": "f102f0a387a1af160d913c290d461e277db1fc65",
+  "subsequentChanges": "The final evidence-recording commit changes only documentation/evidence; packaged source, Runtime pin and README are unchanged from channelsPackagedTarget",
+  "runtimeBaseline": "e92176054206d70e120d4b6641bda2a3d037eb84",
+  "runtimeCommit": "c553ff7144e403162abb9bc950686d5e66625851",
+  "requirements": [
+    "Add optional ordered typed RuntimeImageContent parts to send/startTurn without changing existing text callers or normalized RuntimeMessage.content",
+    "Verify live adapter/model image support; missing/failed/text-only/attached evidence performs no pixel read and preserves honest markers",
+    "Select only existing-budget Conversation context above the Fresh floor, prefer recent/trigger images, and cap each turn at four images/20 MiB total with 10 MiB per image",
+    "Fetch bytes over the authenticated generated-ID Conversation content route with deadlines, streaming size limits, exact MIME/size and container validation; no path/metadata URL/redirect fallback",
+    "Carry canonical base64 raster parts over Runtime HTTP to owned Pi RPC prompt.images; validate bounds and live model support again in Runtime",
+    "Include ordered pixels/MIME in turn idempotency; recover accepted turns without another pixel fetch/dispatch",
+    "Fence new dispatch after cancellation or lease loss during pixel loading; preserve existing text-only lifecycle behavior",
+    "Keep pixels out of public message bodies, SSE, Relay journals, turn polling, normalized Runtime messages and structured events; sanitize image dispatch errors",
+    "Document native Pi prompt-transcript persistence/provider submission; preserve images across managed suspend/resume without treating Runtime as the attachment authority"
+  ],
+  "design": {
+    "input": "send(sessionId, text, images?) and startTurn(sessionId, turnId, text, images?) where each part is {type: image, mimeType, data: canonical base64}",
+    "capability": "Optional version-one inputCapabilities returning images boolean; owned Pi reads the active get_state model.input and exact native session identity, with another check before dispatch",
+    "limits": "1 MiB text, four images, 10 MiB each, 20 MiB aggregate, 34 MiB JSON transport including base64/text escaping; no new pixel decoder, resize transform or provider-specific token estimator",
+    "readProjection": "AgentTurn.input and RuntimeMessage.content remain text-only. The bridge retains only a digest alongside bounded turn records after dispatch; native Pi may retain private image prompt parts."
+  },
+  "checks": [
+    { "command": "pnpm -C ../runtime check && pnpm -C ../runtime test && git -C ../runtime diff --check", "result": "passed", "tests": 56, "scope": "Full Runtime regression, including typed input bounds, concurrent image retries, changed pixels/order conflicts, unsupported adapters, over-old-limit transport, sanitized errors, actual controlled owned-worker RPC and managed transcript resume" },
+    { "command": "pnpm check && node --test --test-name-pattern='a lease check failure does not poison' packages/relay/dist/test/relay.test.js && pnpm test", "result": "passed", "tests": 305, "scope": "Focused lifecycle regression then full Channels backend suite after fixing the introduced text-only lease-check regression" },
+    { "command": "pnpm web:check", "result": "passed" },
+    { "command": "pnpm web:test", "result": "passed", "tests": 160 },
+    { "command": "pnpm --filter @minu/channels-web exec playwright test test-browser/image-attachments.spec.ts", "result": "passed", "tests": 2 },
+    { "command": "node scripts/smoke-image-vision.mjs", "result": "passed", "scope": "Actual Conversation HTTP, temporary SQLite and filesystem bytes, Relay, Runtime client/HTTP/owned managed worker and controlled native-shaped Pi RPC. Database reopen and managed suspend/resume preserve the original image and let a later text message deliver its context pixels again. The fixture overrides PI_COMMAND; no installed Pi or provider is called." },
+    { "command": "git diff --check", "result": "passed", "scope": "Implementation and clean committed source before final documentation/evidence changes" },
+    { "command": "pnpm release:build", "result": "passed", "scope": "Clean Channels f102f0a and Runtime c553ff7, exact Runtime pin, production web/backend builds, bundled Runtime/owned worker and local-path/secret inspection; dirty-source guard not bypassed", "advisory": "Existing non-fatal web chunk-size warning" },
+    { "command": "mkdir release/artifacts/image-vision-f102f0a && (cd release/package && npm pack --pack-destination ../artifacts/image-vision-f102f0a)", "result": "passed", "scope": "Separate candidate directory; previous release/candidate artifacts preserved" },
+    { "command": "node scripts/checksum-release.mjs release/artifacts/image-vision-f102f0a", "result": "passed" },
+    { "command": "node scripts/smoke-release-package.mjs release/artifacts/image-vision-f102f0a/minu-channels-0.0.16.tgz", "result": "passed", "scope": "Disposable installed package: startup, private diagnostics worker, browser-authenticated human image send/retry/content serving, restart/reopen and browser-first setup; no agents started" },
+    { "command": "MINU_RUNTIME_MODULE=\"$PWD/release/package/dist/bin/runtime-pi.js\" node scripts/smoke-image-vision.mjs", "result": "passed", "scope": "Same cross-repository image boundary/suspend/resume test using the exact generated bundled Runtime client and owned worker instead of source Runtime modules; only the controlled fake Pi executable is invoked" }
+  ],
+  "failureResolved": "The initial full Channels run had 304/305 pass: an added pre-dispatch lease check affected a text-only lifecycle regression. It was narrowed to image-bearing context, preserving the existing text-only lease-check contract. The unchanged focused regression and subsequent full 305-test suite passed; no test was weakened.",
+  "browserEvidenceReuse": "Stage 1's full 113-test Chromium run at 1c6d99f remains historical UI regression evidence. Stage 2 changes no UI components; web type/unit checks and affected image browser tests were run. A new full-browser pass is not claimed.",
+  "ci": "The Channels release-package job now runs the controlled cross-repository image smoke against its bundled Runtime after both builds. Runtime c553ff7 is committed locally but not pushed; Channels CI cannot resolve the new pin until the companion Runtime commit is published through an approved workflow.",
+  "candidate": {
+    "path": "release/artifacts/image-vision-f102f0a/minu-channels-0.0.16.tgz",
+    "sha256": "ea4aa6d1e61b94432106c097a7fff398870ab34d74126c47d311f5ede109ac23",
+    "builtAt": "2026-10-26T16:56:13.427Z",
+    "warning": "Local verification candidate only, inheriting main's package version. NOT the published v0.0.16 artifact; no installation update, new version, tag or publication was performed."
+  },
+  "limitations": [
+    "Author verification only, not independent review, human acceptance or genuine-model vision validation",
+    "No real agent/provider execution, installed-application update, service registration, push, PR, new version/tag or publication",
+    "Attached TUI and old/text-only/unknown models remain text-marker-only; only owned Pi advertises verified image input",
+    "Byte/container validation is not full pixel decoding; native Pi/provider owns pixel processing and may persist private image parts in transcripts",
+    "No new secure-erasure, hosted authorization, public sharing, generic files, audio, external Markdown images or cross-machine synchronization",
+    "The bundled Runtime smoke uses compiled Channels services, not a full installed agent-host/UI acceptance run; genuine installed-agent vision acceptance remains outstanding"
+  ]
+}

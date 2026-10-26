@@ -1,0 +1,48 @@
+{
+  "recordedAt": "2026-10-26T20:52:57Z",
+  "historicalNote": "This checkpoint was subsequently independently re-reviewed. The original cancellation paths passed, but a MEDIUM stale-finalizer/evicted-ID-reuse defect was identified. See image-vision-turn-identity-fix.json for that correction, newer Runtime pin and current verification; remaining items below describe this earlier checkpoint.",
+  "status": "review-finding-fixed-author-verified-not-independently-rereviewed",
+  "channelsBaseline": "fabc50e956ae4c95383a862df6ca7bb11cc315e1",
+  "runtimeBaseline": "c553ff7144e403162abb9bc950686d5e66625851",
+  "runtimeCommit": "a37ba84aef582638ac340f213ddf463dae11d04a",
+  "channelsPackagedTarget": "79ae6d3b0bfc26d0ecfd5eb703ee943bd3294667",
+  "subsequentChanges": "Only this evidence record changes after the packaged target; tested source and Runtime pin are unchanged.",
+  "finding": {
+    "severity": "HIGH",
+    "origin": "contextual delegated review",
+    "summary": "An accepted image turn could remain live-status idle during the final capability read, causing interrupt rejection, later native dispatch, and indefinitely canceling Relay state.",
+    "relatedWindow": "The same accepted-but-idle assumption existed while reading the pre-turn transcript. Both pre-dispatch windows are covered by the fix."
+  },
+  "reproduction": [
+    "New bridge regression failed against reviewed code: cancel during held transcript preparation returned HTTP 409 instead of 202.",
+    "Expanded cross-repository owned-worker smoke failed against reviewed code: holding the final native get_state and canceling left Relay unable to advance the canceled trigger cursor before the bounded timeout."
+  ],
+  "changes": [
+    "Bridge distinguishes accepted transcript preparation from adapter dispatch. It can cancel the former locally, releases turn admission and checks the captured turn's interrupted state after asynchronous reads before any dispatch/result overwrite.",
+    "Owned worker reserves the pending operation and publishes working before awaiting the final model-capability read. Pre-dispatch interrupt clears/resolves only that operation locally without a native abort.",
+    "Late capability responses and request failures verify the original pending-operation identity before dispatching or clearing state, so canceled preparation cannot affect a subsequent turn.",
+    "Steering remains unavailable until the native prompt has dispatched; existing uncertain native-interrupt behavior is preserved.",
+    "Runtime has a dedicated actual-process regression in its own test suite. The Channels controlled smoke additionally verifies Relay cancellation delivery, cursor settlement, subsequent work while the old read is still held, and no late prompt after release."
+  ],
+  "checks": [
+    { "command": "pnpm -C ../runtime check && pnpm -C ../runtime test && git -C ../runtime diff --check", "result": "passed", "tests": 58, "scope": "Final Runtime source plus new bridge and actual-owned-worker regressions; subsequent README change is documentation only" },
+    { "command": "pnpm check && node --test packages/relay/dist/test/*.test.js && node scripts/smoke-image-vision.mjs && git diff --check", "result": "passed", "tests": 68, "scope": "All Relay tests including ambiguous interrupt behavior, then actual Conversation HTTP/SQLite/files, Runtime HTTP/managed worker, held native get_state and controlled Pi RPC cancellation/resume/reopen check" },
+    { "command": "pnpm release:build", "result": "passed", "scope": "Clean Channels 79ae6d3 and Runtime a37ba84, exact refreshed pin, production builds and bundled source inspection; dirty-source guard not bypassed", "advisory": "Existing non-fatal web chunk-size warning" },
+    { "command": "mkdir release/artifacts/image-vision-cancel-79ae6d3 && (cd release/package && npm pack --pack-destination ../artifacts/image-vision-cancel-79ae6d3)", "result": "passed", "scope": "Separate candidate directory; old artifacts preserved" },
+    { "command": "node scripts/checksum-release.mjs release/artifacts/image-vision-cancel-79ae6d3", "result": "passed" },
+    { "command": "MINU_RUNTIME_MODULE=\"$PWD/release/package/dist/bin/runtime-pi.js\" node scripts/smoke-image-vision.mjs", "result": "passed", "scope": "Held final capability read, cancellation settlement, subsequent work and stale-read dispatch fence against the freshly bundled Runtime client and owned worker" }
+  ],
+  "verificationReuse": "Channels production source and UI are unchanged from the reviewed Stage 2 target; only the Runtime pin, controlled smoke and documentation/evidence change here. Prior 305 backend, 160 web and two affected browser passes remain historical evidence, not new runs. All affected Relay tests, the full Runtime suite and cross-repository cancellation boundary were rerun.",
+  "candidate": {
+    "path": "release/artifacts/image-vision-cancel-79ae6d3/minu-channels-0.0.16.tgz",
+    "sha256": "bd0fd38301c9264e04c8f2fb8ae27bca4f402efeb077cc492aa4ced65cabbefc",
+    "builtAt": "2026-10-26T20:52:35.841Z",
+    "warning": "Local candidate only, inheriting main's version. NOT the published v0.0.16 artifact. No installed-package acceptance is claimed for this new candidate; its affected Runtime bundle was directly tested and the previous installed-package human-image smoke remains historical."
+  },
+  "remaining": [
+    "No independent re-review has been requested or performed after fixing the finding",
+    "Remote CI requires publishing the companion Runtime commit through an approved workflow; neither repository has been pushed",
+    "Genuine provider/model and installed-agent vision acceptance remain outstanding and were not authorized"
+  ],
+  "operations": "Local commits and disposable controlled tests only. No real Pi/provider calls, existing product data, installed app updates, service registration, PR, version bump, tag or publication."
+}

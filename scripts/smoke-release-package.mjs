@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -58,13 +59,14 @@ async function startAndStop(expectedSetup, portBase, options = {}) {
     const capture = (chunk) => {
       output += chunk.toString();
       process.stdout.write(chunk);
-      if (output.includes(expectedSetup) && !stopping) {
+      if (output.includes(expectedSetup) && output.includes("Press Ctrl-C to stop MinuChannels.") && !stopping) {
         stopping = true;
         void fetch(`http://127.0.0.1:${portBase + 2}/`).then(async (response) => {
           const html = await response.text();
           if (!response.ok || !html.includes("<title>MinuChannels</title>")) {
             throw new Error("Packaged web application is unavailable");
           }
+          await options.verify?.(output);
           child.kill("SIGINT");
         }).catch((error) => {
           child.kill("SIGTERM");
@@ -84,6 +86,60 @@ async function startAndStop(expectedSetup, portBase, options = {}) {
       else reject(new Error(`Packaged startup exited with ${code}\n${output}`));
     });
   });
+}
+
+const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+let sharedImage;
+
+async function imageSharingSmoke(portBase, output) {
+  const launch = output.match(/http:\/\/[^\s]+\/local\/session\/bootstrap\?[^\s]+/)?.[0];
+  assert.ok(launch, "Packaged app must issue a browser launch URL");
+  const launchUrl = new URL(launch);
+  launchUrl.hostname = "127.0.0.1";
+  const bootstrap = await fetch(launchUrl, { redirect: "manual" });
+  assert.equal(bootstrap.status, 303);
+  const cookie = bootstrap.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.ok(cookie);
+  const endpoint = `http://127.0.0.1:${portBase + 2}`;
+  async function request(path, init = {}, expectedStatus = 200) {
+    const response = await fetch(`${endpoint}${path}`, { ...init, headers: { cookie, ...init.headers } });
+    assert.equal(response.status, expectedStatus, `Packaged image request: ${path}`);
+    return response;
+  }
+  const { identityId } = await (await request("/local/session")).json();
+  if (!sharedImage) {
+    const { workspaces } = await (await request("/workspaces")).json();
+    // A human-only Conversation prevents this packaging check from waking a real agent.
+    const { conversation } = await (await request("/conversations", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId: workspaces[0].id, participantIds: [identityId], name: "Package images" }),
+    }, 201)).json();
+    const { attachment } = await (await request(`/conversations/${conversation.id}/attachments?filename=package.png`, {
+      method: "POST", headers: { "content-type": "image/png" }, body: imageBytes,
+    }, 201)).json();
+    sharedImage = { conversationId: conversation.id, attachment, input: { participantId: identityId, body: "", attachmentIds: [attachment.id] } };
+  }
+  const messagesPath = `/conversations/${sharedImage.conversationId}/messages`;
+  for (let retry = 0; retry < 2; retry += 1) {
+    const { message } = await (await request(messagesPath, {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "package-image-send" },
+      body: JSON.stringify(sharedImage.input),
+    }, 201)).json();
+    sharedImage.message ??= message;
+    assert.deepEqual(message, sharedImage.message);
+    assert.equal(message.body, "");
+    assert.equal(message.attachments[0].id, sharedImage.attachment.id);
+  }
+  const { messages } = await (await request(messagesPath)).json();
+  assert.deepEqual(messages, [sharedImage.message]);
+  const contentUrl = `${endpoint}${sharedImage.attachment.contentUrl}`;
+  assert.equal((await fetch(contentUrl)).status, 401, "Image bytes require the browser session");
+  const content = await request(sharedImage.attachment.contentUrl);
+  assert.equal(content.headers.get("content-type"), "image/png");
+  assert.equal(content.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(content.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual(Buffer.from(await content.arrayBuffer()), imageBytes);
+  assert.deepEqual(await readFile(join(dataDirectory, "attachments", sharedImage.attachment.id)), imageBytes);
 }
 
 async function diagnosticWorkerSmoke() {
@@ -161,10 +217,12 @@ try {
   }
   const paths = JSON.parse(await capture(executable, ["paths", "--data-dir", dataDirectory, "--json"]));
   if (paths.dataDirectory !== dataDirectory) throw new Error("Packaged paths command returned the wrong data directory");
+  assert.equal(paths.attachments, join(dataDirectory, "attachments"));
   await capture(executable, ["doctor", "--data-dir", dataDirectory, "--json"]);
   const portBase = 46_000 + Math.floor(Math.random() * 1_000);
-  await startAndStop("Setup:    created a fresh local Workspace", portBase, { explicitRun: true });
-  await startAndStop("Setup:    reopened existing local data", portBase);
+  const verifyImages = (output) => imageSharingSmoke(portBase, output);
+  await startAndStop("Setup:    created a fresh local Workspace", portBase, { explicitRun: true, verify: verifyImages });
+  await startAndStop("Setup:    reopened existing local data", portBase, { verify: verifyImages });
   await startAndStop("Setup:    ready for browser Workspace setup", portBase + 10, {
     dataDirectory: join(temporary, "browser-first-data"),
     workspacePath: undefined,

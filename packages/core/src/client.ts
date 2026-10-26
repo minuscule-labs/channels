@@ -11,6 +11,7 @@ import type {
   CreateWorkspaceInput,
   AddWorkspaceMemberInput,
   Identity,
+  MessageAttachment,
   ResponseResult,
   Workspace,
   WorkspaceMember,
@@ -22,6 +23,7 @@ import type {
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 import type { MessageListOptions } from "./storage.ts";
+import { MAX_IMAGE_BYTES } from "./image-validation.ts";
 
 export interface ConversationEventOptions {
   signal?: AbortSignal;
@@ -204,6 +206,58 @@ export class ConversationClient {
   async getConversation(conversationId: string): Promise<ConversationMetadata> {
     const response = await this.request(`/conversations/${conversationId}`);
     return ((await response.json()) as { conversation: ConversationMetadata }).conversation;
+  }
+
+  async uploadAttachment(
+    conversationId: string,
+    input: {
+      filename: string;
+      mimeType: MessageAttachment["mimeType"];
+      bytes: Uint8Array;
+      actorIdentityId?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<MessageAttachment> {
+    const query = new URLSearchParams({ filename: input.filename });
+    const response = await this.request(`/conversations/${conversationId}/attachments?${query}`, {
+      method: "POST",
+      headers: {
+        "content-type": input.mimeType,
+        ...(input.actorIdentityId ? { "x-minu-actor-id": input.actorIdentityId } : {}),
+      },
+      body: new Blob([input.bytes as BlobPart]),
+      signal: input.signal,
+    });
+    return ((await response.json()) as { attachment: MessageAttachment }).attachment;
+  }
+
+  /** Bounded authenticated byte read for internal consumers; never follows metadata URLs. */
+  async readAttachmentContent(conversationId: string, attachmentId: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mimeType: string }> {
+    if (!/^attachment_[0-9a-f]{32}$/.test(attachmentId)) throw new Error("Invalid attachment id");
+    const response = await this.request(`/conversations/${encodeURIComponent(conversationId)}/attachments/${attachmentId}/content`, { signal, redirect: "error" });
+    const maximum = MAX_IMAGE_BYTES;
+    const length = Number(response.headers.get("content-length"));
+    if (!response.body || !Number.isSafeInteger(length) || length < 1 || length > maximum) {
+      await response.body?.cancel();
+      throw new Error("Invalid image content length");
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        size += next.value.byteLength;
+        if (size > length || size > maximum) throw new Error("Image content is too large");
+        chunks.push(next.value);
+      }
+      if (size !== length) throw new Error("Image content is truncated");
+    } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    return { bytes, mimeType: response.headers.get("content-type") ?? "" };
   }
 
   async postMessage(

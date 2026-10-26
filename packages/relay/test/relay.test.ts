@@ -354,6 +354,53 @@ test("relay routes Workspace-local handles to stable agent identity ids", async 
   }
 });
 
+test("Relay gives agents attachment metadata but never image bytes or vision claims", async () => {
+  const server = await createConversationHttpServer();
+  const serviceToken = server.serviceToken;
+  const runtime = new FakeRuntime();
+  const setupClient = new ConversationClient(server.endpoint, { serviceToken });
+  const human = await setupClient.createIdentity({ type: "human", displayName: "David" });
+  const agent = await setupClient.createIdentity({ type: "agent", displayName: "Builder" });
+  const workspace = await setupClient.createWorkspace({ slug: "image-context", name: "Image Context" });
+  await setupClient.addWorkspaceMember(workspace.id, {
+    identityId: human.id,
+    mentionHandle: "david",
+    accessRole: "owner",
+  });
+  await setupClient.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" });
+  const conversation = await setupClient.createConversation({
+    workspaceId: workspace.id,
+    participantIds: [human.id, agent.id],
+  });
+  const humanClient = new ConversationClient(server.endpoint, { serviceToken, actorIdentityId: human.id });
+  const relay = new ConversationRuntimeRelay({
+    client: setupClient,
+    conversationId: conversation.id,
+    bindings: [{ participantId: agent.id, sessionId: "image-context-session", runtime }],
+  });
+  try {
+    await relay.start();
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const attachment = await humanClient.uploadAttachment(conversation.id, {
+      filename: "diagram.png",
+      mimeType: "image/png",
+      bytes,
+    });
+    await humanClient.postMessage(conversation.id, {
+      participantId: human.id,
+      body: "",
+      attachmentIds: [attachment.id],
+    });
+    await waitUntil(async () => (await setupClient.listMessages(conversation.id)).length === 2);
+    const prompt = runtime.prompts.get("image-context-session")?.[0] ?? "";
+    assert.match(prompt, /Image attached: "diagram\.png"; image pixels are not available to this Runtime/);
+    assert.doesNotMatch(prompt, /89504e470d0a1a0a/i);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
 test("relay caches revisioned rosters and stops waking disabled or removed members", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });

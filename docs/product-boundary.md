@@ -68,7 +68,7 @@ MinuChannels owns:
 
 MinuRuntime owns harness-neutral execution, sessions, messages, stable turns, steering, interruption, and adapter implementations.
 
-Conversations core owns durable communication only. It does not import Runtime or execute agents. Product composition connects core to the internal agent host through explicit ports.
+Conversations core owns durable communication, including structured local image attachments. Image bytes live in owner-private `attachments/` under the product data directory, outside message text and SQLite. Arbitrary Markdown images remain blocked; Stage 2 adds capability-gated image-byte delivery to Runtime ([image support](image-support.md)). Core does not import Runtime or execute agents. Product composition connects core to the internal agent host through explicit ports.
 
 ## Private configuration
 
@@ -129,7 +129,7 @@ The lifecycle vertical slice is complete. From this point, prefer documenting fu
 
 [`skills.md`](skills.md) defines the narrow MVP skill contract and records slash invocation, dynamic session mutation, Conversations-authored skills, executable skills, and installation as fast follows.
 
-Do not expand the MVP with richer supervision policy, optional first-mention auto-start, Conversation working scopes, separately named launch profiles shared across agents, arbitrary provider-option schemas, pagination/virtualization, worktrees or Git automation, attachment infrastructure ([image-support proposal](image-support.md)), hosted deployment/authentication, additional Runtime adapters, desktop packaging, TUI, advanced activity renderers, or new steering/interruption UI. Keep their intended contracts and safety constraints in documentation, but require evidence from real usage before implementation. This is a scope rule, not a rejection of those future capabilities. [`distribution.md`](distribution.md) is the canonical record for foreground npm/pnpm-dlx packaging, GitHub distribution choices, and the deferred T3-style background-service pattern.
+Do not expand the MVP with richer supervision policy, optional first-mention auto-start, Conversation working scopes, separately named launch profiles shared across agents, arbitrary provider-option schemas, pagination/virtualization, worktrees or Git automation, generic attachment infrastructure beyond the agreed local image slice ([image support](image-support.md)), hosted deployment/authentication, additional Runtime adapters, desktop packaging, TUI, advanced activity renderers, or new steering/interruption UI. Keep their intended contracts and safety constraints in documentation, but require evidence from real usage before implementation. This is a scope rule, not a rejection of those future capabilities. [`distribution.md`](distribution.md) is the canonical record for foreground npm/pnpm-dlx packaging, GitHub distribution choices, and the deferred T3-style background-service pattern.
 
 Architecture consolidation is allowed only when required to ship the items above; it is not an independent MVP project. New lifecycle edge cases should generally be documented unless they expose data loss, duplicate execution, authorization failure, secret leakage, stale output, or inability to recover the shipped flow.
 

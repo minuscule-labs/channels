@@ -45,6 +45,7 @@ export function createMessageSubmission(
   body: string,
   participants: Participant[],
   createId: () => string = () => crypto.randomUUID(),
+  attachmentIds: string[] = [],
 ): MessageSubmission {
   return {
     idempotencyKey: createId(),
@@ -52,6 +53,7 @@ export function createMessageSubmission(
       participantId: authorIdentityId,
       body,
       to: structuredTargets(body, participants),
+      ...(attachmentIds.length ? { attachmentIds: [...attachmentIds] } : {}),
     },
   };
 }
@@ -61,11 +63,14 @@ export function submissionMatchesDraft(
   authorIdentityId: string,
   body: string,
   participants: Participant[],
+  attachmentIds: string[] = [],
 ): boolean {
   const targets = structuredTargets(body, participants);
   const submissionTargets = submission.input.to ?? [];
   return submission.input.participantId === authorIdentityId
     && submission.input.body === body
+    && (submission.input.attachmentIds ?? []).length === attachmentIds.length
+    && (submission.input.attachmentIds ?? []).every((id, index) => id === attachmentIds[index])
     && submissionTargets.length === targets.length
     && submissionTargets.every((target, index) => target === targets[index]);
 }

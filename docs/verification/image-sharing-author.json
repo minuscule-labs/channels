@@ -1,0 +1,59 @@
+{
+  "status": "stage-1-implemented-uncommitted-not-released",
+  "branch": "feat/local-image-sharing",
+  "baseline": "cd8b08afd9f2eddabb6a4ef25bbe308975a14bd0",
+  "diagnostics": {
+    "pullRequest": "https://github.com/minuscule-labs/channels/pull/46",
+    "mergedCommit": "cd8b08afd9f2eddabb6a4ef25bbe308975a14bd0",
+    "mergedHead": "2bcddb02504faddc65acdf662372e53a790844a2",
+    "observedPrChecks": ["verify (ubuntu-latest): SUCCESS", "verify (macos-latest): SUCCESS", "browser: SUCCESS", "release-package: SUCCESS"],
+    "releasePublished": false
+  },
+  "reuse": {
+    "sourceBranch": "feat/conversation-image-attachments",
+    "sourceBaseline": "dee7d5f7e329a654e41cba528c480e02034f786f",
+    "sourceWorkingTreePreserved": true,
+    "reused": ["Attachment metadata/storage interfaces and transactional claims", "Drizzle schema/migration and history hydration", "Raw-byte upload and guarded image serving", "Local filesystem content store and retryable staged cleanup", "Local migration backup integration and API/storage/Relay tests"],
+    "notCopiedWholesale": ["Older composer/timeline UI", "Older product baseline or Runtime pin"],
+    "combinedWith": "The separately preserved local image-sharing draft's durable composer metadata/retry payloads, picker/paste/drop, app-owned rendering and browser tests"
+  },
+  "requirementsImplemented": [
+    "Owner-private local attachment bytes outside SQLite/message bodies, under the product data directory",
+    "PNG/JPEG/GIF/WebP signature/container checks; 10 MiB each, four images and 20 MiB per message",
+    "Authenticated browser actor uploads; same-origin private no-store/nosniff/sandboxed content responses",
+    "Atomic Conversation/author-scoped single-message claims and attachment-aware idempotency",
+    "Ready metadata and exact retry payload persisted without storing image bytes in browser storage",
+    "Picker, clipboard paste, drop, ordered removable thumbnails, indeterminate upload state, image-only messages",
+    "Bounded/lazy accessible rendering and missing-image fallback; arbitrary Markdown image URLs remain blocked",
+    "Retryable staged deletion after 24 hours, orphan/temporary-file recovery, startup/six-hour cleanup",
+    "Filesystem persistence and cleanup in both the local product and standalone local database CLI; no silent ephemeral content store for persistent metadata",
+    "Migration backup copies, attachment path reporting, and existing whole-directory development reset",
+    "Safe text-only Relay image markers explicitly stating that pixels are unavailable; Runtime unchanged"
+  ],
+  "checks": [
+    { "command": "pnpm check", "result": "passed", "scope": "Final implementation" },
+    { "command": "pnpm test", "result": "passed", "tests": 296, "scope": "Integrated implementation before final isolated standalone-CLI cleanup wiring" },
+    { "command": "pnpm check && node --test packages/storage-drizzle/dist/test/attachment-cli.test.js && git diff --check", "result": "passed", "tests": 1, "scope": "Final CLI delta: actual process restart retains bytes/metadata and startup reclaims orphan bytes" },
+    { "command": "pnpm web:check", "result": "passed" },
+    { "command": "pnpm web:test", "result": "passed", "tests": 160 },
+    { "command": "pnpm --filter @minu/channels-web exec playwright test", "result": "passed", "tests": 113, "scope": "Full Chromium regression, including new image cases and existing diagnostics" },
+    { "command": "pnpm web:build", "result": "passed", "advisory": "Existing non-fatal chunk-size warning" },
+    { "command": "git diff --check", "result": "passed" }
+  ],
+  "coverageHighlights": [
+    "Real filesystem bytes and temporary SQLite survive reopen; standalone server survives process restart",
+    "Container fixtures for all four supported formats, header-only/truncated rejection, MIME mismatch, empty/oversized requests including chunked streaming",
+    "Cross-Conversation/author claims, duplicate/missing/count/aggregate IDs, concurrent changed-payload idempotency and attached-image preservation",
+    "Lost response after actual server commit: normal Send and reload/Retry preserve the same key/payload and do not upload or create duplicates",
+    "Mobile paste/drop/removal, settled upload disablement, second-tab rendering, missing-image fallback and no remote Markdown image requests",
+    "Migration backups include image files; fake Runtime receives a metadata marker but no pixels"
+  ],
+  "authorReview": "Inspected the integrated diff and affected contracts; this is author verification, not independent review or human acceptance",
+  "limitations": [
+    "Stage 2 agent vision remains agreed follow-up work: Runtime typed image content, adapter/model capabilities, limits/transforms and pixel delivery are not implemented",
+    "Validation checks raster container structure, not full pixel decoding; decoder-level corruption may still render the accessible fallback",
+    "Only completed upload metadata survives navigation; pending file bytes are cancelled/not persisted, and unclaimed ready drafts expire after 24 hours",
+    "Local-only product boundary; no hosted per-participant authorization, object storage, generic files or audio",
+    "No image feature commit/push/PR, clean-package verification, release, real agent run or existing production service/database operation was performed"
+  ]
+}

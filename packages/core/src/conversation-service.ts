@@ -1,9 +1,21 @@
 import { createHash } from "node:crypto";
+import {
+  InMemoryAttachmentContentStore,
+  type AttachmentContentStore,
+} from "./attachment-storage.ts";
+import {
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
+  validateImageBytes,
+} from "./image-validation.ts";
 import { createResourceId, isResourceId } from "./ids.ts";
 import { isReservedMentionHandle, mentionHandles } from "./mentions.ts";
 import {
+  ConversationAttachmentUnavailableError,
   InMemoryConversationStorage,
+  type ConversationAttachmentRecord,
   type ConversationStorage,
+  type MessageCommitResult,
   type MessageListOptions,
   type NewConversationMessage,
   type WorkspaceMemberUpdateResult,
@@ -14,6 +26,7 @@ import type {
   ConversationLifecycle,
   ConversationMessage,
   EffectiveConversationLifecycle,
+  MessageAttachment,
   AddWorkspaceMemberInput,
   ConversationMetadata,
   CreateConversationInput,
@@ -37,6 +50,8 @@ import type {
 export class ConversationNotFoundError extends Error {}
 export class ConversationValidationError extends Error {}
 export class ConversationConflictError extends Error {}
+export class ConversationPayloadTooLargeError extends ConversationValidationError {}
+export class ConversationAttachmentStorageError extends Error {}
 
 type EventListener = (event: ConversationEvent) => void;
 
@@ -105,14 +120,48 @@ function requestFingerprint(input: {
   body: string;
   to: string[];
   replyTo?: string;
+  attachmentIds: string[];
 }): string {
+  // Preserve the pre-attachment fingerprint format for existing text-only retries.
   const canonicalPayload = JSON.stringify({
     participantId: input.participantId,
     body: input.body,
     to: [...input.to].sort(),
     replyTo: input.replyTo ?? null,
+    ...(input.attachmentIds.length ? { attachmentIds: input.attachmentIds } : {}),
   });
   return createHash("sha256").update(canonicalPayload).digest("hex");
+}
+
+function attachmentFilename(filename: string): string {
+  const leaf = filename.trim().split(/[\\/]/).at(-1) ?? "";
+  const normalized = leaf.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 120);
+  return normalized || "image";
+}
+
+function publicAttachment(attachment: ConversationAttachmentRecord): MessageAttachment {
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    altText: attachment.filename,
+    contentUrl: `/conversations/${attachment.conversationId}/attachments/${attachment.id}/content`,
+  };
+}
+
+function validateAttachmentIds(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    throw new ConversationValidationError(`attachmentIds must contain at most ${MAX_ATTACHMENTS_PER_MESSAGE} ids`);
+  }
+  const ids: string[] = [];
+  for (const id of value) {
+    if (!isResourceId(id, "attachment")) throw new ConversationValidationError("attachmentIds contains an invalid id");
+    if (ids.includes(id)) throw new ConversationValidationError("attachmentIds must be unique");
+    ids.push(id);
+  }
+  return ids;
 }
 
 function messageTargets(conversation: Conversation, input: CreateMessageInput): string[] {
@@ -178,7 +227,133 @@ export class ConversationService {
     }
   }
 
-  constructor(readonly storage: ConversationStorage = new InMemoryConversationStorage()) {}
+  private readonly attachmentContentStore?: AttachmentContentStore;
+
+  constructor(
+    readonly storage: ConversationStorage = new InMemoryConversationStorage(),
+    attachmentContentStore?: AttachmentContentStore,
+  ) {
+    // Persistent metadata must never silently use ephemeral bytes.
+    this.attachmentContentStore = attachmentContentStore
+      ?? (storage instanceof InMemoryConversationStorage ? new InMemoryAttachmentContentStore() : undefined);
+  }
+
+  async uploadAttachment(
+    conversationId: string,
+    participantId: string,
+    filename: string,
+    claimedMimeType: string,
+    bytes: Uint8Array,
+  ): Promise<MessageAttachment> {
+    return this.withConversationMessageAdmission(conversationId, () => this.serializeConversation(
+      conversationId,
+      () => this.uploadAttachmentOnce(conversationId, participantId, filename, claimedMimeType, bytes),
+    ));
+  }
+
+  private async uploadAttachmentOnce(
+    conversationId: string,
+    participantId: string,
+    filename: string,
+    claimedMimeType: string,
+    bytes: Uint8Array,
+  ): Promise<MessageAttachment> {
+    if (!this.attachmentContentStore) throw new ConversationAttachmentStorageError("Image storage is not configured");
+    const conversation = await this.storage.getConversation(conversationId);
+    if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
+    await this.assertConversationMutable(conversationId);
+    const participant = conversation.participants.find(({ id }) => id === participantId);
+    if (!participant || participant.type !== "human" || participant.status === "disabled") {
+      throw new ConversationValidationError("Only an active human Conversation participant can upload images");
+    }
+    await this.assertActiveWorkspaceIdentity(conversation, participantId);
+    if (typeof filename !== "string" || !filename.trim() || filename.length > 512) {
+      throw new ConversationValidationError("filename must be a non-empty string up to 512 characters");
+    }
+    const validation = validateImageBytes({ bytes, claimedMimeType });
+    if (!validation.ok) {
+      if (validation.reason === "too_large") throw new ConversationPayloadTooLargeError("Image is too large");
+      if (validation.reason === "empty") throw new ConversationValidationError("Image is empty");
+      if (validation.reason === "unsupported_type") throw new ConversationValidationError("Unsupported image type");
+      throw new ConversationValidationError("Image content does not match its declared type");
+    }
+
+    const id = createResourceId("attachment");
+    const attachment: ConversationAttachmentRecord = {
+      id,
+      conversationId,
+      uploaderIdentityId: participantId,
+      filename: attachmentFilename(filename),
+      mimeType: validation.mimeType,
+      size: validation.size,
+      contentHash: createHash("sha256").update(bytes).digest("hex"),
+      status: "staged",
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      await this.attachmentContentStore.put(id, bytes);
+    } catch {
+      throw new ConversationAttachmentStorageError("Image content could not be stored");
+    }
+    try {
+      await this.storage.stageAttachment(attachment);
+    } catch {
+      await this.attachmentContentStore.delete(id).catch(() => undefined);
+      throw new ConversationAttachmentStorageError("Image metadata could not be stored");
+    }
+    return publicAttachment(attachment);
+  }
+
+  async readAttachmentContent(
+    conversationId: string,
+    attachmentId: string,
+    actorIdentityId?: string,
+  ): Promise<{ bytes: Uint8Array; mimeType: MessageAttachment["mimeType"] }> {
+    if (!this.attachmentContentStore) throw new ConversationNotFoundError("Attachment content not found");
+    const attachment = await this.storage.getAttachment(conversationId, attachmentId);
+    if (!attachment || attachment.status === "deleting"
+      || (attachment.status === "staged" && attachment.uploaderIdentityId !== actorIdentityId)) {
+      throw new ConversationNotFoundError("Attachment not found");
+    }
+    let bytes: Uint8Array | undefined;
+    try {
+      bytes = await this.attachmentContentStore.get(attachmentId);
+    } catch {
+      throw new ConversationAttachmentStorageError("Image content is unavailable");
+    }
+    if (!bytes || createHash("sha256").update(bytes).digest("hex") !== attachment.contentHash) {
+      throw new ConversationNotFoundError("Attachment content not found");
+    }
+    return { bytes, mimeType: attachment.mimeType };
+  }
+
+  async cleanupStagedAttachments(now = new Date(), limit = 100): Promise<{ scanned: number; deleted: number }> {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("cleanup limit must be a positive integer");
+    if (!this.attachmentContentStore) return { scanned: 0, deleted: 0 };
+    const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1_000).toISOString();
+    const batchLimit = Math.min(limit, 500);
+    let scanned = 0;
+    let deletedCount = 0;
+    for (let batch = 0; batch < 10; batch += 1) {
+      const attachments = await this.storage.claimStagedAttachmentsForCleanup(cutoff, batchLimit);
+      if (attachments.length === 0) break;
+      const deleted: string[] = [];
+      for (const attachment of attachments) {
+        try {
+          await this.attachmentContentStore.delete(attachment.id);
+          deleted.push(attachment.id);
+        } catch {
+          // Retain the deleting row so the next cleanup pass can retry the file removal.
+        }
+      }
+      await this.storage.completeAttachmentDeletion(deleted);
+      scanned += attachments.length;
+      deletedCount += deleted.length;
+      if (deleted.length !== attachments.length || attachments.length < batchLimit) break;
+    }
+    await this.attachmentContentStore.cleanupOrphans?.(cutoff, (id) => this.storage.hasAttachment(id));
+    return { scanned, deleted: deletedCount };
+  }
 
   async createIdentity(input: CreateIdentityInput): Promise<Identity> {
     if (!input || !["human", "agent", "service"].includes(input.type)) {
@@ -898,8 +1073,9 @@ export class ConversationService {
       throw new ConversationValidationError(`Participant is not in conversation: ${participantId}`);
     }
     await this.assertActiveWorkspaceIdentity(conversation, participantId);
-    if (typeof input.body !== "string" || !input.body.trim()) {
-      throw new ConversationValidationError("body must be a non-empty string");
+    const attachmentIds = validateAttachmentIds(input.attachmentIds);
+    if (typeof input.body !== "string" || (!input.body.trim() && attachmentIds.length === 0)) {
+      throw new ConversationValidationError("body or at least one attachment is required");
     }
     if (Buffer.byteLength(input.body, "utf8") > 64 * 1024) {
       throw new ConversationValidationError("body exceeds 64 KiB");
@@ -912,6 +1088,15 @@ export class ConversationService {
     await Promise.all(to.filter((target) => target !== "@conversation").map(
       (target) => this.assertActiveWorkspaceIdentity(conversation, target),
     ));
+    const attachmentRecords = await Promise.all(attachmentIds.map((id) => this.storage.getAttachment(conversationId, id)));
+    if (attachmentRecords.some((attachment) => !attachment
+      || (attachment.status !== "staged" && !(validatedKey !== undefined && attachment.status === "attached"))
+      || attachment.uploaderIdentityId !== participantId)) {
+      throw new ConversationValidationError("One or more attachments are unavailable");
+    }
+    if (attachmentRecords.reduce((size, attachment) => size + (attachment?.size ?? 0), 0) > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      throw new ConversationPayloadTooLargeError("Combined image attachments are too large");
+    }
     const pendingMessage: NewConversationMessage = {
       id: createResourceId("message"),
       conversationId,
@@ -920,14 +1105,24 @@ export class ConversationService {
       body: input.body,
       replyTo: input.replyTo,
       createdAt: new Date().toISOString(),
+      attachments: attachmentRecords.map((attachment) => publicAttachment(attachment!)),
     };
-    const result = validatedKey === undefined
-      ? { message: await this.storage.appendMessage(pendingMessage), outcome: "created" as const }
-      : await this.storage.commitMessage(
-          pendingMessage,
-          validatedKey,
-          requestFingerprint({ participantId, body: input.body, to, replyTo: input.replyTo }),
-        );
+    let result: MessageCommitResult;
+    try {
+      result = validatedKey === undefined
+        ? { message: await this.storage.appendMessage(pendingMessage, attachmentIds), outcome: "created" as const }
+        : await this.storage.commitMessage(
+            pendingMessage,
+            validatedKey,
+            requestFingerprint({ participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
+            attachmentIds,
+          );
+    } catch (error) {
+      if (error instanceof ConversationAttachmentUnavailableError) {
+        throw new ConversationValidationError("One or more attachments are unavailable");
+      }
+      throw error;
+    }
     if (result.outcome === "conflict") {
       throw new ConversationConflictError("idempotency key was already used with a different payload");
     }

@@ -1,4 +1,8 @@
 import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FilesystemAttachmentContentStore } from "../../core/dist/src/attachment-storage.js";
 import { LocalAgentHostConfiguration } from "../../control/dist/src/configuration.js";
 import { LocalAgentDiagnosticReads } from "../../control/dist/src/agent-diagnostic-reads.js";
 import { LocalAgentSessionInspections } from "../../control/dist/src/agent-session-inspection.js";
@@ -16,7 +20,8 @@ const conversationsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
 const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
-const service = new ConversationService();
+const imageDirectory = await mkdtemp(join(tmpdir(), "channels-browser-images-"));
+const service = new ConversationService(undefined, new FilesystemAttachmentContentStore(imageDirectory));
 const activeEventStreams = new Set();
 const subscribeMany = service.subscribeMany.bind(service);
 service.subscribeMany = async (ids, listener) => {
@@ -365,6 +370,7 @@ const close = async () => {
   await localControl.close().catch(() => undefined);
   await privateStore.close().catch(() => undefined);
   controlServer.close();
+  await rm(imageDirectory, { recursive: true, force: true });
   process.exit(0);
 };
 process.on("SIGINT", close);

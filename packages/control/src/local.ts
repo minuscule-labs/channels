@@ -1,6 +1,7 @@
 import {
   ConversationClient,
   ConversationService,
+  FilesystemAttachmentContentStore,
   createResourceId,
   createConversationHttpServer,
   type ConversationHttpServer,
@@ -17,7 +18,7 @@ import {
   DrizzleLibSqlRelayStorage,
   localRelayLibSqlUrl,
 } from "@minu/channels-relay-storage-drizzle";
-import { chmod, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalAgentHostDiagnosticEvent, LocalAgentHostWorkSnapshot, LocalManagedRuntimePort } from "./agent-host.ts";
@@ -128,6 +129,7 @@ async function backupDatabasesBeforeMigration(options: {
     "backups",
     `before-migration-${new Date().toISOString().replace(/[:.]/g, "-")}`,
   );
+  await mkdir(backupDirectory, { recursive: true, mode: 0o700 });
   await Promise.all([
     ...(conversations.exists ? [backupLocalLibSqlDatabase(
       localConversationLibSqlUrl(options.conversationsDatabasePath), join(backupDirectory, "channels.db"),
@@ -135,7 +137,26 @@ async function backupDatabasesBeforeMigration(options: {
     ...(relay.exists ? [backupLocalLibSqlDatabase(
       localConversationLibSqlUrl(options.relayDatabasePath), join(backupDirectory, "relay.db"),
     )] : []),
+    backupLocalAttachments(join(options.dataDirectory, "attachments"), join(backupDirectory, "attachments")),
   ]);
+}
+
+async function backupLocalAttachments(sourceDirectory: string, backupDirectory: string): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(sourceDirectory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const files = entries.filter((entry) => entry.isFile() && /^attachment_[0-9a-f]{32}$/.test(entry.name));
+  if (files.length === 0) return;
+  await mkdir(backupDirectory, { recursive: true, mode: 0o700 });
+  for (const file of files) {
+    const destination = join(backupDirectory, file.name);
+    await copyFile(join(sourceDirectory, file.name), destination);
+    await chmod(destination, 0o600);
+  }
 }
 
 async function secureDatabaseFiles(path: string): Promise<void> {
@@ -408,12 +429,29 @@ export async function createLocalProductApp(
   }
   let conversationsServer: ConversationHttpServer | undefined;
   let controlDaemon: LocalControlDaemon | undefined;
+  let attachmentCleanupInterval: NodeJS.Timeout | undefined;
+  let attachmentCleanupTask: Promise<unknown> | undefined;
   try {
     await secureDatabaseFiles(conversationsDatabasePath);
+    const service = new ConversationService(
+      storage,
+      new FilesystemAttachmentContentStore(join(dataDirectory, "attachments")),
+    );
+    await service.cleanupStagedAttachments();
     conversationsServer = await createConversationHttpServer({
       port: options.conversationsPort ?? DEFAULT_CHANNELS_PORT,
-      service: new ConversationService(storage),
+      service,
     });
+    const runAttachmentCleanup = (): Promise<unknown> => {
+      if (!attachmentCleanupTask) {
+        attachmentCleanupTask = service.cleanupStagedAttachments()
+          .catch(() => undefined)
+          .finally(() => { attachmentCleanupTask = undefined; });
+      }
+      return attachmentCleanupTask;
+    };
+    attachmentCleanupInterval = setInterval(() => { void runAttachmentCleanup(); }, 6 * 60 * 60 * 1_000);
+    attachmentCleanupInterval.unref();
     const client = new ConversationClient(conversationsServer.endpoint, { serviceToken: conversationsServer.serviceToken });
     let profile = await readProfile(profilePath);
     const initialized = profile === undefined;
@@ -504,6 +542,8 @@ export async function createLocalProductApp(
       async close() {
         if (closed) return;
         closed = true;
+        if (attachmentCleanupInterval) clearInterval(attachmentCleanupInterval);
+        await attachmentCleanupTask;
         await Promise.allSettled([controlDaemon!.close(), conversationsServer!.close()]);
         try {
           await storage.close();
@@ -513,6 +553,8 @@ export async function createLocalProductApp(
       },
     };
   } catch (error) {
+    if (attachmentCleanupInterval) clearInterval(attachmentCleanupInterval);
+    await attachmentCleanupTask;
     await Promise.allSettled([controlDaemon?.close(), conversationsServer?.close()]);
     try {
       await storage.close();

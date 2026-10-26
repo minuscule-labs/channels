@@ -19,6 +19,10 @@
     "./types": {
       "types": "./dist/src/types.d.ts",
       "default": "./dist/src/types.js"
+    },
+    "./image-validation": {
+      "types": "./dist/src/image-validation.d.ts",
+      "default": "./dist/src/image-validation.js"
     }
   },
   "types": "./dist/src/index.d.ts"

@@ -198,7 +198,7 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   const options = utility.opts<{ dataDir?: string; json?: boolean; check?: boolean; yes?: boolean }>();
   const dataDirectory = resolveConversationsDataDirectory({ explicit: options.dataDir });
   if (command === "paths") {
-    const paths = { dataDirectory, conversationsDatabase: join(dataDirectory, "channels.db"), relayDatabase: join(dataDirectory, "relay.db"), profile: join(dataDirectory, "local-profile.json"), lock: join(dataDirectory, "run", "instance.lock") };
+    const paths = { dataDirectory, attachments: join(dataDirectory, "attachments"), conversationsDatabase: join(dataDirectory, "channels.db"), relayDatabase: join(dataDirectory, "relay.db"), profile: join(dataDirectory, "local-profile.json"), lock: join(dataDirectory, "run", "instance.lock") };
     if (options.json) console.log(JSON.stringify(paths, null, 2));
     else Object.entries(paths).forEach(([label, path]) => console.log(`${label}: ${path}`));
     return true;

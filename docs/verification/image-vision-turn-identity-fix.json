@@ -1,0 +1,43 @@
+{
+  "recordedAt": "2026-10-26T21:36:25Z",
+  "status": "review-finding-fixed-author-verified-not-independently-rereviewed",
+  "channelsBaseline": "83eb63b8cb465a3a7ddc231b6c1d5a9e821b29f4",
+  "runtimeBaseline": "a37ba84aef582638ac340f213ddf463dae11d04a",
+  "runtimeCommit": "e33b8a2da639832947b1bb203b45be5cc40d0772",
+  "channelsPackagedTarget": "408950e1de88dd5e56e5de5fb3839037902d78c2",
+  "subsequentChanges": "Only this evidence record changes after the packaged target; tested source and Runtime pin are unchanged.",
+  "finding": {
+    "severity": "MEDIUM",
+    "origin": "contextual delegated re-review",
+    "summary": "An old canceled read's finalizer compared caller IDs only. After retention eviction and ID reuse, it could clear the newer turn's admission/dispatch state, allowing concurrent admission or losing cancellation ownership."
+  },
+  "fix": "Bridge active/dispatching execution references now store the exact AgentTurn object. Admission, interruption and finalization use that identity, independently of the caller-ID-keyed retained-turn map. Public turn IDs, replay and bounded retention semantics are unchanged.",
+  "regression": {
+    "file": "runtime/packages/pi/test/turn-retention.test.ts",
+    "cases": "Four deterministic cases: old canceled transcript read resolves/rejects after eviction and ID reuse, while the new instance is preparing/dispatched. Each checks busy rejection for another turn, legacy send and managed stop; cancellation must succeed, and dispatched work must still invoke the native interrupt.",
+    "beforeFix": "All four cases failed against a37ba84: preparing cases admitted another turn (202 versus required 409), and dispatched cases could not settle the new instance as interrupted.",
+    "afterFix": "All four pass; the old canceled instance never dispatches. Existing transcript/image-capability cancellation tests remain passing."
+  },
+  "checks": [
+    { "command": "pnpm -C ../runtime check && node --test ../runtime/packages/pi/dist/test/turn-retention.test.js ../runtime/packages/pi/dist/test/image-input.test.js ../runtime/packages/pi/dist/test/image-cancellation.test.js && git -C ../runtime diff --check", "result": "passed", "tests": 10 },
+    { "command": "pnpm -C ../runtime check && pnpm -C ../runtime test && git -C ../runtime diff --check", "result": "passed", "tests": 62, "scope": "Full Runtime regression on final source; subsequent README addition is documentation only" },
+    { "command": "pnpm check && node scripts/smoke-image-vision.mjs && git diff --check", "result": "passed", "scope": "Channels type/build check and controlled Conversation HTTP/SQLite/files to managed Runtime/Pi RPC, including resume/reopen and cancellation during final image preparation" },
+    { "command": "pnpm release:build", "result": "passed", "scope": "Clean Channels 408950e and Runtime e33b8a2, exact refreshed pin, production builds and bundled source inspection; dirty-source guard not bypassed", "advisory": "Existing non-fatal web chunk-size warning" },
+    { "command": "mkdir release/artifacts/image-vision-identity-408950e && (cd release/package && npm pack --pack-destination ../artifacts/image-vision-identity-408950e)", "result": "passed", "scope": "Separate candidate directory; existing artifacts preserved" },
+    { "command": "node scripts/checksum-release.mjs release/artifacts/image-vision-identity-408950e", "result": "passed" },
+    { "command": "MINU_RUNTIME_MODULE=\"$PWD/release/package/dist/bin/runtime-pi.js\" node scripts/smoke-image-vision.mjs", "result": "passed", "scope": "Freshly bundled Runtime client/owned worker: image delivery, managed resume/reopen, held capability-read cancellation, Relay settlement and subsequent work. Retention/ID-reuse matrix is covered by the Runtime source tests, not this native smoke." }
+  ],
+  "evidenceReuse": "Channels production/UI source and controlled smoke are unchanged from 83eb63b; only the Runtime pin and documentation/evidence change. Prior Channels 305 backend, 68 affected Relay, 160 web and two image-browser results remain historical rather than new passes. New Runtime lifecycle source is covered by its full suite and the cross-repository smoke.",
+  "candidate": {
+    "path": "release/artifacts/image-vision-identity-408950e/minu-channels-0.0.16.tgz",
+    "sha256": "c8575c46297f8a7164ebd44aea86d8ae1253c3a850b7019592db86c20b1235fb",
+    "builtAt": "2026-10-26T21:36:17.648Z",
+    "warning": "Local candidate only, inheriting main's version. NOT the published v0.0.16 artifact. Its affected Runtime bundle was directly tested; no installed-package acceptance is claimed for this candidate."
+  },
+  "remaining": [
+    "No independent re-review of this follow-up fix is claimed",
+    "Remote CI requires approved publication of the new pinned Runtime commit; neither repository has been pushed",
+    "Genuine provider/model and installed-agent vision acceptance remain outstanding"
+  ],
+  "operations": "Local commits and disposable controlled tests only. No real Pi/provider calls, existing product data changes, installed app updates, service registration, PR, new version/tag or publication."
+}

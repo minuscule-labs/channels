@@ -10,7 +10,26 @@ import type {
   ResponseResult,
   Workspace,
   WorkspaceMember,
+  MessageAttachment,
 } from "./types.ts";
+
+export type ConversationAttachmentStatus = "staged" | "attached" | "deleting";
+
+export class ConversationAttachmentUnavailableError extends Error {}
+
+export interface ConversationAttachmentRecord {
+  id: string;
+  conversationId: string;
+  uploaderIdentityId: string;
+  filename: string;
+  mimeType: MessageAttachment["mimeType"];
+  size: number;
+  contentHash: string;
+  status: ConversationAttachmentStatus;
+  messageId?: string;
+  position?: number;
+  createdAt: string;
+}
 
 export type NewConversationMessage = Omit<ConversationMessage, "sequence">;
 export type NewResponseMessage = NewConversationMessage & { replyTo: string };
@@ -72,11 +91,17 @@ export interface ConversationStorage extends ConversationCursorStore {
     expectedRosterRevision: number,
     updatedAt: string,
   ): Promise<ConversationRosterUpdateResult | undefined>;
-  appendMessage(message: NewConversationMessage): Promise<ConversationMessage>;
+  stageAttachment(attachment: ConversationAttachmentRecord): Promise<void>;
+  hasAttachment(attachmentId: string): Promise<boolean>;
+  getAttachment(conversationId: string, attachmentId: string): Promise<ConversationAttachmentRecord | undefined>;
+  claimStagedAttachmentsForCleanup(cutoff: string, limit: number): Promise<ConversationAttachmentRecord[]>;
+  completeAttachmentDeletion(attachmentIds: string[]): Promise<void>;
+  appendMessage(message: NewConversationMessage, attachmentIds?: string[]): Promise<ConversationMessage>;
   commitMessage(
     message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
+    attachmentIds?: string[],
   ): Promise<MessageCommitResult>;
   commitResponse(
     message: NewResponseMessage,
@@ -85,11 +110,30 @@ export interface ConversationStorage extends ConversationCursorStore {
   close?(): Promise<void> | void;
 }
 
+function messageAttachment(attachment: ConversationAttachmentRecord): MessageAttachment {
+  return {
+    id: attachment.id,
+    filename: attachment.filename,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    altText: attachment.filename,
+    contentUrl: `/conversations/${attachment.conversationId}/attachments/${attachment.id}/content`,
+  };
+}
+
+function copyMessage(message: ConversationMessage): ConversationMessage {
+  return {
+    ...message,
+    to: [...message.to],
+    ...(message.attachments ? { attachments: message.attachments.map((attachment) => ({ ...attachment })) } : {}),
+  };
+}
+
 function copyConversation(conversation: Conversation): Conversation {
   return {
     ...conversation,
     participants: conversation.participants.map((participant) => ({ ...participant })),
-    messages: conversation.messages.map((message) => ({ ...message, to: [...message.to] })),
+    messages: conversation.messages.map(copyMessage),
   };
 }
 
@@ -101,6 +145,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   private readonly lifecycles = new Map<string, ConversationLifecycle>();
   private readonly cursors = new Map<string, number>();
   private readonly responses = new Map<string, ConversationMessage>();
+  private readonly attachments = new Map<string, ConversationAttachmentRecord>();
   private readonly messageRequests = new Map<
     string,
     { requestFingerprint: string; message: ConversationMessage }
@@ -258,7 +303,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
         ? messages.slice(0, options.limit)
         : messages.slice(-options.limit);
     }
-    return messages.map((message) => ({ ...message, to: [...message.to] }));
+    return messages.map(copyMessage);
   }
 
   async getConversationMetadata(conversationId: string): Promise<ConversationMetadata | undefined> {
@@ -321,18 +366,72 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     };
   }
 
-  async appendMessage(message: NewConversationMessage): Promise<ConversationMessage> {
+  async stageAttachment(attachment: ConversationAttachmentRecord): Promise<void> {
+    if (attachment.status !== "staged" || attachment.messageId !== undefined || attachment.position !== undefined) {
+      throw new Error("New attachments must be staged without a message association");
+    }
+    if (this.attachments.has(attachment.id)) throw new Error(`Attachment id already exists: ${attachment.id}`);
+    if (!this.conversations.has(attachment.conversationId)) throw new Error(`Conversation not found: ${attachment.conversationId}`);
+    this.attachments.set(attachment.id, { ...attachment });
+  }
+
+  async hasAttachment(attachmentId: string): Promise<boolean> {
+    return this.attachments.has(attachmentId);
+  }
+
+  async getAttachment(conversationId: string, attachmentId: string): Promise<ConversationAttachmentRecord | undefined> {
+    const attachment = this.attachments.get(attachmentId);
+    return attachment?.conversationId === conversationId ? { ...attachment } : undefined;
+  }
+
+  async claimStagedAttachmentsForCleanup(cutoff: string, limit: number): Promise<ConversationAttachmentRecord[]> {
+    const eligible = [...this.attachments.values()]
+      .filter((attachment) => attachment.status === "deleting"
+        || (attachment.status === "staged" && attachment.createdAt < cutoff))
+      .slice(0, limit);
+    for (const attachment of eligible) {
+      attachment.status = "deleting";
+    }
+    return eligible.map((attachment) => ({ ...attachment }));
+  }
+
+  async completeAttachmentDeletion(attachmentIds: string[]): Promise<void> {
+    for (const attachmentId of attachmentIds) {
+      if (this.attachments.get(attachmentId)?.status === "deleting") this.attachments.delete(attachmentId);
+    }
+  }
+
+  async appendMessage(message: NewConversationMessage, attachmentIds: string[] = []): Promise<ConversationMessage> {
     const conversation = this.conversations.get(message.conversationId);
     if (!conversation) throw new Error(`Conversation not found: ${message.conversationId}`);
-    const stored = { ...message, sequence: conversation.messages.length + 1, to: [...message.to] };
+    const records = attachmentIds.map((attachmentId) => this.attachments.get(attachmentId));
+    if (records.some((attachment) => !attachment
+      || attachment.conversationId !== message.conversationId
+      || attachment.uploaderIdentityId !== message.participantId
+      || attachment.status !== "staged")) {
+      throw new ConversationAttachmentUnavailableError("One or more attachments are unavailable");
+    }
+    const sequence = conversation.messages.length + 1;
+    const stored: ConversationMessage = {
+      ...message,
+      sequence,
+      to: [...message.to],
+      ...(records.length ? { attachments: records.map((attachment) => messageAttachment(attachment!)) } : { attachments: [] }),
+    };
+    records.forEach((attachment, position) => {
+      attachment!.status = "attached";
+      attachment!.messageId = message.id;
+      attachment!.position = position;
+    });
     conversation.messages.push(stored);
-    return { ...stored, to: [...stored.to] };
+    return copyMessage(stored);
   }
 
   async commitMessage(
     message: NewConversationMessage,
     idempotencyKey: string,
     requestFingerprint: string,
+    attachmentIds: string[] = [],
   ): Promise<MessageCommitResult> {
     const requestKey = JSON.stringify([message.conversationId, message.participantId, idempotencyKey]);
     const pending = this.pendingMessages.get(requestKey);
@@ -340,7 +439,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
       await pending;
       return this.resolveMessageRequest(requestKey, requestFingerprint);
     }
-    const commit = this.commitMessageOnce(requestKey, message, requestFingerprint);
+    const commit = this.commitMessageOnce(requestKey, message, requestFingerprint, attachmentIds);
     this.pendingMessages.set(requestKey, commit);
     try {
       return await commit;
@@ -356,7 +455,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     const existing = this.messageRequests.get(requestKey);
     if (!existing) throw new Error("Idempotency record is missing its message");
     return {
-      message: { ...existing.message, to: [...existing.message.to] },
+      message: copyMessage(existing.message),
       outcome: existing.requestFingerprint === requestFingerprint ? "replayed" : "conflict",
     };
   }
@@ -365,11 +464,12 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     requestKey: string,
     message: NewConversationMessage,
     requestFingerprint: string,
+    attachmentIds: string[],
   ): Promise<MessageCommitResult> {
     if (this.messageRequests.has(requestKey)) {
       return this.resolveMessageRequest(requestKey, requestFingerprint);
     }
-    const stored = await this.appendMessage(message);
+    const stored = await this.appendMessage(message, attachmentIds);
     this.messageRequests.set(requestKey, { requestFingerprint, message: stored });
     return { message: stored, outcome: "created" };
   }
