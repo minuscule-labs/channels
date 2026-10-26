@@ -1,5 +1,6 @@
 {
   "recordedAt": "2026-10-26T16:56:32Z",
+  "historicalNote": "Pre-review author-verification snapshot. The subsequent delegated review identified a HIGH pre-dispatch cancellation defect; see image-vision-cancellation-fix.json for its correction, refreshed Runtime pin and follow-up checks.",
   "status": "stage-2-implemented-author-verified-not-released",
   "scope": "Images attached to channel/Conversation messages reaching image-capable agents through bounded typed Runtime input; not public file sharing",
   "branch": "feat/conversation-image-vision",

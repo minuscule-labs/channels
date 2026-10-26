@@ -14,6 +14,10 @@ const { PiAgentRuntime } = await import(pathToFileURL(runtimeModule).href);
 const temporary = await mkdtemp(join(tmpdir(), "channels-image-vision-"));
 const fakePi = join(temporary, "controlled-pi.mjs");
 const requestsFile = join(temporary, "requests.jsonl");
+const holdCapability = join(temporary, "hold-capability");
+const capabilityHeld = join(temporary, "capability-held");
+const releaseCapability = join(temporary, "release-capability");
+const capabilityReleased = join(temporary, "capability-released");
 // Use the exact image fixture accepted by the Conversation raster-container validator.
 const pixels = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const savedEnvironment = { PI_COMMAND: process.env.PI_COMMAND, MINU_RUNTIME_DIR: process.env.MINU_RUNTIME_DIR };
@@ -21,6 +25,7 @@ let storage;
 let server;
 let relay;
 let session;
+let canceledTurnId;
 const runtime = new PiAgentRuntime();
 const owner = "controlled-image-owner";
 async function waitFor(check) {
@@ -33,7 +38,7 @@ async function waitFor(check) {
 }
 try {
   await writeFile(fakePi, `#!/usr/bin/env node
-import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 const file = process.argv[process.argv.indexOf("--session") + 1];
 const lines = readFileSync(file, "utf8").trim().split("\\n");
 const header = JSON.parse(lines[0]);
@@ -50,7 +55,19 @@ process.stdin.on("data", chunk => {
     const index = buffer.indexOf("\\n");
     const request = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1);
     const respond = data => console.log(JSON.stringify({ id: request.id, type: "response", command: request.type, success: true, data }));
-    if (request.type === "get_state") respond({ sessionId: "controlled-native", sessionFile: file, isStreaming: false, model: { provider: "controlled", id: "vision-fixture", input: ["text", "image"] } });
+    if (request.type === "get_state") {
+      const state = { sessionId: "controlled-native", sessionFile: file, isStreaming: false, model: { provider: "controlled", id: "vision-fixture", input: ["text", "image"] } };
+      let remaining = 0;
+      try { remaining = Number(readFileSync(${JSON.stringify(holdCapability)}, "utf8")); } catch {}
+      if (remaining > 0) writeFileSync(${JSON.stringify(holdCapability)}, String(remaining - 1));
+      if (remaining === 1) {
+        writeFileSync(${JSON.stringify(capabilityHeld)}, "held");
+        const timer = setInterval(() => {
+          if (!existsSync(${JSON.stringify(releaseCapability)})) return;
+          clearInterval(timer); respond(state); writeFileSync(${JSON.stringify(capabilityReleased)}, "released");
+        }, 5);
+      } else respond(state);
+    }
     else if (request.type === "get_messages") respond({ messages });
     else if (request.type === "prompt") {
       appendFileSync(${JSON.stringify(requestsFile)}, JSON.stringify(request) + "\\n", { mode: 0o600 });
@@ -104,9 +121,37 @@ process.on("SIGTERM", () => process.exit(0));
   assert.equal(requests.length, 2);
   assert.ok(requests.every(request => request.images.length === 1 && request.images[0].data === pixels.toString("base64")));
   assert.ok(!JSON.stringify(await runtime.messages(session.id)).includes(pixels.toString("base64")));
-  console.log("Image vision smoke passed: Conversation HTTP/SQLite/files → Relay → Runtime HTTP/owned worker → controlled Pi RPC, including suspend/resume and storage reopen");
+
+  // Hold the owned worker's final get_state, after Relay and bridge capability reads.
+  await writeFile(holdCapability, "3");
+  const canceled = await client.postMessage(conversation.id, { participantId: "human", body: "Cancel during native image preparation" });
+  await waitFor(async () => readFile(capabilityHeld).then(() => true, () => false));
+  canceledTurnId = `conversation:${conversation.id}:agent:${canceled.id}`;
+  assert.equal((await runtime.turn(session.id, canceledTurnId))?.status, "running");
+  await relay.cancelCurrent("agent", "human");
+  await waitFor(() => relay.cursor("agent") >= canceled.sequence);
+  assert.equal((await runtime.turn(session.id, canceledTurnId))?.status, "interrupted");
+  assert.equal(await runtime.status(session.id), "idle");
+  assert.equal((await client.listMessages(conversation.id)).at(-1).body, "Current request was canceled by @human.");
+  assert.equal((await readFile(requestsFile, "utf8")).trim().split("\n").length, 2);
+
+  // A later turn must run even while the canceled read remains physically outstanding.
+  const followup = await client.postMessage(conversation.id, { participantId: "human", body: "Continue after canceled preparation" });
+  await waitFor(() => relay.cursor("agent") >= followup.sequence);
+  assert.equal((await client.listMessages(conversation.id)).at(-1).body, "PIXELS_OK");
+  await writeFile(releaseCapability, "release");
+  await waitFor(async () => readFile(capabilityReleased).then(() => true, () => false));
+  await runtime.messages(session.id); // Drain the native protocol after the stale read returns.
+  const afterCancellation = (await readFile(requestsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(afterCancellation.length, 3, "Canceled preparation must never dispatch a late prompt");
+  assert.ok(afterCancellation[2].message.includes(`Message ${followup.sequence} from`));
+  assert.equal((await runtime.turn(session.id, canceledTurnId))?.status, "interrupted");
+  assert.equal(await runtime.status(session.id), "idle");
+  console.log("Image vision smoke passed: Conversation HTTP/SQLite/files → Relay → Runtime HTTP/owned worker → controlled Pi RPC, including resume, reopen and cancellation during final image preparation");
 } finally {
+  await writeFile(releaseCapability, "release").catch(() => {});
   await relay?.stop().catch(() => {});
+  if (session && canceledTurnId) await waitFor(async () => (await runtime.turn(session.id, canceledTurnId))?.status !== "running").catch(() => {});
   if (session) await runtime.destroy(session.id, owner).catch(() => {});
   await server?.close().catch(() => {});
   await storage?.close().catch(() => {});
