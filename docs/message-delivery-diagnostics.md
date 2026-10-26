@@ -1,6 +1,6 @@
 # Advanced message-delivery diagnostics
 
-**Status:** Implemented locally on `feat/message-delivery-diagnostics`; not merged or released. The user approved advanced-diagnostics-only presentation and the retention defaults below. This is a follow-up to the shipped [recent Runtime events](agent-diagnostics-recent-logs.md), not unfinished v0.0.15 work.
+**Status:** Merged in [PR #46](https://github.com/minuscule-labs/channels/pull/46) and prepared for v0.0.16; publication and installed-artifact acceptance remain separate. The user approved advanced-diagnostics-only presentation and the retention defaults below. This is a follow-up to the shipped [recent Runtime events](agent-diagnostics-recent-logs.md), not unfinished v0.0.15 work.
 
 ## Agreed scope
 
