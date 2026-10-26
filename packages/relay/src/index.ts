@@ -57,6 +57,7 @@ export {
   type DeliveryDeadLetterReason,
   type RelayCursorStore,
   type RuntimeActivityEvent,
+  type RuntimePortImage,
   type RuntimePortMessage,
   type RuntimePortTurn,
   type RelayAgentActivity,

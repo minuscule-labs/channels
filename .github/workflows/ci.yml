@@ -90,3 +90,8 @@ jobs:
       - name: Smoke-test packaged installation
         working-directory: channels
         run: pnpm release:smoke
+      - name: Verify image delivery through controlled Pi RPC
+        working-directory: channels
+        env:
+          MINU_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+        run: node scripts/smoke-image-vision.mjs

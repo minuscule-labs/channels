@@ -13,6 +13,7 @@ import {
   ConversationValidationError,
 } from "../src/conversation-service.ts";
 import { createConversationHttpServer, type ConversationHttpServer } from "../src/http-server.ts";
+import { ConversationClient } from "../src/client.ts";
 import { MAX_ATTACHMENTS_PER_MESSAGE, MAX_IMAGE_BYTES, MAX_MESSAGE_ATTACHMENT_BYTES, validateImageBytes } from "../src/image-validation.ts";
 import { createResourceId, isResourceId } from "../src/ids.ts";
 import { InMemoryConversationStorage } from "../src/storage.ts";
@@ -175,6 +176,13 @@ test("HTTP attachment routes enforce the session actor, preserve bytes, and serv
     assert.equal(fetched.headers.get("x-content-type-options"), "nosniff");
     assert.equal(fetched.headers.get("content-security-policy"), "default-src 'none'; sandbox");
     assert.deepEqual([...new Uint8Array(await fetched.arrayBuffer())], [...png]);
+    const pixelClient = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    assert.deepEqual(await pixelClient.readAttachmentContent(conversation.id, attachment.id), { bytes: new Uint8Array(png), mimeType: "image/png" });
+    await assert.rejects(new ConversationClient(server.endpoint).readAttachmentContent(conversation.id, attachment.id), /Unauthorized/);
+    await assert.rejects(pixelClient.readAttachmentContent(conversation.id, "../outside"), /Invalid attachment id/);
+    const aborted = new AbortController();
+    aborted.abort();
+    await assert.rejects(pixelClient.readAttachmentContent(conversation.id, attachment.id, aborted.signal), { name: "AbortError" });
 
     const missingActor = await jsonRequest(server, `/conversations/${conversation.id}/attachments?filename=x.png`, {
       method: "POST",

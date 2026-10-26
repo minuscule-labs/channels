@@ -68,7 +68,7 @@ MinuChannels owns:
 
 MinuRuntime owns harness-neutral execution, sessions, messages, stable turns, steering, interruption, and adapter implementations.
 
-Conversations core owns durable communication, including structured local image attachments. Image bytes live in owner-private `attachments/` under the product data directory, outside message text and SQLite. Arbitrary Markdown images remain blocked; pixel transfer to agents is Stage 2 ([image support](image-support.md)). Core does not import Runtime or execute agents. Product composition connects core to the internal agent host through explicit ports.
+Conversations core owns durable communication, including structured local image attachments. Image bytes live in owner-private `attachments/` under the product data directory, outside message text and SQLite. Arbitrary Markdown images remain blocked; Stage 2 adds capability-gated image-byte delivery to Runtime ([image support](image-support.md)). Core does not import Runtime or execute agents. Product composition connects core to the internal agent host through explicit ports.
 
 ## Private configuration
 

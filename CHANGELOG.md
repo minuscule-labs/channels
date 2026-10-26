@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Share PNG, JPEG, GIF and WebP images as structured Conversation message attachments, including image-only messages, picker/paste/drop, durable local bytes and retry-safe sends. Keep external Markdown images blocked and explicitly mark image pixels as unavailable to agents until Stage 2 vision support.
+- Share PNG, JPEG, GIF and WebP images as structured Conversation message attachments, including image-only messages, picker/paste/drop, durable local bytes and retry-safe sends. Keep external Markdown images blocked and mark any pixels not delivered to an agent as unavailable.
 - Store image files in owner-private attachment directories, include them in migration backups and reclaim abandoned uploads without sweeping other standalone databases' message images.
+- Deliver bounded image parts to image-capable owned Pi sessions through typed Runtime input and live model checks. Preserve text-only fallback, ordered-pixel retry identity, Fresh-session boundaries, cancellation and native transcript resume; no public URLs or filesystem paths are passed to agents.
 
 ## 0.0.16
 
