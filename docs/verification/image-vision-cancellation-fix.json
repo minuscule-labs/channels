@@ -1,5 +1,6 @@
 {
   "recordedAt": "2026-10-26T20:52:57Z",
+  "historicalNote": "This checkpoint was subsequently independently re-reviewed. The original cancellation paths passed, but a MEDIUM stale-finalizer/evicted-ID-reuse defect was identified. See image-vision-turn-identity-fix.json for that correction, newer Runtime pin and current verification; remaining items below describe this earlier checkpoint.",
   "status": "review-finding-fixed-author-verified-not-independently-rereviewed",
   "channelsBaseline": "fabc50e956ae4c95383a862df6ca7bb11cc315e1",
   "runtimeBaseline": "c553ff7144e403162abb9bc950686d5e66625851",
