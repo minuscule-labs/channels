@@ -1,0 +1,143 @@
+{
+  "startedAt": "2026-10-26T22:48:24.462Z",
+  "status": "passed",
+  "channelsCommit": "1c3693c38ef8f6cc3321f48e5463be131e576000",
+  "runtimeCommit": "e33b8a2da639832947b1bb203b45be5cc40d0772",
+  "bundledSource": {
+    "channelsCommit": "408950e1de88dd5e56e5de5fb3839037902d78c2",
+    "runtimeCommit": "e33b8a2da639832947b1bb203b45be5cc40d0772",
+    "builtAt": "2026-10-26T21:36:17.648Z"
+  },
+  "piVersion": "0.99.1",
+  "scope": "Two real-agent image turns through disposable product app/browser gateway; synthetic PNGs only; existing configured default model; no tools/extensions/context discovery; no production installation, merge or release operation",
+  "cases": [
+    {
+      "case": 1,
+      "afterReopen": false,
+      "filename": "sample-1.png",
+      "imageSha256": "e071ed7249a1b518f2204bbde478a2cff7bc08d38b4bdcfbfe0d0aa083116b0a",
+      "imageBytes": 4552,
+      "expected": {
+        "top_left": {
+          "color": "yellow",
+          "shape": "triangle"
+        },
+        "top_right": {
+          "color": "green",
+          "shape": "square"
+        },
+        "bottom_left": {
+          "color": "red",
+          "shape": "circle"
+        },
+        "bottom_right": {
+          "color": "blue",
+          "shape": "diamond"
+        }
+      },
+      "observed": {
+        "top_left": {
+          "color": "yellow",
+          "shape": "triangle"
+        },
+        "top_right": {
+          "color": "green",
+          "shape": "square"
+        },
+        "bottom_left": {
+          "color": "red",
+          "shape": "circle"
+        },
+        "bottom_right": {
+          "color": "blue",
+          "shape": "diamond"
+        }
+      },
+      "passed": true
+    },
+    {
+      "case": 2,
+      "afterReopen": true,
+      "filename": "sample-2.png",
+      "imageSha256": "d0868a618a83f89556a5aa6c4d1c5187771195252d6c81f6386377f5223cfc9c",
+      "imageBytes": 3997,
+      "expected": {
+        "top_left": {
+          "color": "yellow",
+          "shape": "circle"
+        },
+        "top_right": {
+          "color": "blue",
+          "shape": "diamond"
+        },
+        "bottom_left": {
+          "color": "green",
+          "shape": "square"
+        },
+        "bottom_right": {
+          "color": "red",
+          "shape": "triangle"
+        }
+      },
+      "observed": {
+        "top_left": {
+          "color": "yellow",
+          "shape": "circle"
+        },
+        "top_right": {
+          "color": "blue",
+          "shape": "diamond"
+        },
+        "bottom_left": {
+          "color": "green",
+          "shape": "square"
+        },
+        "bottom_right": {
+          "color": "red",
+          "shape": "triangle"
+        }
+      },
+      "passed": true
+    }
+  ],
+  "cleanup": {
+    "processesStopped": true,
+    "temporaryDataRemoved": true
+  },
+  "limitations": [
+    "Same-account credentials, not clean-account acceptance",
+    "Production HTTP gateway exercised, not an interactive browser/manual UI acceptance run",
+    "Only the observed configured model is tested, not all providers/models"
+  ],
+  "model": {
+    "provider": "openai-codex",
+    "id": "gpt-6.1-sol",
+    "reasoning": "minimal"
+  },
+  "reopenVerified": true,
+  "turns": [
+    {
+      "imageCount": 1,
+      "imageHashes": [
+        "e071ed7249a1b518f2204bbde478a2cff7bc08d38b4bdcfbfe0d0aa083116b0a"
+      ]
+    },
+    {
+      "imageCount": 2,
+      "imageHashes": [
+        "e071ed7249a1b518f2204bbde478a2cff7bc08d38b4bdcfbfe0d0aa083116b0a",
+        "d0868a618a83f89556a5aa6c4d1c5187771195252d6c81f6386377f5223cfc9c"
+      ]
+    }
+  ],
+  "safety": {
+    "toolsDisabled": true,
+    "extensionsDisabled": true,
+    "contextDiscoveryDisabled": true,
+    "disposableCwdOnly": true,
+    "modelTurnCount": 2
+  },
+  "finishedAt": "2026-10-26T22:48:32.807Z",
+  "preflightNote": "A prior test-harness startup attempt requested unsupported reasoning off and sent zero model prompts. The harness was corrected to use the model-supported minimum before these two passing turns; production code was unchanged.",
+  "provenance": "Manual acceptance explicitly authorized in the user session; reported on Channels PR #48 and Runtime PR #11. The bundled Runtime and compiled product app/gateway used temporary data; this is not clean-account or newly installed full-package acceptance."
+}
