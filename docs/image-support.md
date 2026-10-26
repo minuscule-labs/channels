@@ -1,6 +1,6 @@
 # Conversation Image Support
 
-**Status:** Stage 1 implementation on `feat/local-image-sharing`, based on merged diagnostics PR #46 (`cd8b08a`). Reuses the earlier image worktree's storage/API/migration/backup code without replacing current UI files. Stage 2 agent vision is agreed follow-up work; no Runtime image transfer is implemented yet. Images have not been merged or released.
+**Status:** Stage 1 committed on `feat/local-image-sharing` (`cb5a94a`), reconciled with released main (`4bae1d2`) at `1c6d99f`, and locally verified through full regression and clean-package install/restart checks. See [integration evidence](verification/image-sharing-integrated.json). Reuses the earlier image worktree's storage/API/migration/backup code without replacing current UI files. Image PR CI and independent acceptance remain pending; images have not been merged to main or released. Stage 2 agent vision is separate agreed follow-up work; no Runtime image transfer is implemented yet.
 
 ## Recommendation
 

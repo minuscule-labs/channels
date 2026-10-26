@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Share PNG, JPEG, GIF and WebP images as structured Conversation message attachments, including image-only messages, picker/paste/drop, durable local bytes and retry-safe sends. Keep external Markdown images blocked and explicitly mark image pixels as unavailable to agents until Stage 2 vision support.
+- Store image files in owner-private attachment directories, include them in migration backups and reclaim abandoned uploads without sweeping other standalone databases' message images.
+
 ## 0.0.16
 
 Release overview: [message-delivery diagnostics](docs/releases/v0.0.16.md).

@@ -1,6 +1,6 @@
 # Conversation image sharing: continuation checkpoint
 
-Recorded 2026-10-26T15:56:21Z. Stage 1 remains uncommitted and unreleased.
+Recorded 2026-10-26T15:56:21Z. This is the historical pre-commit checkpoint; Stage 1 was uncommitted and unreleased at that point. For subsequent commits, reconciliation with main and clean-package verification, see [integration evidence](image-sharing-integrated.json).
 
 ## Scope and target
 

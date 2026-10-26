@@ -1,0 +1,52 @@
+{
+  "recordedAt": "2026-10-26T16:30:52Z",
+  "status": "committed-locally-verified-not-pushed-or-released",
+  "scope": "Stage 1: images attached to channel/Conversation messages on the single-user loopback-only local product; no public sharing or Runtime pixel delivery",
+  "branch": "feat/local-image-sharing",
+  "implementationCommit": "cb5a94a",
+  "releasedMain": "4bae1d25403e71d5cd79232ed2d6e1087de29247",
+  "integratedTarget": "1c6d99fe556d08ffb12752e756803988276f2e0b",
+  "runtimeCommit": "e92176054206d70e120d4b6641bda2a3d037eb84",
+  "integration": {
+    "userApproval": "User said Let's continue after the explicit commit, reconcile-main and clean-package-verification proposal",
+    "mainMerge": "Clean merge; released version, changelog, README, diagnostics status and v0.0.16 release notes preserved",
+    "preMergeEvidenceReuse": "Full backend and web unit suites ran immediately before committing. git diff cb5a94a HEAD -- packages scripts pnpm-lock.yaml runtime-source.json was empty after merge; main changed only version and documentation, so these results remain applicable to the integrated code. Browser regression and packaging ran after the merge.",
+    "subsequentChanges": "The evidence-recording commit changes only CHANGELOG.md and image documentation/evidence; packaged source and README are unchanged from integratedTarget"
+  },
+  "checks": [
+    { "command": "pnpm check", "result": "passed", "scope": "Final implementation before commit; release build also recompiles integrated target" },
+    { "command": "node --check scripts/smoke-release-package.mjs", "result": "passed" },
+    { "command": "pnpm test", "result": "passed", "tests": 297, "scope": "Full backend suite; includes cross-database image cleanup regression" },
+    { "command": "pnpm web:test", "result": "passed", "tests": 160 },
+    { "command": "pnpm --filter @minu/channels-web exec playwright test", "result": "passed", "tests": 113, "scope": "Full Chromium regression after reconciliation" },
+    { "command": "pnpm release:build", "result": "passed", "scope": "Clean Channels and Runtime repositories, exact pinned Runtime, backend/web builds, artifact bundle and local-path/secret inspection; dirty-source guard was not bypassed", "advisory": "Existing non-fatal web chunk-size warning" },
+    { "command": "mkdir release/artifacts/image-sharing-1c6d99f && (cd release/package && npm pack --pack-destination ../artifacts/image-sharing-1c6d99f)", "result": "passed", "scope": "Candidate packed in a separate directory; existing release artifacts preserved" },
+    { "command": "node scripts/checksum-release.mjs release/artifacts/image-sharing-1c6d99f", "result": "passed" },
+    { "command": "node scripts/smoke-release-package.mjs release/artifacts/image-sharing-1c6d99f/minu-channels-0.0.16.tgz", "result": "passed", "scope": "Disposable local npm install, diagnostic-worker journal, CLI controls/path reporting, fresh startup, authenticated image upload/message/retry/content serving, process restart with persisted metadata and exact bytes, and browser-first startup; no agents started" },
+    { "command": "git diff --check", "result": "passed", "scope": "Before implementation commit" }
+  ],
+  "candidate": {
+    "path": "release/artifacts/image-sharing-1c6d99f/minu-channels-0.0.16.tgz",
+    "sha256": "8aa1e980245e6166874e6deed2550bf3f5a1531a587b619495464c4b73dc7165",
+    "builtAt": "2026-10-26T16:26:33.857Z",
+    "channelsCommit": "1c6d99fe556d08ffb12752e756803988276f2e0b",
+    "runtimeCommit": "e92176054206d70e120d4b6641bda2a3d037eb84",
+    "warning": "Local verification candidate only. Version is inherited from released main; this is NOT the published v0.0.16 artifact. No version bump, tag, release upload or installed-application update was performed. Choose a new version only in an approved release preparation."
+  },
+  "packageImageAssertions": [
+    "Authenticates using the disposable app's one-time browser launch and browser proxy; no service credential bypass",
+    "Creates a human-only Conversation to avoid any real-agent execution",
+    "Uploads a PNG, sends an image-only message and repeats the identical idempotency key/payload",
+    "Reopens the same stopped data directory and repeats retries without uploading again or duplicating the message",
+    "Compares history metadata, served bytes and the private attachment file against the original bytes",
+    "Rejects unauthenticated image reads and verifies raster MIME, nosniff and private no-store headers"
+  ],
+  "remaining": [
+    "Push branch and open an image PR only when authorized; required Ubuntu/macOS verify, browser and release-package CI have not run for this image branch",
+    "Independent review and human/installed-artifact acceptance are not claimed by this author verification",
+    "No genuine-agent or clean-account macOS/Linux acceptance; real agents and existing installations remain untouched",
+    "No release approval, new version, tag or publication; published v0.0.16 still contains no image support",
+    "Stage 2 typed Runtime image content, adapter/model capability checks and bounded pixel delivery remain separate",
+    "Only completed upload metadata survives navigation; staged images expire after 24 hours; validation is container checking rather than full pixel decoding"
+  ]
+}
