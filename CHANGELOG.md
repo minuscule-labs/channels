@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.16
+
+Release overview: [message-delivery diagnostics](docs/releases/v0.0.16.md).
+
 - Add collapsed, owner/admin-only message-delivery trails inside Details & diagnostics, without new chat notices or everyday UI. Record fixed-field Relay/Runtime/delivery milestones only; keep reused public-response acknowledgments and private cursor uncertainty distinct from new reply delivery.
 - Retain trails for up to seven days or 1,000 completed trails installation-wide in a separate optional-journal collection, preserving lifecycle retention and write priority. Bound capture, clipping, authorization/fencing and disposable manual inspection; no prompts, tool output, raw errors, transcript access, report additions or Runtime wakeup.
 - Upgrade only the private diagnostic companion journal to schema v2 and local-control protocol to v22. Public/authoritative Relay schemas, Runtime dependency and lifecycle semantics are unchanged.
