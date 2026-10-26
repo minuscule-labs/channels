@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ConversationService } from "@minu/channels-core";
+import { ConversationService, createResourceId } from "@minu/channels-core";
 import {
   backupLocalLibSqlDatabase,
   defaultConversationMigrationsFolder,
@@ -386,6 +386,59 @@ test("Drizzle/libSQL keeps message idempotency atomic and durable across reopen"
     );
     await reopened.close();
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("parallel Drizzle commits reject a changed attachment payload for one idempotency key", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-channels-attachment-idempotency-"));
+  const url = localLibSqlUrl(join(directory, "channels.db"));
+  let firstStorage: DrizzleLibSqlConversationStorage | undefined;
+  let competingStorage: DrizzleLibSqlConversationStorage | undefined;
+  try {
+    firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
+    const service = new ConversationService(firstStorage);
+    const conversation = await service.createConversation({
+      participants: [{ id: "user", type: "human" }, { id: "agent-a", type: "agent" }],
+    });
+    competingStorage = await DrizzleLibSqlConversationStorage.open({ url });
+
+    const attachments = [createResourceId("attachment"), createResourceId("attachment")];
+    for (const id of attachments) {
+      await firstStorage.stageAttachment({
+        id,
+        conversationId: conversation.id,
+        uploaderIdentityId: "user",
+        filename: `${id}.png`,
+        mimeType: "image/png",
+        size: 8,
+        contentHash: "0".repeat(64),
+        status: "staged",
+        createdAt: new Date().toISOString(),
+      });
+    }
+    const createPendingMessage = (body: string) => ({
+      id: createResourceId("message"),
+      conversationId: conversation.id,
+      participantId: "user",
+      to: [],
+      body,
+      createdAt: new Date().toISOString(),
+    });
+    const [created, conflicting] = await Promise.all([
+      firstStorage.commitMessage(createPendingMessage("original"), "parallel-key", "fingerprint-original", [attachments[0]!]),
+      competingStorage.commitMessage(createPendingMessage("changed"), "parallel-key", "fingerprint-changed", [attachments[1]!]),
+    ]);
+
+    assert.equal(created.outcome, "created");
+    assert.equal(conflicting.outcome, "conflict");
+    assert.equal(conflicting.message.id, created.message.id);
+    assert.equal((await firstStorage.getAttachment(conversation.id, attachments[0]!))?.status, "attached");
+    assert.equal((await firstStorage.getAttachment(conversation.id, attachments[1]!))?.status, "staged");
+    assert.equal((await service.listMessages(conversation.id)).length, 1);
+  } finally {
+    await competingStorage?.close();
+    await firstStorage?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError, Option } from "commander";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   ConversationService,
+  FilesystemAttachmentContentStore,
   createConversationHttpServer,
   InMemoryConversationStorage,
 } from "@minu/channels-core";
@@ -54,11 +55,22 @@ async function main(): Promise<void> {
   const storage = options.memory
     ? new InMemoryConversationStorage()
     : await DrizzleLibSqlConversationStorage.open({ url: databaseUrl, authToken });
-  const server = await createConversationHttpServer({
-    port: options.port,
-    service: new ConversationService(storage),
-    serviceToken: options.serviceToken,
-  });
+  const localDatabasePath = !options.memory && databaseUrl.startsWith("file:")
+    ? resolve(databaseUrl.slice(5)) : undefined;
+  // Keep the product's channels.db layout; other databases must not share its orphan sweep.
+  const attachmentDirectory = localDatabasePath
+    ? join(dirname(localDatabasePath), "attachments", ...(basename(localDatabasePath) === "channels.db" ? [] : [basename(localDatabasePath)]))
+    : undefined;
+  const service = new ConversationService(storage, attachmentDirectory
+    ? new FilesystemAttachmentContentStore(attachmentDirectory) : undefined);
+  await service.cleanupStagedAttachments();
+  const server = await createConversationHttpServer({ port: options.port, service, serviceToken: options.serviceToken });
+  let cleanupTask: Promise<unknown> | undefined;
+  const cleanupTimer = setInterval(() => {
+    if (!cleanupTask) cleanupTask = service.cleanupStagedAttachments()
+      .catch(() => undefined).finally(() => { cleanupTask = undefined; });
+  }, 6 * 60 * 60 * 1000);
+  cleanupTimer.unref();
   console.log(`MinuChannels listening on ${server.endpoint}`);
   console.log(options.memory ? "Storage: memory" : `Storage: ${databaseUrl}`);
 
@@ -66,6 +78,8 @@ async function main(): Promise<void> {
   async function close(): Promise<void> {
     if (closing) return;
     closing = true;
+    clearInterval(cleanupTimer);
+    await cleanupTask;
     await server.close();
   }
 

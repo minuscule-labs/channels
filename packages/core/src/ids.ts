@@ -5,6 +5,7 @@ export const RESOURCE_ID_PREFIXES = [
   "workspace",
   "conversation",
   "message",
+  "attachment",
   "event",
   "config",
   "binding",

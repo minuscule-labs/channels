@@ -11,6 +11,7 @@ import type {
   CreateWorkspaceInput,
   AddWorkspaceMemberInput,
   Identity,
+  MessageAttachment,
   ResponseResult,
   Workspace,
   WorkspaceMember,
@@ -204,6 +205,29 @@ export class ConversationClient {
   async getConversation(conversationId: string): Promise<ConversationMetadata> {
     const response = await this.request(`/conversations/${conversationId}`);
     return ((await response.json()) as { conversation: ConversationMetadata }).conversation;
+  }
+
+  async uploadAttachment(
+    conversationId: string,
+    input: {
+      filename: string;
+      mimeType: MessageAttachment["mimeType"];
+      bytes: Uint8Array;
+      actorIdentityId?: string;
+      signal?: AbortSignal;
+    },
+  ): Promise<MessageAttachment> {
+    const query = new URLSearchParams({ filename: input.filename });
+    const response = await this.request(`/conversations/${conversationId}/attachments?${query}`, {
+      method: "POST",
+      headers: {
+        "content-type": input.mimeType,
+        ...(input.actorIdentityId ? { "x-minu-actor-id": input.actorIdentityId } : {}),
+      },
+      body: new Blob([input.bytes as BlobPart]),
+      signal: input.signal,
+    });
+    return ((await response.json()) as { attachment: MessageAttachment }).attachment;
   }
 
   async postMessage(

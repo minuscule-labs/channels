@@ -415,11 +415,13 @@ function contextEnvelope(
     .filter((message) => message.sequence <= trigger.sequence
       && (contextSequenceFloor === undefined || message.sequence > contextSequenceFloor))
     .slice(-maxMessages);
+  const messageText = (message: ConversationMessage) => `${message.body}${(message.attachments ?? []).map((image) =>
+    `\n[Image attached: ${JSON.stringify(image.filename)}; image pixels are not available to this Runtime]`).join("")}`;
   const maxCharacters = maxTokens * 4;
   const selected: ConversationMessage[] = [];
   let characters = 0;
   for (const message of unseen.reverse()) {
-    const lineLength = message.body.length + 80;
+    const lineLength = messageText(message).length + 80;
     if (selected.length > 0 && characters + lineLength > maxCharacters) break;
     selected.push(message);
     characters += lineLength;
@@ -439,7 +441,7 @@ function contextEnvelope(
       (message) =>
         `[${message.sequence}] ${label(message.participantId)}${
           message.to.length ? ` → ${message.to.map(label).join(", ")}` : ""
-        }: ${message.body}${message.id === trigger.id ? "  ← TRIGGER" : ""}`,
+        }: ${messageText(message)}${message.id === trigger.id ? "  ← TRIGGER" : ""}`,
     )
     .join("\n");
   const self = participants.find((participant) => participant.id === participantId);

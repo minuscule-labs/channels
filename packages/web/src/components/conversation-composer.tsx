@@ -1,7 +1,7 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { LoaderCircle, RotateCcw, Send } from "lucide-react";
+import { ImagePlus, LoaderCircle, RotateCcw, Send, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { conversations } from "../lib/api";
 import {
@@ -14,6 +14,7 @@ import {
   submissionMatchesDraft,
   type MessageSubmission,
 } from "../lib/composer";
+import { imageContentUrl, useImageDraft } from "../lib/image-draft";
 import { mergeMessages } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 import { ErrorNotice } from "./ui/error-notice";
@@ -57,8 +58,24 @@ export function ConversationComposer({
   const [cursor, setCursor] = useState(body.length);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dismissedMention, setDismissedMention] = useState<string>();
-  const [failedSubmission, setFailedSubmission] = useState<MessageSubmission>();
+  const storageKey = draftStorageKey(workspaceId, conversationId, activeAuthorId);
+  const imageDraft = useImageDraft(`${storageKey}.images`, conversationId, activeAuthorId);
+  const [failedSubmission, setFailedSubmission] = useState<MessageSubmission | undefined>(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem(`${storageKey}.submission`) ?? "null");
+      return value && typeof value.idempotencyKey === "string" && value.input
+        && typeof value.input.body === "string" && typeof value.input.participantId === "string"
+        && Array.isArray(value.input.to)
+        && (value.input.attachmentIds === undefined || (Array.isArray(value.input.attachmentIds)
+          && value.input.attachmentIds.every((id: unknown) => typeof id === "string"))) ? value : undefined;
+    } catch { return undefined; }
+  });
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
+  useEffect(() => {
+    if (failedSubmission) localStorage.setItem(`${storageKey}.submission`, JSON.stringify(failedSubmission));
+    else localStorage.removeItem(`${storageKey}.submission`);
+  }, [failedSubmission, storageKey]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const pendingCursorRef = useRef<number | undefined>(undefined);
@@ -147,6 +164,7 @@ export function ConversationComposer({
       );
       localStorage.removeItem(draftStorageKey(workspaceId, conversationId, submission.input.participantId));
       setFailedSubmission(undefined);
+      imageDraft.clear();
       if (draftRef.current.authorId === submission.input.participantId && draftRef.current.body === submission.input.body) {
         setBody("");
         setCursor(0);
@@ -158,21 +176,26 @@ export function ConversationComposer({
     },
   });
 
-  const canSubmit = Boolean(body.trim()) && !bodyTooLarge && Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
+  const canAttach = Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
+  const canSubmit = (Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && canAttach;
   const submit = (submission?: MessageSubmission) => {
     if (!canSubmit) return;
     // Dismissing feedback must not discard the key of an ambiguously failed send.
-    const matchingFailure = failedSubmission && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants)
+    const matchingFailure = failedSubmission && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids)
       ? failedSubmission
       : undefined;
-    mutation.mutate(submission ?? matchingFailure ?? createMessageSubmission(activeAuthorId, body, participants));
+    const next = submission ?? matchingFailure ?? createMessageSubmission(activeAuthorId, body, participants, undefined, imageDraft.ids);
+    // Persist before the request: a lost response or navigation must retain the same retry key.
+    localStorage.setItem(`${storageKey}.submission`, JSON.stringify(next));
+    setFailedSubmission(next);
+    mutation.mutate(next);
   };
 
   const updateBody = (nextBody: string, nextCursor: number) => {
     setBody(nextBody);
     setCursor(nextCursor);
     setDismissedMention(undefined);
-    if (failedSubmission && !submissionMatchesDraft(failedSubmission, activeAuthorId, nextBody, participants)) {
+    if (failedSubmission && !submissionMatchesDraft(failedSubmission, activeAuthorId, nextBody, participants, imageDraft.ids)) {
       setFailedSubmission(undefined);
       mutation.reset();
     }
@@ -196,7 +219,7 @@ export function ConversationComposer({
   };
 
   const retryAvailable = canSubmit && failedSubmission
-    && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants);
+    && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids);
 
   return (
     <div className="bg-[var(--bg)] px-3 pt-3 pb-1 sm:px-6">
@@ -227,7 +250,30 @@ export function ConversationComposer({
             ))}
           </div>
         ) : null}
-        <div className="composer rounded-lg border border-[var(--border)] bg-[var(--bg)] focus-within:border-[var(--accent)]">
+        <div className="composer rounded-lg border border-[var(--border)] bg-[var(--bg)] focus-within:border-[var(--accent)]"
+          onDragOver={(event) => { if (canAttach && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+          onDrop={(event) => {
+            if (!event.dataTransfer.files.length) return;
+            event.preventDefault();
+            if (canAttach) imageDraft.add(Array.from(event.dataTransfer.files));
+          }}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData.files);
+            if (files.length) { event.preventDefault(); if (canAttach) imageDraft.add(files); }
+          }}
+        >
+          {imageDraft.images.length ? <ul aria-label="Message images" className="flex flex-wrap gap-2 px-3 pt-3">
+            {imageDraft.images.map((image) => <li key={image.key} className="relative w-28 rounded border border-[var(--border)] p-1">
+              {image.preview || image.attachment ? <img
+                src={image.preview ?? imageContentUrl(conversationId, image.attachment!.id)}
+                alt={image.filename} className="h-16 w-full rounded object-contain" /> : null}
+              <span className="block truncate text-[10px]" title={image.filename}>{image.filename}</span>
+              {!image.attachment && !image.error ? <LoaderCircle role="status" aria-label={`Uploading ${image.filename}`} className="h-4 w-4 animate-spin" /> : null}
+              {image.error ? <span role="alert" className="text-xs text-[var(--danger)]">{image.error}</span> : null}
+              <button type="button" aria-label={`Remove ${image.filename}`} disabled={!canAttach}
+                className="absolute top-0 right-0 rounded bg-[var(--panel)] p-1" onClick={() => imageDraft.remove(image.key)}><X className="h-3 w-3" /></button>
+            </li>)}
+          </ul> : null}
           <textarea
             ref={textareaRef}
             value={body}
@@ -290,7 +336,11 @@ export function ConversationComposer({
             aria-busy={mutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
-          <div className="flex flex-wrap items-center justify-end gap-3 px-2.5 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-2.5 py-2">
+            <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images"
+              onChange={(event) => { imageDraft.add(Array.from(event.target.files ?? [])); event.target.value = ""; }} disabled={!canAttach} />
+            <button type="button" className="button-secondary" aria-label="Attach images" title="Attach images" disabled={!canAttach}
+              onClick={() => fileInputRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /></button>
             <div className="flex items-center gap-2">
               {showByteCount ? (
                 <span
@@ -316,6 +366,7 @@ export function ConversationComposer({
           </div>
         </div>
         <div className="min-h-5 pt-1">{activity}</div>
+        {imageDraft.error ? <ErrorNotice className="mt-2" dismissLabel="Dismiss image error" onDismiss={imageDraft.dismissError}>{imageDraft.error}</ErrorNotice> : null}
         {mutation.error && !errorDismissed ? (
           <ErrorNotice
             className="mt-2"

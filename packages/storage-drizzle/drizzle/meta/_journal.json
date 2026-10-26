@@ -64,6 +64,13 @@
       "when": 1788051600000,
       "tag": "0008_conversation_lifecycles",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788115200000,
+      "tag": "0009_conversation_attachments",
+      "breakpoints": true
     }
   ]
 }

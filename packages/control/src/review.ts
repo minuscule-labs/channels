@@ -1,6 +1,7 @@
 import {
   ConversationClient,
   ConversationService,
+  FilesystemAttachmentContentStore,
   createConversationHttpServer,
   InMemoryConversationStorage,
   type ConversationHttpServer,
@@ -114,7 +115,7 @@ export async function createLocalReviewApp(
   try {
     conversationsServer = await createConversationHttpServer({
       port: options.conversationsPort ?? DEFAULT_CHANNELS_PORT,
-      service: new ConversationService(new InMemoryConversationStorage()),
+      service: new ConversationService(new InMemoryConversationStorage(), new FilesystemAttachmentContentStore(join(directory, "attachments"))),
     });
     const client = new ConversationClient(conversationsServer.endpoint, { serviceToken: conversationsServer.serviceToken });
     const [human, builder, reviewer] = await Promise.all([
