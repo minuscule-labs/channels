@@ -91,7 +91,7 @@ const manifest = {
   license: workspacePackage.license,
   description: "Local collaboration for humans and coding agents",
   type: "module",
-  engines: { node: ">=22" },
+  engines: { node: ">=22.5.0" },
   bin: { "minu-channels": "./dist/bin/minu-channels.js" },
   files: ["dist", "README.md", "LICENSE"],
   dependencies: {

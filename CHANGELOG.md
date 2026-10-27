@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.18
+
+Release overview: [Safe product locking and Conversation images](docs/releases/v0.0.18.md).
+
+- Hold a private SQLite writer lock throughout product startup, execution and shutdown so concurrent stale-marker recovery cannot admit two owners of one data directory. Preserve live legacy markers, owner-only permissions, crash release and the stable lock-database inode across reopen.
+- Require Node.js 22.5+ with SQLite enabled for the packaged foreground app; recommend 22.13+ for flag-free operation and the background service. Update `doctor` and packaged-install checks to verify SQLite availability and lock exclusion.
+
 ## 0.0.17
 
 Release overview: [Conversation images and agent vision](docs/releases/v0.0.17.md).

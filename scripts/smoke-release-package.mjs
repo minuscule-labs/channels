@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -201,6 +201,8 @@ try {
   ]);
   console.log(`Installing ${basename(tarball)} into ${installRoot}`);
   await run("npm", ["install", "--prefix", installRoot, tarball]);
+  const manifest = JSON.parse(await readFile(join(installRoot, "node_modules/@minu/channels/package.json"), "utf8"));
+  assert.equal(manifest.engines.node, ">=22.5.0");
   await diagnosticWorkerSmoke();
   const executable = join(installRoot, "node_modules/.bin/minu-channels");
   const version = (await capture(executable, ["--version"])).trim();
@@ -220,9 +222,23 @@ try {
   assert.equal(paths.attachments, join(dataDirectory, "attachments"));
   await capture(executable, ["doctor", "--data-dir", dataDirectory, "--json"]);
   const portBase = 46_000 + Math.floor(Math.random() * 1_000);
-  const verifyImages = (output) => imageSharingSmoke(portBase, output);
+  const verifyImages = async (output) => {
+    await imageSharingSmoke(portBase, output);
+    await assert.rejects(capture(executable, [
+      "run", "--no-open", "--data-dir", dataDirectory,
+      "--conversations-port", String(portBase + 20),
+      "--control-port", String(portBase + 21),
+      "--web-port", String(portBase + 22),
+    ], { timeout: 5_000, env: { ...process.env, HOME: join(temporary, "home") } }), /already using data directory/);
+  };
   await startAndStop("Setup:    created a fresh local Workspace", portBase, { explicitRun: true, verify: verifyImages });
+  const lockDatabasePath = join(dataDirectory, "run", "instance-lock.sqlite");
+  const lockDatabase = await stat(lockDatabasePath);
+  assert.equal(lockDatabase.mode & 0o777, 0o600);
   await startAndStop("Setup:    reopened existing local data", portBase, { verify: verifyImages });
+  const reopenedLockDatabase = await stat(lockDatabasePath);
+  assert.equal(reopenedLockDatabase.dev, lockDatabase.dev);
+  assert.equal(reopenedLockDatabase.ino, lockDatabase.ino);
   await startAndStop("Setup:    ready for browser Workspace setup", portBase + 10, {
     dataDirectory: join(temporary, "browser-first-data"),
     workspacePath: undefined,

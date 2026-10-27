@@ -63,7 +63,7 @@ jobs:
       - name: Smoke-test packaged installation
         working-directory: channels
         run: pnpm release:smoke
-      - name: Create GitHub release
+      - name: Prepare draft GitHub release
         working-directory: channels
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,5 +71,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             release/artifacts/*.tgz release/artifacts/SHA256SUMS \
             --verify-tag \
+            --draft \
             --title "MinuChannels $GITHUB_REF_NAME" \
             --generate-notes

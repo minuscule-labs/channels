@@ -27,13 +27,13 @@ See [Product boundary](docs/product-boundary.md) for what belongs to the MVP and
 Requirements:
 
 - macOS or Linux
-- Node.js 22 or newer
+- Node.js 22.13+ recommended; foreground operation on 22.5–22.12 requires `NODE_OPTIONS=--experimental-sqlite`
 - Pi installed, authenticated, and available as `pi` on `PATH`
 
 Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://github.com/minuscule-labs/channels/releases), verify the checksum, then install:
 
 ```bash
-npm install -g ./minu-channels-0.0.17.tgz
+npm install -g ./minu-channels-0.0.18.tgz
 
 # macOS background service
 minu-channels start
