@@ -5,7 +5,7 @@
 ## Requirements
 
 - macOS or Linux;
-- Node.js 22 or newer;
+- Node.js 22.13+ for normal/background-service operation, or 22.5–22.12 with `NODE_OPTIONS=--experimental-sqlite` for foreground operation;
 - npm or pnpm; and
 - the Pi executable installed, authenticated, and available as `pi` on `PATH` for live agent execution.
 
@@ -110,7 +110,7 @@ The default data directory is product-isolated from other Minu applications:
 ~/.minu/channels/
 ```
 
-Conversations never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private, atomically owned `run/instance.lock/` directory prevents multiple Conversations servers from opening the same data directory and safely serializes stale-lock recovery; use a distinct `--data-dir` for an independent concurrent installation.
+Conversations never writes shared state directly beneath `~/.minu/`. Resolution order is `--data-dir`, `MINU_CHANNELS_HOME`, `$MINU_HOME/channels`, then the default above. The directory and its `run/` directory use owner-only permissions. A private `run/instance-lock.sqlite` holds a SQLite writer transaction for the full product lifetime, including recovery and removal of the compatibility `run/instance.lock/` owner marker. The OS releases the SQLite lock if the process exits or crashes. The lock database remains in place between launches; do not delete, replace or restore it while a process may still hold it. Live legacy markers and recent unfinished legacy markers remain protected. Stop older installations before upgrading: old versions do not participate in the SQLite lock, so simultaneous mixed-version launches are not supported. Use a distinct `--data-dir` for an independent concurrent installation.
 
 Stop MinuChannels before copying it so the collaboration and private execution databases represent one consistent checkpoint.
 
@@ -147,4 +147,4 @@ Uninstalling the package does not delete `~/.minu/channels`. Remove that directo
 
 ## Verification
 
-The release producer must provide a `SHA256SUMS` file beside the tarball. Verify the downloaded artifact before installation using the platform's SHA-256 utility. The release is not complete until the installed artifact has been tested from a clean account, reopened against its own persisted data, and used to receive a genuine Pi response.
+The release producer must provide a `SHA256SUMS` file beside the tarball. Verify the downloaded artifact before installation using the platform's SHA-256 utility. The tag workflow prepares a draft release; keep it non-public/non-latest until its exact uploaded artifact passes acceptance. The release is not complete until the installed artifact has been tested from a clean account, reopened against its own persisted data, and used to receive a genuine Pi response. After recording that evidence and confirming all PR, post-merge and tag-workflow checks passed, publish the draft as the latest release. Never move an existing tag or replace its assets to incorporate a fix.

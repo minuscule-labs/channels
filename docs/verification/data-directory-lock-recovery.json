@@ -1,0 +1,130 @@
+{
+  "status": "historical author working-tree checkpoint before commit/push/release preparation; see subsequent PR/CI and release records for publication status",
+  "target": {
+    "baseCommit": "47919a51a5eb58c63f8e96f070ecd92bd52e5226",
+    "branch": "fix/data-directory-lock-recovery",
+    "workingTreeFileSha256": {
+      "CHANGELOG.md": "b7dc32a1c98453378aaa42f2658dab3c75efdec01c49dfde7627cc81a4f89cfc",
+      "README.md": "8117469d668f997b660c097a446119a22981c5eef3e810306a3498b469b803c7",
+      "docs/local-release.md": "6f4f7936e4a88fa0fbb3e17ae727fe2320227cc1d76e2753d415c7a116c0d19c",
+      "packages/control/src/local-paths.ts": "8add944dd1701a04c2432874372d9afe719f2135c215e111373ec7cbe13d3965",
+      "packages/control/src/local-cli.ts": "e2502f0629c3956cd7a57112c4165499dd33228053425e817410832bb7a791b9",
+      "packages/control/test/local-paths.test.ts": "8bdbe19ba05cd5553e2d07a5bb554d8e540d45b0a6f930fd333782bd881c5746",
+      "packages/control/test/fixtures/product-lock-worker.ts": "e8bd98ae404082e2368631b0ee604f9cbbfeab3933bfb6d793b77c1756903602",
+      "scripts/build-release-package.mjs": "7fe0f1c1e0deef22c7c82363bb016a71e7385555bc001a783cfe767ae3c0b1c6",
+      "scripts/smoke-release-package.mjs": "cc74456b36613fb46e943bd555a42e137d2fa7dfcbd632b7a0076f3e79c3e755"
+    }
+  },
+  "request": "Fix the product data-directory lock race before another stable release; user explicitly approved SQLite-backed locking and Node.js 22.5+ compatibility change.",
+  "rootCause": "The old algorithm could classify an old owner as stale, then observe/claim the replacement directory and remove its live owner. The forced-interleaving regression reports two successful holders against the unchanged base implementation.",
+  "implementation": [
+    "Keep BEGIN IMMEDIATE on owner-private run/instance-lock.sqlite for the entire product lifetime, including marker inspection, creation and removal.",
+    "Never remove/replace the SQLite lock database on normal release; process exit or SIGKILL releases the OS transaction lock.",
+    "Refuse same-process ownership by canonical run-directory path before opening filesystem descriptors for lock-database initialization.",
+    "Retain the legacy owner marker, live-PID protection and unfinished-marker grace period. Recover stale legacy markers, including abandoned recovery.claim files, only under the SQLite lock.",
+    "Reject symlink, hardlink, non-file or foreign-owner lock databases; normalize permissions to 0600.",
+    "Update packaged engine metadata, doctor, install guidance and installed-package smoke coverage without a dependency or Runtime pin change."
+  ],
+  "compatibility": {
+    "packagedNodeEngine": ">=22.5.0",
+    "foregroundNode22_5To22_12": "NODE_OPTIONS=--experimental-sqlite required",
+    "normalAndBackgroundRecommended": "Node.js 22.13+ without experimental flag",
+    "mixedVersionLaunches": "Unsupported; stop old versions before upgrading because old versions do not participate in the SQLite lock."
+  },
+  "checks": [
+    {
+      "command": "pnpm check",
+      "result": "passed"
+    },
+    {
+      "command": "node --test packages/control/dist/test/local-paths.test.js packages/control/dist/test/service-lifecycle.test.js packages/control/dist/test/updater.test.js",
+      "result": "45 tests passed, including all 14 lock tests"
+    },
+    {
+      "command": "npm exec --yes --package=node@22.5.0 -- node --experimental-sqlite --test packages/control/dist/test/local-paths.test.js",
+      "result": "14 tests passed"
+    },
+    {
+      "command": "npm exec --yes --package=node@22.13.0 -- node --test packages/control/dist/test/local-paths.test.js",
+      "result": "14 tests passed without experimental-sqlite flag"
+    },
+    {
+      "command": "RUST_BACKTRACE=1 pnpm test",
+      "target": "final production/test source hashes above",
+      "result": "319 tests passed, no failures"
+    },
+    {
+      "command": "MINU_ALLOW_DIRTY_RELEASE=1 pnpm release:build; npm pack of release/package into the marked local candidate directory",
+      "result": "build and bundle inspection passed; development working-tree candidate only, not a release gate"
+    },
+    {
+      "command": "node scripts/smoke-release-package.mjs release/artifacts/data-lock-working-tree/minu-channels-0.0.17.tgz",
+      "result": "passed isolated install, doctor, image send/retry/reopen, simultaneous-launch rejection, private persistent lock-inode checks and diagnostic-worker smoke on Node.js 22.23.0"
+    },
+    {
+      "command": "NODE_OPTIONS=--experimental-sqlite npm exec --yes --package=node@22.5.0 -- node scripts/smoke-release-package.mjs release/artifacts/data-lock-working-tree/minu-channels-0.0.17.tgz",
+      "result": "same isolated installed-package smoke passed on Node.js 22.5.0"
+    },
+    {
+      "command": "installed-candidate doctor --json on Node.js 22.5 without NODE_OPTIONS",
+      "result": "expected exit 1; JSON reports Node.js check false at 22.5.0, other checks true"
+    },
+    {
+      "command": "git diff --check; node --check scripts/build-release-package.mjs; node --check scripts/smoke-release-package.mjs",
+      "result": "passed"
+    }
+  ],
+  "regressionCoverage": [
+    "forced stale-observation interleaving",
+    "expired but still-active initialization",
+    "exclusion through marker removal",
+    "stable database inode and idempotent stale release",
+    "publication failure cleanup",
+    "live/recent legacy markers",
+    "independent data directories",
+    "redirected/corrupt lock-database refusal",
+    "owner-only permissions",
+    "same-process database initialization and directory aliases",
+    "four competing child processes",
+    "SIGKILL recovery"
+  ],
+  "earlierFailures": [
+    {
+      "target": "unchanged base implementation, isolated temporary compilation",
+      "result": "forced regression fails with two holders instead of one; this same test passes on final source"
+    },
+    {
+      "target": "initial SQLite patch before final same-process initialization guard and three additional tests",
+      "command": "pnpm check && pnpm test",
+      "result": "check passed; backend run aborted control.test.js with native Neon PendingException vs Ok / SIGABRT; 282 passes, one failed test process, incomplete suite"
+    },
+    {
+      "classification": "The same native-abort signature exists in pre-fix CI run 40416430914. A focused persistent-product reopen diagnostic passed. The final source's fresh full run passed, but no native-binding root cause or fix is claimed. Both broad results are retained; the final run followed a concrete source change, not an unchanged rerun until green."
+    },
+    {
+      "target": "initial unflagged minimum-version doctor probe against the uninstalled bundle",
+      "result": "setup failure resolving external @libsql/client; corrected to a temporary installed prefix, where the intended negative SQLite-availability check was observed"
+    }
+  ],
+  "candidate": {
+    "path": "release/artifacts/data-lock-working-tree/minu-channels-0.0.17.tgz",
+    "sha256": "53bb669aec13d3bd7c81a5d802abfed20f1c6a69546e1f440c30c4586c3a6983",
+    "version": "0.0.17 inherited for local testing only",
+    "notPublished": true,
+    "provenanceLimitation": "Dirty development build. Embedded Channels commit is the base revision, not a new clean-source release revision. Actual tested working-tree source is identified by hashes above. This is NOT the published v0.0.17 artifact."
+  },
+  "limits": [
+    "Author checks only; no independent/delegated review invoked.",
+    "Linux/new PR CI, clean-source release gates, clean-account acceptance and manual-browser acceptance remain pending.",
+    "No UI source changed; web build passed as part of packaging, but no fresh web-unit/Chromium regression run was added for this Node-only change.",
+    "Intermittent native binding abort remains unexplained. The separate Runtime 50 ms startup PID-fixture test failure is unchanged and not claimed fixed.",
+    "No real agent/model turns, remote ref changes, release edits or installed-app changes were made during this fix."
+  ],
+  "releaseState": {
+    "v0_0_17TagAndAssets": "unchanged",
+    "v0_0_17": "prerelease validation hold",
+    "latestStable": "v0.0.16",
+    "installedApp": "unchanged"
+  },
+  "nextStep": "Review/push the fix for required cross-platform CI. Any release incorporating source changes must use a new version and clean-source artifact; do not move or replace v0.0.17."
+}

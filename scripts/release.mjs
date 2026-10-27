@@ -73,7 +73,7 @@ run("git", ["tag", "-a", tag, "-m", `MinuChannels ${tag}`]);
 if (push) {
   run("git", ["push", "origin", "main"]);
   run("git", ["push", "origin", tag]);
-  console.log(`release: pushed ${tag}; GitHub Actions will publish the release artifacts.`);
+  console.log(`release: pushed ${tag}; GitHub Actions will prepare draft release artifacts for acceptance before publication.`);
 } else {
   console.log(`release: created ${tag}. Push it with: git push origin ${tag}`);
 }

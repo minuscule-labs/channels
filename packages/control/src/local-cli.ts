@@ -205,8 +205,9 @@ async function utilityCommand(args: string[]): Promise<boolean> {
   }
   if (command === "doctor") {
     const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
-    const nodeMajor = Number(process.versions.node.split(".")[0]);
-    checks.push({ name: "Node.js", ok: nodeMajor >= 22, detail: process.versions.node });
+    const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+    const sqliteAvailable = await import("node:sqlite").then(() => true, () => false);
+    checks.push({ name: "Node.js", ok: (nodeMajor! > 22 || (nodeMajor === 22 && nodeMinor! >= 5)) && sqliteAvailable, detail: process.versions.node });
     try {
       await access(dataDirectory);
       const mode = (await stat(dataDirectory)).mode & 0o777;
