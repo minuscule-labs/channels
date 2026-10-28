@@ -363,6 +363,66 @@ test("per-participant refresh reads only its target, preserves receipt time on f
   expect(reads).toBe(2);
 });
 
+test("polls receipts slowly when idle, quickly while pending, and pauses while hidden", async ({ page, request }) => {
+  const data = await fixture(request);
+  await page.clock.install();
+  await mockAgent(page, data, () => agentView(data, "unbound"));
+  const actions = await mockActionRequests(page, data.primary.id);
+  let receiptReads = 0;
+  page.on("request", outgoing => {
+    if (outgoing.method() === "GET" && outgoing.url().endsWith(`/local/conversations/${data.primary.id}/agent-actions`)) receiptReads++;
+  });
+  await launch(page, request, data);
+  await expect.poll(() => receiptReads).toBe(1);
+  await page.clock.fastForward(5_000);
+  expect(receiptReads).toBe(1);
+  await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
+  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  const modal = await details(page, data.agent.displayName!);
+  await expect(modal.getByRole("region", { name: "Pending participant action" })).toBeVisible();
+  const pendingReads = receiptReads;
+  await page.clock.fastForward(1_000);
+  await expect.poll(() => receiptReads).toBeGreaterThan(pendingReads);
+  actions.complete();
+  await page.clock.fastForward(1_000);
+  await expect(modal.getByRole("region", { name: "Pending participant action" })).toHaveCount(0);
+  const idleReads = receiptReads;
+  await page.clock.fastForward(5_000);
+  expect(receiptReads).toBe(idleReads);
+  await page.clock.fastForward(10_000);
+  await expect.poll(() => receiptReads).toBe(idleReads + 1);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const hiddenReads = receiptReads;
+  await page.clock.fastForward(30_000);
+  expect(receiptReads).toBe(hiddenReads);
+  await page.evaluate(() => {
+    Reflect.deleteProperty(document, "visibilityState");
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => receiptReads).toBe(hiddenReads + 1);
+  expect(actions.calls).toHaveLength(1);
+});
+
+test("active Runtime status does not poll every second", async ({ page, request }) => {
+  const data = await fixture(request);
+  await page.clock.install();
+  let statusReads = 0;
+  const view = agentView(data, "running");
+  view.activity = { phase: "running", triggerMessageId: "trigger", triggerSequence: 1, startedAt: new Date().toISOString(), queuedTurns: 0, queuedTurnsExact: true };
+  await mockAgent(page, data, () => { statusReads++; return view; });
+  await launch(page, request, data);
+  await expect(page.getByTitle("Runtime: Working", { exact: true })).toBeVisible();
+  const initialReads = statusReads;
+  await page.clock.fastForward(2_000);
+  expect(statusReads).toBe(initialReads);
+  await page.clock.fastForward(3_000);
+  await expect.poll(() => statusReads).toBe(initialReads + 1);
+});
+
 test("accepted timing passes 30 seconds without a false failure and Refresh never repeats the mutation", async ({ page, request }) => {
   const data = await fixture(request);
   await page.clock.install();

@@ -311,7 +311,7 @@ for (const [resource, status] of [["receipts", 401], ["receipts", 403], ["status
       }
       return route.continue();
     });
-    // Install before mounting so the existing 1/5/10-second polls share the clock.
+    // Install before mounting so all status and receipt polls share the clock.
     await page.clock.install();
     await launch(page, request, data);
     const surface = await open(page, data);
@@ -321,7 +321,7 @@ for (const [resource, status] of [["receipts", 401], ["receipts", 403], ["status
     await surface.getByRole("button", { name: "Show events", exact: true }).click();
     await expect(surface.getByRole("list", { name: "Runtime observations" })).toBeVisible();
     denied = true;
-    await page.clock.fastForward(10_000);
+    await page.clock.fastForward(resource === "receipts" ? 15_000 : 10_000);
     await expect.poll(() => deniedReads).toBeGreaterThan(0);
     await expect(surface).toContainText("Diagnostics unavailable");
     await expect(surface.locator('[aria-label="Report preview"]')).toHaveCount(0);

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.21
+
+Release overview: [Stable text selection and quieter polling](docs/releases/v0.0.21.md).
+
+- Preserve message Markdown DOM nodes through status refreshes and incoming messages so selected text stays selected and copyable; avoid reprocessing unchanged message bodies.
+- Check active Runtime status every five seconds instead of every second. Check action receipts every fifteen seconds when idle, retaining one-second reconciliation while actions are pending; pause chat receipt polling in hidden tabs and refresh on return.
+- Keep diagnostics authorization checks, live Conversation events, local-control protocol 23, database schemas and the pinned Runtime unchanged.
+
 ## 0.0.20
 
 Release overview: [Explicit Pi integrations](docs/releases/v0.0.20.md).

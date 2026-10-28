@@ -34,7 +34,7 @@ export function ParticipantDiagnosticsPage() {
   const agentKey = [...queryKeys.localConversationAgents(conversationId), participantId, humanIdentityId] as const;
   const agent = useQuery({ queryKey: agentKey, queryFn: () => localControl.conversationAgent(conversationId, participantId), enabled: Boolean(authorized && target && (target.type === "agent" || target.type === "service")), retry: false, refetchInterval: 5_000 });
   const actionsKey = ["local", "pending-agent-actions", conversationId, humanIdentityId] as const;
-  const actions = useQuery({ queryKey: actionsKey, queryFn: ({ signal }) => localControl.pendingAgentActions(conversationId, signal), enabled: Boolean(authorized), retry: false, refetchInterval: 1_000 });
+  const actions = useQuery({ queryKey: actionsKey, queryFn: ({ signal }) => localControl.pendingAgentActions(conversationId, signal), enabled: Boolean(authorized), retry: false, refetchInterval: (query) => query.state.status === "error" ? 30_000 : query.state.data?.actions.length ? 1_000 : 15_000 });
   const requestPending = !actions.isSuccess || actions.data.actions.some(action => !action.identityId || action.identityId === participantId);
   // Sidebar notification previews use a bounded page under the ordinary message key.
   // Diagnostics needs its own complete public snapshot for exact message navigation.
