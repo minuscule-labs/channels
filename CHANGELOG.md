@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.20
+
+Release overview: [Explicit Pi integrations](docs/releases/v0.0.20.md).
+
+- Add an installation-private, disabled-by-default Pi extension allowlist through `pi-runtime.json`, with explicit foreground/live-review overrides and consistent service/development startup behavior. Keep credentials, per-agent Skills, public contracts, and the UI independent.
+- Validate owner-only configuration files with bounded reads and fail-closed errors. Keep disposable review from inheriting production integrations, and document host-wide scope, service credentials, and worker restart requirements.
+- Pin the reviewed Runtime extension-loading implementation, including exact selected-skill verification after extension initialization and bounded private startup-hook diagnostics. No database migration or control-protocol change is added.
+
 ## 0.0.19
 
 Release overview: [Reliable participant recovery and separate diagnostics](docs/releases/v0.0.19.md).
