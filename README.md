@@ -14,7 +14,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 - Live updates, mentions, Markdown, Mermaid diagrams, syntax highlighting, and code-copy controls
 - Image attachments with picker/paste/drop, durable local storage, and capability-gated vision for owned Pi agents
 - Per-agent instructions, Skills, harness, provider, model, and reasoning settings
-- Explicit **Start agent**, **New session with context**, **Fresh session**, **Reconnect**, and resumable **Stop agent** controls
+- Compact **Agent**, **New session**, and **Inspect** menus with explicit Start, full Stop, same-transcript Restart, context replacement and read-only diagnostics
 - Conversation **Snooze**, **Archive**, and explicit **Reopen** lifecycle controls
 - Workspace and Conversation administration with native folder selection
 - Product-isolated local storage, recovery, locking, and checksum-verified updates
@@ -33,7 +33,7 @@ Requirements:
 Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://github.com/minuscule-labs/channels/releases), verify the checksum, then install:
 
 ```bash
-npm install -g ./minu-channels-0.0.23.tgz
+npm install -g ./minu-channels-0.0.24.tgz
 
 # macOS background service
 minu-channels start
