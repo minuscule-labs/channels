@@ -140,43 +140,6 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
   expect(requests.calls).toHaveLength(3);
 });
 
-test("offers fresh context isolation when initially starting an unbound agent", async ({ page, request }) => {
-  const data = await fixture(request);
-  let state: LocalConversationAgent["state"] = "unbound";
-  await mockAgents(page, data, () => state);
-  const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
-  await launch(page, request, data);
-  await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
-  await openParticipantSection(page, "Agent");
-  await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeVisible();
-  await openParticipantSection(page, "New session");
-  await expect(page.getByRole("menuitem", { name: "Fresh session", exact: true })).toBeVisible();
-  await openParticipantSection(page, "New session");
-  await page.getByRole("menuitem", { name: "Fresh session", exact: true }).click();
-  const confirmation = page.getByRole("dialog", { name: `Start a fresh session for ${data.agent.displayName}?` });
-  await expect(confirmation).toContainText("excludes all earlier Conversation messages");
-  await confirmation.getByRole("button", { name: "Fresh session", exact: true }).click();
-  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-  expect(requests.calls[0]).toMatchObject({ action: "start-fresh", identityId: data.agent.id });
-});
-
-test("Start agent resumes an intentionally stopped session without confirmation", async ({ page, request }) => {
-  const data = await fixture(request);
-  let state: LocalConversationAgent["state"] = "stopped";
-  await mockAgents(page, data, () => state);
-  const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
-  await launch(page, request, data);
-  await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
-  await openParticipantSection(page, "Agent");
-  const start = page.getByRole("menuitem", { name: "Start agent", exact: true });
-  await expect(start).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "New session", exact: true })).toBeVisible();
-  await start.click();
-  await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  expect(requests.calls[0]).toMatchObject({ action: "start", identityId: data.agent.id });
-});
-
 for (const initialState of ["disabled", "offline"] as const) {
   test(`starting a ${initialState} agent offers an explicit context mode and keeps replacement confirmation`, async ({ page, request }) => {
     const data = await fixture(request);

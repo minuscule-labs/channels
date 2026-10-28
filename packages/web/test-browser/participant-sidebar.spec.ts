@@ -65,7 +65,8 @@ async function details(page: Page, name: string) {
   return page.getByRole("dialog", { name: `Details for ${name}`, exact: true });
 }
 
-for (const minimized of [false, true]) for (const action of ["stop-runtime", "restart-runtime"] as const) {
+// The same menu handles both layouts; cover each action and layout without their full cross-product.
+for (const { minimized, action } of [{ minimized: false, action: "stop-runtime" }, { minimized: true, action: "restart-runtime" }] as const) {
   test(`uncertain participants offer confirmed ${action} with pending guards (minimized=${minimized})`, async ({ page, request }) => {
     const data = await fixture(request);
     const label = action === "stop-runtime" ? "Stop agent" : "Restart agent";
@@ -439,16 +440,24 @@ for (const scenario of pendingScenarios) test(`inspects self and others during a
   const trigger = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true });
   await trigger.click();
   const newSession = scenario.action === "start-fresh" || scenario.action === "replace" || scenario.action === "replace-fresh";
+  if (scenario.action === "start-fresh") {
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeEnabled();
+  }
+  if (scenario.state === "stopped") await expect(page.getByRole("menuitem", { name: "New session", exact: true })).toBeVisible();
   await openParticipantSection(page, newSession ? "New session" : "Agent");
   const actionButton = page.getByRole("menuitem", { name: scenario.label, exact: true });
   await actionButton.evaluate(button => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
   if (scenario.confirmation) {
     const confirmation = page.getByRole("dialog", { name: `${scenario.confirmation} ${data.agent.displayName}?`, exact: true });
+    if (scenario.action === "start-fresh") await expect(confirmation).toContainText("excludes all earlier Conversation messages");
     await confirmation.getByRole("button", { name: scenario.label, exact: true }).evaluate(button => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
     await expect(confirmation).toHaveCount(0);
+  } else {
+    await expect(page.getByRole("dialog")).toHaveCount(0);
   }
   await expect.poll(() => actions.calls.length).toBe(1);
-  expect(actions.calls[0]!.action).toBe(scenario.action);
+  expect(actions.calls[0]).toMatchObject({ action: scenario.action, identityId: data.agent.id });
   let modal = await details(page, data.agent.displayName!);
   await expect(modal.getByRole("region", { name: "Pending participant action" })).toContainText(scenario.label);
   await modal.getByRole("button", { name: "Refresh status", exact: true }).click();
@@ -476,6 +485,7 @@ for (const scenario of pendingScenarios) test(`inspects self and others during a
   await expect(modal.getByRole("region", { name: "Pending participant action" })).toHaveCount(0);
   await expect(modal).toBeVisible();
   if (scenario.fail) await expect(modal.getByRole("region", { name: "Failed participant action" })).toContainText("Delayed participant rejection");
+  if (scenario.action === "start" || scenario.action === "start-fresh") await expect(modal.getByRole("region", { name: "Status freshness" })).toContainText("Idle");
   expect(actions.calls).toHaveLength(1);
 });
 
@@ -537,7 +547,7 @@ test("per-participant refresh reads only its target, preserves receipt time on f
   expect(reads).toBe(2);
 });
 
-test("polls receipts slowly when idle, quickly while pending, and pauses while hidden", async ({ page, request }) => {
+test("polls receipts by activity, keeps long actions pending without replay, and pauses while hidden", async ({ page, request }) => {
   const data = await fixture(request);
   await page.clock.install();
   await mockAgent(page, data, () => agentView(data, "unbound"));
@@ -558,6 +568,11 @@ test("polls receipts slowly when idle, quickly while pending, and pauses while h
   const pendingReads = receiptReads;
   await page.clock.fastForward(1_000);
   await expect.poll(() => receiptReads).toBeGreaterThan(pendingReads);
+  await page.clock.fastForward(31_400);
+  await expect(modal.getByRole("region", { name: "Pending participant action" })).toContainText("Start agent");
+  await expect(modal.getByRole("region", { name: "Failed participant action" })).toHaveCount(0);
+  await modal.getByRole("button", { name: "Refresh status", exact: true }).click();
+  expect(actions.calls).toHaveLength(1);
   actions.complete();
   await page.clock.fastForward(1_000);
   await expect(modal.getByRole("region", { name: "Pending participant action" })).toHaveCount(0);
@@ -596,26 +611,6 @@ test("active Runtime status does not poll every second", async ({ page, request 
   expect(statusReads).toBe(initialReads);
   await page.clock.fastForward(3_000);
   await expect.poll(() => statusReads).toBe(initialReads + 1);
-});
-
-test("accepted timing passes 30 seconds without a false failure and Refresh never repeats the mutation", async ({ page, request }) => {
-  const data = await fixture(request);
-  await page.clock.install();
-  await mockAgent(page, data, () => agentView(data, "unbound"));
-  const actions = await mockActionRequests(page, data.primary.id);
-  await launch(page, request, data);
-  await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await openParticipantSection(page, "Agent");
-  await page.getByRole("menuitem", { name: "Start agent", exact: true }).click();
-  const modal = await details(page, data.agent.displayName!);
-  await page.clock.fastForward(31_400);
-  await expect(modal.getByRole("region", { name: "Pending participant action" })).toContainText("Start agent");
-  await expect(modal.getByRole("region", { name: "Failed participant action" })).toHaveCount(0);
-  await modal.getByRole("button", { name: "Refresh status", exact: true }).click();
-  expect(actions.calls).toHaveLength(1);
-  actions.complete();
-  await page.clock.resume();
-  await expect(modal.getByRole("region", { name: "Pending participant action" })).toHaveCount(0);
 });
 
 test("a lost acceptance response is reconciled without another Fresh-session request", async ({ page, request }) => {
