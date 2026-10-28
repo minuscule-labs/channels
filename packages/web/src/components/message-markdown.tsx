@@ -1,6 +1,6 @@
 import { Check, Copy } from "lucide-react";
-import { Children, isValidElement, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import Markdown from "react-markdown";
+import { Children, isValidElement, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { canonicalFenceLanguage, fencedCodeLanguages } from "../lib/code-fences";
 import type { RehypeHighlightPlugin } from "../lib/code-highlighter";
@@ -83,7 +83,52 @@ function CodeBlock({ children, className, "data-language": language, node: _node
   );
 }
 
-export function MessageMarkdown({ body }: { body: string }) {
+// Stable component types preserve DOM nodes (and selection) across updates.
+const markdownComponents: Components = {
+  a: ({ children, ...properties }) => (
+    <a
+      {...properties}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="text-[var(--accent)] underline underline-offset-2"
+    >
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="my-2 border-l-2 border-[var(--border)] pl-3 text-[var(--muted)]">
+      {children}
+    </blockquote>
+  ),
+  code: ({ children, className }) => (
+    <code className={`${className ?? ""} rounded bg-[var(--panel-muted)] px-1 py-0.5 font-mono text-[0.85em]`}>
+      {children}
+    </code>
+  ),
+  h1: ({ children }) => <h1 className="mt-4 mb-2 text-lg font-semibold first:mt-0">{children}</h1>,
+  h2: ({ children }) => <h2 className="mt-4 mb-2 text-base font-semibold first:mt-0">{children}</h2>,
+  h3: ({ children }) => <h3 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h3>,
+  hr: () => <hr className="my-3 border-[var(--border)]" />,
+  img: ({ alt }) => (
+    <span className="rounded bg-[var(--panel-muted)] px-1.5 py-0.5 text-xs text-[var(--muted)]">
+      Image: {alt || "attachment"}
+    </span>
+  ),
+  li: ({ children }) => <li className="my-0.5 pl-0.5">{children}</li>,
+  ol: ({ children }) => <ol className="my-2 list-decimal space-y-0.5 pl-5">{children}</ol>,
+  p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
+  pre: CodeBlock,
+  table: ({ children }) => (
+    <div className="my-2 max-w-full overflow-x-auto">
+      <table className="min-w-full border-collapse text-left text-xs">{children}</table>
+    </div>
+  ),
+  td: ({ children }) => <td className="border border-[var(--border)] px-2 py-1.5 align-top">{children}</td>,
+  th: ({ children }) => <th className="border border-[var(--border)] bg-[var(--panel-muted)] px-2 py-1.5 font-semibold">{children}</th>,
+  ul: ({ children }) => <ul className="my-2 list-disc space-y-0.5 pl-5">{children}</ul>,
+};
+
+export const MessageMarkdown = memo(function MessageMarkdown({ body }: { body: string }) {
   const languages = useMemo(() => fencedCodeLanguages(body), [body]);
   const languageKey = languages.join(",");
   const [rehypeHighlight, setRehypeHighlight] = useState<RehypeHighlightPlugin>();
@@ -111,52 +156,10 @@ export function MessageMarkdown({ body }: { body: string }) {
         remarkPlugins={[remarkGfm]}
         rehypePlugins={rehypeHighlight ? [rehypeHighlight] : []}
         skipHtml
-        components={{
-          a: ({ children, ...properties }) => (
-            <a
-              {...properties}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-[var(--accent)] underline underline-offset-2"
-            >
-              {children}
-            </a>
-          ),
-          blockquote: ({ children }) => (
-            <blockquote className="my-2 border-l-2 border-[var(--border)] pl-3 text-[var(--muted)]">
-              {children}
-            </blockquote>
-          ),
-          code: ({ children, className }) => (
-            <code className={`${className ?? ""} rounded bg-[var(--panel-muted)] px-1 py-0.5 font-mono text-[0.85em]`}>
-              {children}
-            </code>
-          ),
-          h1: ({ children }) => <h1 className="mt-4 mb-2 text-lg font-semibold first:mt-0">{children}</h1>,
-          h2: ({ children }) => <h2 className="mt-4 mb-2 text-base font-semibold first:mt-0">{children}</h2>,
-          h3: ({ children }) => <h3 className="mt-3 mb-1 text-sm font-semibold first:mt-0">{children}</h3>,
-          hr: () => <hr className="my-3 border-[var(--border)]" />,
-          img: ({ alt }) => (
-            <span className="rounded bg-[var(--panel-muted)] px-1.5 py-0.5 text-xs text-[var(--muted)]">
-              Image: {alt || "attachment"}
-            </span>
-          ),
-          li: ({ children }) => <li className="my-0.5 pl-0.5">{children}</li>,
-          ol: ({ children }) => <ol className="my-2 list-decimal space-y-0.5 pl-5">{children}</ol>,
-          p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
-          pre: CodeBlock,
-          table: ({ children }) => (
-            <div className="my-2 max-w-full overflow-x-auto">
-              <table className="min-w-full border-collapse text-left text-xs">{children}</table>
-            </div>
-          ),
-          td: ({ children }) => <td className="border border-[var(--border)] px-2 py-1.5 align-top">{children}</td>,
-          th: ({ children }) => <th className="border border-[var(--border)] bg-[var(--panel-muted)] px-2 py-1.5 font-semibold">{children}</th>,
-          ul: ({ children }) => <ul className="my-2 list-disc space-y-0.5 pl-5">{children}</ul>,
-        }}
+        components={markdownComponents}
       >
         {body}
       </Markdown>
     </div>
   );
-}
+});

@@ -93,9 +93,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       return { agents, receivedAt: Date.now() };
     },
     retry: false,
-    refetchInterval: (query) => query.state.status === "error"
-      ? 30_000
-      : query.state.data?.agents.some((agent) => agent.activity) ? 1_000 : 5_000,
+    refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
   });
   const { connection, retry } = useLiveConversation(conversationId, currentSession.data?.identityId);
   const participants = metadata.data?.participants ?? [];

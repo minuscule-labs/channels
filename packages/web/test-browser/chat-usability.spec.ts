@@ -74,6 +74,40 @@ test("opens cold and cached Conversations at the end, including when metadata ar
   await expectAtEnd(timeline);
 });
 
+test("preserves selected message text through status polls and incoming messages", async ({ page, request }) => {
+  const { workspaceId, primaryId } = await fixture(request);
+  const body = "Keep this **selected text** and `inline code` copyable.";
+  await peer(request, `${body}\n\n| Column |\n| --- |\n| Stable table |`);
+  await launch(page, request, workspaceId, primaryId);
+  const message = page.getByRole("log").locator("article").filter({ hasText: "Keep this selected text" });
+  const paragraph = message.locator(".message-markdown > p");
+  const original = await paragraph.elementHandle();
+  const tableCell = await message.getByRole("cell", { name: "Stable table" }).elementHandle();
+  const selectedText = await paragraph.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return selection.toString();
+  });
+  const status = await page.waitForResponse(response => response.url().endsWith(`/local/conversations/${primaryId}/agents`) && response.ok());
+  await status.finished();
+  // Let React commit the response before checking node identity and selection.
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(await original!.evaluate(element => element.isConnected)).toBe(true);
+  expect(await tableCell!.evaluate(element => element.isConnected)).toBe(true);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);
+  await peer(request, "Incoming while text is selected");
+  await expect(page.getByText("Incoming while text is selected", { exact: true })).toBeVisible();
+  expect(await original!.evaluate(element => element.isConnected)).toBe(true);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe(selectedText);
+
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.keyboard.press("ControlOrMeta+c");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(selectedText);
+});
+
 test("keeps the composer focused while Enter sends, on success, and on failure", async ({ page, request }) => {
   const { workspaceId, primaryId } = await fixture(request);
   let releaseSend = () => {};
