@@ -33,6 +33,10 @@ export function ParticipantSessionActionsMenu({
   onStop,
   onDismissError,
   onDetails,
+  onRefresh,
+  refreshing = false,
+  diagnosticsHref,
+  hasError = false,
   trigger,
 }: {
   participantName: string;
@@ -51,6 +55,10 @@ export function ParticipantSessionActionsMenu({
   onStop?(): void | Promise<unknown>;
   onDismissError?(): void;
   onDetails?(trigger: HTMLButtonElement | null): void;
+  onRefresh?(): void | Promise<void>;
+  refreshing?: boolean;
+  diagnosticsHref?: string;
+  hasError?: boolean;
   trigger?: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -66,7 +74,7 @@ export function ParticipantSessionActionsMenu({
   const blocked = actionsDisabled || pending;
   const hasActions = canStart || canResume || canReconnect || canReplace || canCancel || canStop;
 
-  if (!hasActions && !onDetails) return null;
+  if (!hasActions && !onDetails && !onRefresh && !diagnosticsHref) return null;
 
   const closeConfirmation = () => {
     confirmationVersion.current += 1;
@@ -144,7 +152,6 @@ export function ParticipantSessionActionsMenu({
             sideOffset={6}
             className="z-50 min-w-52 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none"
           >
-            {blocked ? <p className="max-w-64 px-2.5 py-2 text-xs text-[var(--muted)]">An agent action is pending. Session actions are unavailable; details remain available.</p> : null}
             <div className={blocked ? "[&_button]:cursor-not-allowed [&_button]:opacity-50" : undefined}>
               {(canResume || canStart) && onStart ? (
                 <button
@@ -217,6 +224,9 @@ export function ParticipantSessionActionsMenu({
                 </button>
               ) : null}
             </div>
+            {onRefresh ? <button type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)] disabled:opacity-50" disabled={refreshing} onClick={() => { void onRefresh(); }}><RefreshCw className={`h-4 w-4${refreshing ? " animate-spin" : ""}`} />Refresh status</button> : null}
+            {diagnosticsHref ? <a className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-sm hover:bg-[var(--hover)]" href={diagnosticsHref}>Diagnostics</a> : null}
+            {hasError && onDismissError ? <button type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]" onClick={() => { setError(undefined); onDismissError(); setMenuOpen(false); }}><CircleX className="h-4 w-4" />Dismiss action notice</button> : null}
             {onDetails ? (
               <div className={hasActions ? "mt-1 border-t border-[var(--border)] pt-1" : undefined}>
                 <button
@@ -224,7 +234,7 @@ export function ParticipantSessionActionsMenu({
                   className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]"
                   onClick={viewDetails}
                 >
-                  <Info className="h-4 w-4" /> Details &amp; diagnostics
+                  <Info className="h-4 w-4" /> Details
                 </button>
               </div>
             ) : null}
@@ -261,7 +271,6 @@ export function ParticipantSessionActionsMenu({
                   ? "Starts a Runtime session with no handoff and excludes all earlier Conversation messages. Saved agent/project instructions and configuration still apply; messages posted after it starts are included."
                 : "Active work will be interrupted and queued turns through the stop boundary discarded. The same Runtime session is kept; messages posted while stopped wait until you resume it. External tool or filesystem effects cannot be rolled back."}
           </Dialog.Description>
-          {pending ? <p className="mt-3 text-xs text-[var(--muted)]">Closing this dialog does not cancel the operation.</p> : null}
           {error ? <ErrorNotice className="mt-3" onDismiss={() => {
             setError(undefined);
             onDismissError?.();
@@ -270,7 +279,7 @@ export function ParticipantSessionActionsMenu({
             <Dialog.Close asChild>
               <button ref={cancelRef} type="button" className="button-secondary">{pending ? "Close" : "Cancel"}</button>
             </Dialog.Close>
-            {pending && onDetails ? <button type="button" className="button-secondary" onClick={viewDetails}>View diagnostics</button> : null}
+            {pending && onDetails ? <button type="button" className="button-secondary" onClick={viewDetails}>View details</button> : null}
             <button
               type="button"
               className={`inline-flex min-h-8 items-center justify-center gap-1.5 rounded border px-3 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${

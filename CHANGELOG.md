@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.19
+
+Release overview: [Reliable participant recovery and separate diagnostics](docs/releases/v0.0.19.md).
+
+- Track participant lifecycle actions independently of browser deadlines and status reads, reconcile late completion without replaying uncertain mutations, and prevent duplicate or overlapping actions for the same participant.
+- Keep other participants usable during individual actions, add per-participant read-only status refresh and dismissible action notices, and allow an explicit Stop retry against the same durably fenced session.
+- Move privileged diagnostics to a separate, lazy-loaded page with optional new-tab opening; preserve access-loss clearing, scoped issue navigation, and read-only inspection. Advance local-control protocol to v23 without a database migration or Runtime dependency change.
+
 ## 0.0.18
 
 Release overview: [Safe product locking and Conversation images](docs/releases/v0.0.18.md).

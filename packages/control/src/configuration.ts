@@ -41,6 +41,7 @@ export class LocalConfigurationRequestError extends Error {
     message: string,
     readonly status: 400 | 403 | 404 | 409 | 413,
     readonly reason: "invalid" | "forbidden" | "unavailable",
+    readonly actionOutcome: "failed" | "unconfirmed" = "failed",
   ) {
     super(message);
     this.name = "LocalConfigurationRequestError";

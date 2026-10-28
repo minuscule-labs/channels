@@ -1,6 +1,6 @@
 import type { DiagnosticDetail, DiagnosticHistory, DeliveryHistory, DeliveryDetail } from "@minu/channels-relay";
 
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 22 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 23 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -249,6 +249,27 @@ export interface LocalConversationAgent {
   };
   lastVerifiedAt?: string;
   diagnostics?: LocalAgentDiagnostics;
+}
+
+export type LocalAgentAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel" | "start-all" | "stop-all";
+
+/** An exact browser intent. Reuse its ID only to inspect it, never to retry an uncertain mutation. */
+export interface LocalAgentActionInput {
+  requestId: string;
+  action: LocalAgentAction;
+  identityId?: string;
+}
+
+/** In-process lifecycle receipt, independent of optional diagnostics and Runtime status reads.
+ * Missing receipts (including after host restart) mean unconfirmed, never failed or safe to replay. */
+export interface LocalAgentActionReceipt extends LocalAgentActionInput {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  conversationId: string;
+  state: "pending" | "succeeded" | "failed" | "unconfirmed";
+  requestedAt: number;
+  completedAt?: number;
+  error?: string;
+  results?: LocalBulkAgentLifecycleResult[];
 }
 
 export interface LocalConversationAgentsResponse {

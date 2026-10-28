@@ -4,6 +4,8 @@ import type {
   UpdateConversationLifecycleInput,
 } from "@minu/channels-core/types";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { agentActionInput, LocalAgentActions } from "./agent-actions.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
@@ -57,6 +59,7 @@ import type { LocalDeliveryReads } from "./delivery-reads.ts";
 import {
   LOCAL_CONTROL_PROTOCOL_VERSION,
   type LocalAgentActivity,
+  type LocalAgentActionInput, type LocalAgentActionReceipt,
   type LocalAgentOperationHistory, type LocalAgentOperationDetail, type LocalAgentDiagnosticReport,
   type LocalAgentRuntimeOptions,
   type LocalBulkAgentLifecycleResponse,
@@ -292,6 +295,7 @@ function presentLiveCapabilities(
 export class LocalControlService {
   private readonly statusTimeoutMs: number;
   private readonly lifecycleTransitions = new Map<string, Promise<EffectiveConversationLifecycle>>();
+  private readonly agentActions = new LocalAgentActions();
 
   constructor(private readonly options: LocalControlServiceOptions) {
     this.statusTimeoutMs = options.statusTimeoutMs ?? 2_000;
@@ -600,10 +604,7 @@ export class LocalControlService {
     actorIdentityId: string,
     contextMode: LocalSessionContextMode = "with_context",
   ): Promise<LocalConversationAgent> {
-    if (!this.options.lifecycle?.available) {
-      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
-    }
-    await this.options.lifecycle.startConversationAgent(conversationId, identityId, actorIdentityId, contextMode);
+    await this.runLegacyAgentAction(conversationId, actorIdentityId, contextMode === "fresh" ? "start-fresh" : "start", identityId);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -613,10 +614,7 @@ export class LocalControlService {
     actorIdentityId: string,
     contextMode: LocalSessionContextMode = "with_context",
   ): Promise<LocalConversationAgent> {
-    if (!this.options.lifecycle?.available) {
-      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
-    }
-    await this.options.lifecycle.replaceConversationAgent(conversationId, identityId, actorIdentityId, contextMode);
+    await this.runLegacyAgentAction(conversationId, actorIdentityId, contextMode === "fresh" ? "replace-fresh" : "replace", identityId);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -625,11 +623,7 @@ export class LocalControlService {
     identityId: string,
     actorIdentityId: string,
   ): Promise<LocalConversationAgent> {
-    if (!this.options.lifecycle?.available) {
-      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
-    }
-    await this.withStopAdmissionFence(conversationId, () =>
-      this.options.lifecycle!.stopConversationAgent(conversationId, identityId, actorIdentityId));
+    await this.runLegacyAgentAction(conversationId, actorIdentityId, "stop", identityId);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -638,10 +632,7 @@ export class LocalControlService {
     identityId: string,
     actorIdentityId: string,
   ): Promise<LocalConversationAgent> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.reconnectConversationAgent) {
-      throw new LocalConfigurationRequestError("Agent reconnect unavailable", 404, "unavailable");
-    }
-    await this.options.lifecycle.reconnectConversationAgent(conversationId, identityId, actorIdentityId);
+    await this.runLegacyAgentAction(conversationId, actorIdentityId, "reconnect", identityId);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -649,13 +640,10 @@ export class LocalControlService {
     conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResponse> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.startAllConversationAgents) {
-      throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
-    }
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       conversationId,
-      results: await this.options.lifecycle.startAllConversationAgents(conversationId, actorIdentityId),
+      results: await this.runLegacyAgentAction(conversationId, actorIdentityId, "start-all") ?? [],
     };
   }
 
@@ -663,14 +651,10 @@ export class LocalControlService {
     conversationId: string,
     actorIdentityId: string,
   ): Promise<LocalBulkAgentLifecycleResponse> {
-    if (!this.options.lifecycle?.available || !this.options.lifecycle.stopAllConversationAgents) {
-      throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
-    }
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       conversationId,
-      results: await this.withStopAdmissionFence(conversationId, () =>
-        this.options.lifecycle!.stopAllConversationAgents!(conversationId, actorIdentityId)),
+      results: await this.runLegacyAgentAction(conversationId, actorIdentityId, "stop-all") ?? [],
     };
   }
 
@@ -679,10 +663,7 @@ export class LocalControlService {
     identityId: string,
     actorIdentityId: string,
   ): Promise<LocalConversationAgent> {
-    if (!this.options.lifecycle?.available) {
-      throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
-    }
-    await this.options.lifecycle.cancelCurrentConversationAgent(conversationId, identityId, actorIdentityId);
+    await this.runLegacyAgentAction(conversationId, actorIdentityId, "cancel", identityId);
     return this.conversationAgent(conversationId, identityId);
   }
 
@@ -735,11 +716,75 @@ export class LocalControlService {
       });
   }
 
-  private async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
-    const response = await this.listConversationAgents(conversationId);
-    const agent = response.agents.find((candidate) => candidate.identityId === identityId);
-    if (!agent) throw new LocalConfigurationRequestError("Conversation agent unavailable", 404, "unavailable");
-    return agent;
+  private async authorizeAgentActions(conversationId: string, actorIdentityId: string) {
+    const conversation = await this.options.conversations.getConversation(conversationId);
+    if (!this.options.configuration) throw new LocalConfigurationRequestError("Participant actions unavailable", 404, "unavailable");
+    // Fresh workspace/identity authorization on acceptance and every receipt read.
+    await this.options.configuration.getWorkspaceConfiguration(conversation.workspaceId, actorIdentityId);
+    return conversation;
+  }
+
+  async submitAgentAction(conversationId: string, actorIdentityId: string, value: unknown): Promise<LocalAgentActionReceipt> {
+    const input = agentActionInput(value);
+    const conversation = await this.authorizeAgentActions(conversationId, actorIdentityId);
+    if (input.identityId && !conversation.participants.some(({ id, type, status }) => id === input.identityId && (type === "agent" || type === "service") && status !== "disabled")) {
+      throw new LocalConfigurationRequestError("Active Conversation participant required", 409, "unavailable");
+    }
+    this.agentActions.start(conversationId, actorIdentityId, input, () => this.executeAgentAction(conversationId, actorIdentityId, input));
+    return this.agentActions.read(conversationId, input.requestId)!;
+  }
+
+  async readAgentAction(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAgentActionReceipt> {
+    await this.authorizeAgentActions(conversationId, actorIdentityId);
+    const receipt = this.agentActions.read(conversationId, requestId);
+    if (!receipt) throw new LocalConfigurationRequestError("Participant action outcome unavailable", 404, "unavailable");
+    return receipt;
+  }
+
+  async pendingAgentActions(conversationId: string, actorIdentityId: string): Promise<LocalAgentActionReceipt[]> {
+    await this.authorizeAgentActions(conversationId, actorIdentityId);
+    return this.agentActions.pending(conversationId);
+  }
+
+  private runLegacyAgentAction(conversationId: string, actorIdentityId: string, action: LocalAgentActionInput["action"], identityId?: string) {
+    const input = { requestId: randomUUID(), action, ...(identityId ? { identityId } : {}) };
+    return this.agentActions.start(conversationId, actorIdentityId, input, () => this.executeAgentAction(conversationId, actorIdentityId, input)).completion;
+  }
+
+  private async executeAgentAction(conversationId: string, actorIdentityId: string, input: LocalAgentActionInput): Promise<LocalBulkAgentLifecycleResult[] | undefined> {
+    const lifecycle = this.options.lifecycle;
+    if (!lifecycle?.available) throw new LocalConfigurationRequestError("Agent lifecycle unavailable", 404, "unavailable");
+    const id = input.identityId!;
+    switch (input.action) {
+      case "start": case "start-fresh":
+        await lifecycle.startConversationAgent(conversationId, id, actorIdentityId, input.action === "start-fresh" ? "fresh" : "with_context"); break;
+      case "replace": case "replace-fresh":
+        await lifecycle.replaceConversationAgent(conversationId, id, actorIdentityId, input.action === "replace-fresh" ? "fresh" : "with_context"); break;
+      case "stop":
+        // Shared request admission and the host binding fence isolate this target;
+        // a Conversation-wide fence would also reject unrelated participants.
+        await lifecycle.stopConversationAgent(conversationId, id, actorIdentityId); break;
+      case "cancel": await lifecycle.cancelCurrentConversationAgent(conversationId, id, actorIdentityId); break;
+      case "reconnect":
+        if (!lifecycle.reconnectConversationAgent) throw new LocalConfigurationRequestError("Agent reconnect unavailable", 404, "unavailable");
+        await lifecycle.reconnectConversationAgent(conversationId, id, actorIdentityId); break;
+      case "start-all":
+        if (!lifecycle.startAllConversationAgents) throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
+        return lifecycle.startAllConversationAgents(conversationId, actorIdentityId);
+      case "stop-all":
+        if (!lifecycle.stopAllConversationAgents) throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
+        return this.withStopAdmissionFence(conversationId, () => lifecycle.stopAllConversationAgents!(conversationId, actorIdentityId));
+    }
+    return undefined;
+  }
+
+  async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    const [conversation, records] = await Promise.all([
+      this.options.conversations.getConversation(conversationId), this.options.bindings.listConversationBindings(conversationId),
+    ]);
+    const participant = conversation.participants.find(({ id, type }) => id === identityId && (type === "agent" || type === "service"));
+    if (!participant) throw new LocalConfigurationRequestError("Conversation agent unavailable", 404, "unavailable");
+    return this.presentAgent(conversation, identityId, participant.status, records);
   }
 
   async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
@@ -793,6 +838,7 @@ export class LocalControlService {
         state: "uncertain",
         capabilities: {
           ...disabledCapabilities,
+          stop: Boolean(this.options.lifecycle?.available),
           replace: Boolean(this.options.lifecycle?.available),
         },
       };
@@ -1198,6 +1244,7 @@ export async function createLocalControlHttpServer(
     const isAllowedPost = request.method === "POST" && (
       /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/agent-actions$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
@@ -1254,6 +1301,27 @@ export async function createLocalControlHttpServer(
       }
       if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
+        return;
+      }
+      const actionMatch = path.match(/^\/local\/conversations\/([^/]+)\/agent-actions(?:\/([^/]+))?$/);
+      if (actionMatch && browserSession && (request.method === "GET" || (request.method === "POST" && !actionMatch[2]))) {
+        const conversationId = decodeURIComponent(actionMatch[1]!);
+        const value = request.method === "POST"
+          ? await options.service.submitAgentAction(conversationId, browserSession.identityId, await readJson(request))
+          : actionMatch[2]
+            ? await options.service.readAgentAction(conversationId, browserSession.identityId, decodeURIComponent(actionMatch[2]))
+            : { actions: await options.service.pendingAgentActions(conversationId, browserSession.identityId) };
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        json(response, request.method === "POST" ? 202 : 200, value, origin);
+        return;
+      }
+      const agentStatusMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)$/);
+      if (agentStatusMatch && request.method === "GET") {
+        json(response, 200, { agent: await options.service.conversationAgent(decodeURIComponent(agentStatusMatch[1]!), decodeURIComponent(agentStatusMatch[2]!)) }, origin);
         return;
       }
       const diagnosticMatch = path.match(/^\/local\/conversations\/([^/]+)\/agents\/([^/]+)\/(operations(?:\/([^/]+))?|diagnostic-report|session-inspection|session-events|delivery-trails)$/);

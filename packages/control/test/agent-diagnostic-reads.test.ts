@@ -496,7 +496,7 @@ test("diagnostic GETs require a live browser, active human, owner/admin and Conv
   for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events", "/delivery-trails"]) {
     const response = await f.get(path);
     assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 22);
+    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 23);
     assert.equal((await f.get(path, { method: "POST" })).status, 405);
   }
   await f.member({ accessRole: "member" });

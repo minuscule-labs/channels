@@ -33,7 +33,7 @@ Requirements:
 Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://github.com/minuscule-labs/channels/releases), verify the checksum, then install:
 
 ```bash
-npm install -g ./minu-channels-0.0.18.tgz
+npm install -g ./minu-channels-0.0.19.tgz
 
 # macOS background service
 minu-channels start
@@ -140,6 +140,7 @@ These are internal boundaries of one product, not separate services users must c
 - [Distribution model](docs/distribution.md)
 - [Product boundary and architecture](docs/product-boundary.md)
 - [Execution configuration](docs/execution-configuration.md)
+- [Participant recovery and diagnostics](docs/participant-recovery.md)
 - [Conversation lifecycle and archive behavior](docs/conversation-lifecycle.md)
 - [Skills](docs/skills.md)
 - [Web client MVP](docs/web-client-mvp.md)

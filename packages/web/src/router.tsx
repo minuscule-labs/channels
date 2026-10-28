@@ -1,5 +1,5 @@
 import { createRootRoute, createRoute, createRouter, useNavigate, useParams } from "@tanstack/react-router";
-import { useEffect, useState, type ComponentType } from "react";
+import { lazy, Suspense, useEffect, useState, type ComponentType } from "react";
 import { MessageSquare } from "lucide-react";
 import type * as AgentManagementModule from "./components/agent-management-page";
 import { AppShell } from "./components/app-shell";
@@ -106,6 +106,13 @@ const agentDetailRoute = createRoute({
   pendingComponent: AgentRoutePending,
 });
 
+const ParticipantDiagnosticsPage = lazy(() => import("./components/participant-diagnostics-page").then(module => ({ default: module.ParticipantDiagnosticsPage })));
+const participantDiagnosticsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/app/workspaces/$workspaceId/conversations/$conversationId/participants/$participantId/diagnostics",
+  component: () => <Suspense fallback={<div role="status" className="p-5 text-sm">Loading diagnostics…</div>}><ParticipantDiagnosticsPage /></Suspense>,
+});
+
 const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/conversations/$conversationId",
@@ -131,7 +138,7 @@ const legacyConversationRoute = createRoute({
   component: LegacyConversationRedirect,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, legacyConversationRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
 export const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
