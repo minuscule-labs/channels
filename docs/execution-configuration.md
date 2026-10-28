@@ -104,6 +104,10 @@ A native Codex harness should register as its own MinuRuntime adapter and implem
 
 Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Conversations-authored skill options.
 
+## Pi host integrations
+
+The local and live-development launchers read an installation-private `pi-runtime.json` and pass its explicit extension list to the Pi adapter. Automatic discovery stays disabled, and the default list is empty. This policy is host-wide, not a per-agent launch field, permission grant, or shared Runtime schema. Skills remain independently selected. See [Configure Pi integrations](local-release.md#configure-pi-integrations) for the file format, overrides, service environment, and restart behavior.
+
 ## Current implementation
 
 The current product supports:

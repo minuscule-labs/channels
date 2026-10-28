@@ -10,6 +10,7 @@ import { coordinateConversationsUpdate } from "./coordinated-update.ts";
 import { createLocalProductApp } from "./local.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
 import { resolveConversationsDataDirectory } from "./local-paths.ts";
+import { readPiRuntimeHostConfig, type PiRuntimeHostConfig } from "./pi-runtime-config.ts";
 import { createLocalWebServer } from "./local-web-server.ts";
 import { LocalServiceLifecycle, type LocalServiceStatus } from "./service-lifecycle.ts";
 import { BoundedServiceLog } from "./service-log.ts";
@@ -30,6 +31,7 @@ interface LocalCliOptions {
   workspaceName?: string;
   webDir?: string;
   runtimeModule?: string;
+  piConfig?: string;
   open: boolean;
   serviceMode: boolean;
 }
@@ -67,7 +69,7 @@ function moduleSpecifier(value: string): string {
   return value;
 }
 
-async function loadPiRuntime(specifier?: string): Promise<LocalManagedRuntimePort> {
+async function loadPiRuntime(specifier: string | undefined, config: PiRuntimeHostConfig): Promise<LocalManagedRuntimePort> {
   const packagedModule = packagedPath("bin", "runtime-pi.js");
   const developmentModule = resolve(repositoryRoot(), "../runtime/packages/pi/dist/src/index.js");
   const defaultModule = existsSync(packagedModule) ? packagedModule : developmentModule;
@@ -76,7 +78,7 @@ async function loadPiRuntime(specifier?: string): Promise<LocalManagedRuntimePor
   if (typeof Constructor !== "function") {
     throw new Error("Pi Runtime module does not export PiAgentRuntime");
   }
-  const runtime = new (Constructor as new () => LocalManagedRuntimePort)();
+  const runtime = new (Constructor as new (config: PiRuntimeHostConfig) => LocalManagedRuntimePort)(config);
   if (typeof runtime.start !== "function" || typeof runtime.send !== "function"
     || typeof runtime.messages !== "function" || typeof runtime.status !== "function") {
     throw new Error("Pi Runtime module does not provide managed execution capabilities");
@@ -255,6 +257,7 @@ async function main(): Promise<void> {
     .option("--workspace-name <name>", "name for a newly created Workspace")
     .option("--web-dir <path>", "production web asset directory")
     .option("--runtime-module <module>", "Pi Runtime module")
+    .option("--pi-config <path>", "private Pi Runtime host configuration file")
     .option("--no-open", "print the one-time launch URL instead of opening a browser")
     .option("--service-mode", "run under the product-owned background supervisor")
     .addHelpText("after", `
@@ -298,7 +301,8 @@ Other commands:
     throw new Error("Conversations, control, and web ports must be distinct");
   }
   const webUrl = localConversationsUrl(options.webPort);
-  const runtime = await loadPiRuntime(options.runtimeModule);
+  const piConfig = await readPiRuntimeHostConfig({ dataDirectory, filePath: options.piConfig });
+  const runtime = await loadPiRuntime(options.runtimeModule, piConfig);
   const installationInstance = await registerInstallationInstance({
     kind: options.serviceMode ? "service" : "foreground",
     dataDirectory,
