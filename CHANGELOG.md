@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.23
+
+Release overview: [Inherit Pi integrations without extra controls](docs/releases/v0.0.23.md).
+
+- Remove Runtime's blanket `--no-extensions` launch flag so capability discovery and newly launched/resumed Pi workers use Pi's configured extensions, built-in integrations and MCP servers.
+- Keep integration configuration in Pi, including codemode activation; do not restore `pi-runtime.json`, `--pi-config` or per-agent integration controls. Skills selection and inherited service-environment behavior remain unchanged.
+- Pin Runtime `7bd8a689dec0776d0b1fd5642d1a97353c9b251b`. Document trusted executable integrations, project-local configuration approval and worker replacement requirements. No database migration or local-control protocol change is added.
+
 ## 0.0.22
 
 Release overview: [Simpler API workflows without extension configuration](docs/releases/v0.0.22.md).
