@@ -7,6 +7,8 @@ import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 import { createLocalProductApp } from "./local.ts";
 import { localConversationsUrl } from "./local-host.ts";
+import { resolveConversationsDataDirectory } from "./local-paths.ts";
+import { readPiRuntimeHostConfig, type PiRuntimeHostConfig } from "./pi-runtime-config.ts";
 import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
 
 // Keep source/review processes distinct from the installed product (47410–47412).
@@ -33,14 +35,14 @@ function moduleSpecifier(value: string): string {
   return value;
 }
 
-async function loadPiRuntime(specifier?: string): Promise<LocalReviewManagedRuntime> {
+async function loadPiRuntime(specifier: string | undefined, config: PiRuntimeHostConfig): Promise<LocalReviewManagedRuntime> {
   const defaultModule = resolve(repositoryRoot(), "../runtime/packages/pi/dist/src/index.js");
   const loaded = await import(moduleSpecifier(specifier ?? defaultModule)) as Record<string, unknown>;
   const Constructor = loaded.PiAgentRuntime;
   if (typeof Constructor !== "function") {
     throw new Error("Pi Runtime module does not export PiAgentRuntime");
   }
-  const runtime = new (Constructor as new () => LocalManagedRuntimePort)();
+  const runtime = new (Constructor as new (config: PiRuntimeHostConfig) => LocalManagedRuntimePort)(config);
   if (typeof runtime.start !== "function" || typeof runtime.send !== "function"
     || typeof runtime.messages !== "function") {
     throw new Error("Pi Runtime module does not provide managed execution capabilities");
@@ -139,12 +141,13 @@ async function main(): Promise<void> {
       local: { type: "boolean", default: false },
       "data-dir": { type: "string" },
       "pi-module": { type: "string" },
+      "pi-config": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --conversations-port <port>  Conversations API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --conversations-port <port>  Conversations API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --pi-config <path>      private Pi Runtime host configuration file\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 
@@ -156,8 +159,16 @@ async function main(): Promise<void> {
   }
   const webUrl = localConversationsUrl(webPort);
   const persistent = values.local;
+  if (values["pi-config"] !== undefined && !persistent && !values["live-pi"]) {
+    throw new Error("--pi-config requires --local or --live-pi");
+  }
+  const dataDirectory = persistent
+    ? resolveConversationsDataDirectory({ explicit: values["data-dir"] })
+    : undefined;
   const managedRuntime = values["live-pi"] || persistent
-    ? await loadPiRuntime(values["pi-module"])
+    ? await loadPiRuntime(values["pi-module"], await readPiRuntimeHostConfig({
+      dataDirectory, filePath: values["pi-config"],
+    }))
     : undefined;
   const onAudit = (event: LocalControlAuditEvent) => {
     process.stderr.write(`${JSON.stringify({ source: persistent ? "minu-channels-local" : "minu-channels-review", ...event })}\n`);
@@ -168,7 +179,7 @@ async function main(): Promise<void> {
       controlPort,
       webUrl,
       workspaceRoot: values.cwd,
-      dataDirectory: values["data-dir"],
+      dataDirectory,
       runtimeAdapter: managedRuntime!.adapter,
       runtime: managedRuntime!.runtime,
       personaPrompt: managedRuntime!.personaPrompt,
