@@ -36,7 +36,11 @@ Installing from a release tarball is supported. Installing directly from a Git b
 
 For an authorized API workflow, Skills can guide HTTP requests through the agent's existing shell tools. Required credentials must be available to the actual Channels service process; selecting a Skill does not provide credentials, and terminal exports do not automatically reach the background service. Do not store credentials in repository files or public configuration.
 
-Pi extension loading is disabled. The former `pi-runtime.json` configuration and `--pi-config` override are no longer supported; existing files are not read or deleted. This does not remove Skills or change inherited environment handling.
+Pi workers use Pi's own configured extensions and MCP servers, including its normal built-in integrations. Configure these in Pi rather than Channels; enable codemode through Pi's settings when wanted. The former `pi-runtime.json` configuration and `--pi-config` override remain unsupported; existing files are not read or deleted. Skills selection and inherited environment handling remain unchanged.
+
+Configured extensions execute trusted code with the host's permissions and must support headless RPC; MCP servers may start processes or connect to external services. Runtime launches Pi with `--approve`, so project-local configuration in the worker's working folder is trusted as well. Capability discovery can also load these integrations. Disposable live review follows Pi's configuration too; use an isolated Pi configuration when reviewing an untrusted setup. This is not an integration sandbox or a credential grant.
+
+The actual service process must have the required integration credentials. Installing an update or restarting Channels does not reload already-live Runtime workers; start a new agent session, or suspend/resume an idle managed worker under the updated Runtime, to load the new configuration.
 
 ## Inspect the installation
 
