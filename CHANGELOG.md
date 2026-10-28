@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.24
+
+Release overview: [Clearer agent controls and reliable manual recovery](docs/releases/v0.0.24.md).
+
+- Add explicit managed-worker Stop and same-transcript Restart even when session status is uncertain. Fence delivery, confirm exact-owner process exit and prevent delayed automatic wake after manual stop; unconfirmed shutdown never authorizes a replacement worker.
+- Keep participant menus compact with Agent, New session and Inspect submenus, keyboard/touch navigation, collision-safe flyouts and red destructive actions. Stop agent now selects full worker shutdown; the legacy delivery-only action is labelled Pause agent and is not duplicated beside it.
+- Move notification sound preferences from the sidebar into a dedicated Notifications section in Workspace Settings, preserving browser/identity scope and non-admin access. Make message links blue in light and dark themes without recoloring navigation.
+- Pin Runtime `86f81102db9ddacade58009d040a95253188992b`, including bounded startup extension diagnostics and the stabilized startup-timeout test fixture. Advance local-control protocol to v24 without an authoritative database migration.
+
 ## 0.0.23
 
 Release overview: [Inherit Pi integrations without extra controls](docs/releases/v0.0.23.md).
