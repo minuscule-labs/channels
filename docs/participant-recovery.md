@@ -2,9 +2,9 @@
 
 Everyday controls remain in each participant menu. Refresh status reads only that participant; it never starts, resumes, replaces, reconnects or interrupts a session. Individual actions block their own participant, while bulk actions reserve the Conversation. A pending individual action still blocks a conflicting bulk action.
 
-## Lifecycle requests (local-control v23)
+## Lifecycle requests (local-control v24)
 
-- `POST /local/conversations/:conversationId/agent-actions` accepts `{ requestId, action, identityId? }` and returns a `202` lifecycle receipt promptly. Individual actions are `start`, `start-fresh`, `reconnect`, `replace`, `replace-fresh`, `stop`, and `cancel`; bulk actions are `start-all` and `stop-all`, without an identity ID.
+- `POST /local/conversations/:conversationId/agent-actions` accepts `{ requestId, action, identityId? }` and returns a `202` lifecycle receipt promptly. Individual actions are `start`, `start-fresh`, `reconnect`, `replace`, `replace-fresh`, `stop`, `cancel`, `stop-runtime`, and `restart-runtime`; bulk actions are `start-all` and `stop-all`, without an identity ID.
 - `GET` on that collection lists pending actions; `GET /:requestId` reads one exact receipt. Acceptance and receipt reads require fresh Workspace owner/admin authorization and an authenticated local browser session. Host/origin checks still apply.
 - Receipts distinguish pending, succeeded, failed admission, and unconfirmed outcomes. Successful lifecycle handling is independent of a subsequent Runtime status query. Cancel success acknowledges the cancellation request, not physical turn settlement.
 - Exact duplicate submissions reuse a retained receipt. A different intent for the same participant is rejected rather than silently queued behind it. Legacy synchronous lifecycle endpoints share this admission guard.
@@ -22,6 +22,16 @@ A successful per-participant Refresh adds or replaces that participant's cached 
 Fresh-session activation boundaries and context exclusion are unchanged. A Fresh-start request against an already paused participant is rejected rather than accidentally resuming its old transcript; the explicit Fresh replacement action creates the new session.
 
 Action notices can be dismissed from expanded rows, details, or the minimized participant menu. This changes local feedback only, not session state, diagnostic history, message history or image data.
+
+## Manual Runtime recovery
+
+**Stop runtime** and **Restart runtime** are distinct from **Stop agent** (which pauses routing but may retain a live worker). They remain available for an exact owner-scoped managed binding even when status is uncertain, including sleeping/unattached and previously fenced sessions. They use the same authenticated owner/admin receipt, participant admission and pending-operation guards as ordinary lifecycle actions; archived Conversations remain read-only.
+
+Recovery first durably fences delivery and detaches the old route. Runtime stops the exact worker without requiring healthy status or native RPC, confirms process exit, and preserves the managed identity and transcript. New POSIX workers use dedicated process groups; a verified unresponsive worker can be escalated from TERM to KILL without signalling a shared controller/terminal group. Legacy workers receive only verified worker-targeted TERM, with observed descendant exit required. A dead legacy bridge without process-group or previously confirmed suspension evidence cannot authorize a new writer; unverifiable shutdown remains unconfirmed.
+
+A persisted Runtime recovery fence also rejects delayed automatic resumes. Only an explicit Start/Restart can clear it. Stop leaves the binding paused; Restart reopens the same saved transcript, binding generation, context policy and activation boundary, after rechecking authority. Neither action creates a fresh session or reapplies saved future launch settings. Like Stop agent, queued work through the confirmed stop boundary is discarded; later messages wait for explicit resume. Tool/filesystem side effects are not rolled back.
+
+Failure to confirm shutdown leaves delivery fenced and never launches a second worker. Failed transcript validation/resume preserves the paused binding and resume material, rather than silently replacing it. Existing bounded automatic verification/reattachment is unchanged; automatic termination, replacement and policy changes are outside this manual-recovery increment.
 
 ## Diagnostics
 

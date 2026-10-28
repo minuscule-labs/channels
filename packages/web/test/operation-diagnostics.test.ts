@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { DiagnosticSurface, diagnosticReportText, diagnosticScopeKey, requestDispositionLabel } from "../src/lib/operation-diagnostics";
 
 const scope = { humanIdentityId: "owner", workspaceId: "workspace", conversationId: "conversation", participantIdentityId: "agent" };
-const history: LocalAgentOperationHistory = { protocolVersion: 23, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
-const detail: LocalAgentOperationDetail = { protocolVersion: 23, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
+const history: LocalAgentOperationHistory = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
+const detail: LocalAgentOperationDetail = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
 function report(capturedAt = "now"): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 23, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
+  return { formatVersion: 1, protocolVersion: 24, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,11 +15,11 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const inspection: LocalAgentSessionInspection = { protocolVersion: 23, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
+const inspection: LocalAgentSessionInspection = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
   running: { status: "not_verified" }, saved: { status: "unavailable" }, latestStart: "not_verified", lastStopBoundary: "not_recorded" };
-const events: LocalAgentSessionEvents = { protocolVersion: 23, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+const events: LocalAgentSessionEvents = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
   snapshot: { version: 1, source: "runtime_bridge", capturedAt: "now", recordingSince: "window", eventsDropped: 0, events: [{ sequence: 1, observedAt: "now", code: "turn_accepted" }] } };
-const trails: LocalAgentDeliveryTrails = { protocolVersion: 23, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+const trails: LocalAgentDeliveryTrails = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
   retention: { days: 7, terminalLimit: 1000, eventLimit: 16 }, history: { trails: [], recordingGap: false } };
 function fixture() {
   const reads = {

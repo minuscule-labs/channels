@@ -31,6 +31,11 @@ async function until(check: () => boolean | Promise<boolean>, timeout = 5_000) {
 class ObservedFakeRuntime {
   starts = 0;
   interrupts = 0;
+  forceStops: string[] = [];
+  forceStopFailure = false;
+  forceStopGate?: ReturnType<typeof gate>;
+  resumeFailure = false;
+  resumes = 0;
   destructions: string[] = [];
   interruptFailure = false;
   interruptGate?: ReturnType<typeof gate>;
@@ -68,7 +73,19 @@ class ObservedFakeRuntime {
     return [...this.sessions].filter(([, session]) => session.ownerId === ownerId)
       .map(([id, session]) => ({ id, ownerId, state: session.status === "offline" ? "suspended" as const : "active" as const }));
   }
+  async forceStopManaged(id: string, ownerId: string) {
+    assert.equal(this.sessions.get(id)?.ownerId, ownerId);
+    this.forceStops.push(id);
+    await this.forceStopGate?.promise;
+    if (this.forceStopFailure) throw new Error("SECRET_RUNTIME_SHUTDOWN_ERROR");
+    this.sendGate?.release();
+    await Promise.resolve();
+    this.sessions.get(id)!.status = "offline";
+    this.unreachable.delete(id);
+  }
   async resume(id: string, ownerId: string) {
+    this.resumes++;
+    if (this.resumeFailure) throw new Error("SECRET_RESUME_ERROR");
     assert.equal(this.sessions.get(id)?.ownerId, ownerId);
     this.sessions.get(id)!.status = "idle";
     return { id, ownerId };
@@ -102,6 +119,119 @@ async function fixture(diagnostics?: LifecycleDiagnostics, store: InMemoryRelayB
     async close() { runtime.sendGate?.release(); runtime.interruptGate?.release(); await host.close(); await store.close(); await server.close(); await rm(directory, { recursive: true, force: true }); },
   };
 }
+
+for (const persistent of [false, true]) {
+  test(`explicit Runtime recovery handles uncertain sleeping bindings without status, preserving binding and activation (persistent=${persistent})`, async () => {
+    const collector = new LifecycleCollector();
+    const databaseDirectory = await mkdtemp(join(tmpdir(), "channels-recovery-db-"));
+    const store = persistent ? await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(databaseDirectory, "relay.db")) }) : new InMemoryRelayBindingStore();
+    const f = await fixture(collector, store);
+    try {
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+      const original = (await store.listConversationBindings(f.conversation.id))[0]!;
+      await f.useDiagnostics(collector);
+      const now = new Date().toISOString();
+      assert.ok(await store.acquireBindingLease(original.id, "fixture-recovery", now, new Date(Date.now() + 30_000).toISOString()));
+      assert.ok(await store.updateBindingState(original.id, original.generation, "fixture-recovery", "sleeping", original.lastVerifiedAt, now));
+      await store.releaseBindingLease(original.id, original.generation, "fixture-recovery");
+      f.runtime.status = async () => { throw new Error("PRIVATE_STATUS_TIMEOUT"); };
+      const service = new LocalControlService({ conversations: f.client, bindings: store, runtimes: { fake: f.runtime }, lifecycle: f.host });
+      const status = await service.conversationAgent(f.conversation.id, f.agent.id);
+      assert.equal(status.state, "uncertain"); assert.equal(status.capabilities.recover, true);
+      assert.equal(status.capabilities.stop, false); assert.equal(status.capabilities.replace, false);
+      await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, false);
+      assert.equal((await store.getBinding(original.id))?.state, "paused");
+      assert.equal(f.runtime.resumes, 0);
+      f.runtime.status = async () => "idle";
+      await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+      const recovered = (await store.getBinding(original.id))!;
+      assert.equal(recovered.state, "connected"); assert.equal(recovered.id, original.id);
+      assert.equal(recovered.generation, original.generation);
+      assert.equal(recovered.runtimeSessionId, original.runtimeSessionId);
+      assert.equal(f.runtime.starts, 1); assert.equal(f.runtime.resumes, 1);
+      assert.deepEqual(f.runtime.forceStops, [original.runtimeSessionId, original.runtimeSessionId]);
+      const history = await store.listSessionHistory(f.conversation.id, f.agent.id);
+      assert.equal(history.length, 1); assert.equal(history[0]?.contextMode, "fresh");
+      assert.ok(collector.operations.some(operation => operation.action === "runtime_stop" && operation.outcome === "succeeded"));
+      assert.ok(collector.operations.some(operation => operation.action === "runtime_restart" && operation.outcome === "succeeded"));
+    } finally { await f.close(); await rm(databaseDirectory, { recursive: true, force: true }); }
+  });
+}
+
+test("unconfirmed Runtime shutdown remains durably fenced across host restart; an explicit retry can recover", async () => {
+  const f = await fixture();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const target = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    f.runtime.forceStopFailure = true;
+    await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true), error =>
+      error instanceof LocalConfigurationRequestError && error.actionOutcome === "unconfirmed" && !error.message.includes("SECRET"));
+    assert.equal((await f.store.getBinding(target.id))?.state, "stopping");
+    assert.equal(f.runtime.resumes, 0); assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+    await f.useDiagnostics(); await f.host.restore();
+    assert.equal(f.runtime.resumes, 0); assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+    f.runtime.forceStopFailure = false;
+    await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+    assert.equal((await f.store.getBinding(target.id))?.state, "connected");
+    assert.equal(f.runtime.resumes, 1);
+    f.runtime.resumeFailure = true;
+    await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true));
+    assert.equal((await f.store.getBinding(target.id))?.state, "paused");
+    assert.equal(f.runtime.starts, 1);
+  } finally { await f.close(); }
+});
+
+test("Runtime recovery stops an active turn before resuming and rejects unauthorized or archived requests", async () => {
+  const f = await fixture();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    f.runtime.sendGate = gate();
+    await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "@builder work" });
+    await until(() => (f.host.agentWorkSnapshot(f.conversation.id, f.agent.id)?.activeTurns ?? 0) > 0);
+    f.runtime.forceStopGate = gate();
+    const recovering = f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+    await until(() => f.runtime.forceStops.length === 1);
+    assert.equal(f.runtime.resumes, 0);
+    const target = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    assert.equal(target.state, "stopping");
+    f.runtime.forceStopGate.release(); await recovering;
+    assert.equal(f.runtime.resumes, 1); assert.equal(f.runtime.interrupts, 0);
+    await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.agent.id, true), /owner or admin/);
+    assert.equal(f.runtime.forceStops.length, 1);
+    await f.client.updateConversationLifecycle(f.conversation.id, { actorIdentityId: f.owner.id, state: "settled" });
+    await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true), /not active/);
+    assert.equal(f.runtime.forceStops.length, 1);
+  } finally { f.runtime.forceStopGate?.release(); await f.close(); }
+});
+
+test("recovery rechecks authority after shutdown and never attaches a changed generation", async () => {
+  for (const revoke of [false, true]) {
+    const f = await fixture();
+    try {
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      const target = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+      if (revoke) {
+        const successor = await f.client.createIdentity({ type: "human", displayName: "Successor" });
+        await f.client.addWorkspaceMember(f.workspace.id, { identityId: successor.id, mentionHandle: "successor", accessRole: "owner" });
+        const stop = f.runtime.forceStopManaged.bind(f.runtime);
+        f.runtime.forceStopManaged = async (...args) => {
+          await stop(...args);
+          await f.client.updateWorkspaceMember(f.workspace.id, f.owner.id, { actorIdentityId: successor.id, accessRole: "member" });
+        };
+      } else {
+        const pause = f.store.pauseBinding.bind(f.store);
+        f.store.pauseBinding = async (...args) => {
+          const paused = await pause(...args);
+          if (paused) await f.store.disableBinding(target.id, target.generation, new Date().toISOString());
+          return paused;
+        };
+      }
+      await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true));
+      assert.equal(f.runtime.resumes, 0); assert.equal(f.runtime.starts, 1);
+      assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+    } finally { await f.close(); }
+  }
+});
 
 async function bulkFixture(diagnostics: LifecycleDiagnostics | undefined, count = 5) {
   const f = await fixture(diagnostics);
@@ -489,7 +619,7 @@ test("real worker records lifecycle outcomes and daemon journal failure cannot p
       const publicHistory = await (await fetch(`${diagnosticBase}/operations`, { headers: readHeaders })).json() as {
         protocolVersion: number; coverage: string; operations: Array<{ operationId: string }>;
       };
-      assert.equal(publicHistory.protocolVersion, 23);
+      assert.equal(publicHistory.protocolVersion, 24);
       assert.equal(publicHistory.coverage, broken ? "unavailable" : "available");
       const selectedId = publicHistory.operations[0]?.operationId ?? "operation-unrecorded";
       const report = await fetch(`${diagnosticBase}/diagnostic-report?operationId=${selectedId}`, { headers: readHeaders });

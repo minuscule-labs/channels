@@ -60,7 +60,7 @@ async function startAll(page: Page) {
 
 function bulkResponse(data: Fixture): LocalBulkAgentLifecycleResponse {
   return {
-    protocolVersion: 23,
+    protocolVersion: 24,
     conversationId: data.primary.id,
     results: [
       { identityId: data.agent.id, outcome: "failed" },

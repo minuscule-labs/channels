@@ -1,6 +1,6 @@
 import type { DiagnosticDetail, DiagnosticHistory, DeliveryHistory, DeliveryDetail } from "@minu/channels-relay";
 
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 23 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 24 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -243,6 +243,8 @@ export interface LocalConversationAgent {
     start: boolean;
     replace: boolean;
     stop: boolean;
+    /** Explicit owner-scoped worker shutdown/restart, independent of live status. */
+    recover?: boolean;
     steer: boolean;
     interrupt: boolean;
     reconnect: boolean;
@@ -251,7 +253,7 @@ export interface LocalConversationAgent {
   diagnostics?: LocalAgentDiagnostics;
 }
 
-export type LocalAgentAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel" | "start-all" | "stop-all";
+export type LocalAgentAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "stop-runtime" | "restart-runtime" | "cancel" | "start-all" | "stop-all";
 
 /** An exact browser intent. Reuse its ID only to inspect it, never to retry an uncertain mutation. */
 export interface LocalAgentActionInput {

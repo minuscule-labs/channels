@@ -44,6 +44,7 @@ export function MemberRoster({
   onReplaceAgent,
   onCancelAgent,
   onStopAgent,
+  onRecoverRuntime,
   onStartAllAgents,
   onStopAllAgents,
   onDismissAgentError,
@@ -78,6 +79,7 @@ export function MemberRoster({
   onReplaceAgent?(identityId: string, contextMode: LocalSessionContextMode): void | Promise<unknown>;
   onCancelAgent?(identityId: string): void | Promise<unknown>;
   onStopAgent?(identityId: string): void | Promise<unknown>;
+  onRecoverRuntime?(identityId: string, restart: boolean): void | Promise<unknown>;
   onStartAllAgents?(): void | Promise<void>;
   onStopAllAgents?(): Promise<void>;
   onDismissAgentError?(identityId: string): void;
@@ -299,6 +301,8 @@ export function MemberRoster({
               canReplace={!readOnly && Boolean(localAgent?.capabilities.replace && onReplaceAgent)}
               canCancel={!readOnly && Boolean(localAgent?.capabilities.interrupt && onCancelAgent)}
               canStop={!readOnly && Boolean(localAgent?.capabilities.stop && onStopAgent)}
+              canRecover={!readOnly && Boolean(localAgent?.capabilities.recover && onRecoverRuntime)}
+              onRecover={onRecoverRuntime ? (restart) => onRecoverRuntime(participant.id, restart) : undefined}
               pendingAction={pendingActions.individuals?.get(participant.id)?.action}
               actionsDisabled={Boolean(pendingActions.bulk || pendingActions.individuals?.has(participant.id))}
               onRefresh={participant.type === "agent" && onRefreshParticipant ? () => onRefreshParticipant(participant.id) : undefined}

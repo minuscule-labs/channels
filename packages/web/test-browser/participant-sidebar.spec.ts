@@ -36,7 +36,7 @@ async function launch(page: Page, request: APIRequestContext, data: Fixture, act
 }
 async function mockAgent(page: Page, data: Fixture, view: () => LocalConversationAgent) {
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 23, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
+    json: { protocolVersion: 24, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
   }));
   await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}`, route => route.fulfill({ json: { agent: view() } }));
 }
@@ -61,6 +61,40 @@ async function details(page: Page, name: string) {
   await page.getByRole("button", { name: `Open actions for ${name}`, exact: true }).click();
   await page.getByRole("button", { name: "Details", exact: true }).click();
   return page.getByRole("dialog", { name: `Details for ${name}`, exact: true });
+}
+
+for (const minimized of [false, true]) for (const action of ["stop-runtime", "restart-runtime"] as const) {
+  test(`uncertain participants offer confirmed ${action} with pending guards (minimized=${minimized})`, async ({ page, request }) => {
+    const data = await fixture(request);
+    const label = action === "stop-runtime" ? "Stop runtime" : "Restart runtime";
+    let view = agentView(data, "uncertain");
+    view.capabilities.recover = true;
+    await mockAgent(page, data, () => view);
+    const actions = await mockActionRequests(page, data.primary.id);
+    await page.addInitScript(value => localStorage.setItem("minu-channels:participants-minimized", String(value)), minimized);
+    await launch(page, request, data);
+    await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Start agent", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Fresh session", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Stop runtime", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Restart runtime", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: label, exact: true }).click();
+    const confirmation = page.getByRole("dialog", { name: `${label} for ${data.agent.displayName}?`, exact: true });
+    await expect(confirmation.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+    expect(actions.calls).toHaveLength(0);
+    await confirmation.getByRole("button", { name: label, exact: true }).click();
+    await expect(confirmation).toHaveCount(0);
+    await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
+    await expect(page.getByRole("button", { name: "Stop runtime", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Restart runtime", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Details", exact: true })).toBeEnabled();
+    expect(actions.calls).toHaveLength(1);
+    expect(actions.calls[0]).toMatchObject({ action, identityId: data.agent.id });
+    view = { ...view, state: action === "stop-runtime" ? "stopped" : "idle" };
+    actions.complete();
+    await expect(page.getByRole("button", { name: label, exact: true })).toBeEnabled();
+    expect(actions.calls).toHaveLength(1);
+  });
 }
 
 test("compact rows use Runtime colors, preserve live activity, and move secondary details into a modal", async ({ page, request }) => {
@@ -207,7 +241,9 @@ test("recorded turn issues appear in chat and open safe in-app diagnostics for o
 
 test("details remain available in read-only Conversations without enabling session actions", async ({ page, request }) => {
   const data = await fixture(request);
-  await mockAgent(page, data, () => agentView(data, "unbound"));
+  const view = agentView(data, "unbound");
+  view.capabilities.recover = true;
+  await mockAgent(page, data, () => view);
   await page.route(`**/local/conversations/${data.primary.id}/lifecycle`, (route) => route.fulfill({
     json: { lifecycle: { conversationId: data.primary.id, state: "settled" } },
   }));
@@ -216,6 +252,8 @@ test("details remain available in read-only Conversations without enabling sessi
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
   await expect(page.getByRole("button", { name: "New session with context", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop runtime", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Restart runtime", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Details", exact: true }).click();
   await expect(page.getByRole("dialog", { name: `Details for ${data.agent.displayName}`, exact: true })).toContainText("Not started");
 });

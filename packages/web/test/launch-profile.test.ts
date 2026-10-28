@@ -9,7 +9,7 @@ import {
 } from "../src/lib/launch-profile";
 
 const options: LocalRuntimeOptions = {
-  protocolVersion: 23,
+  protocolVersion: 24,
   workspaceId: "workspace-test",
   models: [
     { provider: "opencode-go", id: "glm", name: "GLM", reasoning: true, enabled: true },

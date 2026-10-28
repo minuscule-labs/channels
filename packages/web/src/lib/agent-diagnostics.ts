@@ -1,6 +1,6 @@
 import { LocalControlClientError } from "@minu/channels-control/client";
 
-export type AgentSessionAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
+export type AgentSessionAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "stop-runtime" | "restart-runtime" | "cancel";
 
 /** Pending lifecycle requests, kept separate from observed Runtime activity. */
 export interface PendingAgentActions {
@@ -29,6 +29,8 @@ export function agentActionLabel(action: AgentSessionAction): string {
     case "replace": return "New session with context";
     case "replace-fresh": return "Fresh session";
     case "stop": return "Stop agent";
+    case "stop-runtime": return "Stop runtime";
+    case "restart-runtime": return "Restart runtime";
     case "cancel": return "Cancel current";
   }
 }

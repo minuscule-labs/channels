@@ -92,6 +92,7 @@ export interface LocalControlBindingRecord {
   agentIdentityId: string;
   runtimeAdapter: string;
   runtimeSessionId: string;
+  runtimeOwnerId?: string;
   state: "connected" | "sleeping" | "waking" | "offline" | "replacing" | "stopping" | "paused" | "disabled";
   wakePolicy: LocalWakePolicy;
   lastVerifiedAt?: string;
@@ -112,6 +113,7 @@ export interface LocalControlRuntimeSessionCapabilities {
 }
 
 export interface LocalControlRuntimePort {
+  forceStopManaged?(managedSessionId: string, ownerId: string): Promise<void>;
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
   inspectSessionProfile?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   sessionCapabilities?(
@@ -146,6 +148,7 @@ export interface LocalControlAgentLifecyclePort {
     agentIdentityId: string,
     actorIdentityId: string,
   ): Promise<void>;
+  recoverConversationAgent?(conversationId: string, agentIdentityId: string, actorIdentityId: string, restart: boolean): Promise<void>;
   reconnectConversationAgent?(
     conversationId: string,
     agentIdentityId: string,
@@ -764,6 +767,9 @@ export class LocalControlService {
         // Shared request admission and the host binding fence isolate this target;
         // a Conversation-wide fence would also reject unrelated participants.
         await lifecycle.stopConversationAgent(conversationId, id, actorIdentityId); break;
+      case "stop-runtime": case "restart-runtime":
+        if (!lifecycle.recoverConversationAgent) throw new LocalConfigurationRequestError("Runtime recovery unavailable", 404, "unavailable");
+        await lifecycle.recoverConversationAgent(conversationId, id, actorIdentityId, input.action === "restart-runtime"); break;
       case "cancel": await lifecycle.cancelCurrentConversationAgent(conversationId, id, actorIdentityId); break;
       case "reconnect":
         if (!lifecycle.reconnectConversationAgent) throw new LocalConfigurationRequestError("Agent reconnect unavailable", 404, "unavailable");
@@ -803,6 +809,23 @@ export class LocalControlService {
   }
 
   private async presentAgent(
+    conversation: ConversationMetadata,
+    identityId: string,
+    membershipStatus: "active" | "disabled" | undefined,
+    records: LocalControlBindingRecord[],
+  ): Promise<LocalConversationAgent> {
+    const agent = await this.presentAgentStatus(conversation, identityId, membershipStatus, records);
+    const matches = records.filter(record => record.agentIdentityId === identityId);
+    const target = matches.length === 1 ? matches[0] : undefined;
+    if (membershipStatus !== "disabled" && agent.state !== "starting" && target?.state !== "disabled"
+      && target?.runtimeOwnerId && this.options.lifecycle?.available && this.options.lifecycle.recoverConversationAgent
+      && this.options.runtimes[target.runtimeAdapter]?.forceStopManaged) {
+      return { ...agent, capabilities: { ...agent.capabilities, recover: true } };
+    }
+    return agent;
+  }
+
+  private async presentAgentStatus(
     conversation: ConversationMetadata,
     identityId: string,
     membershipStatus: "active" | "disabled" | undefined,

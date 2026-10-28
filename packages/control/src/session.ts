@@ -19,6 +19,8 @@ export type LocalControlAuditAction =
   | "agent.session.resumed"
   | "agent.session.replaced"
   | "agent.session.stopped"
+  | "agent.runtime.stopped"
+  | "agent.runtime.restarted"
   | "agent.session.reconnected"
   | "agent.turn.cancel.requested"
   | "agent.diagnostic.opened"

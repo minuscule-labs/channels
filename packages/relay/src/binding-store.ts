@@ -275,7 +275,7 @@ export interface RelayBindingStore extends RelayCursorStore {
   beginStopBinding(
     bindingId: string,
     expectedGeneration: number,
-    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing">,
+    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing" | "paused">,
     updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined>;
   pauseBinding(
@@ -842,7 +842,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   async beginStopBinding(
     bindingId: string,
     expectedGeneration: number,
-    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing">,
+    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing" | "paused">,
     updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
@@ -1123,6 +1123,8 @@ export type RestoreBindingOutcome =
   | "runtime_uncertain";
 
 export interface RestoreConversationBindingsOptions {
+  /** Recovery must not attach a replacement generation that appeared after its stop fence. */
+  expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "runtimeSessionId" | "runtimeOwnerId">;
   client: ConversationClient;
   store: RelayBindingStore;
   conversationId: string;
@@ -1315,6 +1317,12 @@ export async function restoreConversationBindings(
   try {
     for (const candidate of candidates) {
     if (options.bindingIds && !options.bindingIds.includes(candidate.id)) continue;
+    const expected = options.expectedBinding;
+    if (expected && (candidate.id !== expected.id || candidate.generation !== expected.generation
+      || candidate.runtimeSessionId !== expected.runtimeSessionId || candidate.runtimeOwnerId !== expected.runtimeOwnerId)) {
+      outcomes.set(candidate.id, "invalid_binding");
+      continue;
+    }
     if (candidate.state === "disabled" || candidate.state === "stopping"
       || (candidate.state === "paused" && !options.resumePaused)) continue;
     const timestamp = now();
@@ -1461,7 +1469,7 @@ export async function restoreConversationBindings(
         let resumed: { id: string; ownerId: string };
         try {
           resumed = await withRuntimeTimeout(
-            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId),
+            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId, { allowStopped: true }),
             resumeTimeoutMs,
             "Runtime session resume",
           );
