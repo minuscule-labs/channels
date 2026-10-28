@@ -4,6 +4,7 @@ import type {
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
+  LocalAgentActionInput, LocalAgentActionReceipt,
   LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails,
   LocalBulkAgentLifecycleResponse,
   LocalConversationAgent,
@@ -81,6 +82,22 @@ export class LocalControlClient {
 
   async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
     return this.get<LocalConversationAgentsResponse>(`/local/conversations/${encodeURIComponent(conversationId)}/agents`);
+  }
+
+  async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
+    return (await this.request<{ agent: LocalConversationAgent }>(`/local/conversations/${encodeURIComponent(conversationId)}/agents/${encodeURIComponent(identityId)}`)).agent;
+  }
+
+  async submitAgentAction(conversationId: string, input: LocalAgentActionInput): Promise<LocalAgentActionReceipt> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agent-actions`, { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async agentAction(conversationId: string, requestId: string, signal?: AbortSignal): Promise<LocalAgentActionReceipt> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agent-actions/${encodeURIComponent(requestId)}`, { signal });
+  }
+
+  async pendingAgentActions(conversationId: string, signal?: AbortSignal): Promise<{ actions: LocalAgentActionReceipt[] }> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/agent-actions`, { signal });
   }
 
   async listConversationTurnFailures(conversationId: string, limit?: number): Promise<LocalConversationTurnFailuresResponse> {

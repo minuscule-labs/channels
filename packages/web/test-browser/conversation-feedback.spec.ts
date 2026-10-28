@@ -1,6 +1,7 @@
-import type { LocalConversationAgent } from "@minu/channels-control/contracts";
+import type { LocalBulkAgentLifecycleResponse, LocalConversationAgent } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, CreateMessageInput, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { mockActionRequests } from "./agent-action-fixtures";
 
 const conversationsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const fixtureBase = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
@@ -57,9 +58,9 @@ async function startAll(page: Page) {
   await page.getByRole("button", { name: "Start eligible agents (1)" }).click();
 }
 
-function bulkResponse(data: Fixture) {
+function bulkResponse(data: Fixture): LocalBulkAgentLifecycleResponse {
   return {
-    protocolVersion: 20,
+    protocolVersion: 23,
     conversationId: data.primary.id,
     results: [
       { identityId: data.agent.id, outcome: "failed" },
@@ -73,7 +74,7 @@ for (const mobile of [false, true]) {
     if (mobile) await page.setViewportSize({ width: 390, height: 844 });
     const data = await fixture(request);
     await mockAgents(page, data);
-    await page.route(`**/local/conversations/${data.primary.id}/agents/start-all`, (route) => route.fulfill({ json: bulkResponse(data) }));
+    await mockActionRequests(page, data.primary.id, { onSubmit: () => ({ state: "succeeded", results: bulkResponse(data).results }) });
     await launch(page, request, data);
     if (mobile) await page.getByRole("button", { name: "Show participants" }).click();
     await startAll(page);
@@ -103,60 +104,41 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
   const data = await fixture(request);
   let state: LocalConversationAgent["state"] = "unbound";
   await mockAgents(page, data, () => state);
-  let fail = true;
-  let calls = 0;
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/start`, async (route) => {
-    calls += 1;
-    if (fail) return route.fulfill({ status: 503, json: { error: "Start unavailable" } });
-    await gate;
-    state = "idle";
-    await route.fulfill({ json: { agent: localAgent(data, state) } });
-  });
+  const requests = await mockActionRequests(page, data.primary.id, { reject: { status: 409, error: "Start unavailable" } });
   await launch(page, request, data);
   const actions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
   const start = page.getByRole("button", { name: "Start agent", exact: true });
-  await expect(page.getByRole("button", { name: `Start ${data.agent.displayName}`, exact: true })).toHaveCount(0);
   await expect(start).toHaveCount(0);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    await actions.click();
-    await start.click();
-    await expect(page.getByRole("alert")).toContainText("Start unavailable");
-    await page.getByRole("button", { name: "Dismiss agent action error" }).click();
-    await expect(page.getByRole("alert")).toHaveCount(0);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await actions.click(); await start.click();
+    const issue = page.getByRole("button", { name: `View issue details for ${data.agent.displayName}` });
+    await expect(issue).toContainText("Action rejected");
+    await page.getByRole("button", { name: `Dismiss action notice for ${data.agent.displayName}` }).click();
+    await expect(issue).toHaveCount(0);
     await expect(actions).toBeEnabled();
   }
-  fail = false;
-  await actions.click();
-  await start.click();
+  requests.reject();
+  await actions.click(); await start.click();
   await expect(start).toHaveCount(0);
-  await expect(actions).toBeEnabled();
   await actions.click();
   await expect(start).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Details & diagnostics", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Details", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Refresh status", exact: true })).toBeEnabled();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Open participant actions" }).click();
   await expect(page.getByRole("button", { name: "Start eligible agents (1)" })).toBeDisabled();
   await page.keyboard.press("Escape");
-  release();
+  state = "idle"; requests.complete();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-  await expect(actions).toBeEnabled();
-  await actions.click();
-  await expect(start).toHaveCount(0);
-  expect(calls).toBe(3);
+  await actions.click(); await expect(start).toHaveCount(0);
+  expect(requests.calls).toHaveLength(3);
 });
 
 test("offers fresh context isolation when initially starting an unbound agent", async ({ page, request }) => {
   const data = await fixture(request);
   let state: LocalConversationAgent["state"] = "unbound";
-  let contextMode: unknown;
   await mockAgents(page, data, () => state);
-  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/start`, async (route) => {
-    contextMode = route.request().postDataJSON()?.contextMode;
-    state = "idle";
-    await route.fulfill({ json: { agent: localAgent(data, state) } });
-  });
+  const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
   await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeVisible();
@@ -166,19 +148,14 @@ test("offers fresh context isolation when initially starting an unbound agent", 
   await expect(confirmation).toContainText("excludes all earlier Conversation messages");
   await confirmation.getByRole("button", { name: "Fresh session", exact: true }).click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-  expect(contextMode).toBe("fresh");
+  expect(requests.calls[0]).toMatchObject({ action: "start-fresh", identityId: data.agent.id });
 });
 
 test("Start agent resumes an intentionally stopped session without confirmation", async ({ page, request }) => {
   const data = await fixture(request);
   let state: LocalConversationAgent["state"] = "stopped";
-  let contextMode: unknown;
   await mockAgents(page, data, () => state);
-  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/start`, async (route) => {
-    contextMode = route.request().postDataJSON()?.contextMode;
-    state = "idle";
-    await route.fulfill({ json: { agent: localAgent(data, state) } });
-  });
+  const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
   const start = page.getByRole("button", { name: "Start agent", exact: true });
@@ -187,7 +164,7 @@ test("Start agent resumes an intentionally stopped session without confirmation"
   await start.click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  expect(contextMode).toBe("with_context");
+  expect(requests.calls[0]).toMatchObject({ action: "start", identityId: data.agent.id });
 });
 
 for (const initialState of ["disabled", "offline"] as const) {
@@ -195,14 +172,7 @@ for (const initialState of ["disabled", "offline"] as const) {
     const data = await fixture(request);
     let state: LocalConversationAgent["state"] = initialState;
     await mockAgents(page, data, () => state);
-    let calls = 0;
-    let fail = true;
-    await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/replace`, (route) => {
-      calls += 1;
-      if (fail) return route.fulfill({ status: 503, json: { error: "Restart unavailable" } });
-      state = "idle";
-      return route.fulfill({ json: { agent: localAgent(data, state) } });
-    });
+    const requests = await mockActionRequests(page, data.primary.id, { reject: { status: 409, error: "Restart unavailable" }, onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
     await launch(page, request, data);
     const actions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
     const openConfirmation = async () => {
@@ -216,7 +186,7 @@ for (const initialState of ["disabled", "offline"] as const) {
     await expect(confirmation).toContainText("does not resume the current transcript");
     await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(actions).toBeFocused();
-    expect(calls).toBe(0);
+    expect(requests.calls).toHaveLength(0);
     await openConfirmation();
     await confirmation.getByRole("button", { name: "New session with context", exact: true }).click();
     await expect(confirmation.getByRole("alert")).toContainText("Restart unavailable");
@@ -225,28 +195,19 @@ for (const initialState of ["disabled", "offline"] as const) {
     await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await openConfirmation();
-    fail = false;
+    requests.reject();
     await confirmation.getByRole("button", { name: "New session with context", exact: true }).click();
     await expect(confirmation).toHaveCount(0);
     await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
-    expect(calls).toBe(2);
+    expect(requests.calls).toHaveLength(2);
   });
 }
 
-test("clears channel feedback on navigation and ignores a late bulk response from the previous chat", async ({ page, request }) => {
+test("clears Conversation feedback on navigation and ignores a late bulk completion from the previous chat", async ({ page, request }) => {
   const data = await fixture(request);
   await mockAgents(page, data);
-  let fail = false;
   let delay = false;
-  let calls = 0;
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  await page.route(`**/local/conversations/${data.primary.id}/agents/start-all`, async (route) => {
-    calls += 1;
-    if (fail) return route.fulfill({ status: 503, json: { error: "Bulk unavailable" } });
-    if (delay) await gate;
-    await route.fulfill({ json: bulkResponse(data) });
-  });
+  const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => delay ? {} : { state: "succeeded", results: bulkResponse(data).results } });
   await launch(page, request, data);
   const results = page.getByRole("status").filter({ hasText: "Bulk action complete" });
   const navigate = async (conversation: ConversationMetadata) => {
@@ -255,27 +216,19 @@ test("clears channel feedback on navigation and ignores a late bulk response fro
     await expect(results).toHaveCount(0);
     await expect(page.getByRole("alert")).toHaveCount(0);
   };
-  await startAll(page);
-  await expect(results).toBeVisible();
-  await navigate(data.alternate);
-  await navigate(data.primary);
-  fail = true;
+  await startAll(page); await expect(results).toBeVisible();
+  await navigate(data.alternate); await navigate(data.primary);
+  requests.reject({ status: 409, error: "Bulk unavailable" });
   await startAll(page);
   await expect(page.getByRole("alert")).toContainText("Bulk unavailable");
   await page.getByRole("button", { name: "Dismiss bulk action error" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await startAll(page);
-  await expect(page.getByRole("alert")).toBeVisible();
+  await startAll(page); await expect(page.getByRole("alert")).toBeVisible();
+  await navigate(data.alternate); await navigate(data.primary);
+  requests.reject(); delay = true;
+  await startAll(page); await expect.poll(() => requests.calls.length).toBe(4);
   await navigate(data.alternate);
-  await navigate(data.primary);
-  fail = false;
-  delay = true;
-  await startAll(page);
-  await expect.poll(() => calls).toBe(4);
-  await navigate(data.alternate);
-  const response = page.waitForResponse((incoming) => incoming.url().endsWith(`/conversations/${data.primary.id}/agents/start-all`));
-  release();
-  await response;
+  requests.complete({ results: bulkResponse(data).results });
   await expect(results).toHaveCount(0);
   await navigate(data.primary);
 });

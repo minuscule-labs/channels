@@ -105,7 +105,6 @@ export function ParticipantActionsMenu({
             sideOffset={6}
             className="z-50 min-w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none"
           >
-            {pending ? <p className="max-w-64 px-2.5 py-2 text-xs text-[var(--muted)]">An agent action is pending. Details remain available.</p> : null}
             {onStart ? (
               <button
                 type="button"
@@ -128,7 +127,7 @@ export function ParticipantActionsMenu({
                 Stop active agents ({stopEligible})
               </button>
             ) : null}
-            {onViewDiagnostics ? <button type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]" onClick={viewDiagnostics}>View diagnostics</button> : null}
+            {onViewDiagnostics ? <button type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]" onClick={viewDiagnostics}>View details</button> : null}
           </Popover.Content>
         </Popover.Portal>
       </Popover.Root>
@@ -150,7 +149,6 @@ export function ParticipantActionsMenu({
           <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
             Active work will be interrupted and queued turns discarded. External tool or filesystem effects cannot be rolled back.
           </Dialog.Description>
-          {busy ? <p className="mt-3 text-xs text-[var(--muted)]">Closing this dialog does not cancel the operation.</p> : null}
           {error ? <ErrorNotice className="mt-3" onDismiss={() => {
             setError(undefined);
             onDismissError?.();
@@ -159,7 +157,7 @@ export function ParticipantActionsMenu({
             <Dialog.Close asChild>
               <button ref={cancelRef} type="button" className="button-secondary">{busy ? "Close" : "Cancel"}</button>
             </Dialog.Close>
-            {busy && onViewDiagnostics ? <button type="button" className="button-secondary" onClick={viewDiagnostics}>View diagnostics</button> : null}
+            {busy && onViewDiagnostics ? <button type="button" className="button-secondary" onClick={viewDiagnostics}>View details</button> : null}
             <button
               type="button"
               className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded border border-[var(--danger)] px-3 text-xs font-semibold text-[var(--danger)] hover:bg-[var(--danger)]/10 disabled:cursor-not-allowed disabled:opacity-50"

@@ -9,6 +9,8 @@ import { ConversationClient, createConversationHttpServer } from "@minu/channels
 import { InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { DiagnosticJournal, DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import { LocalAgentHost, type ManagedRuntimeStartConfig } from "../src/agent-host.ts";
+import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
+import { LocalControlService } from "../src/server.ts";
 import { DiagnosticRecorder } from "../src/diagnostics-recorder.ts";
 import { createLocalControlDaemon } from "../src/daemon.ts";
 import type { LifecycleDiagnostics } from "../src/lifecycle-diagnostics.ts";
@@ -44,7 +46,8 @@ class ObservedFakeRuntime {
     this.sessions.get(id)!.ownerId = ownerId;
     return { id, ownerId };
   }
-  async status(id: string) { return this.sessions.get(id)?.status ?? "offline" as const; }
+  unreachable = new Set<string>();
+  async status(id: string) { return this.unreachable.has(id) ? "offline" as const : this.sessions.get(id)?.status ?? "offline" as const; }
   setWorking(id: string) { this.sessions.get(id)!.status = "working"; }
   async messages(id: string) { return this.sessions.get(id)?.messages ?? []; }
   async send(id: string, _input: string) {
@@ -76,7 +79,7 @@ class ObservedFakeRuntime {
     this.destructions.push(id); this.sessions.delete(id);
   }
 }
-async function fixture(diagnostics?: LifecycleDiagnostics) {
+async function fixture(diagnostics?: LifecycleDiagnostics, store: InMemoryRelayBindingStore | DrizzleLibSqlRelayStorage = new InMemoryRelayBindingStore()) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-lifecycle-observation-")));
   const server = await createConversationHttpServer({ port: 0 });
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -86,7 +89,6 @@ async function fixture(diagnostics?: LifecycleDiagnostics) {
   await client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" });
   await client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "builder" });
   const conversation = await client.createConversation({ workspaceId: workspace.id, participantIds: [owner.id, agent.id] });
-  const store = new InMemoryRelayBindingStore();
   const now = new Date().toISOString();
   await store.putWorkspaceConfig({ workspaceId: workspace.id, rootUri: directory, createdAt: now, updatedAt: now });
   await store.putAgentConfig({ id: "fixture-config", workspaceId: workspace.id, agentIdentityId: agent.id, runtimeAdapter: "fake",
@@ -487,7 +489,7 @@ test("real worker records lifecycle outcomes and daemon journal failure cannot p
       const publicHistory = await (await fetch(`${diagnosticBase}/operations`, { headers: readHeaders })).json() as {
         protocolVersion: number; coverage: string; operations: Array<{ operationId: string }>;
       };
-      assert.equal(publicHistory.protocolVersion, 22);
+      assert.equal(publicHistory.protocolVersion, 23);
       assert.equal(publicHistory.coverage, broken ? "unavailable" : "available");
       const selectedId = publicHistory.operations[0]?.operationId ?? "operation-unrecorded";
       const report = await fetch(`${diagnosticBase}/diagnostic-report?operationId=${selectedId}`, { headers: readHeaders });
@@ -506,4 +508,109 @@ test("real worker records lifecycle outcomes and daemon journal failure cannot p
       assert.equal(f.runtime.starts, 1);
     } finally { await daemon?.close(); await f.close(); }
   }
+});
+
+
+test("individual Stop leaves another participant usable through real host admission without bypassing Conversation fences", async () => {
+  const { f, agents, conversation } = await bulkFixture(undefined, 2);
+  const other = agents[1]!;
+  const control = new LocalControlService({
+    conversations: f.client, bindings: f.store, runtimes: { fake: f.runtime }, lifecycle: f.host,
+    configuration: new LocalAgentHostConfiguration({ client: f.client, store: f.store }),
+  });
+  let stopping: ReturnType<typeof control.stopConversationAgent> | undefined;
+  try {
+    await f.host.startConversationAgent(conversation.id, f.agent.id, f.owner.id);
+    const original = (await f.store.listConversationBindings(conversation.id))[0]!;
+    f.runtime.setWorking(original.runtimeSessionId);
+    f.runtime.interruptGate = gate();
+    // The legacy and receipt APIs must share participant-scoped admission all
+    // the way through the real host, not just a fake lifecycle port.
+    stopping = control.stopConversationAgent(conversation.id, f.agent.id, f.owner.id);
+    await until(() => f.runtime.interrupts === 1);
+    await assert.rejects(control.submitAgentAction(conversation.id, f.owner.id,
+      { requestId: "overlapping-stop", action: "stop", identityId: f.agent.id }), /already pending/);
+    await assert.rejects(control.submitAgentAction(conversation.id, f.owner.id,
+      { requestId: "overlapping-bulk", action: "stop-all" }), /already pending/);
+    for (const action of ["start", "replace-fresh"] as const) {
+      const requestId = `other-${action}`;
+      await control.submitAgentAction(conversation.id, f.owner.id, { requestId, action, identityId: other.id });
+      await until(async () => (await control.readAgentAction(conversation.id, f.owner.id, requestId)).state !== "pending");
+      const receipt = await control.readAgentAction(conversation.id, f.owner.id, requestId);
+      assert.equal(receipt.state, "succeeded", receipt.error);
+      assert.equal(f.host.isAttached(conversation.id, other.id), true);
+      assert.equal((await f.store.getBinding(original.id))!.state, "stopping");
+    }
+    const release = f.host.fenceConversationAdmission(conversation.id);
+    try {
+      await assert.rejects(control.startConversationAgent(conversation.id, other.id, f.owner.id), /Conversation lifecycle transition/);
+    } finally { release(); }
+    f.runtime.interruptGate.release();
+    await stopping;
+    const stopped = (await f.store.getBinding(original.id))!;
+    assert.equal(stopped.state, "paused");
+    assert.equal(stopped.generation, original.generation);
+    assert.equal(stopped.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(f.host.isAttached(conversation.id, f.agent.id), false);
+    assert.equal(f.host.isAttached(conversation.id, other.id), true);
+  } finally { f.runtime.interruptGate?.release(); await stopping?.catch(() => undefined); await f.close(); }
+});
+
+test("Fresh-session rejection and post-commit uncertainty stay distinct without a diagnostic recorder", async () => {
+  const f = await fixture();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    f.runtime.setWorking(original.runtimeSessionId);
+    await assert.rejects(f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh"),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.actionOutcome === "failed");
+    assert.equal(f.runtime.starts, 1);
+    assert.equal((await f.store.getBinding(original.id))!.generation, original.generation);
+    await f.runtime.interrupt(original.runtimeSessionId);
+    f.runtime.unreachable.add("fake-session-2");
+    await assert.rejects(f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh"),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.actionOutcome === "unconfirmed");
+    assert.equal(f.runtime.starts, 2);
+    assert.equal((await f.store.getBinding(original.id))!.generation, original.generation + 1);
+  } finally { await f.close(); }
+});
+
+test("requesting Fresh start for a paused participant never resumes its old transcript", async () => {
+  const f = await fixture();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    await f.host.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    await assert.rejects(f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh"), /Fresh session replacement/);
+    assert.equal(f.runtime.starts, 1);
+    assert.equal((await f.store.listConversationBindings(f.conversation.id))[0]!.state, "paused");
+    await f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+    assert.equal(f.runtime.starts, 2);
+    assert.equal((await f.store.listSessionHistory(f.conversation.id, f.agent.id)).find(record => record.state === "active")!.contextMode, "fresh");
+  } finally { await f.close(); }
+});
+
+
+for (const persistent of [false, true]) test(`an explicit Stop retry verifies the same fenced session without resuming or replacing it (${persistent ? "SQLite" : "memory"})`, async () => {
+  const databaseDirectory = await mkdtemp(join(tmpdir(), "channels-stop-retry-"));
+  const store = persistent ? await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(databaseDirectory, "relay.db")) }) : new InMemoryRelayBindingStore();
+  const f = await fixture(undefined, store);
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    f.runtime.setWorking(original.runtimeSessionId);
+    f.runtime.interruptFailure = true;
+    await assert.rejects(f.host.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id),
+      (error: unknown) => error instanceof LocalConfigurationRequestError && error.actionOutcome === "unconfirmed");
+    assert.equal((await f.store.getBinding(original.id))!.state, "stopping");
+    assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+    f.runtime.interruptFailure = false;
+    await f.host.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const stopped = (await f.store.getBinding(original.id))!;
+    assert.equal(stopped.state, "paused");
+    assert.equal(stopped.generation, original.generation);
+    assert.equal(stopped.runtimeSessionId, original.runtimeSessionId);
+    assert.equal(f.runtime.starts, 1);
+    assert.equal(f.runtime.interrupts, 2);
+    assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+  } finally { await f.close(); await rm(databaseDirectory, { recursive: true, force: true }); }
 });

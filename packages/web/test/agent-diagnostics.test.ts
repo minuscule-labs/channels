@@ -9,13 +9,13 @@ describe("browser-only agent inspection", () => {
     ["stop", "Stop agent"], ["cancel", "Cancel current"],
   ])("labels %s without claiming host acceptance", (action, label) => {
     expect(agentActionLabel(action)).toBe(label);
-    expect(pendingAgentInspection("agent", { individual: { action, identityId: "agent", requestedAt: 123 } }))
+    expect(pendingAgentInspection("agent", { individuals: new Map([["agent", { action, identityId: "agent", requestedAt: 123 }]]) }))
       .toEqual({ label, requestedAt: 123 });
   });
 
   test("does not attribute another participant's request or an untargeted bulk request", () => {
     const pending: PendingAgentActions = {
-      individual: { action: "stop", identityId: "one", requestedAt: 10 },
+      individuals: new Map([["one", { action: "stop", identityId: "one", requestedAt: 10 }]]),
       bulk: { action: "start", requestedAt: 20, identityIds: new Set(["two"]) },
     };
     expect(pendingAgentInspection("one", pending)).toEqual({ label: "Stop agent", requestedAt: 10 });

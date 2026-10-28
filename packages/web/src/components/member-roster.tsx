@@ -2,13 +2,12 @@ import type {
   LocalBulkAgentLifecycleResult,
   LocalConversationAgent,
   LocalSessionContextMode,
-  LocalTurnFailureDiagnostic,
 } from "@minu/channels-control/contracts";
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { AlertCircle, CheckCircle, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, EllipsisVertical, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { activityLabel, elapsedLabel, runtimeStateLabel, runtimeStatusTone } from "../lib/participant-status";
-import { participantLabel } from "../lib/participants";
+import { participantDiagnosticsHref, participantLabel } from "../lib/participants";
 import { pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions } from "../lib/agent-diagnostics";
 import { shortId } from "../lib/messages";
 import { queuedTurnsSummary } from "./conversation-activity-strip";
@@ -56,9 +55,11 @@ export function MemberRoster({
   bulkResultsExpanded = true,
   onToggleBulkResults,
   onDismissBulkResults,
-  participantActionError,
+  participantActionErrors,
   bulkActionError,
-  turnFailures,
+  onRefreshParticipant,
+  refreshingParticipants,
+  participantSnapshot,
   diagnosticScope,
   onViewMessage,
 }: {
@@ -79,7 +80,10 @@ export function MemberRoster({
   onStopAgent?(identityId: string): void | Promise<unknown>;
   onStartAllAgents?(): void | Promise<void>;
   onStopAllAgents?(): Promise<void>;
-  onDismissAgentError?(): void;
+  onDismissAgentError?(identityId: string): void;
+  onRefreshParticipant?(identityId: string): void | Promise<void>;
+  refreshingParticipants?: ReadonlySet<string>;
+  participantSnapshot?(identityId: string): AgentDiagnosticsSnapshot;
   onDismissBulkError?(): void;
   pendingActions?: PendingAgentActions;
   diagnosticsSnapshot?: AgentDiagnosticsSnapshot;
@@ -88,9 +92,8 @@ export function MemberRoster({
   bulkResultsExpanded?: boolean;
   onToggleBulkResults?(): void;
   onDismissBulkResults?(): void;
-  participantActionError?: { identityId: string; message: string };
+  participantActionErrors?: ReadonlyMap<string, { message: string; unconfirmed: boolean; requestId: string }>;
   bulkActionError?: string;
-  turnFailures?: readonly LocalTurnFailureDiagnostic[];
 }) {
   const bulkResultsId = useId();
   const [minimized, setMinimized] = useState(() => {
@@ -118,14 +121,14 @@ export function MemberRoster({
   useEffect(() => {
     if (!selectedParticipant) setDetailsOpen(false);
   }, [selectedParticipant]);
-  const actionErrorFor = (identityId: string) => participantActionError?.identityId === identityId
-    ? participantActionError.message
+  const actionErrorFor = (identityId: string) => participantActionErrors?.has(identityId)
+    ? participantActionErrors.get(identityId)!.message
     : bulkResults?.some((result) => result.identityId === identityId && result.outcome === "failed")
       ? `Bulk ${bulkResultAction ?? "agent"} action failed.` : undefined;
   const [now, setNow] = useState(() => Date.now());
   const agentValues = [...(localAgents?.values() ?? [])];
   const hasActivity = agentValues.some((agent) => agent.activity);
-  const hasPendingAction = Boolean(pendingActions.individual || pendingActions.bulk);
+  const hasPendingAction = Boolean(pendingActions.individuals?.size || pendingActions.bulk);
   const openBulkDiagnostics = (trigger: HTMLElement | null) => {
     const participant = visibleParticipants.find(({ id }) => pendingActions.bulk?.identityIds.has(id))
       ?? visibleParticipants.find(({ type }) => type === "agent");
@@ -138,7 +141,7 @@ export function MemberRoster({
       startEligible={startEligible}
       stopEligible={stopEligible}
       pendingAction={pendingActions.bulk?.action}
-      disabled={Boolean(pendingActions.individual)}
+      disabled={Boolean(pendingActions.individuals?.size)}
       onViewDiagnostics={visibleParticipants.some(({ type }) => type === "agent") ? openBulkDiagnostics : undefined}
       onStart={onStartAllAgents}
       onStop={onStopAllAgents}
@@ -251,6 +254,7 @@ export function MemberRoster({
             ? runtimeStatusTone(localAgent)
             : participant.status === "disabled" ? "inactive" : "unknown";
           const actionError = actionErrorFor(participant.id);
+          const actionUnconfirmed = participantActionErrors?.get(participant.id)?.unconfirmed ?? Boolean(actionError);
           const dot = <span role="img" aria-label={`${label}: ${status}`} title={status} className="participant-status-dot absolute -bottom-0.5 -right-0.5 ring-2 ring-[var(--panel)]" data-tone={tone} />;
           const avatar = <span data-participant-avatar className="avatar relative h-8 w-8 shrink-0">
             <span aria-hidden="true">{(participant.displayName ?? participant.handle ?? "?").slice(0, 1).toUpperCase()}</span>{dot}
@@ -266,15 +270,19 @@ export function MemberRoster({
               {!minimized && pendingInspection ? <p aria-label="Pending participant action" className="mt-1 pl-10 text-[11px] text-[var(--muted)]">
                 Pending: {pendingInspection.label} · {elapsedLabel(new Date(pendingInspection.requestedAt).toISOString(), now)}
               </p> : null}
-              {!minimized && actionError ? <button
+              {!minimized && actionError ? <div className="mt-1 flex items-start gap-1 pl-10"><button
                 type="button"
-                className="participant-issue-notice mt-1 flex min-h-6 items-center gap-1.5 pl-10 text-left text-[11px] font-medium hover:underline"
+                className="participant-issue-notice flex min-h-6 min-w-0 flex-1 items-center gap-1.5 text-left text-[11px] font-medium hover:underline"
+                style={actionUnconfirmed ? { color: "var(--warning)" } : undefined}
                 aria-label={`View issue details for ${label}`}
                 onClick={(event) => openDetails(participant.id, event.currentTarget)}
               >
                 <AlertCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
-                <span>Participant action failed · View details</span>
-              </button> : null}
+                <span>{actionUnconfirmed ? "Outcome unconfirmed" : "Action rejected"}</span>
+              </button><button type="button" className="icon-button inline-flex shrink-0" aria-label={`Dismiss action notice for ${label}`} onClick={() => {
+                if (participantActionErrors?.has(participant.id)) onDismissAgentError?.(participant.id);
+                else onDismissBulkResults?.();
+              }}><X className="h-3.5 w-3.5" /></button></div> : null}
               {!minimized && phase && localAgent?.activity ? <p className="mt-1 pl-10 text-[11px] text-[var(--muted)]">
                 <span aria-live="polite">{phase}</span> · {elapsedLabel(localAgent.activity.startedAt, now)}{queuedTurnsSummary(localAgent.activity) ? ` · ${queuedTurnsSummary(localAgent.activity)}` : ""}
               </p> : null}
@@ -291,14 +299,21 @@ export function MemberRoster({
               canReplace={!readOnly && Boolean(localAgent?.capabilities.replace && onReplaceAgent)}
               canCancel={!readOnly && Boolean(localAgent?.capabilities.interrupt && onCancelAgent)}
               canStop={!readOnly && Boolean(localAgent?.capabilities.stop && onStopAgent)}
-              pendingAction={pendingActions.individual?.identityId === participant.id ? pendingActions.individual.action : undefined}
-              actionsDisabled={hasPendingAction}
+              pendingAction={pendingActions.individuals?.get(participant.id)?.action}
+              actionsDisabled={Boolean(pendingActions.bulk || pendingActions.individuals?.has(participant.id))}
+              onRefresh={participant.type === "agent" && onRefreshParticipant ? () => onRefreshParticipant(participant.id) : undefined}
+              refreshing={refreshingParticipants?.has(participant.id)}
+              diagnosticsHref={diagnosticScope && participant.type === "agent" ? participantDiagnosticsHref(diagnosticScope.workspaceId, diagnosticScope.conversationId, participant.id) : undefined}
               onStart={onStartAgent ? (contextMode) => onStartAgent(participant.id, contextMode) : undefined}
               onReconnect={onReconnectAgent ? () => onReconnectAgent(participant.id) : undefined}
               onReplace={onReplaceAgent ? (contextMode) => onReplaceAgent(participant.id, contextMode) : undefined}
               onCancel={onCancelAgent ? () => onCancelAgent(participant.id) : undefined}
               onStop={onStopAgent ? () => onStopAgent(participant.id) : undefined}
-              onDismissError={onDismissAgentError}
+              hasError={Boolean(actionError)}
+              onDismissError={() => {
+                if (participantActionErrors?.has(participant.id)) onDismissAgentError?.(participant.id);
+                else onDismissBulkResults?.();
+              }}
             />;
           }
         })}
@@ -313,7 +328,7 @@ export function MemberRoster({
         diagnosticScope={diagnosticScope}
         onViewMessage={onViewMessage}
         pendingAction={pendingAgentInspection(selectedParticipant.id, pendingActions)}
-        diagnosticsSnapshot={diagnosticsSnapshot}
+        diagnosticsSnapshot={participantSnapshot?.(selectedParticipant.id) ?? diagnosticsSnapshot}
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
         onCloseAutoFocus={(event) => {
@@ -322,7 +337,12 @@ export function MemberRoster({
           if (target?.isConnected) target.focus();
         }}
         actionError={actionErrorFor(selectedParticipant.id) ?? bulkActionError}
-        failures={turnFailures?.filter(({ participant }) => participant.identityId === selectedParticipant.id)}
+        actionUnconfirmed={participantActionErrors?.get(selectedParticipant.id)?.unconfirmed ?? Boolean(actionErrorFor(selectedParticipant.id))}
+        onDismissError={() => {
+          if (participantActionErrors?.has(selectedParticipant.id)) onDismissAgentError?.(selectedParticipant.id);
+          else if (actionErrorFor(selectedParticipant.id)) onDismissBulkResults?.();
+          else onDismissBulkError?.();
+        }}
       /> : null}
     </aside>
   );
