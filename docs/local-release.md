@@ -32,25 +32,11 @@ Choose the first Workspace source folder in browser onboarding. Passing an absol
 
 Installing from a release tarball is supported. Installing directly from a Git branch or repository checkout is not a release installation because it may require source build tools and sibling repositories.
 
-## Configure Pi integrations
+## API access and service environment
 
-Pi extensions are opt-in host configuration, separate from per-agent Skills. Create `pi-runtime.json` in the selected product data directory (`~/.minu/channels` by default; `~/.minu/channels-dev` for `pnpm dev`):
+For an authorized API workflow, Skills can guide HTTP requests through the agent's existing shell tools. Required credentials must be available to the actual Channels service process; selecting a Skill does not provide credentials, and terminal exports do not automatically reach the background service. Do not store credentials in repository files or public configuration.
 
-```json
-{
-  "extensionPaths": ["/absolute/path/to/integration.ts"]
-}
-```
-
-Keep the file owned by your user with owner-only permissions (`chmod 600 ~/.minu/channels/pi-runtime.json`). It must be a regular file, not a symlink, and no larger than 64 KiB. Only `extensionPaths` is accepted: at most 100 unique absolute extension file/directory paths or Pi `builtin:<name>` identifiers. Do not put credentials in this file. A missing default file, `{}`, or an empty list disables extensions; an unreadable or invalid configuration stops startup rather than silently dropping the selection.
-
-The foreground launcher accepts `minu-channels run --pi-config /absolute/path/to/config.json`. For disposable live review, use `--live-pi --pi-config /absolute/path/to/config.json` with the review launcher. Disposable review does not inherit the installed product's integration configuration. The macOS `start`/`restart` commands always use the file in their selected `--data-dir`; a foreground `--pi-config` override is not saved into the service registration.
-
-The list applies to all agents using that process's Pi adapter, including capability discovery and newly launched/resumed workers. It is not per-agent selection or a security sandbox. Extensions execute trusted code with the host's permissions and must work over headless RPC. Automatic extension discovery remains disabled. Enabling `builtin:mcp` uses Pi's own enabled-server configuration; this extension list is not an MCP server allowlist.
-
-After editing the file, restart Channels (use `minu-channels restart --when-idle` for an active service). Already-live Runtime workers are unchanged: use a new agent session, or suspend/resume the worker, to load the new configuration. Reconnect alone does not replace its tool set. Skills remain independent; startup/resume is rejected if an extension introduces skills outside an explicit agent skill selection.
-
-Integration credentials must be available to the **service process**, not only an interactive terminal. Channels does not copy shell credentials into this configuration or the LaunchAgent. Each integration and external service still enforce their own permissions; shell access with credentials may allow access independently of whether its extension is loaded. Configuration paths and contents are not added to browser responses or Conversation metadata.
+Pi extension loading is disabled. The former `pi-runtime.json` configuration and `--pi-config` override are no longer supported; existing files are not read or deleted. This does not remove Skills or change inherited environment handling.
 
 ## Inspect the installation
 
