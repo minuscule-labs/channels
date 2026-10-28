@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.22
+
+Release overview: [Simpler API workflows without extension configuration](docs/releases/v0.0.22.md).
+
+- Remove explicit Pi extension loading, including `pi-runtime.json` and `--pi-config`. Existing extension configuration files are no longer read and are not deleted; removed CLI overrides are rejected.
+- Pin Runtime's extension-removal commit `815f1fa3f9c73d573ce69d2c11142c70b3f40ffc`. Automatic extension discovery stays disabled; Skills, inherited environment handling, managed sessions, image input and diagnostics are preserved.
+- Keep custom API workflows independent of native extensions. This does not provision service credentials, authorize automatic API fallback, add secret storage, or change database schemas/local-control protocol.
+
 ## 0.0.21
 
 Release overview: [Stable text selection and quieter polling](docs/releases/v0.0.21.md).
