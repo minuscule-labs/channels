@@ -28,9 +28,9 @@ export function agentActionLabel(action: AgentSessionAction): string {
     case "reconnect": return "Reconnect";
     case "replace": return "New session with context";
     case "replace-fresh": return "Fresh session";
-    case "stop": return "Stop agent";
-    case "stop-runtime": return "Stop runtime";
-    case "restart-runtime": return "Restart runtime";
+    case "stop": return "Pause agent";
+    case "stop-runtime": return "Stop agent";
+    case "restart-runtime": return "Restart agent";
     case "cancel": return "Cancel current";
   }
 }

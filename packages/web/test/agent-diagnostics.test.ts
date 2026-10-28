@@ -6,7 +6,7 @@ describe("browser-only agent inspection", () => {
   test.each<[AgentSessionAction, string]>([
     ["start", "Start agent"], ["start-fresh", "Fresh session"], ["reconnect", "Reconnect"],
     ["replace", "New session with context"], ["replace-fresh", "Fresh session"],
-    ["stop", "Stop agent"], ["cancel", "Cancel current"],
+    ["stop", "Pause agent"], ["stop-runtime", "Stop agent"], ["restart-runtime", "Restart agent"], ["cancel", "Cancel current"],
   ])("labels %s without claiming host acceptance", (action, label) => {
     expect(agentActionLabel(action)).toBe(label);
     expect(pendingAgentInspection("agent", { individuals: new Map([["agent", { action, identityId: "agent", requestedAt: 123 }]]) }))
@@ -18,7 +18,7 @@ describe("browser-only agent inspection", () => {
       individuals: new Map([["one", { action: "stop", identityId: "one", requestedAt: 10 }]]),
       bulk: { action: "start", requestedAt: 20, identityIds: new Set(["two"]) },
     };
-    expect(pendingAgentInspection("one", pending)).toEqual({ label: "Stop agent", requestedAt: 10 });
+    expect(pendingAgentInspection("one", pending)).toEqual({ label: "Pause agent", requestedAt: 10 });
     expect(pendingAgentInspection("two", pending)).toEqual({ label: "Bulk Start eligible agents", requestedAt: 20 });
     expect(pendingAgentInspection("three", pending)).toBeUndefined();
     expect(pendingAgentInspection("one", {})).toBeUndefined();

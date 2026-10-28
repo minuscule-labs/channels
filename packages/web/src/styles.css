@@ -62,6 +62,39 @@ button { color: inherit; }
   margin-inline: auto;
 }
 a { color: inherit; text-decoration: none; }
+.message-markdown a { color: var(--accent); }
+
+.action-menu {
+  z-index: 60;
+  min-width: 10rem;
+  max-width: calc(100vw - 1.5rem);
+  max-height: var(--radix-dropdown-menu-content-available-height);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--panel);
+  padding: 0.25rem;
+  color: var(--text);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 20%);
+}
+.action-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  cursor: default;
+  user-select: none;
+  outline: none;
+}
+.action-menu-item[data-highlighted],
+.action-menu-item[data-state="open"] { background: var(--hover); }
+.action-menu-item[data-disabled] { opacity: 0.5; pointer-events: none; }
+.action-menu-item[data-tone="danger"] { color: var(--danger); }
+.action-menu-item[data-tone="warning"] { color: var(--warning); }
+.action-menu-separator { height: 1px; margin: 0.25rem -0.25rem; background: var(--border); }
 
 .icon-button {
   min-width: 2.25rem;

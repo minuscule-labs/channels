@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import * as Popover from "@radix-ui/react-popover";
-import { EllipsisVertical, LoaderCircle, Play, Square } from "lucide-react";
+import { EllipsisVertical, LoaderCircle } from "lucide-react";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu";
 import { useRef, useState } from "react";
 import { ErrorNotice } from "./ui/error-notice";
 
@@ -32,6 +32,7 @@ export function ParticipantActionsMenu({
   const submission = useRef(false);
   const confirmationVersion = useRef(0);
   const openingDetails = useRef(false);
+  const openingSurface = useRef(false);
   const busy = pendingAction !== undefined || submitting;
   const pending = disabled || busy;
   const closeConfirmation = () => {
@@ -40,6 +41,7 @@ export function ParticipantActionsMenu({
   };
   const viewDiagnostics = () => {
     openingDetails.current = confirmOpen;
+    openingSurface.current = true;
     closeConfirmation();
     setMenuOpen(false);
     onViewDiagnostics?.(triggerRef.current);
@@ -57,6 +59,7 @@ export function ParticipantActionsMenu({
   const openStopConfirmation = () => {
     if (pending || submission.current) return;
     confirmationVersion.current += 1;
+    openingSurface.current = true;
     setMenuOpen(false);
     setError(undefined);
     setConfirmOpen(true);
@@ -87,8 +90,11 @@ export function ParticipantActionsMenu({
         if (!open) closeConfirmation();
       }}
     >
-      <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
-        <Popover.Trigger asChild>
+      <DropdownMenu open={menuOpen} onOpenChange={(open) => {
+        if (open) openingSurface.current = false;
+        setMenuOpen(open);
+      }}>
+        <DropdownMenuTrigger asChild>
           <button
             ref={triggerRef}
             type="button"
@@ -98,39 +104,21 @@ export function ParticipantActionsMenu({
           >
             <EllipsisVertical className="h-4 w-4" />
           </button>
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Content
-            align="end"
-            sideOffset={6}
-            className="z-50 min-w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none"
-          >
-            {onStart ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={startEligible === 0 || pending}
-                onClick={start}
-              >
-                {pendingAction === "start" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                Start eligible agents ({startEligible})
-              </button>
-            ) : null}
-            {onStop ? (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm text-[var(--danger)] hover:bg-[var(--hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={stopEligible === 0 || pending}
-                onClick={openStopConfirmation}
-              >
-                <Square className="h-4 w-4" />
-                Stop active agents ({stopEligible})
-              </button>
-            ) : null}
-            {onViewDiagnostics ? <button type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)]" onClick={viewDiagnostics}>View details</button> : null}
-          </Popover.Content>
-        </Popover.Portal>
-      </Popover.Root>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+          if (openingSurface.current) event.preventDefault();
+          openingSurface.current = false;
+        }}>
+          {onStart ? (
+            <DropdownMenuItem disabled={startEligible === 0 || pending} onSelect={start}>Start eligible agents ({startEligible})</DropdownMenuItem>
+          ) : null}
+          {onViewDiagnostics ? <DropdownMenuItem onSelect={viewDiagnostics}>View details</DropdownMenuItem> : null}
+          {onStop ? <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem tone="danger" disabled={stopEligible === 0 || pending} onSelect={openStopConfirmation}>Stop active agents ({stopEligible})</DropdownMenuItem>
+          </> : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <Dialog.Content
