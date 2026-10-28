@@ -15,7 +15,7 @@ Receipts are **in-process**, independent of the optional diagnostic journal. The
 
 ## Safe recovery
 
-A completed or rejected action releases its controls. Unconfirmed partial changes remain subject to the existing binding, generation, membership, idle-work and Runtime checks; no blanket force-enable is added. An explicit Stop retry may reuse an existing `stopping` fence, verify/interrupt that same Runtime session, then commit the pause. It never reacquires a delivery lease or automatically resumes/replaces the session. Unreachable work remains unconfirmed and fenced.
+A completed or rejected action releases its controls. Unconfirmed partial changes remain subject to the existing binding, generation, membership, idle-work and Runtime checks; no blanket force-enable is added. An explicit legacy pause (`stop`) retry may reuse an existing `stopping` fence, verify/interrupt that same Runtime session, then commit the pause. It never reacquires a delivery lease or automatically resumes/replaces the session. Unreachable work remains unconfirmed and fenced.
 
 A successful per-participant Refresh adds or replaces that participant's cached snapshot without discarding other participants. Multiple participants remain recoverable even if the collection status read stays unavailable.
 
@@ -25,11 +25,13 @@ Action notices can be dismissed from expanded rows, details, or the minimized pa
 
 ## Manual Runtime recovery
 
-**Stop runtime** and **Restart runtime** are distinct from **Stop agent** (which pauses routing but may retain a live worker). They remain available for an exact owner-scoped managed binding even when status is uncertain, including sleeping/unattached and previously fenced sessions. They use the same authenticated owner/admin receipt, participant admission and pending-operation guards as ordinary lifecycle actions; archived Conversations remain read-only.
+Participant menus have three compact groups: **Agent**, **New session**, and **Inspect**. Under Agent, **Stop agent** shuts down the worker and **Restart agent** reopens the same saved transcript. Their internal receipt actions remain `stop-runtime` and `restart-runtime`; the implementation detail is not part of the menu labels. When managed shutdown is unavailable, the legacy delivery-only `stop` action is labelled **Pause agent**, never displayed alongside the supported full Stop action.
+
+Stop and Restart remain available for an exact owner-scoped managed binding even when status is uncertain, including sleeping/unattached and previously fenced sessions. They use the same authenticated owner/admin receipt, participant admission and pending-operation guards as ordinary lifecycle actions; archived Conversations remain read-only. Inspect remains accessible while lifecycle actions are pending, and new-session replacement stays separate.
 
 Recovery first durably fences delivery and detaches the old route. Runtime stops the exact worker without requiring healthy status or native RPC, confirms process exit, and preserves the managed identity and transcript. New POSIX workers use dedicated process groups; a verified unresponsive worker can be escalated from TERM to KILL without signalling a shared controller/terminal group. Legacy workers receive only verified worker-targeted TERM, with observed descendant exit required. A dead legacy bridge without process-group or previously confirmed suspension evidence cannot authorize a new writer; unverifiable shutdown remains unconfirmed.
 
-A persisted Runtime recovery fence also rejects delayed automatic resumes. Only an explicit Start/Restart can clear it. Stop leaves the binding paused; Restart reopens the same saved transcript, binding generation, context policy and activation boundary, after rechecking authority. Neither action creates a fresh session or reapplies saved future launch settings. Like Stop agent, queued work through the confirmed stop boundary is discarded; later messages wait for explicit resume. Tool/filesystem side effects are not rolled back.
+A persisted Runtime recovery fence also rejects delayed automatic resumes. Only an explicit Start/Restart can clear it. Stop leaves the binding paused; Restart reopens the same saved transcript, binding generation, context policy and activation boundary, after rechecking authority. Neither action creates a fresh session or reapplies saved future launch settings. As with the legacy pause, queued work through the confirmed stop boundary is discarded; later messages wait for explicit resume. Tool/filesystem side effects are not rolled back.
 
 Failure to confirm shutdown leaves delivery fenced and never launches a second worker. Failed transcript validation/resume preserves the paused binding and resume material, rather than silently replacing it. Existing bounded automatic verification/reattachment is unchanged; automatic termination, replacement and policy changes are outside this manual-recovery increment.
 

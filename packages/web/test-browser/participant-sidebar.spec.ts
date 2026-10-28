@@ -1,3 +1,4 @@
+import { openParticipantSection } from "./participant-menu";
 import type { LocalConversationAgent } from "@minu/channels-control/contracts";
 import type { ConversationMetadata } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
@@ -59,14 +60,15 @@ async function expectInactiveIndicator(locator: Locator) {
 }
 async function details(page: Page, name: string) {
   await page.getByRole("button", { name: `Open actions for ${name}`, exact: true }).click();
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await openParticipantSection(page, "Inspect");
+  await page.getByRole("menuitem", { name: "Details", exact: true }).click();
   return page.getByRole("dialog", { name: `Details for ${name}`, exact: true });
 }
 
 for (const minimized of [false, true]) for (const action of ["stop-runtime", "restart-runtime"] as const) {
   test(`uncertain participants offer confirmed ${action} with pending guards (minimized=${minimized})`, async ({ page, request }) => {
     const data = await fixture(request);
-    const label = action === "stop-runtime" ? "Stop runtime" : "Restart runtime";
+    const label = action === "stop-runtime" ? "Stop agent" : "Restart agent";
     let view = agentView(data, "uncertain");
     view.capabilities.recover = true;
     await mockAgent(page, data, () => view);
@@ -74,28 +76,150 @@ for (const minimized of [false, true]) for (const action of ["stop-runtime", "re
     await page.addInitScript(value => localStorage.setItem("minu-channels:participants-minimized", String(value)), minimized);
     await launch(page, request, data);
     await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-    await expect(page.getByRole("button", { name: "Start agent", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Fresh session", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Stop runtime", exact: true })).toBeEnabled();
-    await expect(page.getByRole("button", { name: "Restart runtime", exact: true })).toBeEnabled();
-    await page.getByRole("button", { name: label, exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Fresh session", exact: true })).toHaveCount(0);
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: "Stop agent", exact: true })).toBeEnabled();
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: "Restart agent", exact: true })).toBeEnabled();
+    await page.getByRole("menuitem", { name: label, exact: true }).click();
     const confirmation = page.getByRole("dialog", { name: `${label} for ${data.agent.displayName}?`, exact: true });
     await expect(confirmation.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
     expect(actions.calls).toHaveLength(0);
     await confirmation.getByRole("button", { name: label, exact: true }).click();
     await expect(confirmation).toHaveCount(0);
     await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-    await expect(page.getByRole("button", { name: "Stop runtime", exact: true })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Restart runtime", exact: true })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Details", exact: true })).toBeEnabled();
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: "Stop agent", exact: true })).toBeDisabled();
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: "Restart agent", exact: true })).toBeDisabled();
+    await openParticipantSection(page, "Inspect");
+    await expect(page.getByRole("menuitem", { name: "Details", exact: true })).toBeEnabled();
     expect(actions.calls).toHaveLength(1);
     expect(actions.calls[0]).toMatchObject({ action, identityId: data.agent.id });
     view = { ...view, state: action === "stop-runtime" ? "stopped" : "idle" };
     actions.complete();
-    await expect(page.getByRole("button", { name: label, exact: true })).toBeEnabled();
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: label, exact: true })).toBeEnabled();
     expect(actions.calls).toHaveLength(1);
   });
 }
+
+for (const mobile of [false, true]) test(`Runtime menu has grouped actions and a collision-safe new-session flyout (${mobile ? "mobile" : "desktop"})`, async ({ page, request }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+  const data = await fixture(request);
+  const view = agentView(data);
+  view.capabilities = { ...view.capabilities, replace: true, stop: true, recover: true, interrupt: true };
+  await mockAgent(page, data, () => view);
+  const actions = await mockActionRequests(page, data.primary.id);
+  await launch(page, request, data);
+  if (mobile) await page.getByRole("button", { name: "Show participants" }).click();
+  const trigger = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true });
+  const row = (await trigger.boundingBox())!;
+  await trigger.click();
+  const root = page.getByRole("menu", { name: `Open actions for ${data.agent.displayName}`, exact: true });
+  await expect(root.getByRole("menuitem")).toHaveText(["Agent", "New session", "Inspect"]);
+  await openParticipantSection(page, "Agent");
+  await expect(page.getByRole("menuitem", { name: "Restart agent", exact: true })).toBeVisible();
+  await openParticipantSection(page, "Agent");
+  await expectTokenColor(page.getByRole("menuitem", { name: "Stop agent", exact: true }), "color", "--danger");
+  await expect(page.getByRole("menuitem", { name: "Pause agent", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: /runtime/i })).toHaveCount(0);
+  await expect(page.getByRole("separator").first()).toBeVisible();
+  if (!mobile) {
+    const boxes = await Promise.all((await page.getByRole("menu").all()).map(menu => menu.boundingBox()));
+    const left = Math.max(0, Math.min(...boxes.map(box => box!.x), row.x) - 16);
+    const top = Math.max(0, row.y - 52);
+    const right = Math.min(page.viewportSize()!.width, Math.max(...boxes.map(box => box!.x + box!.width), row.x + row.width) + 16);
+    const bottom = Math.max(...boxes.map(box => box!.y + box!.height), row.y + row.height) + 16;
+    await page.screenshot({ path: test.info().outputPath("agent-menu.png"), clip: { x: left, y: top, width: right - left, height: bottom - top } });
+  }
+  const submenu = page.getByRole("menuitem", { name: "New session", exact: true });
+  if (mobile) await submenu.click(); else await submenu.hover();
+  const context = page.getByRole("menuitem", { name: "New session with context", exact: true });
+  await expect(context).toBeVisible();
+  await openParticipantSection(page, "New session");
+  await expect(page.getByRole("menuitem", { name: "Fresh session", exact: true })).toBeVisible();
+  if (!mobile) { await context.hover(); await expect(context).toBeVisible(); }
+  for (const menu of await page.getByRole("menu").all()) {
+    const box = (await menu.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+  await test.info().attach("runtime-menu", { body: await page.screenshot(), contentType: "image/png" });
+  expect(actions.calls).toHaveLength(0);
+  await context.click();
+  const confirmation = page.getByRole("dialog", { name: `Start a new session with context for ${data.agent.displayName}?`, exact: true });
+  await expect(confirmation.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  expect(actions.calls).toHaveLength(0);
+  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(trigger).toBeFocused();
+});
+
+test("Runtime menu supports keyboard flyouts, Escape focus restoration and read-only refresh", async ({ page, request }) => {
+  const data = await fixture(request);
+  const view = agentView(data); view.capabilities.replace = true;
+  await mockAgent(page, data, () => view);
+  const actions = await mockActionRequests(page, data.primary.id);
+  await launch(page, request, data);
+  const trigger = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true });
+  await trigger.focus(); await trigger.press("Enter");
+  const submenu = page.getByRole("menuitem", { name: "New session", exact: true });
+  await expect(submenu).toBeFocused();
+  await submenu.press("ArrowRight");
+  await expect(page.getByRole("menuitem", { name: "New session with context", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await openParticipantSection(page, "New session");
+  await expect(page.getByRole("menuitem", { name: "Fresh session", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowLeft"); await expect(submenu).toBeFocused();
+  await page.keyboard.press("Escape"); await expect(trigger).toBeFocused();
+  await trigger.press("Enter");
+  await openParticipantSection(page, "Inspect");
+  await page.getByRole("menuitem", { name: "Refresh status", exact: true }).click();
+  await expect(page.getByRole("menu", { name: "Inspect", exact: true })).toBeVisible();
+  expect(actions.calls).toHaveLength(0);
+});
+
+test.describe("Touch Runtime menu", () => {
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  test("tap opens the flyout and preserves fresh-session confirmation", async ({ page, request }) => {
+    await page.emulateMedia({ colorScheme: "dark" });
+    const data = await fixture(request);
+    const view = agentView(data); view.capabilities.replace = true; view.capabilities.recover = true;
+    await mockAgent(page, data, () => view);
+    const actions = await mockActionRequests(page, data.primary.id);
+    await launch(page, request, data);
+    await page.getByRole("button", { name: "Show participants" }).tap();
+    await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).tap();
+    await openParticipantSection(page, "Agent");
+    await expectTokenColor(page.getByRole("menuitem", { name: "Stop agent", exact: true }), "color", "--danger");
+    await page.getByRole("menuitem", { name: "New session", exact: true }).tap();
+    await openParticipantSection(page, "New session");
+    await page.getByRole("menuitem", { name: "Fresh session", exact: true }).tap();
+    const confirmation = page.getByRole("dialog", { name: `Start a fresh session for ${data.agent.displayName}?`, exact: true });
+    await expect(confirmation).toBeVisible(); expect(actions.calls).toHaveLength(0);
+    await confirmation.getByRole("button", { name: "Fresh session", exact: true }).tap();
+    await expect.poll(() => actions.calls.length).toBe(1);
+    expect(actions.calls[0]).toMatchObject({ action: "replace-fresh", identityId: data.agent.id });
+  });
+});
+
+test("keyboard activation of Start agent submits only the existing lifecycle intent", async ({ page, request }) => {
+  const data = await fixture(request);
+  await mockAgent(page, data, () => agentView(data, "unbound"));
+  const actions = await mockActionRequests(page, data.primary.id);
+  await launch(page, request, data);
+  const trigger = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true });
+  await trigger.focus(); await trigger.press("Enter");
+  const agent = page.getByRole("menuitem", { name: "Agent", exact: true });
+  await expect(agent).toBeFocused(); await agent.press("ArrowRight");
+  const start = page.getByRole("menuitem", { name: "Start agent", exact: true });
+  await expect(start).toBeFocused(); await start.press("Enter");
+  await expect.poll(() => actions.calls.length).toBe(1);
+  expect(actions.calls[0]).toMatchObject({ action: "start", identityId: data.agent.id });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
 
 test("compact rows use Runtime colors, preserve live activity, and move secondary details into a modal", async ({ page, request }) => {
   const data = await fixture(request);
@@ -180,7 +304,8 @@ test("a failed participant action gets an inline red issue description and viewa
   await mockActionRequests(page, data.primary.id, { reject: { status: 409, error: "Start failed for sidebar fixture" } });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  await openParticipantSection(page, "Agent");
+  await page.getByRole("menuitem", { name: "Start agent", exact: true }).click();
   const issue = page.getByRole("button", { name: `View issue details for ${data.agent.displayName}`, exact: true });
   await expectTokenColor(issue, "color", "--danger");
   await expect(page.getByRole("button", { name: /^View errors/ })).toHaveCount(0);
@@ -193,11 +318,13 @@ test("a failed participant action gets an inline red issue description and viewa
   await page.getByRole("button", { name: `Dismiss action notice for ${data.agent.displayName}`, exact: true }).click();
   await expect(issue).toHaveCount(0);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  await openParticipantSection(page, "Agent");
+  await page.getByRole("menuitem", { name: "Start agent", exact: true }).click();
   await expect(issue).toBeVisible();
   await page.getByRole("button", { name: "Minimize participants", exact: true }).click();
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Dismiss action notice", exact: true }).click();
+  await openParticipantSection(page, "Inspect");
+  await page.getByRole("menuitem", { name: "Dismiss action notice", exact: true }).click();
   await page.getByRole("button", { name: "Expand participants", exact: true }).click();
   await expect(issue).toHaveCount(0);
 });
@@ -250,11 +377,12 @@ test("details remain available in read-only Conversations without enabling sessi
   await launch(page, request, data);
   await expect(page.getByText("This Conversation is archived and read-only.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await expect(page.getByRole("button", { name: "New session with context", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Stop agent", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Stop runtime", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Restart runtime", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "New session", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Pause agent", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Stop agent", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Restart agent", exact: true })).toHaveCount(0);
+  await openParticipantSection(page, "Inspect");
+  await page.getByRole("menuitem", { name: "Details", exact: true }).click();
   await expect(page.getByRole("dialog", { name: `Details for ${data.agent.displayName}`, exact: true })).toContainText("Not started");
 });
 
@@ -293,9 +421,9 @@ const pendingScenarios = [
   { label: "Reconnect", state: "disconnected", action: "reconnect", minimized: true },
   { label: "New session with context", state: "idle", action: "replace", confirmation: "Start a new session with context for" },
   { label: "Fresh session", state: "idle", action: "replace-fresh", confirmation: "Start a fresh session for" },
-  { label: "Stop agent", state: "running", action: "stop", confirmation: "Stop" },
+  { label: "Pause agent", state: "running", action: "stop", confirmation: "Pause" },
   { label: "Cancel current", state: "running", action: "cancel" },
-  { label: "Stop agent", state: "running", action: "stop", confirmation: "Stop", fail: true },
+  { label: "Pause agent", state: "running", action: "stop", confirmation: "Pause", fail: true },
 ] satisfies Array<{ label: string; state: LocalConversationAgent["state"]; action: string; confirmation?: string; mobile?: boolean; minimized?: boolean; fail?: boolean }>;
 
 for (const scenario of pendingScenarios) test(`inspects self and others during accepted ${scenario.label} from ${scenario.state}${scenario.fail ? " with late rejection" : ""}`, async ({ page, request }) => {
@@ -310,7 +438,9 @@ for (const scenario of pendingScenarios) test(`inspects self and others during a
   if (scenario.minimized) await page.getByRole("button", { name: "Minimize participants" }).click();
   const trigger = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true });
   await trigger.click();
-  const actionButton = page.getByRole("button", { name: scenario.label, exact: true });
+  const newSession = scenario.action === "start-fresh" || scenario.action === "replace" || scenario.action === "replace-fresh";
+  await openParticipantSection(page, newSession ? "New session" : "Agent");
+  const actionButton = page.getByRole("menuitem", { name: scenario.label, exact: true });
   await actionButton.evaluate(button => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
   if (scenario.confirmation) {
     const confirmation = page.getByRole("dialog", { name: `${scenario.confirmation} ${data.agent.displayName}?`, exact: true });
@@ -326,15 +456,19 @@ for (const scenario of pendingScenarios) test(`inspects self and others during a
   await modal.getByRole("button", { name: "Close participant details" }).click();
   await expect(trigger).toBeFocused();
   await trigger.press("Enter");
-  await expect(page.getByRole("button", { name: scenario.label, exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Refresh status", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Details", exact: true })).toBeEnabled();
+  if (!newSession) await openParticipantSection(page, "Agent");
+  await expect(page.getByRole("menuitem", { name: newSession ? "New session" : scenario.label, exact: true })).toBeDisabled();
+  await openParticipantSection(page, "Inspect");
+  await expect(page.getByRole("menuitem", { name: "Refresh status", exact: true })).toBeEnabled();
+  await openParticipantSection(page, "Inspect");
+  await expect(page.getByRole("menuitem", { name: "Details", exact: true })).toBeEnabled();
   await page.keyboard.press("Escape");
   const otherModal = await details(page, other.displayName!);
   await expect(otherModal.getByRole("region", { name: "Pending participant action" })).toHaveCount(0);
   await otherModal.getByRole("button", { name: "Close participant details" }).click();
   await page.getByRole("button", { name: `Open actions for ${other.displayName}`, exact: true }).click();
-  await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeEnabled();
+  await openParticipantSection(page, "Agent");
+  await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeEnabled();
   await page.keyboard.press("Escape");
   modal = await details(page, data.agent.displayName!);
   view = { ...view, state: scenario.action === "stop" ? "stopped" : "idle" };
@@ -355,7 +489,7 @@ for (const action of ["start", "stop"] as const) test(`inspects participants dur
   await launch(page, request, data);
   if (action === "stop") await page.getByRole("button", { name: "Show participants" }).click();
   await page.getByRole("button", { name: "Open participant actions" }).click();
-  await page.getByRole("button", { name: action === "start" ? /^Start eligible agents/ : /^Stop active agents/ }).click();
+  await page.getByRole("menuitem", { name: action === "start" ? /^Start eligible agents/ : /^Stop active agents/ }).click();
   if (action === "stop") {
     const confirmation = page.getByRole("dialog", { name: "Stop active agents?", exact: true });
     await confirmation.getByRole("button", { name: "Stop active agents", exact: true }).click();
@@ -365,8 +499,10 @@ for (const action of ["start", "stop"] as const) test(`inspects participants dur
   await expect(modal.getByRole("region", { name: "Pending participant action" })).toContainText(`Bulk ${action === "start" ? "Start eligible" : "Stop active"} agents`);
   await modal.getByRole("button", { name: "Close participant details" }).click();
   await page.getByRole("button", { name: `Open actions for ${other.displayName}`, exact: true }).click();
-  await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Refresh status", exact: true })).toBeEnabled();
+  await openParticipantSection(page, "Agent");
+  await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeDisabled();
+  await openParticipantSection(page, "Inspect");
+  await expect(page.getByRole("menuitem", { name: "Refresh status", exact: true })).toBeEnabled();
   await page.keyboard.press("Escape");
   await details(page, data.agent.displayName!);
   view = { ...view, state: action === "start" ? "idle" : "stopped" };
@@ -415,7 +551,8 @@ test("polls receipts slowly when idle, quickly while pending, and pauses while h
   await page.clock.fastForward(5_000);
   expect(receiptReads).toBe(1);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  await openParticipantSection(page, "Agent");
+  await page.getByRole("menuitem", { name: "Start agent", exact: true }).click();
   const modal = await details(page, data.agent.displayName!);
   await expect(modal.getByRole("region", { name: "Pending participant action" })).toBeVisible();
   const pendingReads = receiptReads;
@@ -468,7 +605,8 @@ test("accepted timing passes 30 seconds without a false failure and Refresh neve
   const actions = await mockActionRequests(page, data.primary.id);
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Start agent", exact: true }).click();
+  await openParticipantSection(page, "Agent");
+  await page.getByRole("menuitem", { name: "Start agent", exact: true }).click();
   const modal = await details(page, data.agent.displayName!);
   await page.clock.fastForward(31_400);
   await expect(modal.getByRole("region", { name: "Pending participant action" })).toContainText("Start agent");
@@ -487,7 +625,9 @@ test("a lost acceptance response is reconciled without another Fresh-session req
   const actions = await mockActionRequests(page, data.primary.id, { loseAcceptance: true });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Fresh session", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New session", exact: true }).click();
+  await openParticipantSection(page, "New session");
+  await page.getByRole("menuitem", { name: "Fresh session", exact: true }).click();
   const confirmation = page.getByRole("dialog", { name: `Start a fresh session for ${data.agent.displayName}?`, exact: true });
   await confirmation.getByRole("button", { name: "Fresh session", exact: true }).click();
   await confirmation.getByRole("button", { name: /Cancel|Close/, exact: true }).click();
@@ -506,9 +646,10 @@ test("a late failure cannot contaminate controls in the next Conversation", asyn
   const actions = await mockActionRequests(page, data.primary.id);
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Stop agent", exact: true }).click();
-  const confirmation = page.getByRole("dialog", { name: `Stop ${data.agent.displayName}?`, exact: true });
-  await confirmation.getByRole("button", { name: "Stop agent", exact: true }).click();
+  await openParticipantSection(page, "Agent");
+  await page.getByRole("menuitem", { name: "Pause agent", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: `Pause ${data.agent.displayName}?`, exact: true });
+  await confirmation.getByRole("button", { name: "Pause agent", exact: true }).click();
   await expect(confirmation).toHaveCount(0);
   await page.getByRole("link", { name: new RegExp(`^${data.alternate.name}`) }).first().click();
   await expect(page.getByRole("heading", { name: `#${data.alternate.name}`, exact: true })).toBeVisible();
@@ -525,7 +666,7 @@ test("bulk failure remains inspectable and dismissible without reopening confirm
   const actions = await mockActionRequests(page, data.primary.id);
   await launch(page, request, data);
   await page.getByRole("button", { name: "Open participant actions" }).click();
-  await page.getByRole("button", { name: /^Stop active agents/ }).click();
+  await page.getByRole("menuitem", { name: /^Stop active agents/ }).click();
   const confirmation = page.getByRole("dialog", { name: "Stop active agents?", exact: true });
   await confirmation.getByRole("button", { name: "Stop active agents", exact: true }).click();
   await expect(confirmation).toHaveCount(0);
@@ -560,7 +701,8 @@ test("refresh recovers multiple participants while the collection status remains
     await modal.getByRole("button", { name: "Close participant details" }).click();
   }
   await page.getByRole("button", { name: `Open actions for ${other.displayName}`, exact: true }).click();
-  await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeEnabled();
+  await openParticipantSection(page, "Agent");
+  await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeEnabled();
   await page.keyboard.press("Escape");
   const first = await details(page, data.agent.displayName!);
   await expect(first.getByRole("region", { name: "Status freshness" })).toContainText("Idle");

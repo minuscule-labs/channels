@@ -2,7 +2,7 @@ import type { ConversationLifecycleState, ConversationMetadata, Workspace } from
 import { Link } from "@tanstack/react-router";
 import * as Popover from "@radix-ui/react-popover";
 import { useRef, useState } from "react";
-import { Archive, Bell, Bot, ChevronDown, Clock3, EllipsisVertical, Hash, MessageSquare, Settings, X } from "lucide-react";
+import { Archive, Bot, ChevronDown, Clock3, EllipsisVertical, Hash, MessageSquare, Settings, X } from "lucide-react";
 import type { NotificationSound } from "../lib/conversation-notifications";
 import { CreateConversationDialog, EditConversationParticipantsDialog } from "./conversation-administration-dialog";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
@@ -186,10 +186,12 @@ function ConversationNavigationLink({
   );
 }
 
-function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate }: {
+function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, onSoundChange }: {
   workspace: Workspace;
   activeAgents: boolean;
   onNavigate?(): void;
+  sound: NotificationSound;
+  onSoundChange?(sound: NotificationSound): void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -239,6 +241,8 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate }: {
       </Popover.Root>
       <WorkspaceSettingsDialog
         workspace={workspace}
+        sound={sound}
+        onSoundChange={onSoundChange}
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         trigger={null}
@@ -331,7 +335,7 @@ export function NavigationSidebar({
                       </h2>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <WorkspaceHeaderActions workspace={workspace} activeAgents={activeAgentsWorkspaceId === workspace.id} onNavigate={onNavigate} />
+                      <WorkspaceHeaderActions workspace={workspace} activeAgents={activeAgentsWorkspaceId === workspace.id} onNavigate={onNavigate} sound={sound} onSoundChange={onSoundChange} />
                     </div>
                   </div>
                   {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
@@ -400,24 +404,6 @@ export function NavigationSidebar({
           </div>
         </div>
       </nav>
-      {onSoundChange ? (
-        <div className="border-t border-[var(--border)] p-3">
-          <label className="flex items-center gap-2 text-xs text-[var(--muted)]">
-            <Bell className="h-3.5 w-3.5" />
-            <span>Sound</span>
-            <select
-              aria-label="Notification sound"
-              className="ml-auto bg-transparent text-xs text-[var(--text)]"
-              value={sound}
-              onChange={(event) => onSoundChange(event.target.value as NotificationSound)}
-            >
-              <option value="off">Off</option>
-              <option value="mentions">Mentions and agent replies</option>
-              <option value="all">All new messages</option>
-            </select>
-          </label>
-        </div>
-      ) : null}
     </aside>
   );
 }

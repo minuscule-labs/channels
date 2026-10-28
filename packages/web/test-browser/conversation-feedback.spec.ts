@@ -1,3 +1,4 @@
+import { openParticipantSection } from "./participant-menu";
 import type { LocalBulkAgentLifecycleResponse, LocalConversationAgent } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, CreateMessageInput, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
@@ -55,7 +56,7 @@ async function mockAgents(page: Page, data: Fixture, state: () => LocalConversat
 
 async function startAll(page: Page) {
   await page.getByRole("button", { name: "Open participant actions" }).click();
-  await page.getByRole("button", { name: "Start eligible agents (1)" }).click();
+  await page.getByRole("menuitem", { name: "Start eligible agents (1)" }).click();
 }
 
 function bulkResponse(data: Fixture): LocalBulkAgentLifecycleResponse {
@@ -91,7 +92,8 @@ for (const mobile of [false, true]) {
     await expect(page.getByRole("button", { name: `Start ${data.agent.displayName}`, exact: true })).toHaveCount(0);
     const agentActions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
     await agentActions.click();
-    await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeVisible();
+    await openParticipantSection(page, "Agent");
+    await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(agentActions).toBeFocused();
     // The next operation shows fresh feedback even after the previous panel was dismissed.
@@ -107,10 +109,11 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
   const requests = await mockActionRequests(page, data.primary.id, { reject: { status: 409, error: "Start unavailable" } });
   await launch(page, request, data);
   const actions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
-  const start = page.getByRole("button", { name: "Start agent", exact: true });
+  await openParticipantSection(page, "Agent");
+  const start = page.getByRole("menuitem", { name: "Start agent", exact: true });
   await expect(start).toHaveCount(0);
   for (let attempt = 0; attempt < 2; attempt++) {
-    await actions.click(); await start.click();
+    await actions.click(); await openParticipantSection(page, "Agent"); await start.click();
     const issue = page.getByRole("button", { name: `View issue details for ${data.agent.displayName}` });
     await expect(issue).toContainText("Action rejected");
     await page.getByRole("button", { name: `Dismiss action notice for ${data.agent.displayName}` }).click();
@@ -118,15 +121,18 @@ test("starts one agent from its popup, dismisses repeat errors, and guards pendi
     await expect(actions).toBeEnabled();
   }
   requests.reject();
-  await actions.click(); await start.click();
+  await actions.click(); await openParticipantSection(page, "Agent"); await start.click();
   await expect(start).toHaveCount(0);
   await actions.click();
+  await openParticipantSection(page, "Agent");
   await expect(start).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Details", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Refresh status", exact: true })).toBeEnabled();
+  await openParticipantSection(page, "Inspect");
+  await expect(page.getByRole("menuitem", { name: "Details", exact: true })).toBeEnabled();
+  await openParticipantSection(page, "Inspect");
+  await expect(page.getByRole("menuitem", { name: "Refresh status", exact: true })).toBeEnabled();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Open participant actions" }).click();
-  await expect(page.getByRole("button", { name: "Start eligible agents (1)" })).toBeDisabled();
+  await expect(page.getByRole("menuitem", { name: "Start eligible agents (1)" })).toBeDisabled();
   await page.keyboard.press("Escape");
   state = "idle"; requests.complete();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
@@ -141,9 +147,12 @@ test("offers fresh context isolation when initially starting an unbound agent", 
   const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
-  await expect(page.getByRole("button", { name: "Start agent", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Fresh session", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Fresh session", exact: true }).click();
+  await openParticipantSection(page, "Agent");
+  await expect(page.getByRole("menuitem", { name: "Start agent", exact: true })).toBeVisible();
+  await openParticipantSection(page, "New session");
+  await expect(page.getByRole("menuitem", { name: "Fresh session", exact: true })).toBeVisible();
+  await openParticipantSection(page, "New session");
+  await page.getByRole("menuitem", { name: "Fresh session", exact: true }).click();
   const confirmation = page.getByRole("dialog", { name: `Start a fresh session for ${data.agent.displayName}?` });
   await expect(confirmation).toContainText("excludes all earlier Conversation messages");
   await confirmation.getByRole("button", { name: "Fresh session", exact: true }).click();
@@ -158,9 +167,10 @@ test("Start agent resumes an intentionally stopped session without confirmation"
   const requests = await mockActionRequests(page, data.primary.id, { onSubmit: () => { state = "idle"; return { state: "succeeded" }; } });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` }).click();
-  const start = page.getByRole("button", { name: "Start agent", exact: true });
+  await openParticipantSection(page, "Agent");
+  const start = page.getByRole("menuitem", { name: "Start agent", exact: true });
   await expect(start).toBeVisible();
-  await expect(page.getByRole("button", { name: "New session with context", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New session", exact: true })).toBeVisible();
   await start.click();
   await expect(page.getByTitle("Runtime: Idle")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -177,10 +187,11 @@ for (const initialState of ["disabled", "offline"] as const) {
     const actions = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}` });
     const openConfirmation = async () => {
       await actions.click();
-      await expect(page.getByRole("button", { name: "New session with context", exact: true })).toBeVisible();
-      await page.getByRole("button", { name: "New session with context", exact: true }).click();
+      await expect(page.getByRole("menuitem", { name: "New session", exact: true })).toBeVisible();
+      await page.getByRole("menuitem", { name: "New session", exact: true }).click();
+      await page.getByRole("menuitem", { name: "New session with context", exact: true }).click();
     };
-    await expect(page.getByRole("button", { name: "New session with context", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "New session", exact: true })).toHaveCount(0);
     await openConfirmation();
     const confirmation = page.getByRole("dialog");
     await expect(confirmation).toContainText("does not resume the current transcript");

@@ -6,6 +6,7 @@ import { Check, FolderOpen, LoaderCircle, Settings, X } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import type { NotificationSound } from "../lib/conversation-notifications";
 import { ErrorNotice } from "./ui/error-notice";
 
 function ConfigurationState({ configured, label }: { configured: boolean; label: string }) {
@@ -174,12 +175,16 @@ export function WorkspaceSettingsDialog({
   onOpenChange,
   trigger,
   onCloseAutoFocus,
+  sound = "off",
+  onSoundChange,
 }: {
   workspace: Workspace;
   open?: boolean;
   onOpenChange?(open: boolean): void;
   trigger?: ReactNode | null;
   onCloseAutoFocus?(event: Event): void;
+  sound?: NotificationSound;
+  onSoundChange?(sound: NotificationSound): void;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -240,6 +245,24 @@ export function WorkspaceSettingsDialog({
               <p className="mb-4 text-[11px] text-[var(--muted)]">
                 Signed in as <strong className="font-mono text-[var(--text)]">@{currentMembership.mentionHandle}</strong> · {currentMembership.accessRole}
               </p>
+            ) : null}
+            {onSoundChange ? (
+              <section aria-label="Notifications" className="mb-4 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+                <h3 className="text-sm font-semibold">Notifications</h3>
+                <label className="mt-3 flex items-center gap-3 text-xs text-[var(--muted)]">
+                  <span>Notification sound</span>
+                  <select
+                    aria-label="Notification sound"
+                    className="ml-auto rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text)]"
+                    value={sound}
+                    onChange={(event) => onSoundChange(event.target.value as NotificationSound)}
+                  >
+                    <option value="off">Off</option>
+                    <option value="mentions">Mentions and agent replies</option>
+                    <option value="all">All new messages</option>
+                  </select>
+                </label>
+              </section>
             ) : null}
             {session.isPending || members.isPending || (session.isSuccess && configuration.isPending) ? (
               <div className="empty-state"><p>Loading Workspace configuration…</p></div>

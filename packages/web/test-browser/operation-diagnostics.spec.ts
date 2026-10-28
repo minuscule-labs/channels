@@ -1,3 +1,4 @@
+import { openParticipantSection } from "./participant-menu";
 import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
@@ -24,7 +25,8 @@ async function launch(page: Page, request: APIRequestContext, data: Fixture, act
 }
 async function open(page: Page, data: Fixture) {
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  const link = page.getByRole("link", { name: "Diagnostics", exact: true });
+  await openParticipantSection(page, "Inspect");
+  const link = page.getByRole("menuitem", { name: "Diagnostics", exact: true });
   if (await link.count()) await link.click();
   else await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}/participants/${data.agent.id}/diagnostics`);
   return page.getByRole("main", { name: "Participant diagnostics", exact: true });
@@ -525,13 +527,14 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   await launch(page, request, data);
   if (kind === "individual") {
     await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-    await page.getByRole("button", { name: "Stop agent", exact: true }).click();
+    await openParticipantSection(page, "Agent");
+    await page.getByRole("menuitem", { name: "Pause agent", exact: true }).click();
   } else {
     await page.getByRole("button", { name: "Open participant actions" }).click();
-    await page.getByRole("button", { name: /^Stop active agents/ }).click();
+    await page.getByRole("menuitem", { name: /^Stop active agents/ }).click();
   }
-  const confirmation = page.getByRole("dialog", { name: kind === "individual" ? `Stop ${data.agent.displayName}?` : "Stop active agents?", exact: true });
-  await confirmation.getByRole("button", { name: kind === "individual" ? "Stop agent" : "Stop active agents", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: kind === "individual" ? `Pause ${data.agent.displayName}?` : "Stop active agents?", exact: true });
+  await confirmation.getByRole("button", { name: kind === "individual" ? "Pause agent" : "Stop active agents", exact: true }).click();
   await expect(confirmation).toHaveCount(0);
   const surface = await open(page, data);
   await expect(surface).toContainText("Participant action pending");
@@ -555,7 +558,8 @@ test("minimized keyboard inspection restores focus and tabs do not share reports
   const trigger = page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true });
   await trigger.focus();
   await page.keyboard.press("Enter");
-  await page.getByRole("link", { name: "Diagnostics", exact: true }).focus();
+  await openParticipantSection(page, "Inspect");
+  await page.getByRole("menuitem", { name: "Diagnostics", exact: true }).focus();
   await page.keyboard.press("Enter");
   const modal = page.getByRole("main", { name: "Participant diagnostics", exact: true });
   await modal.getByRole("button", { name: "Preview report" }).click();
@@ -644,7 +648,8 @@ test("diagnostics opens in a separate tab without losing chat controls or issuin
   context.on("request", request => { if (request.method() !== "GET" && /\/local\/conversations\//.test(request.url())) mutations++; });
   await launch(page, request, data);
   await page.getByRole("button", { name: `Open actions for ${data.agent.displayName}`, exact: true }).click();
-  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await openParticipantSection(page, "Inspect");
+  await page.getByRole("menuitem", { name: "Details", exact: true }).click();
   const details = page.getByRole("dialog", { name: `Details for ${data.agent.displayName}`, exact: true });
   const opened = context.waitForEvent("page");
   await details.getByRole("link", { name: "Open diagnostics", exact: true }).click();
@@ -653,7 +658,7 @@ test("diagnostics opens in a separate tab without losing chat controls or issuin
     await expect(diagnostics.getByRole("main", { name: "Participant diagnostics", exact: true })).toBeVisible();
     await expect(diagnostics.getByRole("heading", { name: `Diagnostics for ${data.agent.displayName}`, exact: true })).toBeVisible();
     await expect(details).toBeVisible();
-    await expect(diagnostics.getByRole("button", { name: "Stop agent", exact: true })).toHaveCount(0);
+    await expect(diagnostics.getByRole("button", { name: "Pause agent", exact: true })).toHaveCount(0);
     await expect(diagnostics.getByRole("button", { name: "Fresh session", exact: true })).toHaveCount(0);
     expect(mutations).toBe(0);
   } finally { await diagnostics.close(); }

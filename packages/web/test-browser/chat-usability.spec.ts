@@ -29,6 +29,25 @@ async function peer(request: APIRequestContext, body: string, options = "") {
   expect((await request.post(`${fixtureBase}/peer-message?body=${encodeURIComponent(body)}${options}`)).ok()).toBe(true);
 }
 
+for (const colorScheme of ["dark", "light"] as const) {
+  test(`message links are blue without recoloring navigation (${colorScheme})`, async ({ page, request }) => {
+    await page.emulateMedia({ colorScheme });
+    const { workspaceId, primaryId } = await fixture(request);
+    await launch(page, request, workspaceId, primaryId);
+    const label = `${colorScheme} reference guide`;
+    const url = `https://example.com/${colorScheme}/status`;
+    await peer(request, `[${label}](https://example.com/guide) and ${url}`);
+    const blue = colorScheme === "dark" ? "rgb(124, 168, 255)" : "rgb(50, 111, 209)";
+    for (const name of [label, url]) {
+      const link = page.getByRole("link", { name, exact: true });
+      await expect(link).toBeVisible();
+      await expect(link).toHaveCSS("color", blue);
+      await expect(link).toHaveAttribute("target", "_blank");
+    }
+    await expect(page.getByRole("link", { name: /^browser-collaboration/ }).first()).not.toHaveCSS("color", blue);
+  });
+}
+
 test("opens cold and cached Conversations at the end, including when metadata arrives after messages", async ({ page, request }) => {
   const { workspaceId, primaryId } = await fixture(request);
   await peer(request, "Primary history", "&count=40");
