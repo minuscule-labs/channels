@@ -11,11 +11,12 @@ import { MessageDeliveryDiagnostics } from "./message-delivery-diagnostics";
 
 /** Mounted only for an open privileged agent surface. Shared queries contain public
  * authorization inputs only; diagnostic projections stay in the disposable child. */
-export function OperationDiagnostics({ scope, onViewMessage, loadedSequences, requestPending = false }: {
+export function OperationDiagnostics({ scope, onViewMessage, loadedSequences, requestPending = false, onAccessLost }: {
   scope: DiagnosticTargetScope;
   loadedSequences: ReadonlySet<number>;
   onViewMessage(sequence: number): void;
   requestPending?: boolean;
+  onAccessLost?(): void;
 }) {
   const workspace = useQuery({ queryKey: queryKeys.workspace(scope.workspaceId), queryFn: () => conversations.getWorkspace(scope.workspaceId), retry: false, refetchInterval: 5_000 });
   const session = useQuery({ queryKey: queryKeys.localCurrentSession(), queryFn: () => localControl.currentSession(), retry: false, refetchInterval: 5_000 });
@@ -29,11 +30,12 @@ export function OperationDiagnostics({ scope, onViewMessage, loadedSequences, re
     && session.data.identityId === scope.humanIdentityId && identity?.type === "human" && identity.status === "active"
     && member?.status === "active" && (member.accessRole === "owner" || member.accessRole === "admin")
     && metadata.data.workspaceId === scope.workspaceId && participant && participant.status !== "disabled";
-  return authorized ? <OperationDiagnosticsContent key={diagnosticScopeKey(scope)} scope={scope} onViewMessage={onViewMessage} loadedSequences={loadedSequences} requestPending={requestPending} />
+  return authorized ? <OperationDiagnosticsContent key={diagnosticScopeKey(scope)} scope={scope} onViewMessage={onViewMessage} loadedSequences={loadedSequences} requestPending={requestPending} onAccessLost={onAccessLost} />
     : <p role="status">Privileged diagnostics cleared: access could not be verified. Previously copied data cannot be revoked.</p>;
 }
 
-function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, requestPending }: {
+function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, requestPending, onAccessLost }: {
+  onAccessLost?(): void;
   requestPending: boolean;
   scope: DiagnosticTargetScope;
   loadedSequences: ReadonlySet<number>;
@@ -58,6 +60,7 @@ function OperationDiagnosticsContent({ scope, onViewMessage, loadedSequences, re
   }, [key]);
   useEffect(() => {
     if (!state.revoked) return;
+    onAccessLost?.();
     // Clear older privileged Phase 1 projections as well as this surface's memory.
     for (const queryKey of [queryKeys.localConversationTurnFailures(scope.conversationId, scope.humanIdentityId), queryKeys.localConversationAgents(scope.conversationId)]) {
       void queryClient.cancelQueries({ queryKey, exact: true });

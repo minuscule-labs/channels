@@ -17,6 +17,11 @@ export function participantLabel(participant: Participant | undefined, identityI
   return participant.displayName ?? `@${participant.handle ?? shortId(participant.id)}`;
 }
 
+export function participantDiagnosticsHref(workspaceId: string, conversationId: string, identityId: string, issue?: { triggerSequence: number; failedAt: string }): string {
+  const search = issue ? `?triggerSequence=${issue.triggerSequence}&failedAt=${encodeURIComponent(issue.failedAt)}` : "";
+  return `/app/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/participants/${encodeURIComponent(identityId)}/diagnostics${search}`;
+}
+
 export function participantHandle(participant: Participant | undefined, identityId: string): string {
   return participant?.handle ?? shortId(identityId);
 }

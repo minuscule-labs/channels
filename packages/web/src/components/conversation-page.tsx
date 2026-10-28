@@ -1,13 +1,15 @@
 import type { LocalBulkAgentLifecycleResult, LocalSessionContextMode, LocalTurnFailureNotice } from "@minu/channels-control/contracts";
 import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { useLocation, useParams } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
 import { queryKeys } from "../lib/query-keys";
-import { agentStatusRequestError, pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions } from "../lib/agent-diagnostics";
+import { agentStatusRequestError, pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions, type AgentSessionAction } from "../lib/agent-diagnostics";
+import { useAgentActions } from "../lib/use-agent-actions";
+import { actionIsPending } from "../lib/agent-actions";
 import { readSequence, resetReadSequence, writeReadSequence } from "../lib/conversation-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
 import { ConversationActivityStrip } from "./conversation-activity-strip";
@@ -27,6 +29,7 @@ export function ConversationPage() {
 
 function ConversationPageContent({ workspaceId, conversationId }: { workspaceId: string; conversationId: string }) {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const [rosterOpen, setRosterOpen] = useState(false);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
@@ -95,26 +98,40 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       : query.state.data?.agents.some((agent) => agent.activity) ? 1_000 : 5_000,
   });
   const { connection, retry } = useLiveConversation(conversationId, currentSession.data?.identityId);
+  const participants = metadata.data?.participants ?? [];
+  const currentMembership = workspaceMembers.data?.find(
+    ({ identityId }) => identityId === currentSession.data?.identityId,
+  );
+  const currentParticipant = participants.find(({ id }) => id === currentSession.data?.identityId);
+  const currentIdentity = identities.data?.find(({ id }) => id === currentSession.data?.identityId);
+  const canViewTurnFailureNotices = currentSession.isSuccess && workspaceMembers.isSuccess && metadata.isSuccess
+    && currentMembership?.status === "active"
+    && Boolean(currentParticipant && currentParticipant.status !== "disabled");
+  const canManageAgents = currentSession.isSuccess && workspace.isSuccess && workspace.data.status === "active" && metadata.isSuccess && metadata.data.workspaceId === workspaceId && workspaceMembers.isSuccess && identities.isSuccess
+    && currentIdentity?.type === "human" && currentIdentity.status === "active" && currentMembership?.status === "active"
+    && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
+  const canOpenDiagnostics = canViewTurnFailureNotices && canManageAgents;
+  const refreshAgentState = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
+  };
+  const agentRequests = useAgentActions(conversationId, currentSession.data?.identityId, Boolean(canManageAgents), refreshAgentState, () => {
+    for (const queryKey of [queryKeys.localCurrentSession(), queryKeys.workspaceMembers(workspaceId), queryKeys.identities()]) {
+      void queryClient.invalidateQueries({ queryKey });
+    }
+  });
   const agentAction = useMutation({
     mutationFn: ({ action, identityId }: {
       action: "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
       identityId: string;
     }) => {
-      if (action === "reconnect") return localControl.reconnectConversationAgent(conversationId, identityId);
-      if (action === "replace") return localControl.replaceConversationAgent(conversationId, identityId, "with_context");
-      if (action === "replace-fresh") return localControl.replaceConversationAgent(conversationId, identityId, "fresh");
-      if (action === "stop") return localControl.stopConversationAgent(conversationId, identityId);
-      if (action === "cancel") return localControl.cancelCurrentConversationAgent(conversationId, identityId);
-      return localControl.startConversationAgent(
-        conversationId,
-        identityId,
-        action === "start-fresh" ? "fresh" : "with_context",
-      );
+      return agentRequests.submit(action, identityId);
     },
     onMutate: ({ action, identityId }) => {
       setBulkResults(undefined);
       if (action !== "cancel") return undefined;
-      const previous = localAgents.data;
+      const previous = localAgents.data?.agents.find(agent => agent.identityId === identityId);
       queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), (current: typeof localAgents.data) =>
         current ? { ...current, agents: current.agents.map((agent) => agent.identityId === identityId && agent.activity
           ? { ...agent, activity: { ...agent.activity, phase: "canceling" as const }, capabilities: { ...agent.capabilities, interrupt: false } }
@@ -122,9 +139,10 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       );
       return { previous };
     },
-    onError: (_error, _variables, context) => {
+    onError: (_error, { identityId }, context) => {
       if (context?.previous) {
-        queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), context.previous);
+        queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), (current: typeof localAgents.data) => current
+          ? { ...current, agents: current.agents.map(agent => agent.identityId === identityId ? context.previous! : agent) } : current);
       }
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
@@ -147,34 +165,25 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
   });
-  const bulkAgentAction = useMutation({
-    mutationFn: (action: "start" | "stop") => action === "start"
-      ? localControl.startAllConversationAgents(conversationId)
-      : localControl.stopAllConversationAgents(conversationId),
-    onMutate: (action) => {
-      setBulkResults(undefined);
+  const bulkReceipt = agentRequests.actions.find(action => !action.identityId);
+  const bulkResultAction = bulkReceipt?.action === "start-all" ? "start" : bulkReceipt?.action === "stop-all" ? "stop" : undefined;
+  useEffect(() => {
+    if (bulkReceipt?.state === "succeeded" && bulkReceipt.results) {
+      setBulkResults(bulkReceipt.results);
       setBulkResultsExpanded(true);
-      setPendingBulkTargets(new Set((localAgents.data?.agents ?? [])
-        .filter(({ state }) => action === "start"
-          ? state === "unbound" || state === "stopped"
-          : state === "idle" || state === "running" || state === "disconnected" || state === "offline")
-        .map(({ identityId }) => identityId)));
-    },
-    onSuccess: (response) => {
-      setBulkResults(response.results);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
-    },
-    onSettled: () => setPendingBulkTargets(undefined),
-  });
-  const startAllAgents = async () => {
-    await bulkAgentAction.mutateAsync("start");
+    }
+    if (bulkReceipt && !actionIsPending(bulkReceipt)) setPendingBulkTargets(undefined);
+  }, [bulkReceipt]);
+  const runBulkAction = async (action: "start" | "stop") => {
+    setBulkResults(undefined);
+    setBulkResultsExpanded(true);
+    setPendingBulkTargets(new Set((localAgents.data?.agents ?? []).filter(({ state }) => action === "start"
+      ? state === "unbound" || state === "stopped"
+      : state === "idle" || state === "running" || state === "disconnected" || state === "offline").map(({ identityId }) => identityId)));
+    await agentRequests.submit(action === "start" ? "start-all" : "stop-all");
   };
-  const stopAllAgents = async () => {
-    await bulkAgentAction.mutateAsync("stop");
-  };
-  const participants = metadata.data?.participants ?? [];
+  const startAllAgents = () => runBulkAction("start");
+  const stopAllAgents = () => runBulkAction("stop");
   const issueDialogParticipant = participants.find(({ id }) => id === issueDialogParticipantId);
   const attributionParticipants = useMemo<Participant[]>(() => {
     const byId = new Map(participants.map((participant) => [participant.id, participant]));
@@ -200,17 +209,6 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     [localAgents.data],
   );
   const localStatus = localAgents.isSuccess ? "available" : localAgents.isError ? "unavailable" : "loading";
-  const currentMembership = workspaceMembers.data?.find(
-    ({ identityId }) => identityId === currentSession.data?.identityId,
-  );
-  const currentParticipant = participants.find(({ id }) => id === currentSession.data?.identityId);
-  const currentIdentity = identities.data?.find(({ id }) => id === currentSession.data?.identityId);
-  const canViewTurnFailureNotices = currentSession.isSuccess && workspaceMembers.isSuccess && metadata.isSuccess
-    && currentMembership?.status === "active"
-    && Boolean(currentParticipant && currentParticipant.status !== "disabled");
-  const canOpenDiagnostics = canViewTurnFailureNotices && workspace.isSuccess && workspace.data.status === "active" && identities.isSuccess
-    && currentIdentity?.type === "human" && currentIdentity.status === "active"
-    && (currentMembership?.accessRole === "owner" || currentMembership?.accessRole === "admin");
   useLayoutEffect(() => {
     if (!canOpenDiagnostics) return;
     const humanId = currentSession.data!.identityId;
@@ -231,13 +229,45 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     refetchInterval: 10_000,
   });
   const pendingActions: PendingAgentActions = {
-    individual: agentAction.isPending && agentAction.variables
-      ? { ...agentAction.variables, requestedAt: agentAction.submittedAt } : undefined,
-    bulk: bulkAgentAction.isPending && bulkAgentAction.variables ? {
-      action: bulkAgentAction.variables,
-      requestedAt: bulkAgentAction.submittedAt,
-      identityIds: pendingBulkTargets ?? new Set(),
+    individuals: new Map(agentRequests.actions.filter(action => action.identityId && actionIsPending(action))
+      .map(action => [action.identityId!, { action: action.action as AgentSessionAction, identityId: action.identityId!, requestedAt: action.requestedAt }])),
+    bulk: bulkReceipt && actionIsPending(bulkReceipt) && bulkResultAction ? {
+      action: bulkResultAction, requestedAt: bulkReceipt.requestedAt,
+      identityIds: pendingBulkTargets ?? new Set(participants.filter(({ type }) => type === "agent").map(({ id }) => id)),
     } : undefined,
+  };
+  const participantActionErrors = new Map(agentRequests.actions.filter(action => action.identityId && action.error && !action.dismissed)
+    .map(action => [action.identityId!, { message: action.error!, unconfirmed: action.state === "unconfirmed", requestId: action.requestId }]));
+  const bulkActionError = bulkReceipt?.error && !bulkReceipt.dismissed ? bulkReceipt.error : undefined;
+  const dismissAgentError = (identityId: string) => {
+    const error = participantActionErrors.get(identityId);
+    if (error) agentRequests.dismiss(error.requestId);
+    if (agentAction.variables?.identityId === identityId) agentAction.reset();
+  };
+  const dismissBulkError = () => { if (bulkReceipt) agentRequests.dismiss(bulkReceipt.requestId); };
+  const [refreshingParticipants, setRefreshingParticipants] = useState<ReadonlySet<string>>(new Set());
+  const [participantSnapshots, setParticipantSnapshots] = useState<ReadonlyMap<string, { receivedAt: number; attemptedAt: number; refreshFailed: boolean; refreshError?: string }>>(new Map());
+  const refreshParticipant = async (identityId: string) => {
+    if (refreshingParticipants.has(identityId)) return;
+    setRefreshingParticipants(current => new Set(current).add(identityId));
+    try {
+      const agent = await localControl.conversationAgent(conversationId, identityId);
+      queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), (current: typeof localAgents.data) => current
+        ? { ...current, agents: current.agents.some(candidate => candidate.identityId === identityId)
+          ? current.agents.map(candidate => candidate.identityId === identityId ? agent : candidate)
+          : [...current.agents, agent] }
+        : { agents: [agent], receivedAt: 0 });
+      const receivedAt = Date.now();
+      setParticipantSnapshots(current => new Map(current).set(identityId, { receivedAt, attemptedAt: receivedAt, refreshFailed: false }));
+    } catch (error) {
+      setParticipantSnapshots(current => new Map(current).set(identityId, { receivedAt: current.get(identityId)?.receivedAt ?? localAgents.data?.receivedAt ?? 0, attemptedAt: Date.now(), refreshFailed: true, refreshError: agentStatusRequestError(error) }));
+      queryClient.setQueryData(queryKeys.localConversationAgents(conversationId), (current: typeof localAgents.data) => current
+        ? { ...current, agents: current.agents.map(agent => agent.identityId === identityId
+          ? { ...agent, state: "uncertain" as const, activity: undefined, capabilities: { start: false, replace: false, stop: false, steer: false, interrupt: false, reconnect: false } } : agent) } : current);
+    } finally {
+      await agentRequests.refresh();
+      setRefreshingParticipants(current => { const next = new Set(current); next.delete(identityId); return next; });
+    }
   };
   const diagnosticsSnapshot: AgentDiagnosticsSnapshot = {
     // Keep actual receipt time separate from React Query's optimistic cache updates.
@@ -246,6 +276,15 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     refreshFailed: localAgents.isError,
     refreshError: localAgents.isError ? agentStatusRequestError(localAgents.error) : undefined,
     refresh: () => { void localAgents.refetch(); },
+  };
+  const participantSnapshot = (identityId: string): AgentDiagnosticsSnapshot => {
+    const snapshot = participantSnapshots.get(identityId);
+    return {
+      ...diagnosticsSnapshot,
+      ...(snapshot && snapshot.attemptedAt > diagnosticsSnapshot.receivedAt ? snapshot : {}),
+      refreshing: refreshingParticipants.has(identityId),
+      refresh: () => { void refreshParticipant(identityId); },
+    };
   };
   const focusMessage = (sequence: number) => {
     const target = scrollRef.current?.querySelector<HTMLElement>(`[data-message-sequence="${sequence}"]`);
@@ -265,10 +304,11 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     onViewMessage: viewMessage,
     pendingActions,
     diagnosticsSnapshot,
-    bulkActionError: bulkAgentAction.isError ? `Conversation-wide bulk request failed: ${bulkAgentAction.error.message}` : undefined,
-    participantActionError: agentAction.isError && agentAction.variables
-      ? { identityId: agentAction.variables.identityId, message: agentAction.error.message } : undefined,
-    turnFailures: canOpenDiagnostics ? turnFailures.data?.diagnostics : undefined,
+    bulkActionError,
+    participantActionErrors,
+    refreshingParticipants,
+    onRefreshParticipant: refreshParticipant,
+    participantSnapshot,
   };
   const settled = lifecycle.data?.state === "settled";
   const lifecycleLabel = lifecycle.data?.state === "snoozed" ? "Snoozed"
@@ -332,6 +372,21 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     return () => document.removeEventListener("visibilitychange", visible);
   }, [markRead]);
 
+  useLayoutEffect(() => {
+    if (!timelineReady) return;
+    const match = /^message-(\d+)$/.exec(location.hash);
+    if (match) {
+      nearEndRef.current = false;
+      focusMessage(Number(match[1]));
+    } else if (location.hash.startsWith("participant-")) {
+      const id = location.hash.slice("participant-".length);
+      const triggers = document.querySelectorAll<HTMLElement>(`[data-participant-id="${CSS.escape(id)}"] button[aria-label^="Open actions for"]`);
+      const trigger = [...triggers].find(node => node.getClientRects().length > 0)
+        ?? document.querySelector<HTMLElement>('button[aria-label="Show participants"]');
+      trigger?.focus();
+    }
+  }, [location.hash, timelineReady, messages.data]);
+
   if (metadata.isLoading || messages.isLoading) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Conversation…</div>;
   }
@@ -394,7 +449,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               showDiagnostics={canOpenDiagnostics}
               {...participantFeedback}
               drawer
-              readOnly={settled}
+              readOnly={settled || !canManageAgents}
               onStartAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
                 action: contextMode === "fresh" ? "start-fresh" : "start",
                 identityId,
@@ -408,9 +463,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
               onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
-              bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
-              onDismissAgentError={() => { if (agentAction.isError) agentAction.reset(); }}
-              onDismissBulkError={() => { if (bulkAgentAction.isError) bulkAgentAction.reset(); }}
+              bulkResultAction={bulkResultAction}
+              onDismissAgentError={dismissAgentError}
+              onDismissBulkError={dismissBulkError}
               bulkResults={bulkResults}
               bulkResultsExpanded={bulkResultsExpanded}
               onToggleBulkResults={() => setBulkResultsExpanded((expanded) => !expanded)}
@@ -424,9 +479,8 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
             This Conversation is archived and read-only. Reopen it to send messages, edit participants, or manage agents.
           </div>
         ) : null}
+        {bulkActionError ? <ErrorNotice className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2" dismissLabel="Dismiss bulk action error" onDismiss={dismissBulkError}>{bulkActionError}</ErrorNotice> : null}
         {[
-          { name: "agent action", mutation: agentAction },
-          { name: "bulk action", mutation: bulkAgentAction },
           { name: "Conversation status", mutation: lifecycleAction },
         ].map(({ name, mutation }) => mutation.error ? (
           <ErrorNotice
@@ -509,7 +563,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           localStatus={localStatus}
           showDiagnostics={canOpenDiagnostics}
           {...participantFeedback}
-          readOnly={settled}
+          readOnly={settled || !canManageAgents}
           onStartAgent={(identityId, contextMode: LocalSessionContextMode) => agentAction.mutateAsync({
             action: contextMode === "fresh" ? "start-fresh" : "start",
             identityId,
@@ -523,9 +577,9 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
           onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
-          bulkResultAction={bulkAgentAction.data ? bulkAgentAction.variables : undefined}
-          onDismissAgentError={() => { if (agentAction.isError) agentAction.reset(); }}
-          onDismissBulkError={() => { if (bulkAgentAction.isError) bulkAgentAction.reset(); }}
+          bulkResultAction={bulkResultAction}
+          onDismissAgentError={dismissAgentError}
+          onDismissBulkError={dismissBulkError}
           bulkResults={bulkResults}
           bulkResultsExpanded={bulkResultsExpanded}
           onToggleBulkResults={() => setBulkResultsExpanded((expanded) => !expanded)}
@@ -543,15 +597,19 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
         selectedIssue={selectedIssue}
         onViewMessage={viewMessage}
         pendingAction={pendingAgentInspection(issueDialogParticipant.id, pendingActions)}
-        diagnosticsSnapshot={diagnosticsSnapshot}
+        diagnosticsSnapshot={participantSnapshot(issueDialogParticipant.id)}
         open={issueDialogOpen}
         onOpenChange={setIssueDialogOpen}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           if (issueNoticeTriggerRef.current?.isConnected) issueNoticeTriggerRef.current.focus();
         }}
-        actionError={agentAction.isError && agentAction.variables?.identityId === issueDialogParticipant.id ? agentAction.error.message : participantFeedback.bulkActionError}
-        failures={canOpenDiagnostics ? turnFailures.data?.diagnostics.filter(({ participant }) => participant.identityId === issueDialogParticipant.id) : undefined}
+        actionError={participantActionErrors.get(issueDialogParticipant.id)?.message ?? bulkActionError}
+        actionUnconfirmed={participantActionErrors.get(issueDialogParticipant.id)?.unconfirmed}
+        onDismissError={() => {
+          if (participantActionErrors.has(issueDialogParticipant.id)) dismissAgentError(issueDialogParticipant.id);
+          else dismissBulkError();
+        }}
       /> : null}
     </div>
   );

@@ -2,9 +2,9 @@ import { LocalControlClientError } from "@minu/channels-control/client";
 
 export type AgentSessionAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
 
-/** Browser request state only; this is not an authoritative host operation record. */
+/** Pending lifecycle requests, kept separate from observed Runtime activity. */
 export interface PendingAgentActions {
-  individual?: { action: AgentSessionAction; identityId: string; requestedAt: number };
+  individuals?: ReadonlyMap<string, { action: AgentSessionAction; identityId: string; requestedAt: number }>;
   bulk?: { action: "start" | "stop"; requestedAt: number; identityIds: ReadonlySet<string> };
 }
 
@@ -34,8 +34,9 @@ export function agentActionLabel(action: AgentSessionAction): string {
 }
 
 export function pendingAgentInspection(identityId: string, pending: PendingAgentActions): PendingAgentInspection | undefined {
-  if (pending.individual?.identityId === identityId) {
-    return { label: agentActionLabel(pending.individual.action), requestedAt: pending.individual.requestedAt };
+  const individual = pending.individuals?.get(identityId);
+  if (individual) {
+    return { label: agentActionLabel(individual.action), requestedAt: individual.requestedAt };
   }
   if (pending.bulk?.identityIds.has(identityId)) {
     return {

@@ -1,0 +1,126 @@
+{
+  "kind": "author-verification",
+  "source": {
+    "baseCommit": "c76537a1850e383a25dfaeb69210ad15eb0f0e6b",
+    "branch": "fix/participant-recovery-flow",
+    "state": "pre-commit v0.0.19 release-preparation working tree",
+    "changedFilesExcludingThisRecord": 39,
+    "sha256": "993d476edd92dc85a51c789aace55ef0cfae536dd6ee9d899f0629113860c9ca",
+    "fingerprint": "SHA-256 of compact, sorted-key JSON containing baseCommit and sorted files [{path,sha256}], covering changed files relative to baseCommit plus then-untracked non-ignored files, excluding this record."
+  },
+  "checks": [
+    { "command": "pnpm web:check", "result": "passed" },
+    { "command": "pnpm web:test", "result": "178 passed" },
+    { "command": "pnpm web:build", "result": "passed; existing large-chunk warnings remain" },
+    { "command": "pnpm --filter @minu/channels-web exec playwright test participant-sidebar.spec.ts --grep 'accepted timing passes|lost acceptance response|inspects self and others during accepted|late failure cannot contaminate|bulk failure remains'", "result": "13 affected Chromium tests passed, 0 failed" },
+    { "command": "git diff --check", "result": "passed" }
+  ],
+  "reusedEvidence": [
+    {
+      "command": "pnpm check && pnpm test",
+      "sourceSha256": "0af643b06825e1ceea95f95845269e08f77d367462434227797eb83262e169a3",
+      "result": "type check passed; rebuilt source; 331 backend tests passed",
+      "reason": "Backend implementation, tests, dependencies and configuration are unchanged by the final browser-only race fix; backend checks were not rerun."
+    },
+    {
+      "command": "pnpm --filter @minu/channels-web exec playwright test",
+      "sourceSha256": "0af643b06825e1ceea95f95845269e08f77d367462434227797eb83262e169a3",
+      "result": "120 Chromium tests passed at the previous integration checkpoint",
+      "reason": "Historical integration baseline, not a full-browser pass for the final target. The receipt owner changed; 18 owner tests and 13 affected browser cases were rerun instead of the entire browser suite."
+    },
+    {
+      "command": "node scripts/smoke-image-vision.mjs",
+      "sourceSha256": "0cb1837ef4e64f49ccd97475537bc9b5e56f9ca717e351bd89b3fe9d1e5b130c",
+      "result": "passed controlled Pi RPC delivery, resume/reopen and image-preparation cancellation at the earlier author checkpoint",
+      "reason": "Review fixes do not change image handling, Relay, Runtime dependencies or this smoke composition; it was not rerun."
+    }
+  ],
+  "covered": [
+    "Delayed lifecycle completion beyond the former 30-second browser deadline, exact-request deduplication, conflicting legacy/new submissions, and independent participant admission",
+    "GET-only reconciliation after lost acceptance, definitive rejection versus unconfirmed partial changes, missing receipts, dismissal without replay, delayed-response fencing and access loss",
+    "Fresh-session rejection and activation semantics without an optional diagnostic recorder",
+    "Explicit Stop retry against the same durable fence and Runtime generation using both in-memory and SQLite storage",
+    "Per-participant refresh, expanded/minimized/mobile notice dismissal, bulk results, separate-tab diagnostics, permission revocation and private report isolation",
+    "Exact issue selection and focused public message navigation beyond the sidebar's 100-message preview"
+  ],
+  "delegatedReview": {
+    "reviewedSourceSha256": "0cb1837ef4e64f49ccd97475537bc9b5e56f9ca717e351bd89b3fe9d1e5b130c",
+    "verdict": "REQUEST_CHANGES",
+    "findingsAddressed": [
+      "Individual Stop no longer acquires a Conversation-wide admission fence. A real service-plus-host regression holds interruption while another participant starts and replaces, verifies overlap rejection, and retains genuine Conversation fences and Stop generation/session ownership.",
+      "Any page-read HTTP 401/403 denial immediately unmounts the entire diagnostics surface and latches revocation despite stale public authorization metadata. Browser regressions cover receipt 401/403, status 403 and turn-failure 403 responses.",
+      "Successful per-participant Refresh upserts a missing participant while preserving other cached snapshots. A browser regression recovers two participants and their controls while collection reads remain unavailable, with zero lifecycle mutations."
+    ],
+    "status": "The follow-up independent review verified these three fixes, but requested changes for the late POST race recorded below."
+  },
+  "followupReview": {
+    "reviewedSourceSha256": "0af643b06825e1ceea95f95845269e08f77d367462434227797eb83262e169a3",
+    "verdict": "REQUEST_CHANGES",
+    "finding": "A delayed acceptance POST failure could overwrite GET-confirmed completion with unconfirmed state and block the participant again.",
+    "authorFix": "Keep confirmed success/failure receipts immutable, ignore late POST outcomes after confirmation or superseding intent, avoid false mutation rollback, and retain 401/403 revocation before the stale-response guard.",
+    "regressions": "18 owner tests cover successful/failed GET receipts followed by delayed transport/admission failure with unavailable reads, dismissed feedback preservation, superseding intents, late pending acceptance and late 401/403 denial.",
+    "status": "The final independent contextual review approved this correction, with one bounded non-blocking menu-lock finding."
+  },
+  "finalIndependentReview": {
+    "reviewedSourceSha256": "69572e99596c5acc0ab116bdc153d43f142d7b0fb03b94e53bf58ca582af2161",
+    "verdict": "APPROVE",
+    "checks": [
+      "18 receipt-owner tests passed",
+      "178 web unit tests passed",
+      "Web type check passed",
+      "Six targeted Chromium regressions passed",
+      "Working-tree fingerprint and whitespace checks passed"
+    ],
+    "nonBlockingFinding": {
+      "severity": "LOW",
+      "location": "packages/web/src/components/participant-session-actions-menu.tsx:69-96",
+      "description": "The transport-local submitting latch can keep eligible controls disabled until the acceptance POST settles, bounded by its default three-second timeout, despite an earlier exact terminal GET receipt.",
+      "disposition": "Deferred and disclosed in the v0.0.19 release notes; no further behavior change was made."
+    },
+    "confidence": "Medium overall; high for the late-POST correction",
+    "boundary": "Approval applies to the recovery behavior before metadata-only version and release-documentation preparation; it is not packaged-release acceptance."
+  },
+  "releasePreparation": {
+    "version": "0.0.19",
+    "latestPublishedVersionAtCapture": "0.0.18",
+    "behaviorChangedAfterApproval": false,
+    "stateAtCapture": "Version, notes, commit and PR preparation. Package checks and PR CI are recorded separately after the source commit; merge, tag and publication remain pending approval and release acceptance."
+  },
+  "failuresInvestigated": [
+    {
+      "check": "Late POST race regressions before the final fix",
+      "result": "Six cases failed: four confirmed-outcome transport/admission races and two superseded-intent late-response races. Twelve other owner cases passed.",
+      "finalResult": "All 18 owner tests, all 178 web unit tests, 13 affected browser tests, web type check and build passed after the bounded browser-owner fix. No timeout or gate was weakened."
+    },
+    {
+      "check": "Review-followup regressions before applying fixes",
+      "result": "The real-host concurrency test and both targeted browser cases failed for the three reported defects before implementation changes.",
+      "finalResult": "26 focused backend tests, five focused browser regressions, all 331 backend tests and all 120 browser tests passed after the fixes."
+    },
+    {
+      "check": "First review-followup focused browser run",
+      "result": "Four passed; the turn-failure denial case did not observe a request because the fake clock was installed after its 10-second polling timer was created.",
+      "correction": "Install the clock before page mount so all existing polls use controlled time; retain the denial, whole-surface clearing, revocation latch and zero-mutation assertions.",
+      "finalResult": "All five focused cases and the complete 120-test browser suite passed. No timeout or gate was weakened."
+    },
+    {
+      "check": "Initial integrated browser run",
+      "result": "114 passed, 1 failed",
+      "cause": "Diagnostics reused the notification preview's message query key, allowing a complete public snapshot to be replaced by the first 100 messages.",
+      "correction": "Isolated the diagnostics public-message snapshot and made the navigation regression create more than 100 messages.",
+      "finalResult": "Focused navigation checks and the complete 115-test browser run passed. No timeout or gate was weakened."
+    },
+    {
+      "check": "Selected collaboration subset",
+      "result": "Roster test reached agent configuration without the Workspace setup performed earlier in that shared-fixture spec.",
+      "finalResult": "The complete collaboration spec passed all 30 tests with its established setup. No unrelated configuration implementation was changed."
+    }
+  ],
+  "limitations": [
+    "Independent review approved the recovery behavior with one disclosed LOW finding. Version and release-documentation preparation adds no behavior changes. No packaged-release approval or human acceptance is claimed.",
+    "No release artifact or cross-platform release acceptance was performed for this change.",
+    "No installed-app update, live participant restart, live data mutation or genuine provider turn was performed.",
+    "Control receipts are bounded, in-process observations of lifecycle handling, not a durable job queue. Missing receipts remain unconfirmed and are never automatically replayed.",
+    "No native-addon crash fix, authoritative schema migration or Runtime dependency change is included."
+  ]
+}
