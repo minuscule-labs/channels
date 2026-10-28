@@ -13,8 +13,8 @@ import { useRef, useState, type ReactNode } from "react";
 import type { LocalSessionContextMode } from "@minu/channels-control/contracts";
 import { ErrorNotice } from "./ui/error-notice";
 
-type ParticipantSessionAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
-type ConfirmedAction = "replace" | "fresh" | "start-fresh" | "stop";
+type ParticipantSessionAction = "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "stop-runtime" | "restart-runtime" | "cancel";
+type ConfirmedAction = "replace" | "fresh" | "start-fresh" | "stop" | "stop-runtime" | "restart-runtime";
 
 export function ParticipantSessionActionsMenu({
   participantName,
@@ -24,6 +24,8 @@ export function ParticipantSessionActionsMenu({
   canReplace,
   canCancel,
   canStop,
+  canRecover = false,
+  onRecover,
   pendingAction,
   actionsDisabled = false,
   onStart,
@@ -46,6 +48,8 @@ export function ParticipantSessionActionsMenu({
   canReplace: boolean;
   canCancel: boolean;
   canStop: boolean;
+  canRecover?: boolean;
+  onRecover?(restart: boolean): void | Promise<unknown>;
   pendingAction?: ParticipantSessionAction;
   actionsDisabled?: boolean;
   onStart?(contextMode: LocalSessionContextMode): void | Promise<unknown>;
@@ -72,7 +76,7 @@ export function ParticipantSessionActionsMenu({
   const openingDetails = useRef(false);
   const pending = pendingAction !== undefined || submitting;
   const blocked = actionsDisabled || pending;
-  const hasActions = canStart || canResume || canReconnect || canReplace || canCancel || canStop;
+  const hasActions = canStart || canResume || canReconnect || canReplace || canCancel || canStop || canRecover;
 
   if (!hasActions && !onDetails && !onRefresh && !diagnosticsHref) return null;
 
@@ -113,6 +117,7 @@ export function ParticipantSessionActionsMenu({
       if (confirmedAction === "replace") await onReplace?.("with_context");
       else if (confirmedAction === "fresh") await onReplace?.("fresh");
       else if (confirmedAction === "start-fresh") await onStart?.("fresh");
+      else if (confirmedAction === "stop-runtime" || confirmedAction === "restart-runtime") await onRecover?.(confirmedAction === "restart-runtime");
       else await onStop?.();
       if (version === confirmationVersion.current) closeConfirmation();
     } catch (cause) {
@@ -127,6 +132,8 @@ export function ParticipantSessionActionsMenu({
   const replacing = confirmedAction === "replace" || confirmedAction === "fresh" || confirmedAction === "start-fresh";
   const fresh = confirmedAction === "fresh" || confirmedAction === "start-fresh";
   const replacementLabel = fresh ? "Fresh session" : "New session with context";
+  const recovering = confirmedAction === "stop-runtime" || confirmedAction === "restart-runtime";
+  const recoveryLabel = confirmedAction === "restart-runtime" ? "Restart runtime" : "Stop runtime";
 
   return (
     <Dialog.Root
@@ -213,6 +220,12 @@ export function ParticipantSessionActionsMenu({
                   <CircleX className="h-4 w-4" /> Cancel current
                 </button>
               ) : null}
+              {canRecover && onRecover ? (["stop-runtime", "restart-runtime"] as const).map(action => (
+                <button key={action} type="button" className="flex w-full items-center gap-2 rounded px-2.5 py-2 text-left text-sm hover:bg-[var(--hover)] disabled:opacity-50" disabled={blocked} onClick={() => requestConfirmation(action)}>
+                  {action === "restart-runtime" ? <RefreshCw className="h-4 w-4" /> : <Square className="h-4 w-4" />}
+                  {action === "restart-runtime" ? "Restart runtime" : "Stop runtime"}
+                </button>
+              )) : null}
               {canStop && onStop ? (
                 <button
                   type="button"
@@ -245,6 +258,7 @@ export function ParticipantSessionActionsMenu({
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50" />
         <Dialog.Content
           className="fixed left-1/2 top-1/2 z-50 w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5 shadow-2xl outline-none"
+          {...(recovering ? { "aria-describedby": undefined } : {})}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             cancelRef.current?.focus();
@@ -256,13 +270,13 @@ export function ParticipantSessionActionsMenu({
           }}
         >
           <Dialog.Title className="text-base font-semibold">
-            {confirmedAction === "replace"
+            {recovering ? `${recoveryLabel} for ${participantName}?` : confirmedAction === "replace"
               ? `Start a new session with context for ${participantName}?`
               : fresh
                 ? `Start a fresh session for ${participantName}?`
                 : `Stop ${participantName}?`}
           </Dialog.Title>
-          <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
+          {!recovering ? <Dialog.Description className="mt-2 text-sm leading-5 text-[var(--muted)]">
             {confirmedAction === "replace"
               ? "This creates a new Runtime session; it does not resume the current transcript. A temporary handoff may be summarized from public Conversation history, and future turns receive configured recent context. Pending work through the current Conversation head is discarded. Conversation history and filesystem effects remain."
               : confirmedAction === "fresh"
@@ -270,7 +284,7 @@ export function ParticipantSessionActionsMenu({
                 : confirmedAction === "start-fresh"
                   ? "Starts a Runtime session with no handoff and excludes all earlier Conversation messages. Saved agent/project instructions and configuration still apply; messages posted after it starts are included."
                 : "Active work will be interrupted and queued turns through the stop boundary discarded. The same Runtime session is kept; messages posted while stopped wait until you resume it. External tool or filesystem effects cannot be rolled back."}
-          </Dialog.Description>
+          </Dialog.Description> : null}
           {error ? <ErrorNotice className="mt-3" onDismiss={() => {
             setError(undefined);
             onDismissError?.();
@@ -291,7 +305,7 @@ export function ParticipantSessionActionsMenu({
               onClick={() => void confirm()}
             >
               {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
-              {replacing ? replacementLabel : "Stop agent"}
+              {recovering ? recoveryLabel : replacing ? replacementLabel : "Stop agent"}
             </button>
           </div>
         </Dialog.Content>

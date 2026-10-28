@@ -16,6 +16,7 @@ const input = { requestId: "request-1", action: "replace-fresh" as const, identi
 
 test("participant action input requires an exact action, ID and individual or bulk scope", () => {
   assert.deepEqual(agentActionInput(input), input);
+  for (const action of ["stop-runtime", "restart-runtime"] as const) assert.deepEqual(agentActionInput({ ...input, action }), { ...input, action });
   assert.deepEqual(agentActionInput({ requestId: "bulk", action: "stop-all" }), { requestId: "bulk", action: "stop-all" });
   for (const value of [null, [], {}, { ...input, requestId: "../secret" }, { ...input, action: "destroy" }, { ...input, identityId: undefined }, { ...input, action: "stop-all" }, { ...input, contextMode: "fresh" }]) {
     assert.throws(() => agentActionInput(value), LocalConfigurationRequestError);
@@ -104,6 +105,10 @@ async function fixture() {
       entered.release(); await held.promise;
     },
     async stopConversationAgent() {},
+    async recoverConversationAgent(_conversationId, identityId, _actor, restart) {
+      calls.push({ identityId, contextMode: restart ? "restart-runtime" : "stop-runtime" });
+      entered.release(); await held.promise;
+    },
     async cancelCurrentConversationAgent() {},
   };
   const control = new LocalControlService({ conversations: client, bindings: { async listConversationBindings() { if (unreadableStatus) throw new Error("PRIVATE_STATUS_ERROR"); return []; } }, runtimes: {}, lifecycle,
@@ -119,6 +124,29 @@ async function fixture() {
   return { client, owner, member, agent, otherAgent, workspace, conversation, store, sessions, server, path, headers, held, entered, calls, submit, read,
     rejectFresh() { rejectFresh = true; }, unreadableStatus() { unreadableStatus = true; },
     async close() { held.release(); await server.close(); await publicServer.close(); await store.close(); } };
+}
+
+for (const action of ["stop-runtime", "restart-runtime"] as const) {
+  test(`HTTP ${action} uses authenticated lifecycle receipts and the shared participant admission guard`, async () => {
+    const f = await fixture();
+    const body = { requestId: "recovery-1", action, identityId: f.agent.id };
+    try {
+      assert.equal((await fetch(f.path, { method: "POST", body: JSON.stringify(body) })).status, 401);
+      assert.equal((await fetch(f.path, { method: "POST", headers: { ...f.headers, origin: "http://attacker.example" }, body: JSON.stringify(body) })).status, 403);
+      const submit = () => fetch(f.path, { method: "POST", headers: f.headers, body: JSON.stringify(body) });
+      assert.equal((await submit()).status, 202); await f.entered.promise;
+      assert.equal((await f.read("recovery-1")).state, "pending");
+      assert.equal((await submit()).status, 202);
+      assert.equal((await fetch(f.path, { method: "POST", headers: f.headers, body: JSON.stringify({ ...body, requestId: "conflict" }) })).status, 409);
+      f.held.release();
+      assert.equal((await f.read("recovery-1")).state, "succeeded");
+      assert.deepEqual(f.calls, [{ identityId: f.agent.id, contextMode: action }]);
+      await f.client.updateWorkspaceMember(f.workspace.id, f.member.id, { actorIdentityId: f.owner.id, accessRole: "owner" });
+      await f.client.updateWorkspaceMember(f.workspace.id, f.owner.id, { actorIdentityId: f.owner.id, accessRole: "member" });
+      assert.equal((await submit()).status, 403);
+      assert.equal(f.calls.length, 1);
+    } finally { await f.close(); }
+  });
 }
 
 test("HTTP acknowledges a held replacement, reconciles its result, and rejects duplicate legacy or new intents", async () => {

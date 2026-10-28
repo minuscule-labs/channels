@@ -64,6 +64,7 @@ export interface LocalManagedRuntimePort extends LocalControlRuntimePort, Partia
   start?(config: ManagedRuntimeStartConfig): Promise<ManagedRuntimeSession>;
   startManaged?(config: ManagedRuntimeStartConfig, ownerId: string): Promise<ManagedRuntimeSession & { ownerId: string }>;
   suspend?(managedSessionId: string, ownerId: string): Promise<void>;
+  forceStopManaged?(managedSessionId: string, ownerId: string): Promise<void>;
   destroy?(managedSessionId: string, ownerId: string): Promise<void>;
   capabilities?(config?: { cwd?: string }): Promise<{
     models: Array<Omit<LocalAgentRuntimeOptions["models"][number], "enabled">>;
@@ -1435,6 +1436,83 @@ export class LocalAgentHost {
     });
   }
 
+  /** Explicit worker recovery does not require a successful status query or an attached Relay. */
+  async recoverConversationAgent(
+    conversationId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    restart: boolean,
+  ): Promise<void> {
+    return this.exclusive(this.bindingKey(conversationId, agentIdentityId), async () => {
+      let observation: RecordedOperation | undefined;
+      let workspaceId: string | undefined;
+      let fenced = false;
+      try {
+        if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
+        await this.assertConversationAdmission(conversationId);
+        const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+        workspaceId = context.conversation.workspaceId;
+        const matches = context.bindings.filter(binding => binding.agentIdentityId === agentIdentityId);
+        const target = matches.length === 1 ? matches[0] : undefined;
+        const runtime = target && this.options.runtimes[target.runtimeAdapter];
+        if (!target || target.state === "disabled" || !target.runtimeOwnerId?.trim() || !runtime?.forceStopManaged
+          || (restart && !runtime.resume)) {
+          throw new LocalConfigurationRequestError("Owner-scoped Runtime recovery is unavailable", 409, "unavailable");
+        }
+        observation = this.observeLifecycle(workspaceId, conversationId, agentIdentityId, restart ? "runtime_restart" : "runtime_stop", target);
+        observation?.event("delivery_fenced", "started");
+        const stopping = target.state === "stopping" ? target : await this.options.store.beginStopBinding(
+          target.id, target.generation, target.state, this.now().toISOString(),
+        );
+        if (!stopping) throw new LocalConfigurationRequestError("Agent binding changed; reload before recovery", 409, "unavailable");
+        fenced = true;
+        this.cancelRecovery(target.id);
+        observation?.event("delivery_fenced", "confirmed");
+        // Remove routing immediately, but do not wait for a hung turn before stopping its worker.
+        const retired = this.retireBinding(conversationId, agentIdentityId);
+        void retired.catch(() => {});
+        this.startedSessions.delete(this.sessionKey(target.id, target.runtimeSessionId));
+        observation?.event("cleanup_requested", "started");
+        await this.withTimeout(runtime.forceStopManaged(target.runtimeSessionId, target.runtimeOwnerId), 90_000, "Runtime shutdown timed out");
+        observation?.event("runtime_verified", "confirmed");
+        await this.withTimeout(retired, 15_000, "Previous delivery work did not settle");
+        observation?.event("route_detached", "confirmed");
+        const messages = await this.options.client.listMessages(conversationId);
+        const paused = await this.options.store.pauseBinding(
+          target.id, target.generation, messages.at(-1)?.sequence ?? 0, this.now().toISOString(),
+        );
+        if (!paused) throw new Error("Agent binding changed during recovery");
+        observation?.event("pause_committed", "confirmed");
+        if (restart) {
+          // Recheck authority after shutdown. Never create a replacement or change activation policy.
+          await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+          await this.assertConversationAdmission(conversationId);
+          observation?.event("resume_requested", "started");
+          if (await this.attachBinding(conversationId, target.id, true, target) !== "attached") {
+            throw new Error("Saved Runtime session could not be resumed");
+          }
+          observation?.event("route_attached", "confirmed");
+        }
+        observation?.requestFinished("handler_returned");
+        observation?.finish("succeeded");
+        this.audit({ action: restart ? "agent.runtime.restarted" : "agent.runtime.stopped", outcome: "accepted",
+          actorIdentityId, workspaceId, conversationId, targetIdentityId: agentIdentityId });
+      } catch (error) {
+        observation?.requestFinished("handler_failed");
+        observation?.finish(fenced ? "unknown" : "failed");
+        this.audit({ action: restart ? "agent.runtime.restarted" : "agent.runtime.stopped", outcome: "rejected",
+          reason: error instanceof LocalConfigurationRequestError ? error.reason : "unavailable",
+          actorIdentityId, workspaceId, conversationId, targetIdentityId: agentIdentityId });
+        if (error instanceof LocalConfigurationRequestError) throw actionFailure(error, fenced);
+        throw new LocalConfigurationRequestError(
+          restart ? "Runtime restart could not be confirmed; delivery remains blocked. Retry recovery or choose a new session."
+            : "Runtime shutdown could not be confirmed; delivery remains blocked. Retry Stop runtime.",
+          409, "unavailable", fenced ? "unconfirmed" : "failed",
+        );
+      }
+    });
+  }
+
   async stopConversationAgent(
     conversationId: string,
     agentIdentityId: string,
@@ -2374,6 +2452,7 @@ export class LocalAgentHost {
     conversationId: string,
     bindingId: string,
     resumePaused = false,
+    expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "runtimeSessionId" | "runtimeOwnerId">,
   ): Promise<AttachmentResult> {
     if (this.conversationAdmissionFences.has(conversationId)) return "lease_unavailable";
     try {
@@ -2405,6 +2484,7 @@ export class LocalAgentHost {
         store: this.options.store,
         conversationId,
         bindingIds: [bindingId],
+        expectedBinding,
         resumePaused,
         markConnected: false,
         leaseOwner: this.leaseOwner,

@@ -31,13 +31,13 @@ async function open(page: Page, data: Fixture) {
 }
 function history(data: Fixture): LocalAgentOperationHistory {
   return {
-    protocolVersion: 23, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
+    protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
     nextCursor: "2:2", retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 },
     operations: [{ operationId: "selected-stop", conversationId: data.primary.id, participantIdentityId: data.agent.id, action: "stop", requestedAt: "2026-10-01T09:59:00.000Z", acceptedAt: "2026-10-01T09:59:00.000Z", outcome: "unknown", requestDisposition: "handler_failed", observedAt: "2026-10-01T09:59:01.000Z", closedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, eventsDropped: 1, recordingGap: true, lastConfirmedStage: "delivery_fenced" }],
   };
 }
 function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperationDetail {
-  return { protocolVersion: 23, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
+  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
     operation: { ...history(data).operations[0]!, operationId, ...(operationId === "parent" ? {
       action: "bulk_stop", participantIdentityId: data.ownerId,
       bulk: { targets: 4, completed: 3, started: 0, stopped: 1, skipped: 1, failed: 1, unknown: 1, childrenUnrecorded: 1, childrenUnavailable: 2 },
@@ -50,10 +50,10 @@ function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperati
   failures: [{ triggerSequence: 1, participant: { identityId: data.agent.id, displayLabel: "Builder Agent" }, causeCategory: "runtime_request_timeout", failedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, attemptCount: 1, deliveryOutcome: "pending", remediation: { code: "retry_request", label: "Retry request" }, operationRelation: "targeted_trigger" }] };
 }
 function report(data: Fixture, count = 1): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 23, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
+  return { formatVersion: 1, protocolVersion: 24, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
 }
 function inspection(data: Fixture): LocalAgentSessionInspection {
-  return { protocolVersion: 23, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     recorded: { bindingState: "paused", origin: "started", adapter: "pi", contextMode: "fresh", activationSequence: 999999, activatedAt: "2026-10-01T09:00:00.000Z" },
     running: { status: "available", profile: { version: 1, capturedAt: "2026-10-01T10:00:00.000Z",
       model: { status: "verified", provider: "provider", id: "running-model" }, reasoning: { status: "verified", level: "low" },
@@ -63,14 +63,14 @@ function inspection(data: Fixture): LocalAgentSessionInspection {
     latestStart: "not_verified", lastStopBoundary: "not_recorded" };
 }
 function runtimeEvents(data: Fixture): LocalAgentSessionEvents {
-  return { protocolVersion: 23, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     snapshot: { version: 1, source: "runtime_bridge", capturedAt: "2026-10-01T10:00:00.000Z", recordingSince: "2026-10-01T09:00:00.000Z", eventsDropped: 0,
       events: [{ sequence: 1, observedAt: "2026-10-01T09:59:00.000Z", code: "turn_accepted" }, { sequence: 2, observedAt: "2026-10-01T09:59:01.000Z", code: "turn_dispatch_requested" }] } };
 }
 function deliveryTrails(data: Fixture): LocalAgentDeliveryTrails {
   const selected = { trailId: "trail-selected", triggerSequence: 1, startedAt: "2026-10-01T09:59:00.000Z", observedAt: "2026-10-01T10:00:00.000Z", closedAt: "2026-10-01T10:00:00.000Z", outcome: "delivered" as const,
     eventsDropped: 0, recordingGap: false, events: [{ sequence: 1, stage: "runtime_completed" as const, observedAt: "2026-10-01T09:59:59.000Z", elapsedMs: 59000 }, { sequence: 2, stage: "response_committed" as const, observedAt: "2026-10-01T10:00:00.000Z", elapsedMs: 60000, kind: "reply" as const, responseSequence: 2 }] };
-  return { protocolVersion: 23, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     retention: { days: 7, terminalLimit: 1000, eventLimit: 16 }, history: { trails: [selected], nextCursor: "2:2", recordingGap: false }, selected };
 }
 async function mocks(page: Page, data: Fixture) {
@@ -427,7 +427,7 @@ for (const loss of ["session", "identity", "participation", "disabled-human", "d
   const data = await fixture(request);
   await mocks(page, data);
   let lost = false;
-  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 23, identityId: lost ? data.agent.id : data.ownerId } }));
+  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 24, identityId: lost ? data.agent.id : data.ownerId } }));
   else if (loss === "participation") await page.route(`**/conversations/${data.primary.id}`, (route) => route.fulfill({ json: { conversation: { ...data.primary, participants: lost ? data.primary.participants.filter(({ id }) => id !== data.ownerId) : data.primary.participants } } }));
   else if (loss === "disabled-membership") await page.route(`**/workspaces/${data.workspaceId}/members`, (route) => route.fulfill({ json: { members: data.members.map((member) => member.identityId === data.ownerId && lost ? { ...member, status: "disabled" } : member) } }));
   else if (loss === "workspace") {
@@ -512,7 +512,7 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   const data = await fixture(request);
   const counts = await mocks(page, data);
   await page.route(`**/local/conversations/${data.primary.id}/agents`, route => route.fulfill({ json: {
-    protocolVersion: 23, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
+    protocolVersion: 24, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
   } }));
   const actions = await mockActionRequests(page, data.primary.id);
   if (kind === "individual") {
@@ -602,7 +602,7 @@ test("issue notices select exact public trigger evidence, not a matching timesta
   const first = { ...detail(data).failures[0]!, causeCategory: "runtime_offline" };
   const other = { ...first, triggerSequence: 999_999, causeCategory: "runtime_rejected" };
   await page.route(`**/local/conversations/${data.primary.id}/turn-failures`, (route) => route.fulfill({ json: {
-    protocolVersion: 23, conversationId: data.primary.id,
+    protocolVersion: 24, conversationId: data.primary.id,
     notices: [first, other].map(({ participant, failedAt, triggerSequence }) => ({ participant, failedAt, triggerSequence })),
     diagnostics: [first, other],
   } }));

@@ -673,7 +673,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
   async beginStopBinding(
     bindingId: string,
     expectedGeneration: number,
-    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing">,
+    expectedState: Extract<ConversationAgentBindingState, "connected" | "sleeping" | "waking" | "offline" | "replacing" | "paused">,
     updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const rows = await this.database.update(schema.conversationAgentBindings).set({

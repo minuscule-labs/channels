@@ -17,7 +17,7 @@ export async function mockActionRequests(page: Page, conversationId: string, opt
       calls.push(input);
       if (options.reject) return route.fulfill({ status: options.reject.status, json: { error: options.reject.error } });
       const result = options.onSubmit?.(input);
-      const receipt: LocalAgentActionReceipt = { ...input, protocolVersion: 23, conversationId, requestedAt: Date.now(), state: "pending", ...result };
+      const receipt: LocalAgentActionReceipt = { ...input, protocolVersion: 24, conversationId, requestedAt: Date.now(), state: "pending", ...result };
       if (receipt.state !== "pending") receipt.completedAt = Date.now();
       receipts.set(input.requestId, receipt);
       if (options.loseAcceptance) return route.abort("failed");

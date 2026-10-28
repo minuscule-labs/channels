@@ -7,7 +7,7 @@ interface ActionEntry {
   completion: Promise<LocalBulkAgentLifecycleResult[] | undefined>;
 }
 
-const actions = new Set(["start", "start-fresh", "reconnect", "replace", "replace-fresh", "stop", "cancel", "start-all", "stop-all"]);
+const actions = new Set(["start", "start-fresh", "reconnect", "replace", "replace-fresh", "stop", "stop-runtime", "restart-runtime", "cancel", "start-all", "stop-all"]);
 const validId = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 
 export function agentActionInput(input: unknown): LocalAgentActionInput {

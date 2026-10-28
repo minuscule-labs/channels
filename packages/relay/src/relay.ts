@@ -46,7 +46,7 @@ export interface ManagedRuntimeSessionSummary {
 export interface AgentRuntimePort {
   /** Owner-scoped operations for Runtime-managed sessions; absent on legacy adapters. */
   listManagedSessions?(ownerId: string): Promise<ManagedRuntimeSessionSummary[]>;
-  resume?(managedSessionId: string, ownerId: string): Promise<ManagedRuntimeSessionRef>;
+  resume?(managedSessionId: string, ownerId: string, options?: { allowStopped?: boolean }): Promise<ManagedRuntimeSessionRef>;
   send(sessionId: string, input: string, images?: RuntimePortImage[]): Promise<void>;
   startTurn?(sessionId: string, turnId: string, input: string, images?: RuntimePortImage[]): Promise<RuntimePortTurn>;
   inputCapabilities?(sessionId: string): Promise<{ version: 1; images: boolean }>;

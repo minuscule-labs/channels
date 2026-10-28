@@ -121,7 +121,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
   });
   const agentAction = useMutation({
     mutationFn: ({ action, identityId }: {
-      action: "start" | "start-fresh" | "reconnect" | "replace" | "replace-fresh" | "stop" | "cancel";
+      action: AgentSessionAction;
       identityId: string;
     }) => {
       return agentRequests.submit(action, identityId);
@@ -459,6 +459,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               })}
               onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
               onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
+              onRecoverRuntime={(identityId, restart) => agentAction.mutateAsync({ action: restart ? "restart-runtime" : "stop-runtime", identityId })}
               onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
               onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
               bulkResultAction={bulkResultAction}
@@ -573,6 +574,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           })}
           onCancelAgent={(identityId) => agentAction.mutateAsync({ action: "cancel", identityId })}
           onStopAgent={(identityId) => agentAction.mutateAsync({ action: "stop", identityId })}
+          onRecoverRuntime={(identityId, restart) => agentAction.mutateAsync({ action: restart ? "restart-runtime" : "stop-runtime", identityId })}
           onStartAllAgents={localCapabilities.data?.features.agentBulkStart ? startAllAgents : undefined}
           onStopAllAgents={localCapabilities.data?.features.agentBulkStop ? stopAllAgents : undefined}
           bulkResultAction={bulkResultAction}
