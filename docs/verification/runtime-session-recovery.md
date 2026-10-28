@@ -3,8 +3,8 @@
 ## Scope and source
 
 - User-approved increment: distinct **Stop runtime** and **Restart runtime** actions, available for uncertain owner-scoped managed sessions, preserving the existing transcript and keeping Fresh session separate. Failed/unconfirmed shutdown must not authorize restart. Automatic recovery policy changes are deferred.
-- Channels: `feat/runtime-session-recovery`, working-tree changes over `6719e6d`.
-- Runtime: adjacent `../runtime`, `feat/runtime-session-recovery`, working-tree changes over `accf23c`. That baseline already includes the separate startup-diagnostics change; it is not the currently pinned release source.
+- Channels implementation: `fdd2483` over `6719e6d`, subsequently integrated with current `origin/main` (`caaad6a`) without source conflicts.
+- Runtime implementation: `4af5154` over `accf23c`, integrated with current `origin/main` (`ec229f1`, including startup diagnostics and startup-timeout fixture stabilization). [Runtime PR #18](https://github.com/minuscule-labs/runtime/pull/18) merged as `86f81102db9ddacade58009d040a95253188992b`; `runtime-source.json` now pins that merged revision.
 - No authoritative schema migration, installed-app update, real-provider agent run, existing service restart, or real-data mutation was performed.
 
 ## Implementation
@@ -29,9 +29,13 @@ Focused cases cover busy turns, a frozen bridge/process group, owner denial, sam
 
 One bundled test initially failed because its test-only expected executable path had not resolved macOS's temporary-directory symlink. The fixture was corrected to use the real path; final bundled checks above passed without relaxing production identity checks.
 
+## Merge integration checkpoint
+
+The user authorized integration with the current updates. Runtime `pnpm check` / `pnpm test` passed with **68 tests** after merging current main; Runtime PR #18 also passed its Ubuntu and macOS CI jobs before merging. Channels now pins that exact merged Runtime revision, rather than a dirty source checkout or an unpublished dependency commit. Official release packaging and installed-tarball smoke are additional integration gates; their outcomes are recorded on the Channels recovery PR after building the clean pinned commit.
+
 ## Delivery limitations
 
-- These are author checks, not independent review, live-provider acceptance or release approval.
-- `runtime-source.json` remains pinned to `7bd8a689dec0776d0b1fd5642d1a97353c9b251b`. The new Runtime implementation must be committed/integrated and Channels pinned to that reviewed revision before reproducible release packaging. No fabricated or dirty-source release pin was added.
-- Official `release:pack` / installed-tarball smoke were not run: both source trees are intentionally uncommitted and the release Runtime pin has not been integrated. Disposable bundle verification is not a substitute for those release gates.
-- Signal fallback was exercised on macOS. Unreachable Windows workers and unverifiable legacy descendants remain unconfirmed/fenced rather than receiving unsafe broad kills.
+- Local results are author checks; GitHub CI is separately observed automation. Neither is independent review, live-provider acceptance or release approval.
+- Disposable bundle verification alone is not a substitute for clean pinned release packaging and installed-tarball smoke.
+- Signal fallback was exercised locally on macOS and by Runtime CI on Ubuntu/macOS. Unreachable Windows workers and unverifiable legacy descendants remain unconfirmed/fenced rather than receiving unsafe broad kills.
+- Merging does not publish a release, update the installed application or restart existing agents.
