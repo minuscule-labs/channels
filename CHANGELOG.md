@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.0.25
+
+Release overview: [Durable Pi sessions without destructive recovery fallbacks](docs/releases/v0.0.25.md).
+
+- Fix resume rejection of valid native Pi journals containing context edits, usage records or additional tree roots. Remove stale entry/role allowlists while retaining ownership, private-file, identity, bounded-read and ancestry checks.
+- Remove automatic replacement when an existing session cannot be resumed. Preserve managed identity, binding generation, context policy and pending-message cursor rather than silently starting over.
+- Retire and suspend replaced sessions without discarding their resume manifests. Convert older queued automatic-destroy cleanup intents to non-destructive suspend attempts and retain visible failures instead of claiming successful cleanup of missing sessions.
+- Record safe, bounded resume-failure reasons and stop recommending replacement as the ordinary recovery action. Keep worker-exit confirmation, delivery fencing and explicit-stop resume protection.
+- Pin Runtime `86bd35ea846740f55e83038b3ff823d9ddd67e34`. Keep local-control protocol v24 and database schemas unchanged. Previously discarded manifests are not automatically reconstructed.
+- Make development checks focused by default, fix web test-name filter forwarding, consolidate redundant browser coverage and split browser CI across three isolated single-worker runners. Superseded PR checks are cancelled; release gates are unchanged.
+
 ## 0.0.24
 
 Release overview: [Clearer agent controls and reliable manual recovery](docs/releases/v0.0.24.md).
