@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     strategy:
@@ -30,7 +34,11 @@ jobs:
           RUST_BACKTRACE: full
       - run: pnpm web:test
 
-  browser:
+  browser-shards:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +51,28 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @minu/channels-web exec playwright install --with-deps chromium
-      - run: pnpm web:test:browser
+      - run: pnpm web:test:browser --shard=${{ matrix.shard }}/3 --reporter=line,json
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-results/results.json
+      - name: Upload browser timings and results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-results-${{ matrix.shard }}
+          path: browser-results/results.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Keep the existing check name; it passes only when every isolated shard passes.
+  browser:
+    if: ${{ always() }}
+    needs: browser-shards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all browser shards
+        env:
+          SHARDS_RESULT: ${{ needs.browser-shards.result }}
+        run: test "$SHARDS_RESULT" = success
 
   release-package:
     runs-on: ubuntu-latest

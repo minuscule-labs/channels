@@ -148,6 +148,24 @@ These are internal boundaries of one product, not separate services users must c
 
 ## Development checks
 
+While developing, run affected files rather than every suite:
+
+```bash
+# Backend: compile the affected package, then run its relevant test file.
+pnpm exec tsc -b packages/control
+node --test packages/control/dist/test/agent-actions.test.js
+
+# Web unit test filename filter; add -t "test title" to narrow further.
+pnpm web:test agent-actions
+
+# One browser spec, optionally narrowed by title.
+pnpm web:test:browser participant-sidebar.spec.ts --grep "uncertain participants"
+```
+
+See [development verification guidance](AGENTS.md). Rerun failing/affected checks while iterating; use required CI for broad integration evidence rather than duplicating every CI run locally. Browser CI uses three isolated, single-worker shards and cancels superseded pull-request runs. Its timing reports are uploaded as `browser-results-1`, `browser-results-2`, and `browser-results-3` artifacts.
+
+The unfiltered commands below remain available for integration checks, not as a per-edit checklist:
+
 ```bash
 pnpm check
 pnpm test

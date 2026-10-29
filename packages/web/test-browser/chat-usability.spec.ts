@@ -245,19 +245,27 @@ test("lazily renders Mermaid, retains copyable source, and anchors through diagr
   expect(await timeline.evaluate((element) => element.scrollTop)).toBe(0);
 });
 
-test("renders Mermaid and highlighted TypeScript together, including nested fences", async ({ page, request }) => {
+test("lazily highlights nested code without erasing mixed Mermaid diagrams", async ({ page, request }) => {
   const { workspaceId, alternateId } = await fixture(request);
-  // Keep supported fences out of the primary fixture used by the existing cold-highlighter test.
+  const loadedModules: string[] = [];
+  page.on("request", outgoing => loadedModules.push(outgoing.url()));
   await peer(request, "Mixed history", "&count=35&conversation=alternate&author=human");
   await launch(page, request, workspaceId, alternateId);
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  expect(loadedModules.some(url => url.includes("code-highlighter"))).toBe(false);
   await peer(request, [
     "```mermaid", "graph TD", "  A[Mixed start] --> B[Mixed done]", "```", "",
     "> ~~~MeRmAiD", "> sequenceDiagram", ">   Alice->>Bob: Nested hello", "> ~~~", "",
-    "```typescript", "const mixedAnswer: number = 42;", "```",
+    "```typescript", "const mixedAnswer: number = 42;", "```", "",
+    "> ```ts", "> const nestedAnswer: number = 42;", "> ```", "",
+    "- Configuration", "", "    ~~~yml", "    name: value", "    ~~~",
   ].join("\n"), "&conversation=alternate&author=human");
   const message = page.getByRole("log").locator("article").last();
   // Wait for highlighting first: this is the asynchronous transform that used to erase Mermaid.
-  await expect(message.locator('pre[data-language="ts"] .th-keyword')).toBeVisible();
+  await expect(message.locator('pre[data-language="ts"] .th-keyword').first()).toBeVisible();
+  await expect(message.locator('blockquote pre[data-language="ts"] .th-keyword')).toBeVisible();
+  await expect(message.locator('pre[data-language="yaml"]')).toBeVisible();
+  expect(loadedModules.some(url => url.includes("code-highlighter"))).toBe(true);
   await expect(message.getByRole("img", { name: "Mermaid diagram" })).toHaveCount(2);
   await expect(message.getByRole("img", { name: "Mermaid diagram" }).first()).toContainText("Mixed start");
   await expect(message.getByRole("img", { name: "Mermaid diagram" }).last()).toContainText("Nested hello");

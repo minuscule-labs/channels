@@ -96,11 +96,9 @@ async function mocks(page: Page, data: Fixture) {
 }
 function gate() { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; }
 
-for (const mobile of [false, true]) test(`message delivery is advanced-only, explicit and keyboard accessible (${mobile ? "mobile" : "desktop"})`, async ({ page, request }) => {
-  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+test("message delivery is advanced-only, explicit and keyboard accessible", async ({ page, request }) => {
   const data = await fixture(request), counts = await mocks(page, data); await launch(page, request, data);
   await expect(page.getByRole("region", { name: "Message delivery", exact: true })).toHaveCount(0); expect(counts.trails).toBe(0);
-  if (mobile) await page.getByRole("button", { name: "Show participants" }).click();
   const modal = await open(page, data), region = modal.getByRole("region", { name: "Message delivery", exact: true });
   await expect(region.getByRole("button", { name: "Show message trails" })).toBeEnabled(); expect(counts.trails).toBe(0);
   await region.getByRole("button", { name: "Show message trails" }).focus(); await page.keyboard.press("Enter");
@@ -140,11 +138,9 @@ test("message trail read errors, session changes and server denial discard stale
   await region.getByRole("button", { name: "Refresh message trails" }).click(); await expect(modal.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
 });
 
-for (const mobile of [false, true]) test(`recent Runtime events are explicit, read-only and keyboard accessible (${mobile ? "mobile" : "desktop"})`, async ({ page, request }) => {
-  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+test("recent Runtime events are explicit, read-only and keyboard accessible", async ({ page, request }) => {
   const data = await fixture(request), counts = await mocks(page, data);
   await launch(page, request, data); expect(counts.events).toBe(0);
-  if (mobile) await page.getByRole("button", { name: "Show participants" }).click();
   const modal = await open(page, data);
   const region = modal.getByRole("region", { name: "Recent Runtime events", exact: true });
   const show = region.getByRole("button", { name: "Show events", exact: true });

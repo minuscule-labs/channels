@@ -1384,39 +1384,6 @@ test("keeps navigation available and retries a failed agent page chunk", async (
   expect(moduleAttempts).toBeGreaterThan(1);
 });
 
-test("loads only needed syntax highlighting for nested fenced code", async ({ page, request }) => {
-  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
-    workspaces: Array<{ id: string }>;
-  };
-  const workspaceId = workspaces[0]!.id;
-  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspaceId}/conversations`)).json() as {
-    conversations: Array<{ id: string }>;
-  };
-  const conversationId = conversations[0]!.id;
-  const loadedModules: string[] = [];
-  page.on("request", (outgoing) => loadedModules.push(outgoing.url()));
-
-  await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
-  await expect(page.getByLabel("Live updates live")).toBeVisible();
-  expect(loadedModules.some((url) => url.includes("code-highlighter"))).toBe(false);
-
-  const nestedCode = [
-    "> ```ts",
-    "> const answer: number = 42;",
-    "> ```",
-    "",
-    "- Configuration",
-    "",
-    "    ~~~yml",
-    "    name: value",
-    "    ~~~",
-  ].join("\n");
-  await request.post(`${fixtureBase}/peer-message?body=${encodeURIComponent(nestedCode)}`);
-  await expect(page.locator(".th-token.th-keyword")).toBeVisible();
-  await expect(page.locator('pre[data-language="yaml"]')).toBeVisible();
-  expect(loadedModules.some((url) => url.includes("code-highlighter"))).toBe(true);
-});
-
 test("keeps messaging available when Runtime status is unavailable", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string }>;
