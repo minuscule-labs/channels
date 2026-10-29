@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Worker } from "node:worker_threads";
 import { EventEmitter } from "node:events";
 import { ConversationClient, createConversationHttpServer } from "@minu/channels-core";
-import { InMemoryRelayBindingStore } from "@minu/channels-relay";
+import { InMemoryRelayBindingStore, type ManagedRuntimeSessionSummary } from "@minu/channels-relay";
 import { DiagnosticJournal, DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import { LocalAgentHost, type ManagedRuntimeStartConfig } from "../src/agent-host.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
@@ -69,7 +69,7 @@ class ObservedFakeRuntime {
     this.sendGate?.release();
     await this.interruptGate?.promise;
   }
-  async listManagedSessions(ownerId: string) {
+  async listManagedSessions(ownerId: string): Promise<ManagedRuntimeSessionSummary[]> {
     return [...this.sessions].filter(([, session]) => session.ownerId === ownerId)
       .map(([id, session]) => ({ id, ownerId, state: session.status === "offline" ? "suspended" as const : "active" as const }));
   }
@@ -119,6 +119,58 @@ async function fixture(diagnostics?: LifecycleDiagnostics, store: InMemoryRelayB
     async close() { runtime.sendGate?.release(); runtime.interruptGate?.release(); await host.close(); await store.close(); await server.close(); await rm(directory, { recursive: true, force: true }); },
   };
 }
+
+for (const reason of ["session_metadata_unavailable", "session_transcript_invalid", "session_resume_failed"] as const) {
+  test(`explicit resume records safe ${reason} evidence without replacing or losing the saved session`, async () => {
+    const collector = new LifecycleCollector();
+    const f = await fixture(collector);
+    try {
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+      const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+      await f.host.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      const list = f.runtime.listManagedSessions.bind(f.runtime);
+      if (reason === "session_resume_failed") {
+        await f.runtime.suspend(original.runtimeSessionId, original.runtimeOwnerId!);
+        f.runtime.resumeFailure = true;
+      } else if (reason === "session_metadata_unavailable") {
+        f.runtime.listManagedSessions = async () => [];
+      } else {
+        f.runtime.listManagedSessions = async ownerId => (await list(ownerId)).map(session => ({ ...session, state: "unavailable", unavailableReason: reason }));
+      }
+      await assert.rejects(f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id), error =>
+        error instanceof LocalConfigurationRequestError && /session.*not.*replaced/.test(error.message) && !error.message.includes("SECRET"));
+      const current = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+      assert.equal(current.state, "paused"); assert.equal(current.runtimeSessionId, original.runtimeSessionId); assert.equal(current.generation, original.generation);
+      assert.equal(f.runtime.starts, 1); assert.deepEqual(f.runtime.destructions, []);
+      assert.equal((await f.store.listSessionHistory(f.conversation.id, f.agent.id)).length, 1);
+      const operation = collector.operations.filter(item => item.action === "resume").at(-1)!;
+      assert.ok(operation.events.some(([stage, result, options]) => stage === "resume_requested" && result === "failed" && options?.reasonCode === reason));
+      assert.doesNotMatch(JSON.stringify(operation.events), /SECRET|PRIVATE|sessionFile|ownerId/);
+    } finally { await f.close(); }
+  });
+}
+
+test("startup retains an unavailable owned session instead of silently creating a replacement", async () => {
+  const f = await fixture();
+  let restored: LocalAgentHost | undefined;
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+    const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    await f.host.close();
+    const now = new Date().toISOString();
+    assert.ok(await f.store.acquireBindingLease(original.id, "fixture-offline", now, new Date(Date.now() + 30_000).toISOString()));
+    assert.ok(await f.store.updateBindingState(original.id, original.generation, "fixture-offline", "offline", original.lastVerifiedAt, now));
+    await f.store.releaseBindingLease(original.id, original.generation, "fixture-offline");
+    f.runtime.listManagedSessions = async ownerId => [{ id: original.runtimeSessionId, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }];
+    restored = new LocalAgentHost({ client: f.client, store: f.store, runtimes: { fake: f.runtime }, autoResumeOfflineAgents: true });
+    await restored.restore();
+    const current = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    assert.equal(current.runtimeSessionId, original.runtimeSessionId); assert.equal(current.generation, original.generation); assert.equal(current.state, "offline");
+    assert.equal(restored.isAttached(f.conversation.id, f.agent.id), false);
+    assert.equal(f.runtime.starts, 1); assert.deepEqual(f.runtime.destructions, []);
+    assert.equal((await f.store.listSessionHistory(f.conversation.id, f.agent.id)).length, 1);
+  } finally { await restored?.close(); await f.close(); }
+});
 
 for (const persistent of [false, true]) {
   test(`explicit Runtime recovery handles uncertain sleeping bindings without status, preserving binding and activation (persistent=${persistent})`, async () => {
@@ -450,8 +502,8 @@ test("cleanup failure is separate from replacement success, and restart retries 
   try {
     await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
     const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
-    const destroy = f.runtime.destroy.bind(f.runtime);
-    f.runtime.destroy = async () => { throw new Error("SECRET_CLEANUP_ERROR"); };
+    const suspend = f.runtime.suspend.bind(f.runtime);
+    f.runtime.suspend = async () => { throw new Error("SECRET_CLEANUP_ERROR"); };
     await f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
     const replacement = collector.operations.find(({ action }) => action === "replace_fresh")!;
     const failed = collector.operations.find(({ action }) => action === "cleanup")!;
@@ -461,7 +513,7 @@ test("cleanup failure is separate from replacement success, and restart retries 
     assert.deepEqual(failed.correlations.sourceBinding, { id: original.id, generation: original.generation });
     assert.ok(!JSON.stringify(failed).includes("SECRET_CLEANUP_ERROR"));
     const job = (await f.store.listSessionHistory(f.conversation.id, f.agent.id)).find(({ bindingGeneration }) => bindingGeneration === original.generation)!;
-    f.runtime.destroy = destroy;
+    f.runtime.suspend = suspend;
     await f.useDiagnostics(collector);
     await f.host.restore();
     await until(() => collector.operations.some(({ action, outcome, correlations }) => action === "cleanup" && outcome === "succeeded" && correlations.cleanupHistoryId === job.id));

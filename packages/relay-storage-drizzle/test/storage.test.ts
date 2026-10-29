@@ -490,7 +490,8 @@ test("managed session history is transactionally versioned, owner-scoped, and re
     assert.equal(history[1]?.conversationSequenceAtActivation, 18);
     assert.equal(history[1]?.contextMode, "fresh");
     assert.equal(history[0]?.conversationSequenceAtRetirement, undefined);
-    assert.equal(history[0]?.retentionStatus, "destroy_pending");
+    assert.equal(history[0]?.retentionStatus, "retained");
+    assert.equal(history[0]?.cleanupAction, "suspend");
     assert.equal(history[1]?.retentionStatus, "retained");
     assert.deepEqual((await first.listPendingSessionCleanups(100)).map(({ managedSessionId, runtimeOwnerId }) => ({
       managedSessionId,
@@ -503,7 +504,8 @@ test("managed session history is transactionally versioned, owner-scoped, and re
       outcome: "succeeded",
       attemptedAt: "2026-01-01T00:00:02.000Z",
       observedRuntimeStatus: "offline",
-      retentionOutcome: "destroyed",
+      cleanupAction: "suspend",
+      retentionOutcome: "retained",
     });
     assert.equal((await first.listPendingSessionCleanups(100)).length, 0);
   } finally {
@@ -516,7 +518,8 @@ test("managed session history is transactionally versioned, owner-scoped, and re
     const history = await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId);
     assert.equal(history[0]?.cleanupStatus, "succeeded");
     assert.equal(history[0]?.cleanupAttemptCount, 1);
-    assert.equal(history[0]?.retentionStatus, "destroyed");
+    assert.equal(history[0]?.retentionStatus, "retained");
+    assert.equal(history[0]?.cleanupAction, "suspend");
     assert.equal(history[1]?.state, "active");
     assert.equal(history[1]?.contextMode, "fresh");
     const disabled = await reopened.disableBinding(
@@ -527,7 +530,8 @@ test("managed session history is transactionally versioned, owner-scoped, and re
     assert.equal(disabled?.generation, 3);
     const disabledHistory = await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId);
     assert.equal(disabledHistory[1]?.cleanupStatus, "pending");
-    assert.equal(disabledHistory[1]?.retentionStatus, "destroy_pending");
+    assert.equal(disabledHistory[1]?.retentionStatus, "retained");
+    assert.equal(disabledHistory[1]?.cleanupAction, "suspend");
     await reopened.deleteBinding(binding.id);
     assert.equal(await reopened.getBinding(binding.id), undefined);
     assert.equal((await reopened.listSessionHistory(binding.conversationId, binding.agentIdentityId)).length, 2);

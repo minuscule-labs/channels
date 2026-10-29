@@ -210,13 +210,8 @@ async function retireSessionActivation(
     state: "retired",
     retiredAt: timestamp,
     retirementReason: reason,
-    cleanupAction: reason === "replaced" || reason === "stopped"
-      ? sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'destroy' ELSE 'none' END`
-      : sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'suspend' ELSE 'none' END`,
+    cleanupAction: sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'suspend' ELSE 'none' END`,
     cleanupStatus: sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'pending' ELSE 'unknown' END`,
-    ...((reason === "replaced" || reason === "stopped")
-      ? { retentionStatus: sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'destroy_pending' ELSE ${schema.conversationAgentSessionHistory.retentionStatus} END` }
-      : {}),
     updatedAt: timestamp,
   }).where(and(
     eq(schema.conversationAgentSessionHistory.bindingId, bindingId),
@@ -504,6 +499,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       lastCleanupAttemptAt: input.attemptedAt,
       lastObservedRuntimeStatus: input.observedRuntimeStatus,
       cleanupStatus: input.outcome,
+      ...(input.cleanupAction ? { cleanupAction: input.cleanupAction } : {}),
       ...(input.retentionOutcome ? { retentionStatus: input.retentionOutcome } : {}),
       lastVerifiedAt: input.attemptedAt,
       lastCleanupErrorCategory: input.outcome === "failed" ? input.errorCategory ?? "operation_failed" : null,

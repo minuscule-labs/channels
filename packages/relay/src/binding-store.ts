@@ -156,6 +156,8 @@ export interface RuntimeSessionCleanupAttempt {
   observedRuntimeStatus: "idle" | "working" | "offline" | "unknown";
   errorCategory?: RuntimeSessionCleanupErrorCategory;
   retentionOutcome?: "retained" | "destroyed";
+  /** Normalize legacy automatic-destroy intents to non-destructive retirement. */
+  cleanupAction?: "suspend";
 }
 
 export interface DeliveryDeadLetterRecord {
@@ -527,12 +529,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     record.state = "retired";
     record.retiredAt = timestamp;
     record.retirementReason = reason;
-    const destructionRequested = reason === "replaced" || reason === "stopped";
-    record.cleanupAction = record.mapping === "managed"
-      ? destructionRequested ? "destroy" : "suspend"
-      : "none";
+    record.cleanupAction = record.mapping === "managed" ? "suspend" : "none";
     record.cleanupStatus = record.mapping === "managed" ? "pending" : "unknown";
-    if (record.mapping === "managed" && destructionRequested) record.retentionStatus = "destroy_pending";
     record.updatedAt = timestamp;
   }
 
@@ -585,6 +583,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     record.lastCleanupAttemptAt = input.attemptedAt;
     record.lastObservedRuntimeStatus = input.observedRuntimeStatus;
     record.cleanupStatus = input.outcome;
+    if (input.cleanupAction) record.cleanupAction = input.cleanupAction;
     if (input.retentionOutcome) record.retentionStatus = input.retentionOutcome;
     record.lastCleanupErrorCategory = input.outcome === "failed" ? input.errorCategory : undefined;
     record.lastVerifiedAt = input.attemptedAt;
@@ -1120,7 +1119,10 @@ export type RestoreBindingOutcome =
   | "invalid_binding"
   | "runtime_unavailable"
   | "runtime_offline"
-  | "runtime_uncertain";
+  | "runtime_uncertain"
+  | "session_metadata_unavailable"
+  | "session_transcript_invalid"
+  | "session_resume_failed";
 
 export interface RestoreConversationBindingsOptions {
   /** Recovery must not attach a replacement generation that appeared after its stop fence. */
@@ -1449,14 +1451,15 @@ export async function restoreConversationBindings(
           );
           outcomes.set(leased.id, offline ? "runtime_offline" : "runtime_uncertain");
         } else {
-          outcomes.set(leased.id, "runtime_offline");
+          outcomes.set(leased.id, "session_metadata_unavailable");
         }
         await release();
         continue;
       }
       managedSessionState = ownedSession.state;
       if (managedSessionState === "unavailable") {
-        outcomes.set(leased.id, "runtime_uncertain");
+        const reason = ownedSession.unavailableReason;
+        outcomes.set(leased.id, reason === "session_metadata_unavailable" || reason === "session_transcript_invalid" ? reason : "runtime_uncertain");
         await release();
         continue;
       }
@@ -1474,7 +1477,7 @@ export async function restoreConversationBindings(
             "Runtime session resume",
           );
         } catch {
-          outcomes.set(leased.id, "runtime_uncertain");
+          outcomes.set(leased.id, "session_resume_failed");
           await release();
           continue;
         }

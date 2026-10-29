@@ -33,7 +33,15 @@ Recovery first durably fences delivery and detaches the old route. Runtime stops
 
 A persisted Runtime recovery fence also rejects delayed automatic resumes. Only an explicit Start/Restart can clear it. Stop leaves the binding paused; Restart reopens the same saved transcript, binding generation, context policy and activation boundary, after rechecking authority. Neither action creates a fresh session or reapplies saved future launch settings. As with the legacy pause, queued work through the confirmed stop boundary is discarded; later messages wait for explicit resume. Tool/filesystem side effects are not rolled back.
 
-Failure to confirm shutdown leaves delivery fenced and never launches a second worker. Failed transcript validation/resume preserves the paused binding and resume material, rather than silently replacing it. Existing bounded automatic verification/reattachment is unchanged; automatic termination, replacement and policy changes are outside this manual-recovery increment.
+Failure to confirm shutdown leaves delivery fenced and never launches a second worker. Failed transcript validation/resume preserves the paused binding and resume material, rather than silently replacing it. Bounded verification/lease reattachment remains, but startup recovery only reopens the same owner-scoped saved session. The automatic new-session fallback is removed: unavailable resume material never authorizes replacement, generation changes, or cursor advancement.
+
+## Durable sessions and retirement
+
+The worker is disposable; its owner-scoped resume manifest and Pi transcript are not. Runtime validates the private journal envelope while Pi interprets native entry payloads, including context edits, usage records and branched history. A CLI upgrade must not make valid new entry types fail an outdated Runtime allowlist.
+
+Explicit New session still creates a different session, but retires and suspends the previous one without destroying its resume manifest. History remains owner-scoped and retained; cleanup failures remain visible and retryable. Older queued automatic-destroy intents are converted to suspend attempts, not replayed as deletion. A missing or invalid session is not falsely recorded as successfully cleaned up. Disposal of a newly launched, never-bound session remains separate.
+
+These changes do not reconstruct manifests already removed by older versions or rewrite historical records labelled destroyed. Older orphaned transcript files may still exist and require explicit recovery; no automatic scan, reassignment or modification of them is performed.
 
 ## Diagnostics
 
@@ -41,4 +49,6 @@ The participant menu links to `/app/workspaces/:workspaceId/conversations/:conve
 
 Existing diagnostic authorization and bounded reads remain in force. Private inspection/report state is disposable, fenced against navigation and late responses, and cleared on observed access loss. Authorization denial from any page read clears the whole surface even if public authorization metadata is stale; subsequent successful polls cannot restore the cleared projections. Reports are not shared between tabs or saved in browser storage. Exact selected issue identifiers preserve trigger/failed-time selection; public message links return to the Conversation and focus the referenced message. Returning to the Conversation restores participant focus, including the mobile drawer trigger.
 
-No Runtime repin, authoritative schema migration, installed-app update, or native-addon crash fix is included.
+Resume failures retain bounded reason codes (`session_metadata_unavailable`, `session_transcript_invalid`, or `session_resume_failed`) in lifecycle evidence and safe existing action errors. Raw errors, native IDs, paths and transcript content remain private. Failure guidance no longer suggests replacing a session as the ordinary recovery step.
+
+No authoritative schema migration, installed-app update, or native-addon crash fix is included.

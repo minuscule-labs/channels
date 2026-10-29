@@ -1,7 +1,7 @@
 /** Diagnostic observations only. These records are never lifecycle authority. */
 export const DIAGNOSTIC_ACTIONS = ["start", "resume", "stop", "runtime_stop", "runtime_restart", "reconnect", "cancel_current", "replace", "replace_fresh", "bulk_start", "bulk_stop", "cleanup"] as const;
 export const DIAGNOSTIC_STAGES = ["accepted", "delivery_fenced", "interrupt_requested", "interrupt_acknowledged", "turn_settled", "pause_committed", "route_detached", "session_verified", "resume_requested", "runtime_verified", "route_attached", "handoff_prepared", "activation_boundary", "launch_requested", "binding_committed", "cleanup_requested", "cleanup_recorded", "bulk_progress", "completed", "observer_lost"] as const;
-export const DIAGNOSTIC_REASONS = ["not_required", "fresh_context", "unavailable", "uncertain", "observer_lost", "recording_gap", "target_changed", "already_settled", "already_requested", "suspend", "destroy"] as const;
+export const DIAGNOSTIC_REASONS = ["not_required", "fresh_context", "unavailable", "uncertain", "observer_lost", "recording_gap", "target_changed", "already_settled", "already_requested", "suspend", "destroy", "session_metadata_unavailable", "session_transcript_invalid", "session_resume_failed"] as const;
 export type DiagnosticAction = typeof DIAGNOSTIC_ACTIONS[number];
 export type DiagnosticStage = typeof DIAGNOSTIC_STAGES[number];
 export type DiagnosticReason = typeof DIAGNOSTIC_REASONS[number];

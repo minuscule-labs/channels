@@ -41,6 +41,7 @@ export interface ManagedRuntimeSessionSummary {
   id: string;
   ownerId: string;
   state: "active" | "suspended" | "unavailable";
+  unavailableReason?: "session_metadata_unavailable" | "session_transcript_invalid";
 }
 
 export interface AgentRuntimePort {
