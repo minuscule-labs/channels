@@ -116,7 +116,7 @@ export async function createLocalControlDaemon(
       diagnostics,
       now: options.now,
       stopStartedSessionsOnClose: options.stopStartedSessionsOnClose,
-      autoResumeActorIdentityId: options.autoResumeOfflineAgents ? options.currentHumanIdentityId : undefined,
+      autoResumeOfflineAgents: options.autoResumeOfflineAgents,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,
     });

@@ -21,6 +21,7 @@ import {
   type WorkspaceAgentConfig,
   type DiagnosticAction,
   type DiagnosticObservation,
+  type DiagnosticReason,
   type DiagnosticScope,
   type DeliveryScope,
   type DiagnosticBulkProgress,
@@ -92,6 +93,18 @@ class BulkSnapshotChangedError extends Error {}
 
 type AttachmentResult = "attached" | RestoreBindingOutcome | "failed";
 
+function resumeFailureReason(result: AttachmentResult): DiagnosticReason {
+  return result === "session_metadata_unavailable" || result === "session_transcript_invalid" || result === "session_resume_failed"
+    ? result : "unavailable";
+}
+function resumeFailureMessage(result: AttachmentResult): string {
+  switch (result) {
+    case "session_transcript_invalid": return "Saved session transcript could not be validated; the session was not replaced.";
+    case "session_metadata_unavailable": return "Saved session metadata is unavailable; the session was not replaced.";
+    default: return "Saved session could not be resumed; the session was not replaced.";
+  }
+}
+
 export interface LocalAgentHostDiagnosticEvent {
   category: "binding_restore" | "binding_lease" | "turn_failure";
   outcome: "attached" | "reattached" | "retrying" | "offline" | "uncertain" | "conflict" | "invalid" | "failed" | "recorded" | "finalized";
@@ -159,8 +172,8 @@ export interface LocalAgentHostOptions {
   idleSleepTimeoutMs?: number;
   idleSleepCheckIntervalMs?: number;
   recoveryBackoffMs?: readonly number[];
-  /** Local product owner allowed to replace stale offline sessions during startup. */
-  autoResumeActorIdentityId?: string;
+  /** Startup may reopen the same owner-scoped session, never create a replacement. */
+  autoResumeOfflineAgents?: boolean;
   diagnostics?: LifecycleDiagnostics;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
@@ -810,7 +823,7 @@ export class LocalAgentHost {
         }
         if (existingBindings[0]?.state === "stopping") {
           throw new LocalConfigurationRequestError(
-            "Stop could not be confirmed; use New session instead",
+            "Stop could not be confirmed; delivery remains blocked",
             409,
             "unavailable",
           );
@@ -820,9 +833,11 @@ export class LocalAgentHost {
           mutationStarted = true;
           observation = this.observeLifecycle(conversation.workspaceId, conversationId, agentIdentityId, "resume", existingBindings[0], undefined, diagnostic);
           observation?.event("resume_requested", "started");
-          if (await this.attachBinding(conversationId, existingBindings[0].id, true) !== "attached") {
+          const result = await this.attachBinding(conversationId, existingBindings[0].id, true);
+          if (result !== "attached") {
+            observation?.event("resume_requested", "failed", { reasonCode: resumeFailureReason(result) });
             throw new LocalConfigurationRequestError(
-              "Stopped Runtime session could not be resumed; use New session instead",
+              resumeFailureMessage(result),
               409,
               "unavailable",
             );
@@ -1118,7 +1133,7 @@ export class LocalAgentHost {
           previous.runtimeOwnerId,
           previous.id,
           previous.generation,
-          "destroy",
+          "suspend",
           { workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId },
         );
         this.startedSessions.delete(this.sessionKey(previous.id, previous.runtimeSessionId));
@@ -1146,7 +1161,7 @@ export class LocalAgentHost {
             previousBinding?.runtimeOwnerId,
             previousBinding?.id,
             previousBinding?.generation,
-            "destroy",
+            "suspend",
             workspaceId ? { workspaceId, conversationId, participantIdentityId: agentIdentityId, relatedOperationId: observation?.operationId } : undefined,
           );
           const records = await this.options.store.listConversationBindings(conversationId).catch(() => []);
@@ -1220,12 +1235,11 @@ export class LocalAgentHost {
         if (binding.state === "offline" && binding.runtimeOwnerId) {
           await this.resumeManagedBinding(binding, observation);
         }
-        if (await this.attachBinding(conversationId, binding.id) !== "attached") {
-          const current = await this.options.store.getBinding(binding.id);
+        const result = await this.attachBinding(conversationId, binding.id);
+        if (result !== "attached") {
+          observation?.event("resume_requested", "failed", { reasonCode: resumeFailureReason(result) });
           throw new LocalConfigurationRequestError(
-            current?.state === "offline"
-              ? "Existing Runtime session is unreachable; use New session instead"
-              : "Existing Runtime session could not be reconnected",
+            resumeFailureMessage(result),
             409,
             "unavailable",
           );
@@ -1488,8 +1502,10 @@ export class LocalAgentHost {
           await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
           await this.assertConversationAdmission(conversationId);
           observation?.event("resume_requested", "started");
-          if (await this.attachBinding(conversationId, target.id, true, target) !== "attached") {
-            throw new Error("Saved Runtime session could not be resumed");
+          const result = await this.attachBinding(conversationId, target.id, true, target);
+          if (result !== "attached") {
+            observation?.event("resume_requested", "failed", { reasonCode: resumeFailureReason(result) });
+            throw new LocalConfigurationRequestError(resumeFailureMessage(result), 409, "unavailable");
           }
           observation?.event("route_attached", "confirmed");
         }
@@ -1505,8 +1521,8 @@ export class LocalAgentHost {
           actorIdentityId, workspaceId, conversationId, targetIdentityId: agentIdentityId });
         if (error instanceof LocalConfigurationRequestError) throw actionFailure(error, fenced);
         throw new LocalConfigurationRequestError(
-          restart ? "Runtime restart could not be confirmed; delivery remains blocked. Retry recovery or choose a new session."
-            : "Runtime shutdown could not be confirmed; delivery remains blocked. Retry Stop runtime.",
+          restart ? "Agent restart could not be confirmed; delivery remains blocked."
+            : "Agent shutdown could not be confirmed; delivery remains blocked.",
           409, "unavailable", fenced ? "unconfirmed" : "failed",
         );
       }
@@ -2142,7 +2158,7 @@ export class LocalAgentHost {
     let status = await this.runtimeStatus(runtime, sessionId);
     if (status === "offline") {
       throw new LocalConfigurationRequestError(
-        "Agent Runtime session is unavailable; use New session instead",
+        "Agent Runtime session is unavailable; delivery remains blocked",
         409,
         "unavailable",
       );
@@ -2197,13 +2213,16 @@ export class LocalAgentHost {
     if (!existing || existing.state === "unavailable") return false;
     observation?.event("session_verified", "confirmed");
     observation?.event("resume_requested", "started");
-    const resumed = await this.withTimeout(
-      runtime.resume(binding.runtimeSessionId, binding.runtimeOwnerId),
-      30_000,
-      "Managed Runtime resume timed out",
-    );
-    if (resumed.id !== binding.runtimeSessionId || resumed.ownerId !== binding.runtimeOwnerId) {
-      throw new Error("Runtime resumed a different managed session or owner scope");
+    try {
+      const resumed = await this.withTimeout(
+        runtime.resume(binding.runtimeSessionId, binding.runtimeOwnerId),
+        30_000,
+        "Managed Runtime resume timed out",
+      );
+      if (resumed.id !== binding.runtimeSessionId || resumed.ownerId !== binding.runtimeOwnerId) throw new Error("Managed resume identity mismatch");
+    } catch {
+      observation?.event("resume_requested", "failed", { reasonCode: "session_resume_failed" });
+      throw new LocalConfigurationRequestError(resumeFailureMessage("session_resume_failed"), 409, "unavailable");
     }
     observation?.event("resume_requested", "confirmed");
     return true;
@@ -2266,9 +2285,9 @@ export class LocalAgentHost {
           attemptedAt: this.now().toISOString(),
           observedRuntimeStatus,
           ...(outcome === "failed" ? { errorCategory } : {}),
-          ...(outcome === "succeeded" && cleanupAction === "destroy"
-            ? { retentionOutcome: "destroyed" as const }
-            : {}),
+          ...(cleanupAction === "suspend"
+            ? { cleanupAction: "suspend" as const, retentionOutcome: "retained" as const }
+            : outcome === "succeeded" ? { retentionOutcome: "destroyed" as const } : {}),
         }).then(() => observation?.event("cleanup_recorded", "confirmed")).catch((error) => {
           cleanupRecordFailed = true;
           observation?.event("cleanup_recorded", "unknown", { reasonCode: "uncertain" });
@@ -2325,7 +2344,7 @@ export class LocalAgentHost {
           errorCategory = "operation_unsupported";
           throw new Error("Managed Runtime listing is unavailable");
         }
-        if (record.cleanupAction === "destroy" ? !runtime.destroy : !runtime.suspend) {
+        if (!runtime.suspend) {
           errorCategory = "operation_unsupported";
           throw new Error("Managed Runtime cleanup operation is unavailable");
         }
@@ -2336,27 +2355,20 @@ export class LocalAgentHost {
         );
         const session = sessions.find((candidate) =>
           candidate.id === record.managedSessionId && candidate.ownerId === record.runtimeOwnerId);
-        if (!session) {
-          outcome = "succeeded";
-          observedRuntimeStatus = "offline";
-        } else if (session.state === "unavailable" && record.cleanupAction === "suspend") {
+        if (!session || session.state === "unavailable") {
           errorCategory = "session_unavailable";
           throw new Error("Managed session is unavailable for suspend cleanup");
-        } else if (record.cleanupAction === "suspend" && session.state === "suspended") {
+        } else if (session.state === "suspended") {
           outcome = "succeeded";
           observedRuntimeStatus = "offline";
         } else {
-          // An explicit destroy intent may be retrying a Runtime manifest left in `destroying` by a crash.
-          // Runtime.destroy is owner-scoped and safe to retry even when listing labels it unavailable.
-          observation?.event("cleanup_requested", "started", { reasonCode: record.cleanupAction === "destroy" ? "destroy" : "suspend" });
+          // Retirement is non-destructive, including old queued automatic-destroy intents.
+          observation?.event("cleanup_requested", "started", { reasonCode: "suspend" });
           invoked = true;
-          const cleanup = record.cleanupAction === "destroy"
-            ? runtime.destroy!(record.managedSessionId, record.runtimeOwnerId)
-            : runtime.suspend!(record.managedSessionId, record.runtimeOwnerId);
           await this.withTimeout(
-            cleanup,
+            runtime.suspend(record.managedSessionId, record.runtimeOwnerId),
             15_000,
-            record.cleanupAction === "destroy" ? "Managed Runtime destroy timed out" : "Managed Runtime suspend timed out",
+            "Managed Runtime suspend timed out",
           );
           outcome = "succeeded";
           observedRuntimeStatus = "offline";
@@ -2365,7 +2377,7 @@ export class LocalAgentHost {
         this.options.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
       observation?.event("cleanup_requested", outcome === "succeeded" ? invoked ? "confirmed" : "skipped" : invoked ? "unknown" : "failed",
-        { reasonCode: outcome === "succeeded" ? invoked ? record.cleanupAction === "destroy" ? "destroy" : "suspend" : "already_settled" : invoked ? "uncertain" : "unavailable" });
+        { reasonCode: outcome === "succeeded" ? invoked ? "suspend" : "already_settled" : invoked ? "uncertain" : "unavailable" });
       await this.options.store.recordSessionCleanupAttempt({
         bindingId: record.bindingId,
         bindingGeneration: record.bindingGeneration,
@@ -2373,9 +2385,8 @@ export class LocalAgentHost {
         attemptedAt,
         observedRuntimeStatus,
         ...(outcome === "failed" ? { errorCategory } : {}),
-        ...(outcome === "succeeded" && record.retentionStatus === "destroy_pending"
-          ? { retentionOutcome: "destroyed" as const }
-          : {}),
+        cleanupAction: "suspend",
+        retentionOutcome: "retained",
       }).then(() => observation?.event("cleanup_recorded", "confirmed")).catch((error) => {
         observation?.event("cleanup_recorded", "unknown", { reasonCode: "uncertain" });
         observation?.finish("unknown");
@@ -2401,30 +2412,21 @@ export class LocalAgentHost {
   }
 
   private async autoResumeOfflineBindings(conversationId: string): Promise<void> {
-    const actorIdentityId = this.options.autoResumeActorIdentityId;
-    if (!actorIdentityId || this.closed || this.quiescing) return;
+    if (!this.options.autoResumeOfflineAgents || this.closed || this.quiescing) return;
     try {
       if ((await this.options.client.getConversationLifecycle(conversationId)).state !== "active") return;
       const bindings = await this.options.store.listConversationBindings(conversationId);
       await Promise.all(bindings
-        .filter((binding) => binding.state === "offline" && !binding.managedSessionMissingAt)
+        .filter((binding) => binding.state === "offline" && binding.runtimeOwnerId && !binding.managedSessionMissingAt)
         .map(async (binding) => {
           try {
-            if (binding.runtimeOwnerId && await this.resumeManagedBinding(binding)) {
+            if (await this.resumeManagedBinding(binding)) {
               if (await this.attachBinding(conversationId, binding.id) !== "attached") {
                 throw new Error("Resumed managed session could not be attached");
               }
-              return;
             }
-            await this.replaceConversationAgent(
-              conversationId,
-              binding.agentIdentityId,
-              actorIdentityId,
-              "with_context",
-              binding,
-            );
           } catch {
-            // Resume/replacement emits bounded diagnostics; startup remains available.
+            // A failed resume must never change identity, generation, context, or cursor.
           }
         }));
     } catch {
@@ -2640,6 +2642,9 @@ export class LocalAgentHost {
           agentIdentityId: record.agentIdentityId,
         });
         return;
+      case "session_metadata_unavailable":
+      case "session_transcript_invalid":
+      case "session_resume_failed":
       case "runtime_uncertain":
       case "lease_unavailable":
       case "failed":
