@@ -38,6 +38,7 @@ export function ConversationComposer({
   identityStatus,
   activity,
   readOnlyReason,
+  thread = false,
 }: {
   participants: Participant[];
   workspaceId: string;
@@ -46,8 +47,10 @@ export function ConversationComposer({
   identityStatus: "loading" | "ready" | "unavailable";
   activity?: ReactNode;
   readOnlyReason?: string;
+  thread?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const mentionListId = `${conversationId}-mention-suggestions`;
   const currentHuman = participants.find((participant) =>
     participant.id === currentHumanIdentityId
     && participant.type === "human"
@@ -226,14 +229,14 @@ export function ConversationComposer({
       <div className="relative mx-auto max-w-5xl">
         {suggestions.length ? (
           <div
-            id="conversation-mention-suggestions"
+            id={mentionListId}
             role="listbox"
             aria-label="Mention suggestions"
             className="absolute right-0 bottom-[calc(100%+0.5rem)] left-0 z-20 rounded-md border border-[var(--border)] bg-[var(--panel-elevated)] p-1 shadow-xl"
           >
             {suggestions.map((suggestion, index) => (
               <button
-                id={`mention-suggestion-${index}`}
+                id={`${mentionListId}-${index}`}
                 key={suggestion.id}
                 type="button"
                 role="option"
@@ -318,14 +321,14 @@ export function ConversationComposer({
               }
             }}
             rows={2}
-            aria-label="Conversation message"
+            aria-label={thread ? "Thread reply" : "Conversation message"}
             aria-autocomplete="list"
-            aria-controls={suggestions.length ? "conversation-mention-suggestions" : undefined}
+            aria-controls={suggestions.length ? mentionListId : undefined}
             aria-expanded={suggestions.length > 0}
-            aria-activedescendant={suggestions.length ? `mention-suggestion-${activeSuggestionIndex}` : undefined}
+            aria-activedescendant={suggestions.length ? `${mentionListId}-${activeSuggestionIndex}` : undefined}
             role="combobox"
             placeholder={readOnlyReason ?? (authorReady
-              ? "Message #Channel"
+              ? thread ? "Reply in thread" : "Message #Channel"
               : identityStatus === "loading"
                 ? "Loading your browser identity…"
                 : identityStatus === "unavailable"

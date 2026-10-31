@@ -360,7 +360,7 @@ export class LocalAgentHostConfiguration {
     actorIdentityId: string,
   ): Promise<LocalConversationWorkingFolders> {
     const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
-    const folders = await this.options.store.getConversationWorkingFolders(conversation.workspaceId, conversationId);
+    const folders = await this.options.store.getConversationWorkingFolders(conversation.workspaceId, conversation.thread?.parentConversationId ?? conversationId);
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       workspaceId: conversation.workspaceId,
@@ -382,6 +382,7 @@ export class LocalAgentHostConfiguration {
     value: unknown,
   ): Promise<{ relativePath: string }> {
     const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation working folders", 409, "unavailable");
     const selection = localWorkingFolderInput(value);
     if (!selection.path) {
       throw new LocalConfigurationRequestError("Working folder preview requires a selected path", 400, "invalid");
@@ -410,6 +411,7 @@ export class LocalAgentHostConfiguration {
     try {
       const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
       workspaceId = conversation.workspaceId;
+      if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation working folders", 409, "unavailable");
       const input = object(value, "Conversation working folders");
       rejectUnknown(input, ["folders"]);
       if (!Array.isArray(input.folders) || input.folders.length > MAX_CHANNEL_WORKING_FOLDERS) {

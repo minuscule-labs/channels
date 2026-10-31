@@ -79,4 +79,20 @@ describe("Conversation broadcast labels", () => {
     expect(memberHtml).toContain("An owner or admin can review the details.");
     expect(memberHtml).not.toContain('aria-label="View Runtime issue details for Builder"');
   });
+
+  it("shows existing reply counts in read-only mode without enabling new or nested threads", () => {
+    const thread = {
+      id: "thread-scope", workspaceId: "workspace-id", name: "Thread", participants: [human, builder],
+      rosterRevision: 1, createdAt: messages[0]!.createdAt, replyCount: 2,
+      thread: { parentConversationId: "conversation-id", rootMessageId: messages[0]!.id, context: [messages[0]!] },
+    };
+    const html = renderToStaticMarkup(<ConversationTimeline messages={messages} participants={[human, builder]}
+      threads={[thread]} onOpenThread={() => undefined} canStartThread={false} />);
+    expect(html).toContain("2 replies");
+    expect(html).toContain('aria-label="Open thread for message 1: 2 replies"');
+    expect(html).toContain('disabled="" aria-label="Start thread on message 2"');
+    const replies = renderToStaticMarkup(<ConversationTimeline messages={messages} participants={[human, builder]} />);
+    expect(replies).not.toContain("Start thread");
+    expect(renderToStaticMarkup(<ConversationTimeline messages={[]} participants={[human, builder]} hideEmptyState />)).toBe("");
+  });
 });
