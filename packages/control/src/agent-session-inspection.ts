@@ -1,5 +1,6 @@
 import type { ConversationClient } from "@minu/channels-core/client";
 import type { ConversationAgentBindingRecord, RelayBindingStore, RuntimeSessionHistoryRecord, WorkspaceAgentConfig } from "@minu/channels-relay";
+import { conversationAgentConfiguration } from "@minu/channels-relay";
 import { authorizeDiagnosticAccess } from "./agent-diagnostic-reads.ts";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import { safeSessionEvents } from "./agent-session-events.ts";
@@ -10,7 +11,7 @@ export interface SessionProfilePort {
   inspectSessionProfile?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   inspectSessionEvents?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
-type Store = Pick<RelayBindingStore, "getSessionInspectionRecords" | "getWorkspaceAgentConfig">;
+type Store = Pick<RelayBindingStore, "getSessionInspectionRecords" | "getWorkspaceAgentConfig" | "getConversationCreationSetup">;
 const unavailable = () => new LocalConfigurationRequestError("Not found", 404, "unavailable");
 const id = (value: unknown, max = 256): value is string => typeof value === "string" && value.length <= max && /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/.test(value) && !value.includes("..") && !value.includes("://") && !/^[a-zA-Z]:\//.test(value);
 const time = (value: unknown): value is string => typeof value === "string" && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
@@ -88,7 +89,8 @@ export class LocalAgentSessionInspections {
         const result = base();
         const before = await this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, identityId);
         controller.signal.throwIfAborted();
-        const config = await this.options.store.getWorkspaceAgentConfig(conversation.workspaceId, identityId);
+        const config = await conversationAgentConfiguration(this.options.store, conversation.workspaceId,
+          conversationId, identityId);
         result.saved = config && (config.workspaceId !== conversation.workspaceId || config.agentIdentityId !== identityId) ? { status: "unavailable" } : savedProfile(config);
         controller.signal.throwIfAborted();
         if (before.bindings.length > 1) return { ...result, availability: "conflict" as const };

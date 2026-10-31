@@ -2,6 +2,7 @@ import { ConversationClient } from "@minu/channels-core/client";
 import type { ConversationMessage, ConversationMetadata, Participant } from "@minu/channels-core";
 import {
   ConversationRuntimeRelay,
+  conversationAgentConfiguration,
   LocalRelayDirectory,
   restoreConversationBindings,
   getManagedRuntimeSession,
@@ -793,7 +794,7 @@ export class LocalAgentHost {
           this.options.client.getIdentity(actorIdentityId),
           this.options.client.getIdentity(agentIdentityId),
           this.options.store.getWorkspaceConfig(conversation.workspaceId),
-          this.options.store.getWorkspaceAgentConfig(conversation.workspaceId, agentIdentityId),
+          conversationAgentConfiguration(this.options.store, conversation.workspaceId, conversationId, agentIdentityId),
           this.options.store.listConversationBindings(conversationId),
         ]);
         const actorMembership = members.find(({ identityId }) => identityId === actorIdentityId);
@@ -2189,7 +2190,7 @@ export class LocalAgentHost {
     const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
     const [workspaceConfig, agentConfig] = await Promise.all([
       this.options.store.getWorkspaceConfig(context.conversation.workspaceId),
-      this.options.store.getWorkspaceAgentConfig(context.conversation.workspaceId, agentIdentityId),
+      conversationAgentConfiguration(this.options.store, context.conversation.workspaceId, conversationId, agentIdentityId),
     ]);
     if (!workspaceConfig || !agentConfig || agentConfig.status !== "active"
       || !agentConfig.runtimeAdapter) {

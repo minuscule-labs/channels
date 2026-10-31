@@ -11,6 +11,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 
 - Persistent Workspaces, Conversations, messages, and membership
 - Message-based threads with isolated agent sessions and a fixed creation-time public-context snapshot
+- Reusable Conversation presets with roles, model/effort defaults, and collaboration guidance
 - Reusable human, agent, and service identities
 - Live updates, mentions, Markdown, Mermaid diagrams, syntax highlighting, and code-copy controls
 - Image attachments with picker/paste/drop, durable local storage, and capability-gated vision for owned Pi agents
@@ -142,6 +143,7 @@ These are internal boundaries of one product, not separate services users must c
 - [Distribution model](docs/distribution.md)
 - [Product boundary and architecture](docs/product-boundary.md)
 - [Execution configuration](docs/execution-configuration.md)
+- [Conversation presets](docs/conversation-presets.md)
 - [Participant recovery and diagnostics](docs/participant-recovery.md)
 - [Conversation lifecycle and archive behavior](docs/conversation-lifecycle.md)
 - [Conversation threads and context](docs/conversation-threads.md)

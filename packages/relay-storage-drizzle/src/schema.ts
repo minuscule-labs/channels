@@ -1,6 +1,19 @@
 import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+export const conversationPresets = sqliteTable("conversation_presets", {
+  workspaceId: text("workspace_id").notNull(),
+  id: text("id").notNull(),
+  revision: integer("revision").notNull(),
+  definition: text("definition").notNull(),
+}, (table) => [primaryKey({ columns: [table.workspaceId, table.id] })]);
+
+export const conversationCreationSetups = sqliteTable("conversation_creation_setups", {
+  workspaceId: text("workspace_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  definition: text("definition").notNull(),
+}, (table) => [primaryKey({ columns: [table.workspaceId, table.conversationId] })]);
+
 export const localRuntimeOwners = sqliteTable("local_runtime_owners", {
   id: text("id").primaryKey(),
   ownerId: text("owner_id").notNull().unique(),
