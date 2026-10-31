@@ -42,7 +42,7 @@ A future Conversation working scope may narrow the Runtime working directory wit
 - expose only a redacted or relative summary in ordinary browser responses; and
 - apply to newly started sessions or explicit **New session** replacements, never mutate an active session.
 
-This is filesystem scoping, not nested Conversations. Conversational threads or subconversations are a separate future product decision.
+This is filesystem scoping, not conversational context isolation. [Message-based threads](conversation-threads.md) use separate Conversation/session scopes and inherit the parent's working folders; they do not create filesystem sandboxes. Independently named subconversations remain outside that feature.
 
 ## Reusable Workspace agents
 

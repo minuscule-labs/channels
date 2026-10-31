@@ -1,8 +1,9 @@
 import type { LocalBulkAgentLifecycleResult, LocalSessionContextMode, LocalTurnFailureNotice } from "@minu/channels-control/contracts";
-import type { Participant } from "@minu/channels-core/types";
+import type { ConversationMessage, ConversationThread, Participant } from "@minu/channels-core/types";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "@tanstack/react-router";
-import { AlertCircle, RefreshCw, Users } from "lucide-react";
+import { AlertCircle, RefreshCw, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
@@ -15,6 +16,9 @@ import { isNearTimelineEnd } from "../lib/timeline";
 import { ConversationActivityStrip } from "./conversation-activity-strip";
 import { ConversationComposer } from "./conversation-composer";
 import { ConversationTimeline } from "./conversation-timeline";
+import { MessageMarkdown } from "./message-markdown";
+import { MessageImages } from "./message-images";
+import { participantLabel } from "../lib/participants";
 import { MemberRoster } from "./member-roster";
 import { ParticipantDetailsDialog } from "./participant-details-dialog";
 import { Drawer } from "./ui/drawer";
@@ -27,10 +31,17 @@ export function ConversationPage() {
   return <ConversationPageContent key={`${workspaceId}:${conversationId}`} workspaceId={workspaceId} conversationId={conversationId} />;
 }
 
-function ConversationPageContent({ workspaceId, conversationId }: { workspaceId: string; conversationId: string }) {
+function ConversationPageContent({ workspaceId, conversationId, rootMessage, onCloseThread }: {
+  workspaceId: string;
+  conversationId: string;
+  rootMessage?: ConversationMessage;
+  onCloseThread?(): void;
+}) {
   const queryClient = useQueryClient();
   const location = useLocation();
   const [rosterOpen, setRosterOpen] = useState(false);
+  const [selectedThread, setSelectedThread] = useState<ConversationThread>();
+  const threadTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
   const [bulkResultsExpanded, setBulkResultsExpanded] = useState(true);
@@ -56,6 +67,13 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     queryKey: queryKeys.conversation(conversationId),
     queryFn: () => conversations.getConversation(conversationId),
   });
+  const activeThread = Boolean(onCloseThread || metadata.data?.thread);
+  const threadRoot = rootMessage ?? metadata.data?.thread?.context.find((message) => message.id === metadata.data?.thread?.rootMessageId);
+  const threads = useQuery({
+    queryKey: queryKeys.conversationThreads(conversationId),
+    queryFn: () => conversations.listThreads(conversationId),
+    enabled: metadata.isSuccess && !activeThread,
+  });
   const workspaceMembers = useQuery({
     queryKey: queryKeys.workspaceMembers(workspaceId),
     queryFn: () => conversations.listWorkspaceMembers(workspaceId),
@@ -73,6 +91,15 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
     queryFn: () => localControl.currentSession(),
     retry: false,
     refetchInterval: 60_000,
+  });
+  const openThread = useMutation({
+    mutationFn: (message: ConversationMessage) => conversations.createThread(conversationId, {
+      actorIdentityId: currentSession.data!.identityId, rootMessageId: message.id,
+    }),
+    onSuccess: (thread) => {
+      setSelectedThread(thread);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
+    },
   });
   const lifecycle = useQuery({
     queryKey: queryKeys.localConversationLifecycle(conversationId),
@@ -402,21 +429,23 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <Dialog.Root open={Boolean(selectedThread)} modal={false} onOpenChange={(open) => { if (!open) setSelectedThread(undefined); }}>
+    <div className="flex min-h-0 min-w-0 flex-1">
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-sm font-semibold" title={metadata.data.name}>#{metadata.data.name}</h1>
+            <h1 className="truncate text-sm font-semibold" title={metadata.data.name}>{activeThread ? "Thread" : `#${metadata.data.name}`}</h1>
             <p className="truncate text-[11px] text-[var(--muted)]">Workspace: {workspace.data?.name ?? "Workspace"}</p>
             <span className="sr-only" role="status" aria-label={`Live updates ${connection}`}>Live updates {connection}</span>
           </div>
+          {onCloseThread ? <button type="button" className="icon-button" aria-label="Close thread" onClick={onCloseThread}><X className="h-4 w-4" /></button> : null}
           {connection === "disconnected" ? (
             <button className="button-secondary" type="button" onClick={retry}>
               <RefreshCw className="h-3.5 w-3.5" /> Retry
             </button>
           ) : null}
           {lifecycle.data ? <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${settled ? "border-[var(--border)] text-[var(--muted)]" : lifecycle.data.state === "snoozed" ? "border-[var(--accent)]/40 text-[var(--accent)]" : "border-[var(--border)] text-[var(--muted)]"}`}>{lifecycleLabel}</span> : null}
-          {canOpenDiagnostics && lifecycle.data && lifecycle.data.state !== "active" ? (
+          {!activeThread && canOpenDiagnostics && lifecycle.data && lifecycle.data.state !== "active" ? (
             <button className="button-secondary" type="button" disabled={lifecycleAction.isPending} onClick={() => lifecycleAction.mutate("active")}>Reopen</button>
           ) : null}
           <Drawer
@@ -433,7 +462,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
             title="Participants"
             description="Public members of this Conversation."
             trigger={(
-              <button className="icon-button inline-flex lg:hidden" type="button" aria-label="Show participants">
+              <button className={`icon-button inline-flex ${activeThread || selectedThread ? "" : "lg:hidden"}`} type="button" aria-label="Show participants">
                 <Users className="h-4 w-4" />
               </button>
             )}
@@ -478,6 +507,8 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
             This Conversation is archived and read-only. Reopen it to send messages, edit participants, or manage agents.
           </div>
         ) : null}
+        {openThread.error ? <ErrorNotice className="border-b border-[var(--border)] px-4 py-2" dismissLabel="Dismiss thread error" onDismiss={openThread.reset}>{openThread.error.message}</ErrorNotice> : null}
+        {threads.error && !activeThread ? <ErrorNotice className="border-b border-[var(--border)] px-4 py-2" dismissLabel="Retry threads" onDismiss={() => { void threads.refetch(); }}>{threads.error.message}</ErrorNotice> : null}
         {bulkActionError ? <ErrorNotice className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2" dismissLabel="Dismiss bulk action error" onDismiss={dismissBulkError}>{bulkActionError}</ErrorNotice> : null}
         {[
           { name: "Conversation status", mutation: lifecycleAction },
@@ -513,8 +544,22 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
               }
             }}
           >
+            <div>
+            {threadRoot ? <article aria-label="Thread root" className="border-b border-[var(--border)] px-4 py-4 sm:px-6">
+              <strong className="text-sm">{participantLabel(attributionParticipants.find(({ id }) => id === threadRoot.participantId), threadRoot.participantId)}</strong>
+              <div className="mt-2"><MessageMarkdown body={threadRoot.body} /><MessageImages attachments={threadRoot.attachments ?? []} conversationId={threadRoot.conversationId} /></div>
+            </article> : null}
             <ConversationTimeline
               messages={messages.data ?? []}
+              threads={threads.data}
+              hideEmptyState={activeThread}
+              canStartThread={!settled && !openThread.isPending && currentParticipant?.type === "human" && currentParticipant.status !== "disabled"}
+              onOpenThread={activeThread ? undefined : (message, trigger) => {
+                threadTriggerRef.current = trigger;
+                const thread = threads.data?.find((candidate) => candidate.thread.rootMessageId === message.id);
+                if (thread) setSelectedThread(thread);
+                else openThread.mutate(message);
+              }}
               participants={participants}
               attributionParticipants={attributionParticipants}
               turnFailureNotices={turnFailures.data?.notices}
@@ -526,6 +571,7 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
                 setIssueDialogOpen(true);
               }}
             />
+            </div>
           </div>
           {unseenMessages ? (
             <button
@@ -549,11 +595,12 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           conversationId={conversationId}
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
+          thread={activeThread}
           activity={<ConversationActivityStrip agents={localAgents.data?.agents ?? []} participants={participants} />}
           readOnlyReason={settled ? "This Conversation is archived. Reopen it to send a message." : undefined}
         />
       </section>
-      <div className="hidden lg:block">
+      {!activeThread && !selectedThread ? <div className="hidden lg:block">
         <MemberRoster
           participants={participants}
           currentHumanIdentityId={currentSession.data?.identityId}
@@ -585,7 +632,22 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
           onToggleBulkResults={() => setBulkResultsExpanded((expanded) => !expanded)}
           onDismissBulkResults={() => setBulkResults(undefined)}
         />
-      </div>
+      </div> : null}
+      {selectedThread ? <Dialog.Content
+        aria-describedby={undefined}
+        onInteractOutside={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => { event.preventDefault(); if (threadTriggerRef.current?.isConnected) threadTriggerRef.current.focus(); }}
+        className="fixed inset-0 z-40 flex min-h-0 min-w-0 flex-col border-l border-[var(--border)] bg-[var(--bg)] outline-none md:static md:z-auto md:w-[min(34rem,48vw)] md:shrink-0"
+      >
+        <Dialog.Title className="sr-only">Thread</Dialog.Title>
+        <ConversationPageContent
+          key={selectedThread.id}
+          workspaceId={workspaceId}
+          conversationId={selectedThread.id}
+          rootMessage={selectedThread.thread.context.find((message) => message.id === selectedThread.thread.rootMessageId)}
+          onCloseThread={() => setSelectedThread(undefined)}
+        />
+      </Dialog.Content> : null}
       {issueDialogParticipant ? <ParticipantDetailsDialog
         participant={issueDialogParticipant}
         agent={localAgentMap?.get(issueDialogParticipant.id)}
@@ -612,5 +674,6 @@ function ConversationPageContent({ workspaceId, conversationId }: { workspaceId:
         }}
       /> : null}
     </div>
+    </Dialog.Root>
   );
 }

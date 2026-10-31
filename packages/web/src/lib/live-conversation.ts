@@ -49,6 +49,8 @@ export function useLiveConversation(conversationId: string, identityId: string |
             ]);
             if (controller.signal.aborted) return;
             queryClient.setQueryData(queryKeys.conversation(conversationId), metadata);
+            void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
             queryClient.setQueryData<ConversationMessage[]>(
               queryKeys.conversationMessages(conversationId),
               (current) => mergeMessages(current, messages),
@@ -81,6 +83,8 @@ export function useLiveConversation(conversationId: string, identityId: string |
           }));
         }
       } else if (action.type === "refresh-metadata") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
         if (action.rosterRevision !== undefined) {
           highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
         }

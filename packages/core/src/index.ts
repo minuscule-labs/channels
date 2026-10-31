@@ -22,6 +22,7 @@ export {
 } from "./conversation-service.ts";
 export {
   ConversationAttachmentUnavailableError,
+  ConversationResponseRetiredError,
   InMemoryConversationStorage,
   type ConversationAttachmentRecord,
   type ConversationAttachmentStatus,
