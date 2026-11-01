@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { ConversationMessage } from "@minu/channels-core";
 import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const identities = sqliteTable("identities", {
@@ -55,7 +56,12 @@ export const conversations = sqliteTable("conversations", {
   createdAt: text("created_at").notNull(),
   nextSequence: integer("next_sequence").notNull().default(1),
   rosterRevision: integer("roster_revision").notNull().default(1),
-});
+  parentConversationId: text("parent_conversation_id"),
+  rootMessageId: text("root_message_id"),
+  threadContext: text("thread_context_json", { mode: "json" }).$type<ConversationMessage[]>(),
+}, (table) => [
+  uniqueIndex("conversations_thread_root_unique").on(table.parentConversationId, table.rootMessageId),
+]);
 
 export const conversationLifecycles = sqliteTable("conversation_lifecycles", {
   conversationId: text("conversation_id")

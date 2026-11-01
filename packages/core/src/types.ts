@@ -166,6 +166,24 @@ export function assertConversationLifecycle(lifecycle: ConversationLifecycle): v
   }
 }
 
+/** A thread is a message scope with independent agent sessions and inherited administration. */
+export interface ConversationThreadOrigin {
+  parentConversationId: string;
+  rootMessageId: string;
+  /** Immutable public background from first thread creation; bounded, with the root always retained. Never a private transcript. */
+  context: ConversationMessage[];
+}
+
+export interface CreateThreadInput {
+  actorIdentityId: string;
+  rootMessageId: string;
+}
+
+export interface ConversationThread extends ConversationMetadata {
+  thread: ConversationThreadOrigin;
+  replyCount: number;
+}
+
 export interface ConversationMetadata {
   id: string;
   workspaceId: string;
@@ -173,6 +191,7 @@ export interface ConversationMetadata {
   participants: Participant[];
   rosterRevision: number;
   createdAt: string;
+  thread?: ConversationThreadOrigin;
 }
 
 export interface Conversation extends ConversationMetadata {

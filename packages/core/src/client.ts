@@ -4,6 +4,8 @@ import type {
   ConversationMessage,
   EffectiveConversationLifecycle,
   ConversationMetadata,
+  ConversationThread,
+  CreateThreadInput,
   CreateConversationInput,
   CreateIdentityInput,
   CreateMessageInput,
@@ -149,6 +151,23 @@ export class ConversationClient {
   async listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]> {
     const response = await this.request(`/workspaces/${workspaceId}/members`);
     return ((await response.json()) as { members: WorkspaceMember[] }).members;
+  }
+
+  async getCursor(conversationId: string, participantId: string): Promise<number> {
+    const response = await this.request(`/conversations/${encodeURIComponent(conversationId)}/cursors/${encodeURIComponent(participantId)}`);
+    return (await response.json() as { sequence: number }).sequence;
+  }
+
+  async listThreads(conversationId: string): Promise<ConversationThread[]> {
+    const response = await this.request(`/conversations/${conversationId}/threads`);
+    return (await response.json() as { threads: ConversationThread[] }).threads;
+  }
+
+  async createThread(conversationId: string, input: CreateThreadInput): Promise<ConversationThread> {
+    const response = await this.request(`/conversations/${conversationId}/threads`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+    });
+    return (await response.json() as { thread: ConversationThread }).thread;
   }
 
   async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {
@@ -336,7 +355,7 @@ export class ConversationClient {
           .split("\n")
           .find((line) => line.startsWith("data: "))
           ?.slice(6);
-        if ((eventName === "message.created" || eventName === "roster.updated") && data) {
+        if ((eventName === "message.created" || eventName === "roster.updated" || eventName === "conversation.updated") && data) {
           yield JSON.parse(data) as ConversationEvent;
         }
       }

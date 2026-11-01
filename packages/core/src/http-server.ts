@@ -12,6 +12,7 @@ import type {
   AddWorkspaceMemberInput,
   ConversationEvent,
   CreateConversationInput,
+  CreateThreadInput,
   CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
@@ -321,6 +322,18 @@ export async function createConversationHttpServer(
         return;
       }
 
+      const threadsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/threads$/);
+      if (threadsMatch && request.method === "GET") {
+        json(response, 200, { threads: await service.listThreads(threadsMatch[1]!) });
+        return;
+      }
+      if (threadsMatch && request.method === "POST") {
+        const input = await readJson(request) as CreateThreadInput;
+        requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
+        json(response, 200, { thread: await service.createThread(threadsMatch[1]!, input) });
+        return;
+      }
+
       const lifecycleMatch = url.pathname.match(/^\/conversations\/([^/]+)\/lifecycle$/);
       if (lifecycleMatch && request.method === "GET") {
         json(response, 200, { lifecycle: await service.getConversationLifecycle(lifecycleMatch[1]!) });
@@ -360,6 +373,12 @@ export async function createConversationHttpServer(
           input,
         );
         json(response, 200, { conversation });
+        return;
+      }
+
+      const cursorMatch = url.pathname.match(/^\/conversations\/([^/]+)\/cursors\/([^/]+)$/);
+      if (cursorMatch && request.method === "GET") {
+        json(response, 200, { sequence: await service.getCursor(cursorMatch[1]!, cursorMatch[2]!) });
         return;
       }
 

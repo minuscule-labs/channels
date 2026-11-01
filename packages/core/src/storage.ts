@@ -16,6 +16,7 @@ import type {
 export type ConversationAttachmentStatus = "staged" | "attached" | "deleting";
 
 export class ConversationAttachmentUnavailableError extends Error {}
+export class ConversationResponseRetiredError extends Error {}
 
 export interface ConversationAttachmentRecord {
   id: string;
@@ -132,6 +133,7 @@ function copyMessage(message: ConversationMessage): ConversationMessage {
 function copyConversation(conversation: Conversation): Conversation {
   return {
     ...conversation,
+    ...(conversation.thread ? { thread: structuredClone(conversation.thread) } : {}),
     participants: conversation.participants.map((participant) => ({ ...participant })),
     messages: conversation.messages.map(copyMessage),
   };
@@ -267,6 +269,11 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
 
   async createConversation(conversation: Conversation): Promise<Conversation> {
     if (this.conversations.has(conversation.id)) throw new Error(`Conversation id already exists: ${conversation.id}`);
+    if (conversation.thread && [...this.conversations.values()].some((existing) =>
+      existing.thread?.parentConversationId === conversation.thread!.parentConversationId
+      && existing.thread.rootMessageId === conversation.thread!.rootMessageId)) {
+      throw new Error("Thread already exists for this root message");
+    }
     this.conversations.set(conversation.id, copyConversation(conversation));
     return copyConversation(conversation);
   }
@@ -280,13 +287,22 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
         name: conversation.name,
         createdAt: conversation.createdAt,
         rosterRevision: conversation.rosterRevision,
+        ...(conversation.thread ? { thread: structuredClone(conversation.thread) } : {}),
         participants: conversation.participants.map((participant) => ({ ...participant })),
       }));
   }
 
   async getConversation(conversationId: string): Promise<Conversation | undefined> {
     const conversation = this.conversations.get(conversationId);
-    return conversation ? copyConversation(conversation) : undefined;
+    if (!conversation) return undefined;
+    const copy = copyConversation(conversation);
+    if (copy.thread) {
+      const parent = await this.getConversationMetadata(copy.thread.parentConversationId);
+      if (!parent) throw new Error("Thread parent is unavailable");
+      copy.participants = parent.participants;
+      copy.rosterRevision = parent.rosterRevision;
+    }
+    return copy;
   }
 
   async listMessages(
@@ -307,7 +323,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   }
 
   async getConversationMetadata(conversationId: string): Promise<ConversationMetadata | undefined> {
-    const conversation = this.conversations.get(conversationId);
+    const conversation = await this.getConversation(conversationId);
     if (!conversation) return undefined;
     return {
       id: conversation.id,
@@ -315,11 +331,14 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
       name: conversation.name,
       createdAt: conversation.createdAt,
       rosterRevision: conversation.rosterRevision,
+      ...(conversation.thread ? { thread: structuredClone(conversation.thread) } : {}),
       participants: conversation.participants.map((participant) => ({ ...participant })),
     };
   }
 
   async getConversationLifecycle(conversationId: string): Promise<ConversationLifecycle | undefined> {
+    const parentId = this.conversations.get(conversationId)?.thread?.parentConversationId;
+    if (parentId) return this.getConversationLifecycle(parentId);
     const lifecycle = this.lifecycles.get(conversationId);
     return lifecycle ? { ...lifecycle } : undefined;
   }
@@ -356,9 +375,14 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
       .map(({ id }) => id);
     conversation.participants = participants.map((participant) => ({ ...participant }));
     conversation.rosterRevision += 1;
-    const headSequence = conversation.messages.at(-1)?.sequence ?? 0;
-    for (const participantId of removedParticipantIds) {
-      this.cursors.set(`${conversation.id}:${participantId}`, headSequence);
+    const scopes = [...this.conversations.values()].filter((candidate) =>
+      candidate.id === conversationId || candidate.thread?.parentConversationId === conversationId);
+    for (const scope of scopes) {
+      const headSequence = scope.messages.at(-1)?.sequence ?? 0;
+      for (const participantId of removedParticipantIds) {
+        const key = `${scope.id}:${participantId}`;
+        this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, headSequence));
+      }
     }
     return {
       conversation: (await this.getConversationMetadata(conversationId))!,
@@ -500,9 +524,15 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   ): Promise<ResponseResult> {
     const existing = this.responses.get(deliveryKey);
     if (existing) return { message: { ...existing, to: [...existing.to] }, created: false };
+    const cursorKey = `${message.conversationId}:${message.participantId}`;
+    // The base in-memory append is synchronous up to publication: do not yield
+    // between this authoritative floor check and appending the response.
+    if (this.conversations.get(message.conversationId)?.thread
+      && (this.cursors.get(cursorKey) ?? 0) >= triggerSequence) {
+      throw new ConversationResponseRetiredError("Thread request was retired");
+    }
     const stored = await this.appendMessage(message);
     this.responses.set(deliveryKey, stored);
-    const cursorKey = `${message.conversationId}:${message.participantId}`;
     this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, triggerSequence));
     return { message: stored, created: true };
   }

@@ -14,6 +14,7 @@ export const queryKeys = {
   agentRuntimeOptions: (workspaceId: string, identityId: string) =>
     ["workspace", workspaceId, "agent", identityId, "runtime-options"] as const,
   conversation: (conversationId: string) => ["conversation", conversationId] as const,
+  conversationThreads: (conversationId: string) => ["conversation", conversationId, "threads"] as const,
   conversationMessages: (conversationId: string) => ["conversation", conversationId, "messages"] as const,
   localConversationAgents: (conversationId: string) => ["local", "conversation", conversationId, "agents"] as const,
   localConversationTurnFailures: (conversationId: string, identityId?: string) => ["local", "conversation", conversationId, "turn-failures", identityId] as const,

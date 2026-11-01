@@ -1,7 +1,7 @@
 import type { LocalTurnFailureNotice } from "@minu/channels-control/contracts";
-import type { ConversationMessage, Participant } from "@minu/channels-core/types";
+import type { ConversationMessage, ConversationThread, Participant } from "@minu/channels-core/types";
 import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
-import { AlertCircle, Menu } from "lucide-react";
+import { AlertCircle, Menu, MessageSquare } from "lucide-react";
 import { useMemo } from "react";
 import { shortId } from "../lib/messages";
 import { participantHandle, participantLabel } from "../lib/participants";
@@ -16,7 +16,13 @@ function MessageRow({
   participants,
   continuation,
   broadcastTargetLabel,
+  thread,
+  onOpenThread,
+  canStartThread,
 }: {
+  thread?: ConversationThread;
+  onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
+  canStartThread?: boolean;
   message: ConversationMessage;
   participants: Participant[];
   continuation: boolean;
@@ -63,13 +69,26 @@ function MessageRow({
             <MessageMarkdown body={message.body} />
             <MessageImages attachments={message.attachments ?? []} conversationId={message.conversationId} />
           </div>
+          {onOpenThread ? <button
+            type="button"
+            className="mt-2 inline-flex items-center gap-1.5 rounded text-xs text-[var(--accent)] hover:underline disabled:opacity-40"
+            disabled={!thread && !canStartThread}
+            onClick={(event) => onOpenThread(message, event.currentTarget)}
+            aria-label={thread ? `Open thread for message ${message.sequence}: ${thread.replyCount} replies` : `Start thread on message ${message.sequence}`}
+          >
+            <MessageSquare aria-hidden="true" className="h-3.5 w-3.5" />
+            {thread ? `${thread.replyCount} ${thread.replyCount === 1 ? "reply" : "replies"}` : "Start thread"}
+          </button> : null}
         </div>
       </div>
     </article>
   );
 }
 
-function TimelineRowView({ row, participants, broadcastTargetLabel }: {
+function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOpenThread, canStartThread }: {
+  thread?: ConversationThread;
+  onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
+  canStartThread?: boolean;
   row: TimelineRow;
   participants: Participant[];
   broadcastTargetLabel: BroadcastTargetLabel;
@@ -85,7 +104,7 @@ function TimelineRowView({ row, participants, broadcastTargetLabel }: {
       </div>
     );
   }
-  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} />;
+  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} thread={thread} onOpenThread={onOpenThread} canStartThread={canStartThread} />;
 }
 
 function TurnFailureNoticeRow({ notice, canOpenDetails, onViewDetails }: {
@@ -123,7 +142,15 @@ export function ConversationTimeline({
   turnFailureNotices = [],
   canOpenIssueDetails = false,
   onViewIssueDetails,
+  threads = [],
+  onOpenThread,
+  canStartThread = false,
+  hideEmptyState = false,
 }: {
+  threads?: ConversationThread[];
+  onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
+  canStartThread?: boolean;
+  hideEmptyState?: boolean;
   messages: ConversationMessage[];
   participants: Participant[];
   attributionParticipants?: Participant[];
@@ -132,6 +159,7 @@ export function ConversationTimeline({
   onViewIssueDetails?(identityId: string, trigger: HTMLButtonElement, notice: LocalTurnFailureNotice): void;
 }) {
   const rows = useMemo(() => projectTimeline(messages), [messages]);
+  const threadsByRoot = useMemo(() => new Map(threads.map((thread) => [thread.thread.rootMessageId, thread])), [threads]);
   // Broadcast names follow the live roster; historical identities only label authors/recipients.
   const broadcastTargetLabel = hasChannelMentionCollision(participants) ? "@conversation" : "@channel";
   const notices = useMemo(() => [...turnFailureNotices].sort((left, right) =>
@@ -159,6 +187,7 @@ export function ConversationTimeline({
     return items;
   }, [notices, rows]);
 
+  if (hideEmptyState && !rows.length && !notices.length) return null;
   if (!rows.length && !notices.length) {
     return (
       <div className="grid min-h-full place-items-center p-6">
@@ -174,7 +203,9 @@ export function ConversationTimeline({
   return (
     <div role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation messages">
       {timelineItems.map((item) => item.kind === "row"
-        ? <TimelineRowView key={item.row.id} row={item.row} participants={attributionParticipants} broadcastTargetLabel={broadcastTargetLabel} />
+        ? <TimelineRowView key={item.row.id} row={item.row} participants={attributionParticipants} broadcastTargetLabel={broadcastTargetLabel}
+          thread={item.row.kind === "message" ? threadsByRoot.get(item.row.message.id) : undefined}
+          onOpenThread={onOpenThread} canStartThread={canStartThread} />
         : <TurnFailureNoticeRow
           key={`${item.notice.participant.identityId}:${item.notice.triggerSequence}:${item.notice.failedAt}`}
           notice={item.notice}

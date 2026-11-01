@@ -12,6 +12,7 @@ import { createResourceId, isResourceId } from "./ids.ts";
 import { isReservedMentionHandle, mentionHandles } from "./mentions.ts";
 import {
   ConversationAttachmentUnavailableError,
+  ConversationResponseRetiredError,
   InMemoryConversationStorage,
   type ConversationAttachmentRecord,
   type ConversationStorage,
@@ -29,6 +30,8 @@ import type {
   MessageAttachment,
   AddWorkspaceMemberInput,
   ConversationMetadata,
+  ConversationThread,
+  CreateThreadInput,
   CreateConversationInput,
   CreateIdentityInput,
   CreateMessageInput,
@@ -204,6 +207,7 @@ export class ConversationService {
 
   /** Private in-process gate shared by message commits and a managed lifecycle Stop. */
   async withConversationMessageAdmission<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    conversationId = (await this.storage.getConversationMetadata(conversationId))?.thread?.parentConversationId ?? conversationId;
     const prior = this.messageAdmissions.get(conversationId) ?? Promise.resolve();
     const current = prior.catch(() => undefined).then(operation);
     this.messageAdmissions.set(conversationId, current);
@@ -215,6 +219,7 @@ export class ConversationService {
   }
 
   private async serializeConversation<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    conversationId = (await this.storage.getConversationMetadata(conversationId))?.thread?.parentConversationId ?? conversationId;
     const prior = this.conversationOperations.get(conversationId) ?? Promise.resolve();
     const current = prior.catch(() => undefined).then(operation);
     this.conversationOperations.set(conversationId, current);
@@ -670,7 +675,81 @@ export class ConversationService {
 
   async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {
     await this.getWorkspace(workspaceId);
-    return await this.storage.listWorkspaceConversations(workspaceId);
+    return (await this.storage.listWorkspaceConversations(workspaceId)).filter((conversation) => !conversation.thread);
+  }
+
+  async listThreads(conversationId: string): Promise<ConversationThread[]> {
+    const parent = await this.getConversationMetadata(conversationId);
+    if (parent.thread) throw new ConversationValidationError("Nested threads are not supported");
+    const children = (await this.storage.listWorkspaceConversations(parent.workspaceId))
+      .filter((conversation) => conversation.thread?.parentConversationId === conversationId);
+    return Promise.all(children.map(async (child) => ({
+      ...child,
+      participants: parent.participants,
+      rosterRevision: parent.rosterRevision,
+      thread: child.thread!,
+      replyCount: (await this.storage.listMessages(child.id))!.length,
+    })));
+  }
+
+  async createThread(conversationId: string, input: CreateThreadInput): Promise<ConversationThread> {
+    return this.withConversationMessageAdmission(conversationId, () => this.serializeConversation(conversationId, async () => {
+      const parent = await this.getConversation(conversationId);
+      if (parent.thread) throw new ConversationValidationError("Nested threads are not supported");
+      await this.assertConversationMutable(conversationId);
+      if (!input || typeof input.actorIdentityId !== "string" || typeof input.rootMessageId !== "string") {
+        throw new ConversationValidationError("actorIdentityId and rootMessageId are required");
+      }
+      const actor = parent.participants.find((participant) => participant.id === input.actorIdentityId);
+      if (!actor || actor.type !== "human" || actor.status === "disabled") {
+        throw new ConversationValidationError("An active human Conversation participant is required");
+      }
+      await this.assertActiveWorkspaceIdentity(parent, actor.id);
+      const root = parent.messages.find((message) => message.id === input.rootMessageId);
+      if (!root) throw new ConversationValidationError("Root message is not in this Conversation");
+      const existing = (await this.listThreads(conversationId)).find((thread) => thread.thread.rootMessageId === root.id);
+      if (existing) return existing;
+      // Capture the public parent at first creation, reserving the root even
+      // when it is older than the recent window or larger than the background budget.
+      const context: ConversationMessage[] = [structuredClone(root)];
+      let characters = root.body.length;
+      for (const message of [...parent.messages].reverse()) {
+        if (message.id === root.id) continue;
+        if (context.length >= 20 || characters + message.body.length > 16_000) break;
+        context.push(structuredClone(message));
+        characters += message.body.length;
+      }
+      context.sort((left, right) => left.sequence - right.sequence);
+      const thread = await this.storage.createConversation({
+        id: createResourceId("conversation"),
+        workspaceId: parent.workspaceId,
+        name: `Thread #${root.sequence}`,
+        participants: parent.participants,
+        rosterRevision: parent.rosterRevision,
+        createdAt: new Date().toISOString(),
+        messages: [],
+        thread: { parentConversationId: conversationId, rootMessageId: root.id, context },
+      }).catch(async (error) => {
+        // The unique parent/root key also handles callers using another service instance.
+        const raced = (await this.listThreads(conversationId)).find((candidate) => candidate.thread.rootMessageId === root.id);
+        if (raced) return { ...raced, messages: [] };
+        throw error;
+      });
+      this.notifyConversationUpdated(conversationId);
+      return { ...thread, thread: thread.thread!, replyCount: thread.messages.length };
+    }));
+  }
+
+  private notifyConversationUpdated(conversationId: string): void {
+    const event: ConversationEvent = {
+      id: createResourceId("event"), type: "conversation.updated", conversationId, createdAt: new Date().toISOString(),
+    };
+    for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
+  }
+
+  private async notifyThreadParent(conversationId: string): Promise<void> {
+    const thread = (await this.storage.getConversationMetadata(conversationId))?.thread;
+    if (thread) this.notifyConversationUpdated(thread.parentConversationId);
   }
 
   async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
@@ -693,6 +772,7 @@ export class ConversationService {
     input: UpdateConversationLifecycleInput,
   ): Promise<EffectiveConversationLifecycle> {
     const conversation = await this.getConversationMetadata(conversationId);
+    if (conversation.thread) throw new ConversationValidationError("Threads inherit the parent Conversation lifecycle");
     if (!input || !["active", "snoozed", "settled"].includes(input.state)) {
       throw new ConversationValidationError("Conversation lifecycle state must be active, snoozed, or settled");
     }
@@ -934,6 +1014,7 @@ export class ConversationService {
     if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
     await this.assertConversationMutable(conversationId);
     await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
+    if (conversation.thread) throw new ConversationValidationError("Threads inherit parent Conversation administration");
     const updated = await this.storage.updateConversationName(conversationId, name);
     if (!updated) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     const event: ConversationEvent = {
@@ -977,6 +1058,7 @@ export class ConversationService {
     if (!input.participantIds.includes(input.actorIdentityId)) {
       throw new ConversationValidationError("Conversation participants must include the acting human");
     }
+    if (conversation.thread) throw new ConversationValidationError("Threads inherit the parent Conversation roster");
     const participants = await this.resolveActiveParticipants(
       conversation.workspaceId,
       input.participantIds,
@@ -1010,6 +1092,15 @@ export class ConversationService {
     const conversation = await this.storage.getConversationMetadata(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     return conversation;
+  }
+
+  /** Public collaboration progress, including the retirement floor after roster removal. */
+  async getCursor(conversationId: string, participantId: string): Promise<number> {
+    const conversation = await this.getConversationMetadata(conversationId);
+    if (!conversation.participants.some((participant) => participant.id === participantId)) {
+      throw new ConversationValidationError("Participant is not in this Conversation");
+    }
+    return this.storage.getCursor(conversationId, participantId);
   }
 
   async listMessages(conversationId: string, options: MessageListOptions = {}): Promise<ConversationMessage[]> {
@@ -1137,6 +1228,7 @@ export class ConversationService {
       };
       for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
     }
+    if (result.outcome === "created") await this.notifyThreadParent(conversationId);
     return { ...message, to: [...message.to] };
   }
 
@@ -1200,7 +1292,12 @@ export class ConversationService {
         createdAt: new Date().toISOString(),
       },
       trigger.sequence,
-    );
+    ).catch((error) => {
+      if (error instanceof ConversationResponseRetiredError) {
+        throw new ConversationConflictError("Thread request was retired; a new response cannot be committed");
+      }
+      throw error;
+    });
     if (result.created) {
       const event: ConversationEvent = {
         id: createResourceId("event"),
@@ -1211,6 +1308,7 @@ export class ConversationService {
       };
       for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
     }
+    if (result.created) await this.notifyThreadParent(conversationId);
     return { message: { ...result.message, to: [...result.message.to] }, created: result.created };
   }
 
@@ -1219,13 +1317,13 @@ export class ConversationService {
   }
 
   async subscribeMany(conversationIds: readonly string[], listener: EventListener): Promise<() => void> {
-    const subscriptions: Array<{ conversationId: string; conversationListeners: Set<EventListener> }> = [];
+    const subscriptions: Array<{ conversationId: string; conversationListeners: Set<EventListener>; listener: EventListener }> = [];
     let subscribed = true;
     const unsubscribe = () => {
       if (!subscribed) return;
       subscribed = false;
-      for (const { conversationId, conversationListeners } of subscriptions) {
-        conversationListeners.delete(listener);
+      for (const { conversationId, conversationListeners, listener: subscribedListener } of subscriptions) {
+        conversationListeners.delete(subscribedListener);
         if (conversationListeners.size === 0) this.listeners.delete(conversationId);
       }
     };
@@ -1237,7 +1335,17 @@ export class ConversationService {
         const conversationListeners = this.listeners.get(conversationId) ?? new Set<EventListener>();
         conversationListeners.add(listener);
         this.listeners.set(conversationId, conversationListeners);
-        subscriptions.push({ conversationId, conversationListeners });
+        subscriptions.push({ conversationId, conversationListeners, listener });
+        const origin = (await this.storage.getConversationMetadata(conversationId))?.thread;
+        if (origin) {
+          const parentListener: EventListener = (event) => {
+            if (event.type !== "message.created") listener({ ...event, conversationId });
+          };
+          const parentListeners = this.listeners.get(origin.parentConversationId) ?? new Set<EventListener>();
+          parentListeners.add(parentListener);
+          this.listeners.set(origin.parentConversationId, parentListeners);
+          subscriptions.push({ conversationId: origin.parentConversationId, conversationListeners: parentListeners, listener: parentListener });
+        }
       }
       return unsubscribe;
     } catch (error) {

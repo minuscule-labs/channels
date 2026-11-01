@@ -81,6 +81,7 @@ import {
 
 export interface LocalControlConversationDirectory {
   getConversation(conversationId: string): Promise<ConversationMetadata>;
+  listThreads?(conversationId: string): Promise<ConversationMetadata[]>;
   getConversationLifecycle?(conversationId: string): Promise<EffectiveConversationLifecycle>;
   updateConversationLifecycle?(
     conversationId: string,
@@ -357,6 +358,8 @@ export class LocalControlService {
     )) {
       throw new LocalConfigurationRequestError("Conversation snooze time must be in the future", 400, "invalid");
     }
+    const conversation = await this.options.conversations.getConversation(conversationId);
+    if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit the parent Conversation lifecycle", 409, "unavailable");
     const current = await this.getConversationLifecycle(conversationId);
     if (current.state === "settled" && input.state !== "active") {
       throw new LocalConfigurationRequestError("A settled Conversation must be reopened first", 409, "unavailable");
@@ -377,8 +380,11 @@ export class LocalControlService {
     let committed = false;
     try {
       return await this.options.withConversationMessageAdmission(conversationId, async () => {
+        let scopeIds = [conversationId];
         try {
-          await this.options.lifecycle?.refreshConversationWorkSnapshot?.(conversationId);
+          const threads = await this.options.conversations.listThreads?.(conversationId) ?? [];
+          scopeIds = [conversationId, ...threads.map(({ id }) => id)];
+          await Promise.all(scopeIds.map((id) => this.options.lifecycle?.refreshConversationWorkSnapshot?.(id)));
         } catch {
           throw new LocalConfigurationRequestError(
             "Conversation agent work could not be verified; retry",
@@ -386,11 +392,13 @@ export class LocalControlService {
             "unavailable",
           );
         }
-        const agents = (await this.listConversationAgents(conversationId)).agents;
+        const agents = (await Promise.all(scopeIds.map(async (id) =>
+          (await this.listConversationAgents(id)).agents.map((agent) => ({ ...agent, scopeId: id })),
+        ))).flat();
         const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "stopped", "idle"].includes(state));
         if (unsafeAgents.length > 0 || agents.some((agent) => {
-          if (agent.state !== "idle" || this.options.lifecycle?.isAttached?.(conversationId, agent.identityId) !== true) return false;
-          const work = this.options.lifecycle.agentWorkSnapshot?.(conversationId, agent.identityId);
+          if (agent.state !== "idle" || this.options.lifecycle?.isAttached?.(agent.scopeId, agent.identityId) !== true) return false;
+          const work = this.options.lifecycle.agentWorkSnapshot?.(agent.scopeId, agent.identityId);
           return !work || work.activeTurns !== 0 || work.queuedTurns !== 0 || !work.queuedTurnsExact;
         })) {
           throw new LocalConfigurationRequestError(
@@ -403,10 +411,10 @@ export class LocalControlService {
           if (!this.options.lifecycle) {
             throw new LocalConfigurationRequestError("Managed agent control is unavailable", 409, "unavailable");
           }
-          await this.options.lifecycle.stopConversationAgent(conversationId, agent.identityId, actorIdentityId);
+          await this.options.lifecycle.stopConversationAgent(agent.scopeId, agent.identityId, actorIdentityId);
         }
-        const afterStop = await this.listConversationAgents(conversationId);
-        if (afterStop.agents.some(({ state }) => !["unbound", "disabled", "stopped"].includes(state))) {
+        const afterStop = (await Promise.all(scopeIds.map((id) => this.listConversationAgents(id)))).flatMap(({ agents }) => agents);
+        if (afterStop.some(({ state }) => !["unbound", "disabled", "stopped"].includes(state))) {
           throw new LocalConfigurationRequestError(
             "Conversation agents changed while lifecycle was being updated; retry",
             409,
