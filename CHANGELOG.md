@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.0.26
+
+Release overview: [Conversation threads with isolated agent sessions](docs/releases/v0.0.26.md).
+
+- Add one durable side-panel thread per top-level message, live reply counts and thread-local message streams, drafts and retry keys.
+- Give each agent a separate thread session seeded once with bounded public parent context through first thread creation, always retaining the root. Keep the snapshot frozen across reopen, delayed startup and restart; never clone private Runtime history or automatically sync later messages.
+- Inherit current parent participants, lifecycle and working folders. Keep thread Start, Stop and session controls scoped while preserving parent permissions and archive safeguards.
+- Fence retired thread work across recovery, cancellation and delayed delivery, including authoritative rejection of new obsolete responses while allowing already-committed responses to be retried.
+- Return results to main manually: ask for a summary, copy it and post a new message. Copy-message, Share-to-conversation and reusable presets are not included.
+- Add public Conversation migration 0010 for thread relationships and frozen context. Keep local-control protocol v24, the existing Runtime pin and dependencies unchanged. Back up the complete stopped data directory before upgrading; downgrading migrated data is unsupported.
+
 ## 0.0.25
 
 Release overview: [Durable Pi sessions without destructive recovery fallbacks](docs/releases/v0.0.25.md).
