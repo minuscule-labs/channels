@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   github-release:
@@ -43,17 +44,14 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           node -e 'const expected = process.argv[1]; const actual = require("./package.json").version; if (actual !== expected) throw new Error(`Tag ${expected} does not match package ${actual}`)' "$VERSION"
+      - name: Require successful main CI for the exact tagged commit
+        working-directory: channels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/check-release-ci.mjs
       - run: pnpm install --frozen-lockfile
         working-directory: runtime
       - run: pnpm install --frozen-lockfile
-        working-directory: channels
-      - run: pnpm check
-        working-directory: runtime
-      - run: pnpm test
-        working-directory: runtime
-      - run: pnpm check
-        working-directory: channels
-      - run: pnpm test
         working-directory: channels
       - name: Build release artifact and checksums
         working-directory: channels

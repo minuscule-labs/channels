@@ -1,14 +1,14 @@
 # Releasing MinuChannels
 
-Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is required: pushing the tag triggers `.github/workflows/release.yml`, which tests the pinned Runtime, builds, smoke-tests, checksums, and prepares a draft GitHub Release. Publication as latest is a separate step after exact-artifact acceptance. Pull-request CI runs the same package and smoke path on Ubuntu so release-only failures are caught before tagging.
+Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is required: pushing the tag triggers `.github/workflows/release.yml`, which requires successful main CI for that exact commit, then builds, smoke-tests, checksums, and prepares a draft GitHub Release. Publication as latest is a separate step after exact-artifact acceptance. Pull-request CI runs the same package and smoke path on Ubuntu so release-only failures are caught before tagging.
 
 ## Prepare
 
-1. Prepare the release version and notes in a pull request. Merge only after required checks pass, then tag from a clean `main` that exactly matches the freshly fetched `origin/main`.
+1. Prepare the release version and notes in a pull request. Merge only after required checks pass, wait for successful post-merge CI, then tag from a clean `main` that exactly matches the freshly fetched `origin/main`.
 2. Set the release version in the root `package.json`.
 3. Add the matching `## <version>` section to `CHANGELOG.md`.
 4. Confirm `LICENSE` exists and package metadata names it.
-5. Confirm the Runtime commit pinned in `runtime-source.json` is intentional and publicly readable or available to Actions. The local packager and GitHub Actions both consume this file and reject another Runtime checkout.
+5. Confirm the Runtime commit pinned in `runtime-source.json` is intentional and publicly readable or available to Actions. The local tag command validates the source definition. CI and release packaging check out and enforce the exact Runtime pin; a local Runtime checkout is not needed just to tag.
 
 ## Validate without tagging
 
@@ -16,7 +16,9 @@ Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is r
 pnpm release:tag:dry-run
 ```
 
-This runs type checks, workspace and web tests, release packaging, checksum generation, and packaged install/reopen diagnostics. It refuses a dirty tree, duplicate tag, missing license, missing changelog entry, or a Runtime checkout that differs from `runtime-source.json`. After validation it fetches `origin/main` again and refuses moving source input.
+This is a lightweight metadata/source check, not a test or packaging run. It refuses a dirty tree, duplicate tag, missing license, missing changelog entry, invalid Runtime source pin, or source that differs from freshly fetched `origin/main`. It does not query GitHub CI locally or require a GitHub CLI login. A successful dry run does not claim tests passed or authorize publication.
+
+Full type, backend, web, browser and pinned Runtime verification remains in required PR/post-merge CI. Do not repeat `release:check` locally just to tag an already CI-verified commit; it remains available for diagnosing packaging or integration problems when needed.
 
 `release:pack` recreates the ignored `release/artifacts/` directory. Archive accepted artifacts and their evidence before running validation.
 
@@ -26,7 +28,9 @@ This runs type checks, workspace and web tests, release packaging, checksum gene
 pnpm release:tag:push
 ```
 
-The command creates and pushes the annotated tag only after validation. GitHub Actions verifies that the tag matches `package.json`, checks out and tests the pinned Runtime commit, rebuilds from source, smoke-tests the artifact, and uploads the `.tgz` plus `SHA256SUMS` to a draft release.
+The command creates and pushes the annotated tag after the metadata/source checks above. GitHub Actions verifies that the tag matches `package.json` and requires the latest main push run of `.github/workflows/ci.yml` for the **exact tagged commit** to have completed successfully in this repository. Missing, pending, failed, cancelled, wrong-commit, pull-request, fork or other-workflow results do not authorize a release. Wait for or fix CI before rerunning a blocked release workflow; never substitute another commit's green result.
+
+The workflow uses its own Actions token with `actions: read`; no new local credentials or GitHub CLI requirement is added. After that gate, it builds from the tag and pinned Runtime, runs the package/privacy/checksum and installed-package smoke path, and uploads the `.tgz` plus `SHA256SUMS` to a draft. It reuses the exact-commit CI source-test result rather than rerunning Runtime/Channels source suites. Required PR/post-merge coverage is unchanged.
 
 If you create the tag without `--push`, publish it later with:
 
