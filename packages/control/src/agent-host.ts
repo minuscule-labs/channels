@@ -4,6 +4,8 @@ import {
   ConversationRuntimeRelay,
   LocalRelayDirectory,
   restoreConversationBindings,
+  getManagedRuntimeSession,
+  resumeManagedRuntimeSession,
   type AgentConversationBinding,
   type AgentRuntimePort,
   type ConversationAgentBindingRecord,
@@ -532,7 +534,7 @@ export class LocalAgentHost {
         if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) return;
       }
       const runtime = this.options.runtimes[current.runtimeAdapter];
-      if (!runtime?.suspend || !runtime.resume || !runtime.listManagedSessions || !binding.verifyLease) return;
+      if (!runtime?.suspend || !runtime.resume || (!runtime.getManagedSession && !runtime.listManagedSessions) || !binding.verifyLease) return;
 
       const reconcileInner = async (): Promise<boolean> => {
         if (this.closed || this.quiescing || this.conversationAdmissionFences.has(current.conversationId)
@@ -547,13 +549,11 @@ export class LocalAgentHost {
           const latestActivity = Date.parse(latest.lastActiveAt ?? latest.updatedAt);
           if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < currentTimeoutMs) return false;
         }
-        const sessions = await this.withTimeout(
-          runtime.listManagedSessions!(latest.runtimeOwnerId!),
+        const managed = await this.withTimeout(
+          getManagedRuntimeSession(runtime, latest.runtimeSessionId, latest.runtimeOwnerId!),
           this.options.runtimeStatusTimeoutMs ?? 2_000,
           "Managed Runtime listing timed out",
         );
-        const managed = sessions.find((candidate) =>
-          candidate.id === latest.runtimeSessionId && candidate.ownerId === latest.runtimeOwnerId);
         if (managed?.state === "suspended" && wasSleeping) {
           if (latest.state !== "sleeping" || !latest.sleptAt || latest.wakeRequestedAt) {
             const confirmedAt = this.now().toISOString();
@@ -610,10 +610,10 @@ export class LocalAgentHost {
           this.options.onError?.(new Error("Managed Runtime suspend did not complete cleanly"));
         }
 
-        let after: Awaited<ReturnType<NonNullable<LocalManagedRuntimePort["listManagedSessions"]>>>;
+        let observed: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
         try {
-          after = await this.withTimeout(
-            runtime.listManagedSessions!(latest.runtimeOwnerId!),
+          observed = await this.withTimeout(
+            getManagedRuntimeSession(runtime, latest.runtimeSessionId, latest.runtimeOwnerId!),
             this.options.runtimeStatusTimeoutMs ?? 2_000,
             "Managed Runtime listing timed out",
           );
@@ -621,8 +621,6 @@ export class LocalAgentHost {
           // Keep the durable sleeping fence when Runtime state cannot be verified.
           return durableSleeping;
         }
-        const observed = after.find((candidate) =>
-          candidate.id === latest.runtimeSessionId && candidate.ownerId === latest.runtimeOwnerId);
         if (observed?.state === "suspended") {
           const confirmedAt = this.now().toISOString();
           await this.options.store.updateBindingState(
@@ -1059,6 +1057,9 @@ export class LocalAgentHost {
           );
         }
         const previous = matches[0]!;
+        if (previous.state === "stopping" && previous.leaseOwner) {
+          throw new LocalConfigurationRequestError("Agent recovery is in progress", 409, "unavailable");
+        }
         if (expectedBinding && (previous.id !== expectedBinding.id
           || previous.generation !== expectedBinding.generation
           || previous.state !== expectedBinding.state)) {
@@ -1494,6 +1495,12 @@ export class LocalAgentHost {
       let observation: RecordedOperation | undefined;
       let workspaceId: string | undefined;
       let fenced = false;
+      // A retired route may still release its delivery lease while recovery is stopping its worker.
+      const recoveryLeaseOwner = `recovery:${randomUUID()}`;
+      let recovery: ConversationAgentBindingRecord | undefined;
+      let renewalTimer: NodeJS.Timeout | undefined;
+      let renewal: Promise<void> | undefined;
+      let leaseLost = false;
       try {
         if (this.closed || this.quiescing) throw new LocalConfigurationRequestError("Agent host is unavailable", 409, "unavailable");
         await this.assertConversationAdmission(conversationId);
@@ -1508,11 +1515,23 @@ export class LocalAgentHost {
         }
         observation = this.observeLifecycle(workspaceId, conversationId, agentIdentityId, restart ? "runtime_restart" : "runtime_stop", target);
         observation?.event("delivery_fenced", "started");
-        const stopping = target.state === "stopping" ? target : await this.options.store.beginStopBinding(
-          target.id, target.generation, target.state, this.now().toISOString(),
+        const leaseDurationMs = this.options.bindingLeaseDurationMs ?? 30_000;
+        const startedAt = this.now();
+        recovery = await this.options.store.beginBindingRecovery(
+          target.id, target.generation, target.state, recoveryLeaseOwner,
+          startedAt.toISOString(), new Date(startedAt.getTime() + leaseDurationMs).toISOString(),
         );
-        if (!stopping) throw new LocalConfigurationRequestError("Agent binding changed; reload before recovery", 409, "unavailable");
+        if (!recovery) throw new LocalConfigurationRequestError("Agent binding is owned by another recovery or changed", 409, "unavailable");
         fenced = true;
+        renewalTimer = setInterval(() => {
+          if (renewal) return;
+          const checkedAt = this.now();
+          renewal = this.options.store.renewBindingLease(target.id, target.generation, recoveryLeaseOwner,
+            checkedAt.toISOString(), new Date(checkedAt.getTime() + leaseDurationMs).toISOString())
+            .then(renewed => { if (!renewed) leaseLost = true; }, () => { leaseLost = true; })
+            .finally(() => { renewal = undefined; });
+        }, Math.max(1, Math.floor(leaseDurationMs / 3)));
+        renewalTimer.unref();
         this.cancelRecovery(target.id);
         observation?.event("delivery_fenced", "confirmed");
         // Remove routing immediately, but do not wait for a hung turn before stopping its worker.
@@ -1525,22 +1544,50 @@ export class LocalAgentHost {
         await this.withTimeout(retired, 15_000, "Previous delivery work did not settle");
         observation?.event("route_detached", "confirmed");
         const messages = await this.options.client.listMessages(conversationId);
-        const paused = await this.options.store.pauseBinding(
-          target.id, target.generation, messages.at(-1)?.sequence ?? 0, this.now().toISOString(),
-        );
-        if (!paused) throw new Error("Agent binding changed during recovery");
-        observation?.event("pause_committed", "confirmed");
+        const sequence = messages.at(-1)?.sequence ?? 0;
+        const assertRecovery = async () => {
+          const current = await this.options.store.getBinding(target.id);
+          if (leaseLost || !current || current.generation !== target.generation || current.state !== "stopping"
+            || current.leaseOwner !== recoveryLeaseOwner || !current.leaseExpiresAt
+            || current.leaseExpiresAt <= this.now().toISOString()) {
+            throw new LocalConfigurationRequestError("Recovery ownership changed", 409, "unavailable");
+          }
+        };
+        await assertRecovery();
         if (restart) {
-          // Recheck authority after shutdown. Never create a replacement or change activation policy.
+          // Prefer the original transcript. Only explicit recovery may replace it after a second confirmed shutdown.
           await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
           await this.assertConversationAdmission(conversationId);
           observation?.event("resume_requested", "started");
-          const result = await this.attachBinding(conversationId, target.id, true, target);
+          const result = await this.resumeRecoverySession(target, runtime);
+          await assertRecovery();
           if (result !== "attached") {
             observation?.event("resume_requested", "failed", { reasonCode: resumeFailureReason(result) });
-            throw new LocalConfigurationRequestError(resumeFailureMessage(result), 409, "unavailable");
+            if (result !== "session_metadata_unavailable" && result !== "session_transcript_invalid" && result !== "session_resume_failed") {
+              throw new LocalConfigurationRequestError(resumeFailureMessage(result), 409, "unavailable");
+            }
+            // A timed-out resume may still launch a worker. Runtime serializes this stop
+            // behind that resume; no replacement is permitted until exit is confirmed again.
+            await this.withTimeout(runtime.forceStopManaged(target.runtimeSessionId, target.runtimeOwnerId), 90_000, "Runtime shutdown timed out");
+            observation?.event("runtime_verified", "confirmed");
+            await assertRecovery();
+            await this.replaceStoppedSession(conversationId, agentIdentityId, actorIdentityId, recovery, observation);
+          } else {
+            await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+            await this.assertConversationAdmission(conversationId);
+            const prepared = await this.options.store.completeBindingRecovery(
+              target.id, target.generation, recoveryLeaseOwner, sequence, "replacing", this.now().toISOString(),
+            );
+            if (!prepared || await this.attachBinding(conversationId, target.id, false, target) !== "attached") {
+              throw new LocalConfigurationRequestError("Recovered Runtime requires reconciliation", 409, "unavailable");
+            }
           }
           observation?.event("route_attached", "confirmed");
+        } else {
+          if (!await this.options.store.completeBindingRecovery(
+            target.id, target.generation, recoveryLeaseOwner, sequence, "paused", this.now().toISOString(),
+          )) throw new LocalConfigurationRequestError("Recovery ownership changed", 409, "unavailable");
+          observation?.event("pause_committed", "confirmed");
         }
         observation?.requestFinished("handler_returned");
         observation?.finish("succeeded");
@@ -1558,8 +1605,135 @@ export class LocalAgentHost {
             : "Agent shutdown could not be confirmed; delivery remains blocked.",
           409, "unavailable", fenced ? "unconfirmed" : "failed",
         );
+      } finally {
+        if (renewalTimer) clearInterval(renewalTimer);
+        await renewal;
+        if (recovery) await this.options.store.releaseBindingLease(recovery.id, recovery.generation, recoveryLeaseOwner);
       }
     });
+  }
+
+  private async resumeRecoverySession(binding: ConversationAgentBindingRecord, runtime: LocalManagedRuntimePort): Promise<AttachmentResult> {
+    const [config, workspace, inspection] = await Promise.all([
+      this.options.store.getAgentConfig(binding.workspaceAgentConfigId),
+      this.options.store.getWorkspaceConfig(binding.workspaceId),
+      this.options.store.getSessionInspectionRecords(binding.workspaceId, binding.conversationId, binding.agentIdentityId),
+    ]);
+    if (!config || config.status !== "active" || config.workspaceId !== binding.workspaceId
+      || config.agentIdentityId !== binding.agentIdentityId || !workspace || !inspection.activation
+      || inspection.activation.bindingId !== binding.id || inspection.activation.bindingGeneration !== binding.generation
+      || (inspection.activation.contextMode === "fresh" && inspection.activation.conversationSequenceAtActivation === undefined)) return "invalid_binding";
+    let session: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
+    try {
+      session = await this.withTimeout(getManagedRuntimeSession(runtime, binding.runtimeSessionId, binding.runtimeOwnerId!),
+        this.options.runtimeStatusTimeoutMs ?? 2_000, "Managed Runtime lookup timed out");
+    } catch { return "runtime_uncertain"; }
+    if (!session) return "session_metadata_unavailable";
+    if (session.state === "unavailable") return session.unavailableReason ?? "runtime_uncertain";
+    if (!runtime.resume) return "runtime_unavailable";
+    try {
+      const resumed = await this.withTimeout(resumeManagedRuntimeSession(runtime, binding.runtimeSessionId, binding.runtimeOwnerId!, { allowStopped: true }),
+        this.options.managedSessionWakeTimeoutMs ?? 30_000, "Managed Runtime resume timed out");
+      if (resumed.id !== binding.runtimeSessionId || resumed.ownerId !== binding.runtimeOwnerId) return "runtime_uncertain";
+    } catch { return "session_resume_failed"; }
+    return await this.runtimeStatus(runtime, binding.runtimeSessionId).catch(() => "offline") === "idle" ? "attached" : "runtime_uncertain";
+  }
+
+  /** Recovery replacement uses only public context and never rewrites the retired transcript. */
+  private async replaceStoppedSession(
+    conversationId: string,
+    agentIdentityId: string,
+    actorIdentityId: string,
+    previous: ConversationAgentBindingRecord,
+    observation?: RecordedOperation,
+  ): Promise<void> {
+    const context = await this.configuredContext(conversationId, agentIdentityId, actorIdentityId);
+    await this.assertConversationAdmission(conversationId);
+    if (this.closed || this.quiescing || !context.runtime.startManaged || !context.runtime.forceStopManaged) {
+      throw new LocalConfigurationRequestError("Managed recovery replacement is unavailable", 409, "unavailable");
+    }
+    assertModelPolicy(context.workspaceConfig, context.agentConfig);
+    const { activation } = await this.options.store.getSessionInspectionRecords(
+      context.conversation.workspaceId, conversationId, agentIdentityId,
+    );
+    if (!activation || activation.bindingId !== previous.id || activation.bindingGeneration !== previous.generation
+      || (activation.contextMode === "fresh" && activation.conversationSequenceAtActivation === undefined)) {
+      throw new LocalConfigurationRequestError("Session context boundary is unavailable", 409, "unavailable");
+    }
+    const messages = await this.options.client.listMessages(conversationId);
+    const sequence = messages.at(-1)?.sequence ?? 0;
+    const floor = activation.contextMode === "fresh" ? activation.conversationSequenceAtActivation! : 0;
+    const maxMessages = context.agentConfig.recentContextMessages ?? 50;
+    const budget = Math.min(context.agentConfig.recentContextTokens ?? 8_000, HANDOFF_SOURCE_TOKEN_LIMIT) * 4;
+    const eligible = maxMessages > 0 ? messages.filter(message => message.sequence > floor).slice(-maxMessages) : [];
+    const handoff = budget > 0 && eligible.length > 0
+      ? `The previous agent session could not resume. Its worker has been stopped. This is a bounded recovery snapshot, not a complete private memory. Do not repeat prior actions merely because they appear here; wait for new Conversation work.\n\n${publicConversationHandoffSource(eligible, context.conversation.participants).slice(-budget)}`
+      : undefined;
+    observation?.event("handoff_prepared", handoff ? "confirmed" : "skipped");
+
+    const assertCurrent = async () => {
+      await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
+      await this.assertConversationAdmission(conversationId);
+      const current = await this.options.store.getBinding(previous.id);
+      if (this.closed || this.quiescing || !current || current.state !== "stopping"
+        || current.leaseOwner !== previous.leaseOwner || !current.leaseExpiresAt || current.leaseExpiresAt <= this.now().toISOString()
+        || current.generation !== previous.generation || current.runtimeSessionId !== previous.runtimeSessionId
+        || current.runtimeOwnerId !== previous.runtimeOwnerId) {
+        throw new LocalConfigurationRequestError("Agent binding changed during recovery", 409, "unavailable");
+      }
+    };
+    await assertCurrent();
+    let session: ManagedRuntimeSession | undefined;
+    let committed = false;
+    try {
+      observation?.event("launch_requested", "started");
+      const ownerId = await this.options.store.getOrCreateRuntimeOwnerId();
+      const started = await startRuntimeSession(context.runtime, {
+        cwd: context.cwd,
+        appendSystemPrompt: this.appendWorkingFolderGuidance(
+          context.agentConfig.personaPrompt, context.workingFolderGuidance, handoff,
+          activation.contextMode === "fresh" ? undefined : context.conversation.thread,
+        ),
+        ...(context.agentConfig.modelProvider && context.agentConfig.modelId
+          ? { model: { provider: context.agentConfig.modelProvider, id: context.agentConfig.modelId } } : {}),
+        ...(context.agentConfig.reasoningLevel ? { reasoningLevel: context.agentConfig.reasoningLevel } : {}),
+        ...(context.agentConfig.skillIds !== undefined ? { skillIds: [...context.agentConfig.skillIds] } : {}),
+      }, ownerId);
+      session = started.session;
+      observation?.event("launch_requested", "confirmed");
+      await assertCurrent();
+      const replaced = await this.directory.replaceSession({
+        bindingId: previous.id, expectedGeneration: previous.generation,
+        runtimeAdapter: context.agentConfig.runtimeAdapter!, runtimeSessionId: session.id,
+        runtimeOwnerId: started.runtimeOwnerId, conversationSequenceAtActivation: sequence,
+        contextMode: activation.contextMode, origin: "started", recoveryLeaseOwner: previous.leaseOwner,
+      });
+      committed = true;
+      observation?.correlate({ targetBinding: { id: replaced.id, generation: replaced.generation } });
+      observation?.event("binding_committed", "confirmed");
+      await this.options.store.recordSessionCleanupAttempt({
+        bindingId: previous.id, bindingGeneration: previous.generation, outcome: "succeeded",
+        attemptedAt: this.now().toISOString(), observedRuntimeStatus: "offline",
+        retentionOutcome: "retained", cleanupAction: "suspend",
+      });
+      this.startedSessions.set(this.sessionKey(replaced.id, session.id), {
+        bindingId: replaced.id, runtime: context.runtime, sessionId: session.id,
+        runtimeOwnerId: started.runtimeOwnerId, generation: replaced.generation,
+      });
+      // The store committed the no-replay boundary atomically with this generation.
+      const result = await this.attachBinding(conversationId, replaced.id);
+      if (result !== "attached") {
+        this.handleAttachmentResult(replaced, result, "binding_restore");
+        throw new LocalConfigurationRequestError("Recovery replacement requires reconciliation", 409, "unavailable");
+      }
+      this.audit({ action: "agent.session.replaced", outcome: "accepted", actorIdentityId,
+        workspaceId: context.conversation.workspaceId, conversationId, targetIdentityId: agentIdentityId });
+    } catch (error) {
+      if (session && !committed) {
+        await this.stopRuntimeBestEffort(context.runtime, session.id, session.ownerId);
+      }
+      throw error;
+    }
   }
 
   async stopConversationAgent(
@@ -1589,6 +1763,9 @@ export class LocalAgentHost {
           );
         }
         const target = matches[0]!;
+        if (target.state === "stopping" && target.leaseOwner) {
+          throw new LocalConfigurationRequestError("Agent recovery is in progress", 409, "unavailable");
+        }
         stopTarget = target;
         if (expectedBinding && (target.id !== expectedBinding.id
           || target.generation !== expectedBinding.generation
@@ -2240,20 +2417,18 @@ export class LocalAgentHost {
     if (binding.runtimeOwnerId === undefined) return false;
     if (!binding.runtimeOwnerId.trim()) throw new Error("Stored Runtime owner scope is invalid");
     const runtime = this.options.runtimes[binding.runtimeAdapter];
-    if (!runtime?.listManagedSessions || !runtime.resume) return false;
-    const sessions = await this.withTimeout(
-      runtime.listManagedSessions(binding.runtimeOwnerId),
+    if (!runtime?.resume || (!runtime.getManagedSession && !runtime.listManagedSessions)) return false;
+    const existing = await this.withTimeout(
+      getManagedRuntimeSession(runtime, binding.runtimeSessionId, binding.runtimeOwnerId),
       2_000,
       "Managed Runtime listing timed out",
     );
-    const existing = sessions.find((candidate) =>
-      candidate.id === binding.runtimeSessionId && candidate.ownerId === binding.runtimeOwnerId);
     if (!existing || existing.state === "unavailable") return false;
     observation?.event("session_verified", "confirmed");
     observation?.event("resume_requested", "started");
     try {
       const resumed = await this.withTimeout(
-        runtime.resume(binding.runtimeSessionId, binding.runtimeOwnerId),
+        resumeManagedRuntimeSession(runtime, binding.runtimeSessionId, binding.runtimeOwnerId),
         30_000,
         "Managed Runtime resume timed out",
       );
@@ -2378,7 +2553,7 @@ export class LocalAgentHost {
           errorCategory = "session_unavailable";
           throw new Error("Managed session cleanup record is incomplete");
         }
-        if (!runtime.listManagedSessions) {
+        if (!runtime.getManagedSession && !runtime.listManagedSessions) {
           errorCategory = "operation_unsupported";
           throw new Error("Managed Runtime listing is unavailable");
         }
@@ -2386,13 +2561,11 @@ export class LocalAgentHost {
           errorCategory = "operation_unsupported";
           throw new Error("Managed Runtime cleanup operation is unavailable");
         }
-        const sessions = await this.withTimeout(
-          runtime.listManagedSessions(record.runtimeOwnerId),
+        const session = await this.withTimeout(
+          getManagedRuntimeSession(runtime, record.managedSessionId, record.runtimeOwnerId),
           2_000,
           "Managed Runtime listing timed out",
         );
-        const session = sessions.find((candidate) =>
-          candidate.id === record.managedSessionId && candidate.ownerId === record.runtimeOwnerId);
         if (!session || session.state === "unavailable") {
           errorCategory = "session_unavailable";
           throw new Error("Managed session is unavailable for suspend cleanup");

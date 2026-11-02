@@ -130,6 +130,18 @@ type RelayStorageTransaction = SQLiteTransaction<
   ExtractTablesWithRelations<typeof schema>
 >;
 
+async function advanceRecoveryCursor(
+  transaction: RelayStorageTransaction,
+  conversationId: string, participantId: string, sequence: number, updatedAt: string,
+): Promise<void> {
+  await transaction.insert(schema.agentHostCursors).values({
+    conversationId, participantId, lastProcessedSequence: sequence, updatedAt,
+  }).onConflictDoUpdate({
+    target: [schema.agentHostCursors.conversationId, schema.agentHostCursors.participantId],
+    set: { lastProcessedSequence: sql`max(${schema.agentHostCursors.lastProcessedSequence}, ${sequence})`, updatedAt },
+  });
+}
+
 async function assertManagedSessionReusable(
   transaction: RelayStorageTransaction,
   record: ConversationAgentBindingRecord,
@@ -637,7 +649,12 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       conversationSequence?: number;
       contextMode?: RuntimeSessionContextMode;
     },
+    recoveryLeaseOwner?: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
+    if (recoveryLeaseOwner !== undefined
+      && (!Number.isSafeInteger(activation?.conversationSequence) || activation!.conversationSequence! < 0)) {
+      throw new Error("Recovery requires a valid no-replay boundary");
+    }
     return this.database.transaction(async (transaction) => {
       const rows = await transaction.update(schema.conversationAgentBindings).set({
         runtimeAdapter,
@@ -657,12 +674,58 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       }).where(and(
         eq(schema.conversationAgentBindings.id, bindingId),
         eq(schema.conversationAgentBindings.generation, expectedGeneration),
+        ...(recoveryLeaseOwner !== undefined ? [
+          eq(schema.conversationAgentBindings.state, "stopping"),
+          eq(schema.conversationAgentBindings.leaseOwner, recoveryLeaseOwner),
+          gt(schema.conversationAgentBindings.leaseExpiresAt, updatedAt),
+        ] : [or(ne(schema.conversationAgentBindings.state, "stopping"), isNull(schema.conversationAgentBindings.leaseOwner))]),
       )).returning();
       if (!rows[0]) return undefined;
       await retireSessionActivation(transaction, bindingId, expectedGeneration, updatedAt, "replaced");
       const replacement = binding(rows[0]);
       await insertSessionActivation(transaction, replacement, activation);
+      if (recoveryLeaseOwner !== undefined) {
+        await advanceRecoveryCursor(transaction, replacement.conversationId, replacement.agentIdentityId,
+          activation!.conversationSequence!, updatedAt);
+      }
       return replacement;
+    });
+  }
+
+  async beginBindingRecovery(
+    bindingId: string, expectedGeneration: number,
+    expectedState: Exclude<ConversationAgentBindingState, "disabled">,
+    leaseOwner: string, now: string, leaseExpiresAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const rows = await this.database.update(schema.conversationAgentBindings).set({
+      state: "stopping", leaseOwner, leaseExpiresAt, lastVerifiedAt: null, wakeRequestedAt: null, updatedAt: now,
+    }).where(and(
+      eq(schema.conversationAgentBindings.id, bindingId),
+      eq(schema.conversationAgentBindings.generation, expectedGeneration),
+      eq(schema.conversationAgentBindings.state, expectedState),
+      or(ne(schema.conversationAgentBindings.state, "stopping"), isNull(schema.conversationAgentBindings.leaseOwner),
+        lte(schema.conversationAgentBindings.leaseExpiresAt, now)),
+    )).returning();
+    return rows[0] ? binding(rows[0]) : undefined;
+  }
+
+  async completeBindingRecovery(
+    bindingId: string, expectedGeneration: number, leaseOwner: string,
+    conversationSequence: number, state: "paused" | "replacing", now: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    return this.database.transaction(async transaction => {
+      const rows = await transaction.update(schema.conversationAgentBindings).set({
+        state, updatedAt: now, leaseOwner: null, leaseExpiresAt: null,
+      }).where(and(
+        eq(schema.conversationAgentBindings.id, bindingId),
+        eq(schema.conversationAgentBindings.generation, expectedGeneration),
+        eq(schema.conversationAgentBindings.state, "stopping"),
+        eq(schema.conversationAgentBindings.leaseOwner, leaseOwner),
+        gt(schema.conversationAgentBindings.leaseExpiresAt, now),
+      )).returning();
+      if (!rows[0]) return undefined;
+      await advanceRecoveryCursor(transaction, rows[0].conversationId, rows[0].agentIdentityId, conversationSequence, now);
+      return binding(rows[0]);
     });
   }
 
@@ -705,6 +768,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         eq(schema.conversationAgentBindings.id, bindingId),
         eq(schema.conversationAgentBindings.generation, expectedGeneration),
         ne(schema.conversationAgentBindings.state, "disabled"),
+        or(ne(schema.conversationAgentBindings.state, "stopping"), isNull(schema.conversationAgentBindings.leaseOwner)),
       )).returning();
       if (!rows[0]) return undefined;
       await transaction.insert(schema.agentHostCursors).values({
