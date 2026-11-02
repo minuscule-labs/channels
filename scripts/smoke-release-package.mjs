@@ -206,7 +206,7 @@ try {
   await diagnosticWorkerSmoke();
   const executable = join(installRoot, "node_modules/.bin/minu-channels");
   const version = (await capture(executable, ["--version"])).trim();
-  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Packaged CLI returned an invalid version: ${version}`);
+  assert.equal(version, manifest.version, "Packaged CLI must report the exact installed manifest version, including prerelease identifiers");
   const help = await capture(executable, ["--help"]);
   for (const command of ["start", "stop", "restart", "status", "open", "enable-login", "disable-login", "remove-service", "run"]) {
     if (!help.includes(command)) throw new Error(`Packaged CLI help is missing ${command}`);
