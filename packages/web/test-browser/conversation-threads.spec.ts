@@ -52,8 +52,14 @@ test("threads keep replies and drafts separate, update counts live, and reopen a
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(messageMenu).toBeFocused();
-  const composerBox = (await mainComposer.boundingBox())!;
   await messageMenu.click();
+  // Raw coordinate clicks do not wait for the menu's mount/focus lifecycle.
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(page.getByRole("menu")).toBeFocused();
+  // The modal menu aria-hides the composer, but it remains the visual click target.
+  const composerBox = (await page.getByRole("combobox", {
+    name: "Conversation message", exact: true, includeHidden: true,
+  }).boundingBox())!;
   await page.mouse.click(composerBox.x + 10, composerBox.y + 10);
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(mainComposer).toHaveValue("Main draft remains here");
