@@ -35,7 +35,7 @@ Requirements:
 Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://github.com/minuscule-labs/channels/releases), verify the checksum, then install:
 
 ```bash
-npm install -g ./minu-channels-0.0.25.tgz
+npm install -g ./minu-channels-0.0.28.tgz
 
 # macOS background service
 minu-channels start
