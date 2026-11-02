@@ -219,8 +219,9 @@ test("sends @channel through the real API and retains legacy broadcast mentions"
   await launch(page, request, data);
   const composer = page.getByRole("combobox", { name: "Conversation message" });
   await composer.fill("@cha");
-  await expect(page.getByRole("option", { name: /@channel/ })).toBeVisible();
-  await expect(page.getByRole("option", { name: /@conversation/ })).toHaveCount(0);
+  const suggestions = page.getByRole("listbox", { name: "Mention suggestions", exact: true });
+  await expect(suggestions.getByRole("option", { name: /@channel/ })).toBeVisible();
+  await expect(suggestions.getByRole("option", { name: /@conversation/ })).toHaveCount(0);
   await composer.press("Enter");
   await expect(composer).toHaveValue("@channel ");
   await composer.pressSequentially("Broadcast check");
@@ -300,7 +301,8 @@ test("legacy channel handles stay direct and removing them restores roster-scope
   await launch(page, request, data);
   const composer = page.getByRole("combobox", { name: "Conversation message" });
   await composer.fill("@cha");
-  const option = page.getByRole("option", { name: /@channel/ });
+  const suggestions = page.getByRole("listbox", { name: "Mention suggestions", exact: true });
+  const option = suggestions.getByRole("option", { name: /@channel/ });
   await expect(option).toHaveCount(1);
   await expect(option).toContainText(data.agent.displayName!);
   await composer.press("Enter");
@@ -309,7 +311,7 @@ test("legacy channel handles stay direct and removing them restores roster-scope
   await expect(composer).toHaveValue("");
   expect(sent[0]?.to).toEqual([data.agent.id]);
   await composer.fill("@conv");
-  await expect(page.getByRole("option", { name: /@conversation.*Everyone allowed/ })).toBeVisible();
+  await expect(suggestions.getByRole("option", { name: /@conversation.*Everyone allowed/ })).toBeVisible();
   await composer.press("Enter");
   await composer.pressSequentially("Explicit legacy broadcast");
   await composer.press("Enter");
@@ -323,7 +325,7 @@ test("legacy channel handles stay direct and removing them restores roster-scope
   await page.getByRole("link", { name: new RegExp(`^${data.primary.name}`) }).first().click();
   await expect(page.getByRole("heading", { name: `#${data.primary.name}` })).toBeVisible();
   await composer.fill("@cha");
-  await expect(page.getByRole("option", { name: /@channel.*Everyone allowed/ })).toBeVisible();
+  await expect(suggestions.getByRole("option", { name: /@channel.*Everyone allowed/ })).toBeVisible();
   await composer.press("Enter");
   await composer.pressSequentially("Broadcast after roster removal");
   await composer.press("Enter");
