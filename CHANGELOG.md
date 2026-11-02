@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.0.28
+
+Release overview: [Agent recovery without installation-wide transcript scans](docs/releases/v0.0.28.md).
+
+- Recover and inspect exact owner-scoped sessions without scanning every saved transcript. Bound full-transcript validation to four readers per Runtime module and one per path, cancel queued/active read work safely, and keep guards occupied until physical settlement.
+- Make explicit Restart resume the same transcript first, then permit controlled replacement in the same Conversation only after confirmed shutdown. Retain original transcripts/history and bounded public context; ordinary Start and background recovery never automatically replace existing sessions.
+- Reserve recovery with a separate durable lease, reject competing lifecycle actions, and atomically commit replacement generation/history with its no-replay cursor boundary so cleanup failures cannot replay captured commands.
+- Carry forward the emergency recovery build's cancellation and exact-manifest-version package verification. Document the manual, checksum-verified upgrade path from `0.0.27-recovery.0` without resetting product data or Runtime resume material.
+- Pin Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`. Keep local-control protocol v24, dependencies and database schemas unchanged.
+- Accept imperfect context reconstruction for now: repeated fallback replacements of a Fresh session can narrow recovered public context while the Conversation and retained transcripts remain intact. Do not claim a fix for the previously disclosed intermittent native Neon database abort.
+
 ## 0.0.27
 
 Release overview: [Select once and start agents on Send](docs/releases/v0.0.27.md).
