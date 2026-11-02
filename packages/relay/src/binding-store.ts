@@ -1,5 +1,6 @@
 import { createResourceId, type ConversationClient } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
+import { getManagedRuntimeSession, resumeManagedRuntimeSession } from "./managed-sessions.ts";
 import type {
   AgentConversationBinding,
   AgentRuntimePort,
@@ -273,6 +274,18 @@ export interface RelayBindingStore extends RelayCursorStore {
       conversationSequence?: number;
       contextMode?: RuntimeSessionContextMode;
     },
+    recoveryLeaseOwner?: string,
+  ): Promise<ConversationAgentBindingRecord | undefined>;
+  /** Reserve the existing stopping fence for one recovery owner, without admitting delivery. */
+  beginBindingRecovery(
+    bindingId: string, expectedGeneration: number,
+    expectedState: Exclude<ConversationAgentBindingState, "disabled">,
+    leaseOwner: string, now: string, leaseExpiresAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined>;
+  /** Commit the stop boundary and release recovery ownership with the completed state transition. */
+  completeBindingRecovery(
+    bindingId: string, expectedGeneration: number, leaseOwner: string,
+    conversationSequence: number, state: "paused" | "replacing", now: string,
   ): Promise<ConversationAgentBindingRecord | undefined>;
   beginStopBinding(
     bindingId: string,
@@ -702,9 +715,17 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       conversationSequence?: number;
       contextMode?: RuntimeSessionContextMode;
     },
+    recoveryLeaseOwner?: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
+    if (recoveryLeaseOwner !== undefined) {
+      if (binding.state !== "stopping" || binding.leaseOwner !== recoveryLeaseOwner
+        || !binding.leaseExpiresAt || binding.leaseExpiresAt <= updatedAt) return undefined;
+      if (!Number.isSafeInteger(activation?.conversationSequence) || activation!.conversationSequence! < 0) {
+        throw new Error("Recovery requires a valid no-replay boundary");
+      }
+    } else if (binding.state === "stopping" && binding.leaseOwner) return undefined;
     validateRuntimeOwnerScope(runtimeOwnerId);
     const sessionOwner = [...this.bindings.values()].find(
       (candidate) => candidate.id !== bindingId
@@ -735,6 +756,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     delete binding.managedSessionMissingAt;
     binding.updatedAt = updatedAt;
     this.createSessionActivation(binding, activation);
+    // The replacement identity and recovery boundary become visible together.
+    if (recoveryLeaseOwner !== undefined) {
+      const key = `${binding.conversationId}:${binding.agentIdentityId}`;
+      this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, activation!.conversationSequence!));
+    }
     // Remain visibly uncertain until the new session is leased, verified, and attached.
     binding.state = "replacing";
     delete binding.leaseOwner;
@@ -838,6 +864,40 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       .map((record) => ({ ...record }));
   }
 
+  async beginBindingRecovery(
+    bindingId: string, expectedGeneration: number,
+    expectedState: Exclude<ConversationAgentBindingState, "disabled">,
+    leaseOwner: string, now: string, leaseExpiresAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration || binding.state !== expectedState
+      || (binding.state === "stopping" && binding.leaseOwner
+        && (!binding.leaseExpiresAt || binding.leaseExpiresAt > now))) return undefined;
+    binding.state = "stopping";
+    binding.leaseOwner = leaseOwner;
+    binding.leaseExpiresAt = leaseExpiresAt;
+    delete binding.lastVerifiedAt;
+    delete binding.wakeRequestedAt;
+    binding.updatedAt = now;
+    return copyBinding(binding);
+  }
+
+  async completeBindingRecovery(
+    bindingId: string, expectedGeneration: number, leaseOwner: string,
+    conversationSequence: number, state: "paused" | "replacing", now: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration || binding.state !== "stopping"
+      || binding.leaseOwner !== leaseOwner || !binding.leaseExpiresAt || binding.leaseExpiresAt <= now) return undefined;
+    const key = `${binding.conversationId}:${binding.agentIdentityId}`;
+    this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, conversationSequence));
+    binding.state = state;
+    delete binding.leaseOwner;
+    delete binding.leaseExpiresAt;
+    binding.updatedAt = now;
+    return copyBinding(binding);
+  }
+
   async beginStopBinding(
     bindingId: string,
     expectedGeneration: number,
@@ -862,7 +922,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
-    if (!binding || binding.generation !== expectedGeneration || binding.state === "disabled") return undefined;
+    if (!binding || binding.generation !== expectedGeneration || binding.state === "disabled"
+      || (binding.state === "stopping" && binding.leaseOwner)) return undefined;
     const cursorKey = `${binding.conversationId}:${binding.agentIdentityId}`;
     this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, conversationSequence));
     binding.state = "paused";
@@ -1094,6 +1155,7 @@ export class LocalRelayDirectory {
     conversationSequenceAtActivation?: number;
     contextMode?: RuntimeSessionContextMode;
     origin?: RuntimeSessionHistoryOrigin;
+    recoveryLeaseOwner?: string;
   }): Promise<ConversationAgentBindingRecord> {
     const replaced = await this.store.replaceBindingSession(
       input.bindingId,
@@ -1107,6 +1169,7 @@ export class LocalRelayDirectory {
         conversationSequence: input.conversationSequenceAtActivation,
         contextMode: input.contextMode,
       },
+      input.recoveryLeaseOwner,
     );
     if (!replaced) throw new Error("Binding generation changed; reload before replacing the session");
     return replaced;
@@ -1412,15 +1475,15 @@ export async function restoreConversationBindings(
         await release();
         continue;
       }
-      if (!runtime.listManagedSessions) {
+      if (!runtime.getManagedSession && !runtime.listManagedSessions) {
         outcomes.set(leased.id, "runtime_unavailable");
         await release();
         continue;
       }
-      let managedSessions: Awaited<ReturnType<NonNullable<AgentRuntimePort["listManagedSessions"]>>>;
+      let ownedSession: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
       try {
-        managedSessions = await withRuntimeTimeout(
-          runtime.listManagedSessions(leased.runtimeOwnerId),
+        ownedSession = await withRuntimeTimeout(
+          getManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId),
           statusTimeoutMs,
           "Runtime session listing",
         );
@@ -1429,8 +1492,6 @@ export async function restoreConversationBindings(
         await release();
         continue;
       }
-      const ownedSession = managedSessions.find((session) =>
-        session.id === leased.runtimeSessionId && session.ownerId === leased.runtimeOwnerId);
       if (!ownedSession) {
         if (leased.state !== "paused") {
           const verifiedAt = now().toISOString();
@@ -1472,7 +1533,7 @@ export async function restoreConversationBindings(
         let resumed: { id: string; ownerId: string };
         try {
           resumed = await withRuntimeTimeout(
-            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId, { allowStopped: true }),
+            resumeManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId, { allowStopped: true }),
             resumeTimeoutMs,
             "Runtime session resume",
           );
@@ -1499,7 +1560,7 @@ export async function restoreConversationBindings(
           // Resume is idempotent and serialized by Runtime. Calling it for an already-
           // active worker also waits out any interrupted suspend/resume transition.
           resumed = await withRuntimeTimeout(
-            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId),
+            resumeManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId),
             resumeTimeoutMs,
             "Runtime session resume",
           );
@@ -1652,7 +1713,7 @@ export async function restoreConversationBindings(
         }
         if (latest.state !== "sleeping" && latest.state !== "waking") return;
         const ownerId = latest.runtimeOwnerId;
-        if (!ownerId || !runtime.listManagedSessions) {
+        if (!ownerId || (!runtime.getManagedSession && !runtime.listManagedSessions)) {
           throw new Error("Managed session listing is unavailable");
         }
         const requestedAt = now().toISOString();
@@ -1668,13 +1729,11 @@ export async function restoreConversationBindings(
         );
         if (!waking) throw new Error("Managed binding lease changed before wake");
         try {
-          const sessions = await withRuntimeTimeout(
-            runtime.listManagedSessions(ownerId),
+          const owned = await withRuntimeTimeout(
+            getManagedRuntimeSession(runtime, latest.runtimeSessionId, ownerId),
             statusTimeoutMs,
             "Runtime session listing",
           );
-          const owned = sessions.find((session) =>
-            session.id === latest.runtimeSessionId && session.ownerId === latest.runtimeOwnerId);
           if (!owned) {
             const verifiedAt = now().toISOString();
             const offline = await options.store.updateBindingState(
@@ -1697,7 +1756,7 @@ export async function restoreConversationBindings(
           // Runtime serializes idempotent resume with suspend. This is required even
           // when inventory says active because a timed-out suspend may still be settling.
           const resumed = await withRuntimeTimeout(
-            runtime.resume(latest.runtimeSessionId, ownerId),
+            resumeManagedRuntimeSession(runtime, latest.runtimeSessionId, ownerId),
             resumeTimeoutMs,
             "Runtime session resume",
           );

@@ -30,6 +30,9 @@ async function until(check: () => boolean | Promise<boolean>, timeout = 5_000) {
 }
 class ObservedFakeRuntime {
   starts = 0;
+  startConfigs: ManagedRuntimeStartConfig[] = [];
+  sentInputs: Array<{ id: string; input: string }> = [];
+  getManagedSession?: (id: string, ownerId: string) => Promise<ManagedRuntimeSessionSummary | undefined>;
   interrupts = 0;
   forceStops: string[] = [];
   forceStopFailure = false;
@@ -41,7 +44,8 @@ class ObservedFakeRuntime {
   interruptGate?: ReturnType<typeof gate>;
   sendGate?: ReturnType<typeof gate>;
   private sessions = new Map<string, { ownerId?: string; status: "idle" | "working" | "offline"; messages: Array<{ role: "assistant"; content: string }> }>();
-  async start(_config: ManagedRuntimeStartConfig) {
+  async start(config: ManagedRuntimeStartConfig) {
+    this.startConfigs.push(config);
     const id = `fake-session-${++this.starts}`;
     this.sessions.set(id, { status: "idle", messages: [] });
     return { id };
@@ -55,7 +59,8 @@ class ObservedFakeRuntime {
   async status(id: string) { return this.unreachable.has(id) ? "offline" as const : this.sessions.get(id)?.status ?? "offline" as const; }
   setWorking(id: string) { this.sessions.get(id)!.status = "working"; }
   async messages(id: string) { return this.sessions.get(id)?.messages ?? []; }
-  async send(id: string, _input: string) {
+  async send(id: string, input: string) {
+    this.sentInputs.push({ id, input });
     const session = this.sessions.get(id)!;
     session.status = "working";
     await this.sendGate?.promise;
@@ -114,7 +119,7 @@ async function fixture(diagnostics?: LifecycleDiagnostics, store: InMemoryRelayB
   let host = new LocalAgentHost({ client, store, runtimes: { fake: runtime }, diagnostics });
   return { directory, server, client, owner, agent, workspace, conversation, store, runtime,
     get host() { return host; },
-    async useDiagnostics(value?: LifecycleDiagnostics) { await host.close(); host = new LocalAgentHost({ client, store, runtimes: { fake: runtime }, diagnostics: value }); },
+    async useDiagnostics(value?: LifecycleDiagnostics, managedSessionWakeTimeoutMs?: number) { await host.close(); host = new LocalAgentHost({ client, store, runtimes: { fake: runtime }, diagnostics: value, managedSessionWakeTimeoutMs }); },
     scope: { workspaceId: workspace.id, conversationId: conversation.id, participantIdentityId: agent.id },
     async close() { runtime.sendGate?.release(); runtime.interruptGate?.release(); await host.close(); await store.close(); await server.close(); await rm(directory, { recursive: true, force: true }); },
   };
@@ -227,9 +232,244 @@ test("unconfirmed Runtime shutdown remains durably fenced across host restart; a
     assert.equal((await f.store.getBinding(target.id))?.state, "connected");
     assert.equal(f.runtime.resumes, 1);
     f.runtime.resumeFailure = true;
+    await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+    assert.equal((await f.store.getBinding(target.id))?.state, "connected");
+    assert.equal((await f.store.getBinding(target.id))?.generation, target.generation + 1);
+    assert.equal(f.runtime.starts, 2);
+  } finally { await f.close(); }
+});
+
+for (const persistent of [false, true]) {
+  test(`restart replaces an unusable session without losing its Conversation or Fresh boundary (persistent=${persistent})`, async () => {
+    const databaseDirectory = await mkdtemp(join(tmpdir(), "channels-replacement-recovery-"));
+    const store = persistent ? await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(databaseDirectory, "relay.db")) }) : new InMemoryRelayBindingStore();
+    const collector = new LifecycleCollector();
+    const f = await fixture(collector, store);
+    try {
+      await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "EXCLUDED_BEFORE_FRESH" });
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+      const original = (await store.listConversationBindings(f.conversation.id))[0]!;
+      await f.useDiagnostics(collector);
+      await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "RECENT_PUBLIC_DECISION" });
+      const before = await f.client.listMessages(f.conversation.id);
+      const inventory = f.runtime.listManagedSessions.bind(f.runtime);
+      f.runtime.getManagedSession = async (id, ownerId) => id === original.runtimeSessionId
+        ? { id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }
+        : (await inventory(ownerId)).find(session => session.id === id);
+      f.runtime.listManagedSessions = async () => { throw new Error("Inventory must not run"); };
+      await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+      const recovered = (await store.getBinding(original.id))!;
+      assert.equal(recovered.state, "connected");
+      assert.equal(recovered.conversationId, original.conversationId);
+      assert.equal(recovered.generation, original.generation + 1);
+      assert.notEqual(recovered.runtimeSessionId, original.runtimeSessionId);
+      assert.equal(f.runtime.starts, 2, "No extra summarizer session is needed");
+      assert.deepEqual(f.runtime.forceStops, [original.runtimeSessionId, original.runtimeSessionId]);
+      assert.deepEqual(f.runtime.destructions, [], "The original transcript is retained");
+      assert.match(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /RECENT_PUBLIC_DECISION/);
+      assert.doesNotMatch(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /EXCLUDED_BEFORE_FRESH/);
+      assert.deepEqual(await f.client.listMessages(f.conversation.id), before);
+      assert.equal(await store.getCursor(f.conversation.id, f.agent.id), before.at(-1)?.sequence);
+      assert.deepEqual(f.runtime.sentInputs, [], "Historical triggers must not be replayed");
+      const history = await store.listSessionHistory(f.conversation.id, f.agent.id);
+      assert.equal(history.length, 2);
+      assert.ok(history.every(record => record.contextMode === "fresh"));
+      const retired = history.find(record => record.bindingGeneration === original.generation)!;
+      assert.equal(retired.state, "retired"); assert.equal(retired.retentionStatus, "retained");
+      assert.equal(retired.cleanupStatus, "succeeded");
+      const operation = collector.operations.filter(item => item.action === "runtime_restart").at(-1)!;
+      assert.equal(operation.outcome, "succeeded");
+      assert.equal(operation.correlations.targetBinding?.generation, recovered.generation);
+      assert.ok(operation.events.some(([stage, result, details]) => stage === "resume_requested" && result === "failed" && details?.reasonCode === "session_transcript_invalid"));
+    } finally { await f.close(); await rm(databaseDirectory, { recursive: true, force: true }); }
+  });
+}
+
+for (const persistent of [false, true]) {
+  test(`recovery commits its no-replay boundary before fallible cleanup bookkeeping (persistent=${persistent})`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "recovery-commit-fault-"));
+    const store = persistent ? await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(directory, "relay.db")) }) : new InMemoryRelayBindingStore();
+    const f = await fixture(undefined, store);
+    try {
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      const original = (await store.listConversationBindings(f.conversation.id))[0]!;
+      await f.useDiagnostics();
+      let capturedSequence = 0;
+      f.runtime.resume = async () => {
+        capturedSequence = (await f.client.postMessage(f.conversation.id, {
+          participantId: f.owner.id, body: "@builder ALREADY_CAPTURED_RECOVERY_COMMAND",
+        })).sequence;
+        throw new Error("Saved session cannot resume");
+      };
+      const record = store.recordSessionCleanupAttempt.bind(store);
+      let fail = true;
+      store.recordSessionCleanupAttempt = async input => {
+        if (fail && input.outcome === "succeeded") { fail = false; throw new Error("Cleanup write failed"); }
+        await record(input);
+      };
+      await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true));
+      assert.equal((await store.getBinding(original.id))?.generation, original.generation + 1);
+      assert.ok(capturedSequence > 0);
+      assert.ok(await store.getCursor(f.conversation.id, f.agent.id) >= capturedSequence,
+        "The no-replay boundary must survive failure immediately after replacement commit");
+      await f.host.restore();
+      assert.deepEqual(f.runtime.sentInputs, [], "Restore must not execute a captured historical command");
+    } finally { await f.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+
+  test(`recovery excludes another host until replacement commits (persistent=${persistent})`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "recovery-host-race-"));
+    const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+    const store = persistent ? await DrizzleLibSqlRelayStorage.open({ url }) : new InMemoryRelayBindingStore();
+    const f = await fixture(undefined, store);
+    const competingStore = persistent ? await DrizzleLibSqlRelayStorage.open({ url }) : store;
+    const other = new LocalAgentHost({ client: f.client, store: competingStore, runtimes: { fake: f.runtime } });
+    const resumeEntered = gate();
+    const releaseResume = gate();
+    let competingStart: Promise<unknown> | undefined;
+    try {
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      const original = (await store.listConversationBindings(f.conversation.id))[0]!;
+      await f.useDiagnostics();
+      const resume = f.runtime.resume.bind(f.runtime);
+      let competitor = false;
+      f.runtime.resume = async (...args) => {
+        if (!competitor) { f.runtime.resumes++; throw new Error("Resume failed"); }
+        resumeEntered.release();
+        await releaseResume.promise;
+        return resume(...args);
+      };
+      const start = f.runtime.startManaged.bind(f.runtime);
+      f.runtime.startManaged = async (...args) => {
+        const session = await start(...args);
+        await assert.rejects(other.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true), /owned by another recovery/);
+        await assert.rejects(other.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id), /recovery is in progress/);
+        await assert.rejects(other.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id), /recovery is in progress/);
+        competitor = true;
+        competingStart = other.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+        await Promise.race([resumeEntered.promise, competingStart.then(() => undefined, () => undefined)]);
+        return session;
+      };
+      await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+      releaseResume.release();
+      await Promise.allSettled([competingStart]);
+      const replacement = (await store.getBinding(original.id))!;
+      assert.equal(replacement.state, "connected");
+      assert.equal(replacement.generation, original.generation + 1);
+      assert.equal(await f.runtime.status(replacement.runtimeSessionId), "idle");
+      assert.equal(await f.runtime.status(original.runtimeSessionId), "offline",
+        "A competing Start must not resurrect the retired worker during replacement launch");
+      assert.equal(f.runtime.resumes, 1, "Only the recovery owner's failed resume may run");
+    } finally {
+      releaseResume.release(); await Promise.allSettled([competingStart]);
+      await other.close(); if (persistent) await competingStore.close?.();
+      await f.close(); await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+test("restart never replaces while a late resume worker cannot be confirmed stopped", async () => {
+  const f = await fixture();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    f.runtime.resumeFailure = true;
+    const stop = f.runtime.forceStopManaged.bind(f.runtime);
+    f.runtime.forceStopManaged = async (...args) => {
+      if (f.runtime.forceStops.length === 1) {
+        f.runtime.forceStops.push(args[0]);
+        throw new Error("Unconfirmed late worker");
+      }
+      await stop(...args);
+    };
     await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true));
-    assert.equal((await f.store.getBinding(target.id))?.state, "paused");
-    assert.equal(f.runtime.starts, 1);
+    assert.equal(f.runtime.starts, 1); assert.equal(f.runtime.forceStops.length, 2);
+    assert.equal((await f.store.getBinding(original.id))?.generation, original.generation);
+    assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+  } finally { await f.close(); }
+});
+
+test("a timed-out resume must settle and its late worker must stop before replacement launches", async () => {
+  const f = await fixture();
+  const delayedResume = gate();
+  const secondStop = gate();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    await f.useDiagnostics(undefined, 5);
+    const resume = f.runtime.resume.bind(f.runtime);
+    let resumeFinished!: () => void;
+    const finished = new Promise<void>(resolve => { resumeFinished = resolve; });
+    f.runtime.resume = async (...args) => {
+      await delayedResume.promise;
+      const result = await resume(...args);
+      resumeFinished();
+      return result;
+    };
+    const stop = f.runtime.forceStopManaged.bind(f.runtime);
+    let stops = 0;
+    f.runtime.forceStopManaged = async (...args) => {
+      if (++stops === 2) {
+        secondStop.release();
+        await finished; // Models Runtime's lifecycle serialization behind the pending resume.
+      }
+      await stop(...args);
+    };
+    const recovering = f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+    await secondStop.promise;
+    assert.equal(f.runtime.starts, 1, "The late writer has not yet stopped");
+    delayedResume.release();
+    await recovering;
+    assert.equal(f.runtime.resumes, 1);
+    assert.equal(f.runtime.forceStops.length, 2);
+    assert.equal(f.runtime.starts, 2);
+    assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), true);
+  } finally { delayedResume.release(); await f.close(); }
+});
+
+for (const contextMode of ["with_context", "fresh"] as const) {
+  test(`recovery preserves immutable thread background and excludes later parent context (${contextMode})`, async () => {
+    const f = await fixture();
+    try {
+      const root = await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "INHERITED_THREAD_ROOT" });
+      const thread = await f.client.createThread(f.conversation.id, { actorIdentityId: f.owner.id, rootMessageId: root.id });
+      await f.host.startConversationAgent(thread.id, f.agent.id, f.owner.id, contextMode);
+      const original = (await f.store.listConversationBindings(thread.id))[0]!;
+      await f.useDiagnostics();
+      await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "EXCLUDED_LATER_PARENT_DISCUSSION" });
+      await f.client.postMessage(thread.id, { participantId: f.owner.id, body: "THREAD_RECOVERY_DECISION" });
+      const inventory = f.runtime.listManagedSessions.bind(f.runtime);
+      f.runtime.getManagedSession = async (id, ownerId) => id === original.runtimeSessionId
+        ? { id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }
+        : (await inventory(ownerId)).find(session => session.id === id);
+      await f.host.recoverConversationAgent(thread.id, f.agent.id, f.owner.id, true);
+      const prompt = f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "";
+      assert.match(prompt, /THREAD_RECOVERY_DECISION/);
+      assert.doesNotMatch(prompt, /EXCLUDED_LATER_PARENT_DISCUSSION/);
+      if (contextMode === "fresh") assert.doesNotMatch(prompt, /INHERITED_THREAD_ROOT/);
+      else assert.match(prompt, /INHERITED_THREAD_ROOT/);
+      assert.equal((await f.store.listConversationBindings(f.conversation.id)).length, 0);
+    } finally { await f.close(); }
+  });
+}
+
+test("replacement rechecks authority after its asynchronous launch and cleans up an uncommitted worker", async () => {
+  const f = await fixture();
+  try {
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    f.runtime.resumeFailure = true;
+    const successor = await f.client.createIdentity({ type: "human", displayName: "Successor" });
+    await f.client.addWorkspaceMember(f.workspace.id, { identityId: successor.id, mentionHandle: "successor", accessRole: "owner" });
+    const start = f.runtime.startManaged.bind(f.runtime);
+    f.runtime.startManaged = async (...args) => {
+      const session = await start(...args);
+      await f.client.updateWorkspaceMember(f.workspace.id, f.owner.id, { actorIdentityId: successor.id, accessRole: "member" });
+      return session;
+    };
+    await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true), /owner or admin/);
+    assert.equal((await f.store.getBinding(original.id))?.generation, original.generation);
+    assert.equal(f.host.isAttached(f.conversation.id, f.agent.id), false);
+    assert.equal(await f.runtime.status("fake-session-2"), "offline");
   } finally { await f.close(); }
 });
 
@@ -271,11 +511,10 @@ test("recovery rechecks authority after shutdown and never attaches a changed ge
           await f.client.updateWorkspaceMember(f.workspace.id, f.owner.id, { actorIdentityId: successor.id, accessRole: "member" });
         };
       } else {
-        const pause = f.store.pauseBinding.bind(f.store);
-        f.store.pauseBinding = async (...args) => {
-          const paused = await pause(...args);
-          if (paused) await f.store.disableBinding(target.id, target.generation, new Date().toISOString());
-          return paused;
+        const stop = f.runtime.forceStopManaged.bind(f.runtime);
+        f.runtime.forceStopManaged = async (...args) => {
+          await stop(...args);
+          await f.store.disableBinding(target.id, target.generation, new Date().toISOString());
         };
       }
       await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true));

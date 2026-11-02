@@ -39,6 +39,7 @@ export {
   type WorkspaceAgentConfig,
   validateConversationWorkingFolders,
 } from "./binding-store.ts";
+export { getManagedRuntimeSession, resumeManagedRuntimeSession } from "./managed-sessions.ts";
 export {
   ConversationRuntimeRelay,
   ResponseDeliveryFailedError,
