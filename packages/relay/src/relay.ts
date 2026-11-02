@@ -46,9 +46,9 @@ export interface ManagedRuntimeSessionSummary {
 
 export interface AgentRuntimePort {
   /** Exact metadata-only lookup; resume, not status polling, validates transcript contents. */
-  getManagedSession?(managedSessionId: string, ownerId: string): Promise<ManagedRuntimeSessionSummary | undefined>;
+  getManagedSession?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<ManagedRuntimeSessionSummary | undefined>;
   /** Owner-scoped operations for Runtime-managed sessions; absent on legacy adapters. */
-  listManagedSessions?(ownerId: string): Promise<ManagedRuntimeSessionSummary[]>;
+  listManagedSessions?(ownerId: string, options?: { signal?: AbortSignal }): Promise<ManagedRuntimeSessionSummary[]>;
   resume?(managedSessionId: string, ownerId: string, options?: { allowStopped?: boolean }): Promise<ManagedRuntimeSessionRef>;
   send(sessionId: string, input: string, images?: RuntimePortImage[]): Promise<void>;
   startTurn?(sessionId: string, turnId: string, input: string, images?: RuntimePortImage[]): Promise<RuntimePortTurn>;

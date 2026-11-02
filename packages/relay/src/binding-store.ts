@@ -1483,7 +1483,7 @@ export async function restoreConversationBindings(
       let ownedSession: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
       try {
         ownedSession = await withRuntimeTimeout(
-          getManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId),
+          getManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId, statusTimeoutMs),
           statusTimeoutMs,
           "Runtime session listing",
         );
@@ -1730,7 +1730,7 @@ export async function restoreConversationBindings(
         if (!waking) throw new Error("Managed binding lease changed before wake");
         try {
           const owned = await withRuntimeTimeout(
-            getManagedRuntimeSession(runtime, latest.runtimeSessionId, ownerId),
+            getManagedRuntimeSession(runtime, latest.runtimeSessionId, ownerId, statusTimeoutMs),
             statusTimeoutMs,
             "Runtime session listing",
           );

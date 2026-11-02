@@ -66,3 +66,47 @@ test("a timed-out resume remains single-flight until its underlying operation se
   resumed.resolve({ id: "target", ownerId: "owner" });
   assert.deepEqual(await first, await second);
 });
+
+for (const exact of [false, true]) {
+  test(`shared physical lookup receives a cancellable deadline (exact=${exact})`, async () => {
+    let calls = 0;
+    let observedSignal: AbortSignal | undefined;
+    const read = (options?: { signal?: AbortSignal }): Promise<never> => {
+      calls++; observedSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        assert.ok(options?.signal);
+        options.signal.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+      });
+    };
+    const runtime = exact
+      ? { getManagedSession: (_id: string, _ownerId: string, options?: { signal?: AbortSignal }) => read(options) }
+      : { listManagedSessions: (_ownerId: string, options?: { signal?: AbortSignal }) => read(options) };
+    const first = getManagedRuntimeSession(runtime, "target", "owner", 5);
+    const second = getManagedRuntimeSession(runtime, "target", "owner", 5);
+    // Keep the event loop alive while the unref'ed AbortSignal timeout fires.
+    const keepAlive = new Promise(resolve => setTimeout(resolve, 20));
+    await Promise.all([assert.rejects(first, { name: "TimeoutError" }), assert.rejects(second, { name: "TimeoutError" }), keepAlive]);
+    assert.equal(calls, 1);
+    assert.equal(observedSignal?.aborted, true);
+  });
+}
+
+test("an adapter ignoring cancellation keeps its physical guard until actual settlement", async () => {
+  const result = gate<ManagedRuntimeSessionSummary | undefined>();
+  let calls = 0;
+  let observedSignal: AbortSignal | undefined;
+  const runtime = {
+    getManagedSession(_id: string, _ownerId: string, options?: { signal?: AbortSignal }) {
+      calls++; observedSignal = options?.signal; return result.promise;
+    },
+  };
+  const first = getManagedRuntimeSession(runtime, "target", "owner", 5);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(observedSignal?.aborted, true);
+  const second = getManagedRuntimeSession(runtime, "target", "owner", 5);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  result.resolve({ id: "target", ownerId: "owner", state: "suspended" });
+  assert.deepEqual(await first, await second);
+  await assert.rejects(getManagedRuntimeSession(runtime, "target", "owner", 0), RangeError);
+});

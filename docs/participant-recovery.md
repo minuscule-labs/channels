@@ -39,7 +39,7 @@ Known limitation: consecutive fallback replacements of a Fresh session can progr
 
 Failure to confirm either shutdown leaves delivery fenced and never launches a second worker. Ordinary Start and background startup/lease recovery still only resume the same owner-scoped saved session; they never automatically replace it. Replacement is limited to explicit Restart with confirmed shutdown, fresh owner/admin authority and an unchanged binding.
 
-Recovery, wake, idle sleep and retirement cleanup use exact-session metadata lookup when supported. Transcript contents are validated on actual resume, not routine polling. Legacy adapters share one unfinished inventory read per owner; reads and resumes retain their in-flight guards until physical settlement even after a caller times out, preventing retries from multiplying the underlying work.
+Recovery, wake, idle sleep and retirement cleanup use exact-session metadata lookup when supported. Transcript contents are validated on actual resume, not routine polling. Legacy adapters share one unfinished inventory read per owner. The shared read carries a cancellation deadline matching the configured status-read budget; supported Runtime reads remove queued work and stop active validation between chunks when it expires. Adapters that ignore cancellation still occupy their in-flight guard until physical settlement. Resume guards also remain held until settlement, preventing retries from multiplying the underlying work.
 
 ## Durable sessions and retirement
 

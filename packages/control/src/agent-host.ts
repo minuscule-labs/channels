@@ -550,7 +550,7 @@ export class LocalAgentHost {
           if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < currentTimeoutMs) return false;
         }
         const managed = await this.withTimeout(
-          getManagedRuntimeSession(runtime, latest.runtimeSessionId, latest.runtimeOwnerId!),
+          getManagedRuntimeSession(runtime, latest.runtimeSessionId, latest.runtimeOwnerId!, this.options.runtimeStatusTimeoutMs ?? 2_000),
           this.options.runtimeStatusTimeoutMs ?? 2_000,
           "Managed Runtime listing timed out",
         );
@@ -613,7 +613,7 @@ export class LocalAgentHost {
         let observed: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
         try {
           observed = await this.withTimeout(
-            getManagedRuntimeSession(runtime, latest.runtimeSessionId, latest.runtimeOwnerId!),
+            getManagedRuntimeSession(runtime, latest.runtimeSessionId, latest.runtimeOwnerId!, this.options.runtimeStatusTimeoutMs ?? 2_000),
             this.options.runtimeStatusTimeoutMs ?? 2_000,
             "Managed Runtime listing timed out",
           );
@@ -1625,7 +1625,7 @@ export class LocalAgentHost {
       || (inspection.activation.contextMode === "fresh" && inspection.activation.conversationSequenceAtActivation === undefined)) return "invalid_binding";
     let session: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
     try {
-      session = await this.withTimeout(getManagedRuntimeSession(runtime, binding.runtimeSessionId, binding.runtimeOwnerId!),
+      session = await this.withTimeout(getManagedRuntimeSession(runtime, binding.runtimeSessionId, binding.runtimeOwnerId!, this.options.runtimeStatusTimeoutMs ?? 2_000),
         this.options.runtimeStatusTimeoutMs ?? 2_000, "Managed Runtime lookup timed out");
     } catch { return "runtime_uncertain"; }
     if (!session) return "session_metadata_unavailable";

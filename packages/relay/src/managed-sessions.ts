@@ -21,12 +21,19 @@ export async function getManagedRuntimeSession(
   runtime: Pick<AgentRuntimePort, "getManagedSession" | "listManagedSessions">,
   sessionId: string,
   ownerId: string,
+  timeoutMs = 2_000,
 ): Promise<ManagedRuntimeSessionSummary | undefined> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647) {
+    throw new RangeError("Managed session read timeout must be a supported positive integer");
+  }
+  // The shared physical read has one deadline. Callers keep their own waiting limits;
+  // an adapter that ignores cancellation still occupies its guard until settlement.
   const session = runtime.getManagedSession
-    ? await singleFlight(runtime, JSON.stringify(["read", ownerId, sessionId]), () => runtime.getManagedSession!(sessionId, ownerId))
+    ? await singleFlight(runtime, JSON.stringify(["read", ownerId, sessionId]), () =>
+      runtime.getManagedSession!(sessionId, ownerId, { signal: AbortSignal.timeout(timeoutMs) }))
     : (await singleFlight(runtime, JSON.stringify(["list", ownerId]), () => {
       if (!runtime.listManagedSessions) throw new Error("Managed Runtime lookup is unavailable");
-      return runtime.listManagedSessions(ownerId);
+      return runtime.listManagedSessions(ownerId, { signal: AbortSignal.timeout(timeoutMs) });
     })).find(candidate => candidate.id === sessionId && candidate.ownerId === ownerId);
   if (session && (session.id !== sessionId || session.ownerId !== ownerId)) {
     throw new Error("Managed Runtime lookup identity mismatch");
