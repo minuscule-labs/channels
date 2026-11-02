@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.27
+
+Release overview: [Select once and start agents on Send](docs/releases/v0.0.27.md).
+
+- Unify per-person, browser-local recipient selection across main conversations and threads, with a visible recipient control, intentional mention switching, Reply and sticky follow-ups. Incoming messages and generated replies cannot redirect selection.
+- Start eligible never-bound addressed agents on Send, including later Sends and explicit multiple recipients. Preserve saved questions, retry identity, pending work, permissions, archive restrictions and explicit Stop; never implicitly resume or replace an existing binding.
+- Keep broadcasts and multiple-recipient overrides message-only without replacing the sticky selection. Broadcasts do not start idle or resume stopped agents; unclear recipients do not start the roster.
+- Add the borderless message-actions menu with separate Reply and Start/Open thread actions, and remember open threads per person/channel. Opening, restoring and drafting start nobody; thread sessions and frozen context remain separate.
+- Fix manual-Start/Send ordering, omitted-recipient retry inference and retained Reply intents crossing authenticated identity changes, while preserving cancellation and retirement fences.
+- Make supplied API `to` authoritative, including an empty list, rather than unioning body mentions. Generated agent text is not a routing command, and unaddressed messages no longer implicitly wake a sole agent. SDK clients should submit their effective targets explicitly; see the release overview.
+- Keep protocol v24, Runtime `86bd35ea846740f55e83038b3ff823d9ddd67e34`, dependencies and database schemas unchanged from v0.0.26. Presets, Copy/link actions and automatic history synchronization remain outside this release.
+- Retain the previously disclosed intermittent native Neon database-abort limitation; this release does not claim to fix it or waive required CI and artifact-acceptance gates.
+
 ## 0.0.26
 
 Release overview: [Conversation threads with isolated agent sessions](docs/releases/v0.0.26.md).
