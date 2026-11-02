@@ -1,7 +1,25 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 const api = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const fixture = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
+
+async function expectCloseLayout(panel: Locator) {
+  const close = panel.getByRole("button", { name: "Close thread", exact: true });
+  const participants = panel.getByRole("button", { name: "Show participants", exact: true });
+  const closeBox = (await close.boundingBox())!;
+  const participantsBox = (await participants.boundingBox())!;
+  const icon = (await close.locator("svg").boundingBox())!;
+  const header = await close.evaluate((element) => {
+    const header = element.closest("header")!;
+    const box = header.getBoundingClientRect();
+    return { right: box.right - parseFloat(getComputedStyle(header).paddingRight), centerY: box.y + box.height / 2 };
+  });
+  expect(closeBox.x).toBeGreaterThanOrEqual(participantsBox.x + participantsBox.width);
+  expect(Math.abs(closeBox.x + closeBox.width - header.right)).toBeLessThan(1);
+  expect(Math.abs(closeBox.y + closeBox.height / 2 - header.centerY)).toBeLessThan(1);
+  expect(Math.abs(icon.x + icon.width / 2 - (closeBox.x + closeBox.width / 2))).toBeLessThan(1);
+  expect(Math.abs(icon.y + icon.height / 2 - (closeBox.y + closeBox.height / 2))).toBeLessThan(1);
+}
 
 test("threads keep replies and drafts separate, update counts live, and reopen after reload", async ({ page, request }, testInfo) => {
   const { workspaces } = await (await request.get(`${api}/workspaces`)).json();
@@ -24,15 +42,54 @@ test("threads keep replies and drafts separate, update counts live, and reopen a
   await mainComposer.press("Enter");
   await expect(mainComposer).toHaveValue("");
   await mainComposer.fill("Main draft remains here");
-  await page.getByRole("button", { name: "Start thread on message 1", exact: true }).click();
+  const messageMenu = page.getByRole("button", { name: "Open actions for message 1", exact: true });
+  await expect(messageMenu).toHaveCSS("border-top-width", "0px");
+  await expect(page.getByRole("button", { name: /Start thread on message/ })).toHaveCount(0);
+  await messageMenu.focus();
+  await messageMenu.press("ArrowDown");
+  const startThread = page.getByRole("menuitem", { name: "Start thread", exact: true });
+  await expect(startThread).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(messageMenu).toBeFocused();
+  const composerBox = (await mainComposer.boundingBox())!;
+  await messageMenu.click();
+  await page.mouse.click(composerBox.x + 10, composerBox.y + 10);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(mainComposer).toHaveValue("Main draft remains here");
+  let failCreation = true;
+  await page.route("**/conversations/*/threads", async (route) => {
+    if (route.request().method() === "POST" && failCreation) {
+      failCreation = false;
+      return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporarily unavailable" }) });
+    }
+    return route.continue();
+  });
+  await messageMenu.click();
+  await startThread.click();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(messageMenu).toBeFocused();
+  await expect(page.getByRole("dialog", { name: "Thread", exact: true })).toHaveCount(0);
+  await messageMenu.focus();
+  await messageMenu.press("ArrowDown");
+  await startThread.press("Enter");
   const panel = page.getByRole("dialog", { name: "Thread", exact: true });
   await expect(panel).toBeVisible();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect.poll(() => panel.evaluate(element => element.contains(document.activeElement))).toBe(true);
+  await expectCloseLayout(panel);
+  await page.screenshot({ path: testInfo.outputPath("thread-desktop.png") });
   await expect(panel.getByRole("article", { name: "Thread root" })).toContainText("Root topic for the thread");
   const replyComposer = panel.getByRole("combobox", { name: "Thread reply", exact: true });
   await replyComposer.fill("Thread reply one");
   await replyComposer.press("Enter");
   await expect(replyComposer).toHaveValue("");
   await expect(panel.getByText("Thread reply one", { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: /Open actions for message/ }).first().click();
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /^(Start|Open) thread$/ })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeVisible();
   await expect(mainComposer).toHaveValue("Main draft remains here");
   await expect(page.getByRole("button", { name: "Open thread for message 1: 1 replies", exact: true })).toBeVisible();
 
@@ -48,6 +105,11 @@ test("threads keep replies and drafts separate, update counts live, and reopen a
   await replyComposer.fill("Unsent thread draft");
   await panel.getByRole("button", { name: "Close thread", exact: true }).click();
   await expect(panel).toHaveCount(0);
+  await expect(messageMenu).toBeFocused();
+  await messageMenu.click();
+  await page.getByRole("menuitem", { name: "Open thread", exact: true }).click();
+  await expect(replyComposer).toHaveValue("Unsent thread draft");
+  await panel.getByRole("button", { name: "Close thread", exact: true }).click();
   await expect(page.getByText("Thread reply one", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Agent thread answer", { exact: true })).toHaveCount(0);
   const roots = await (await request.get(`${api}/conversations/${conversation.id}/messages`)).json();
@@ -64,21 +126,39 @@ test("threads keep replies and drafts separate, update counts live, and reopen a
   await expect(threadButton).toBeFocused();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await threadButton.click();
+  await messageMenu.click();
+  const mobileMenu = (await page.getByRole("menu").boundingBox())!;
+  expect(mobileMenu.x).toBeGreaterThanOrEqual(0);
+  expect(mobileMenu.x + mobileMenu.width).toBeLessThanOrEqual(390);
+  await page.getByRole("menuitem", { name: "Open thread", exact: true }).click();
   await expect(panel).toBeVisible();
   expect(await panel.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(390);
   await expect(replyComposer).toBeVisible();
+  await expectCloseLayout(panel);
   await page.screenshot({ path: testInfo.outputPath("thread-mobile.png") });
   await panel.getByRole("button", { name: "Close thread", exact: true }).click();
   await expect(mainComposer).toHaveValue("Main draft remains here");
 
   await page.setViewportSize({ width: 1280, height: 900 });
+  const continued = await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: human.id, body: "Another message without a thread",
+  } });
+  expect(continued.ok()).toBe(true);
+  const continuedMenu = page.getByRole("button", { name: "Open actions for message 2", exact: true });
+  await continuedMenu.click();
+  await expect(startThread).toBeEnabled();
+  await page.keyboard.press("Escape");
   const archived = await request.patch(`${api}/conversations/${conversation.id}/lifecycle`, {
     data: { actorIdentityId: human.id, state: "settled" },
   });
   expect(archived.ok()).toBe(true);
   await expect(page.getByRole("button", { name: "Reopen", exact: true })).toBeVisible();
-  await threadButton.click();
+  await continuedMenu.click();
+  await expect(startThread).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await messageMenu.click();
+  await expect(page.getByRole("menuitem", { name: "Open thread", exact: true })).toBeEnabled();
+  await page.getByRole("menuitem", { name: "Open thread", exact: true }).click();
   await expect(panel.getByRole("button", { name: "Reopen", exact: true })).toHaveCount(0);
   await expect(replyComposer).toBeDisabled();
   await panel.getByRole("button", { name: "Close thread", exact: true }).click();

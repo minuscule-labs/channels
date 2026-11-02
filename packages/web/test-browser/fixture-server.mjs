@@ -150,7 +150,14 @@ const localControl = await createLocalControlHttpServer({
   allowedOrigins: [browserSessions.browserOrigin],
   browserSessions,
   service: new LocalControlService({
-    conversations: service,
+    conversations: {
+      getConversation: service.getConversation.bind(service),
+      listThreads: service.listThreads.bind(service),
+      getConversationLifecycle: service.getConversationLifecycle.bind(service),
+      updateConversationLifecycle: service.updateConversationLifecycle.bind(service),
+      listMessages: service.listMessages.bind(service),
+      postMessage: (id, input, options) => service.createMessage(id, input, options?.idempotencyKey),
+    },
     withConversationMessageAdmission: service.withConversationMessageAdmission.bind(service),
     bindings: {
       async listConversationBindings(conversationId) {
@@ -172,6 +179,13 @@ const localControl = await createLocalControlHttpServer({
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");
         agentBindings.set(`${conversationId}:${identityId}`, "connected");
         attachedAgents.add(`${conversationId}:${identityId}`);
+      },
+      async autoStartConversationAgent(conversationId, identityId) {
+        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+        const key = `${conversationId}:${identityId}`;
+        if (agentBindings.has(key)) return;
+        agentBindings.set(key, "connected");
+        attachedAgents.add(key);
       },
       async reconnectConversationAgent(conversationId, identityId) {
         if (identityId !== agent.id) throw new Error("Unknown fixture agent");

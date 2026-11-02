@@ -1,5 +1,6 @@
 import type { CreateMessageInput, Participant } from "@minu/channels-core/types";
 import { structuredTargets } from "./messages";
+import { recipientText } from "@minu/channels-core/mentions";
 
 export const MAX_MESSAGE_BYTES = 64 * 1024;
 
@@ -20,7 +21,7 @@ export function messageByteLength(body: string): number {
 
 export function mentionQueryAt(body: string, cursor: number): MentionQuery | undefined {
   const safeCursor = Math.max(0, Math.min(cursor, body.length));
-  const match = body.slice(0, safeCursor).match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+  const match = recipientText(body.slice(0, safeCursor)).match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
   if (!match) return undefined;
   const value = match[1] ?? "";
   return { start: safeCursor - value.length - 1, end: safeCursor, value: value.toLowerCase() };
@@ -46,13 +47,16 @@ export function createMessageSubmission(
   participants: Participant[],
   createId: () => string = () => crypto.randomUUID(),
   attachmentIds: string[] = [],
+  targets = structuredTargets(body, participants),
+  replyTo?: string,
 ): MessageSubmission {
   return {
     idempotencyKey: createId(),
     input: {
       participantId: authorIdentityId,
       body,
-      to: structuredTargets(body, participants),
+      to: [...targets],
+      ...(replyTo ? { replyTo } : {}),
       ...(attachmentIds.length ? { attachmentIds: [...attachmentIds] } : {}),
     },
   };
@@ -64,11 +68,13 @@ export function submissionMatchesDraft(
   body: string,
   participants: Participant[],
   attachmentIds: string[] = [],
+  targets = structuredTargets(body, participants),
+  replyTo?: string,
 ): boolean {
-  const targets = structuredTargets(body, participants);
   const submissionTargets = submission.input.to ?? [];
   return submission.input.participantId === authorIdentityId
     && submission.input.body === body
+    && submission.input.replyTo === replyTo
     && (submission.input.attachmentIds ?? []).length === attachmentIds.length
     && (submission.input.attachmentIds ?? []).every((id, index) => id === attachmentIds[index])
     && submissionTargets.length === targets.length

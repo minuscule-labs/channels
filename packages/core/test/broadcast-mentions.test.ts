@@ -12,7 +12,7 @@ async function workspace(client: ConversationClient) {
   return { owner, agent, workspace, member };
 }
 
-test("the real API canonicalizes channel and legacy broadcast mentions in messages and responses", async () => {
+test("the real API canonicalizes human broadcasts without routing generated response text", async () => {
   const server = await createConversationHttpServer();
   try {
     const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -33,13 +33,13 @@ test("the real API canonicalizes channel and legacy broadcast mentions in messag
     const response = await client.postResponse(conversation.id, {
       participantId: agent.id, triggerMessageId: trigger.id, triggerSequence: trigger.sequence, body: "@channel result",
     });
-    assert.deepEqual(response.message.to, ["@conversation"]);
+    assert.deepEqual(response.message.to, []);
   } finally {
     await server.close();
   }
 });
 
-test("complete trailing-hyphen handles stay direct in messages and responses", async () => {
+test("complete trailing-hyphen human handles stay direct; generated responses remain content", async () => {
   const server = await createConversationHttpServer();
   try {
     const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -61,11 +61,15 @@ test("complete trailing-hyphen handles stay direct in messages and responses", a
           participantId: agent.id, triggerMessageId: explicit.id, triggerSequence: explicit.sequence,
           body: `Result for @${spelling}`,
         });
-        assert.deepEqual(response.message.to, [agent.id]);
+        assert.deepEqual(response.message.to, []);
       }
     }
+    const explicit = await client.postMessage(conversation.id, {
+      participantId: owner.id, body: "@channel--- is content with an explicit recipient", to: [agent.id],
+    });
+    assert.deepEqual(explicit.to, [agent.id]);
     await assert.rejects(client.postMessage(conversation.id, {
-      participantId: owner.id, body: "@channel--- unknown full handle", to: [agent.id],
+      participantId: owner.id, body: "@channel--- unknown full handle",
     }), /Target participant is not in conversation: channel---/);
     await client.updateWorkspaceMember(space.id, agent.id, {
       actorIdentityId: owner.id, mentionHandle: "channel-", status: "disabled",

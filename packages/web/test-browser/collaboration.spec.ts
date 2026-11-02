@@ -229,7 +229,7 @@ test("sends idempotently, refreshes rosters, and catches up after reconnect", as
   await composer.fill("");
   await expect.poll(() => composer.evaluate((element) => element.clientHeight)).toBe(compactHeight);
   await composer.fill("@b");
-  await expect(page.getByRole("option", { name: /@builder/ })).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Mention suggestions", exact: true }).getByRole("option", { name: /@builder/ })).toBeVisible();
   await composer.press("Enter");
   await composer.pressSequentially("Browser reply.");
   await page.getByRole("button", { name: "Send message", exact: true }).click();

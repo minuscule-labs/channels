@@ -40,10 +40,13 @@ async function setup(request: APIRequestContext, page: Page) {
 const panel = (page: Page) => page.getByRole("dialog", { name: "Thread", exact: true });
 const reply = (page: Page) => panel(page).getByRole("combobox", { name: "Thread reply", exact: true });
 const mainComposer = (page: Page) => page.getByRole("combobox", { name: "Conversation message", exact: true });
-const rootAction = (page: Page, body: string) => page.getByRole("log", { name: "Conversation messages", exact: true }).first()
-  .getByRole("article").filter({ hasText: body }).getByRole("button", { name: /thread/i });
+const rootRow = (page: Page, body: string) => page.getByRole("log", { name: "Conversation messages", exact: true }).first()
+  .getByRole("article").filter({ hasText: body });
+const rootAction = (page: Page, body: string) => rootRow(page, body).getByRole("button", { name: /Open thread for message/ });
+const rootMenu = (page: Page, body: string) => rootRow(page, body).getByRole("button", { name: /Open actions for message/ });
 async function open(page: Page, body: string) {
-  await rootAction(page, body).click();
+  await rootMenu(page, body).click();
+  await page.getByRole("menuitem", { name: /^(Start|Open) thread$/ }).click();
   await expect(panel(page)).toBeVisible();
   await expect(panel(page).getByRole("article", { name: "Thread root", exact: true })).toContainText(body);
 }
@@ -99,7 +102,7 @@ test("acceptance: main/A/B drafts stay independent; peer replies update the righ
   await expect(panel(page).getByRole("log").getByRole("article")).toHaveText([/ALPHA_FIRST_REPLY/, /ALPHA_SECOND_REPLY/]);
   await page.keyboard.press("Escape");
   await expect(panel(page)).toHaveCount(0);
-  await expect(rootAction(page, rootAlpha)).toBeFocused();
+  await expect(rootMenu(page, rootAlpha)).toBeFocused();
   await page.setViewportSize({ width: 390, height: 844 });
   await open(page, rootBeta);
   await expect(reply(page)).toHaveValue("BETA_UNSENT_DRAFT");

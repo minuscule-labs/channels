@@ -13,8 +13,10 @@ import { useAgentActions } from "../lib/use-agent-actions";
 import { actionIsPending } from "../lib/agent-actions";
 import { readSequence, resetReadSequence, writeReadSequence } from "../lib/conversation-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
+import { readThreadSelection, threadSelectionStorageKey, writeThreadSelection } from "../lib/thread-selection";
 import { ConversationActivityStrip } from "./conversation-activity-strip";
-import { ConversationComposer } from "./conversation-composer";
+import { ConversationComposer, type ComposerReplyTarget } from "./conversation-composer";
+import { threadDefaultRecipient } from "@minu/channels-core/mentions";
 import { ConversationTimeline } from "./conversation-timeline";
 import { MessageMarkdown } from "./message-markdown";
 import { MessageImages } from "./message-images";
@@ -40,7 +42,12 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const queryClient = useQueryClient();
   const location = useLocation();
   const [rosterOpen, setRosterOpen] = useState(false);
-  const [selectedThread, setSelectedThread] = useState<ConversationThread>();
+  const [replyTarget, setReplyTarget] = useState<ComposerReplyTarget>();
+  const consumeReplyTarget = useCallback((handled: ComposerReplyTarget) => {
+    setReplyTarget((current) => current === handled ? undefined : current);
+  }, []);
+  const [threadSelection, setThreadSelection] = useState<{ key: string; thread: ConversationThread }>();
+  const restoredThreadSelectionKey = useRef<string | undefined>(undefined);
   const threadTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [unseenMessages, setUnseenMessages] = useState(0);
   const [bulkResults, setBulkResults] = useState<readonly LocalBulkAgentLifecycleResult[]>();
@@ -92,12 +99,44 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     retry: false,
     refetchInterval: 60_000,
   });
+  const replyActorId = currentSession.isSuccess ? currentSession.data.identityId : undefined;
+  const replyActorRef = useRef(replyActorId);
+  replyActorRef.current = replyActorId;
+  useEffect(() => {
+    setReplyTarget((target) => target?.actorIdentityId === replyActorId ? target : undefined);
+  }, [replyActorId]);
+  const threadSelectionKey = currentSession.isSuccess && !activeThread
+    ? threadSelectionStorageKey(workspaceId, conversationId, currentSession.data.identityId) : undefined;
+  const selectedThread = threadSelection && threadSelection.key === threadSelectionKey ? threadSelection.thread : undefined;
+  const selectThread = (thread?: ConversationThread, identityId = currentSession.data?.identityId) => {
+    if (!identityId || activeThread) return;
+    const key = threadSelectionStorageKey(workspaceId, conversationId, identityId);
+    writeThreadSelection(key, thread?.id);
+    if (key === threadSelectionKey) {
+      restoredThreadSelectionKey.current = key;
+      setThreadSelection(thread ? { key, thread } : undefined);
+    }
+  };
+  useEffect(() => {
+    if (!threadSelectionKey || restoredThreadSelectionKey.current === threadSelectionKey
+      || !threads.isSuccess || threads.isFetching) return;
+    restoredThreadSelectionKey.current = threadSelectionKey;
+    const rememberedId = readThreadSelection(threadSelectionKey);
+    const thread = threads.data.find((candidate) => candidate.id === rememberedId
+      && candidate.thread.parentConversationId === conversationId);
+    setThreadSelection(thread ? { key: threadSelectionKey, thread } : undefined);
+    if (rememberedId && !thread) writeThreadSelection(threadSelectionKey, undefined);
+  }, [threadSelectionKey, threads.data, threads.isSuccess, threads.isFetching, conversationId]);
   const openThread = useMutation({
-    mutationFn: (message: ConversationMessage) => conversations.createThread(conversationId, {
-      actorIdentityId: currentSession.data!.identityId, rootMessageId: message.id,
-    }),
-    onSuccess: (thread) => {
-      setSelectedThread(thread);
+    mutationFn: async (message: ConversationMessage) => {
+      const identityId = currentSession.data!.identityId;
+      const thread = await conversations.createThread(conversationId, {
+        actorIdentityId: identityId, rootMessageId: message.id,
+      });
+      return { thread, identityId };
+    },
+    onSuccess: ({ thread, identityId }) => {
+      selectThread(thread, identityId);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
     },
   });
@@ -336,6 +375,13 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     participantSnapshot,
   };
   const settled = lifecycle.data?.state === "settled";
+  const canReply = Boolean(replyActorId) && !settled && currentParticipant?.type === "human" && currentParticipant.status !== "disabled";
+  const replyToMessage = (message: ConversationMessage) => {
+    // A menu can finish closing after its selecting user's session changed.
+    if (!replyActorId || replyActorRef.current !== replyActorId) return;
+    setReplyTarget({ actorIdentityId: replyActorId, identityId: message.participantId,
+      ...(message.conversationId === conversationId ? { messageId: message.id } : {}) });
+  };
   const lifecycleLabel = lifecycle.data?.state === "snoozed" ? "Snoozed"
     : lifecycle.data?.state === "settled" ? "Archived"
       : "Active";
@@ -429,7 +475,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   }
 
   return (
-    <Dialog.Root open={Boolean(selectedThread)} modal={false} onOpenChange={(open) => { if (!open) setSelectedThread(undefined); }}>
+    <Dialog.Root open={Boolean(selectedThread)} modal={false} onOpenChange={(open) => { if (!open) selectThread(); }}>
     <div className="flex min-h-0 min-w-0 flex-1">
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
@@ -438,7 +484,6 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
             <p className="truncate text-[11px] text-[var(--muted)]">Workspace: {workspace.data?.name ?? "Workspace"}</p>
             <span className="sr-only" role="status" aria-label={`Live updates ${connection}`}>Live updates {connection}</span>
           </div>
-          {onCloseThread ? <button type="button" className="icon-button" aria-label="Close thread" onClick={onCloseThread}><X className="h-4 w-4" /></button> : null}
           {connection === "disconnected" ? (
             <button className="button-secondary" type="button" onClick={retry}>
               <RefreshCw className="h-3.5 w-3.5" /> Retry
@@ -500,6 +545,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
               onDismissBulkResults={() => setBulkResults(undefined)}
             />
           </Drawer>
+          {onCloseThread ? <button type="button" className="icon-button inline-flex shrink-0" aria-label="Close thread" onClick={onCloseThread}><X aria-hidden="true" className="h-4 w-4" /></button> : null}
         </header>
         {connection === "polling" ? <p role="status" className="border-b border-[var(--border)] px-4 py-2 text-xs text-[var(--muted)]">Live updates are unavailable in this browser. Checking periodically; notification sounds are unavailable in this fallback mode.</p> : null}
         {settled ? (
@@ -548,16 +594,20 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
             {threadRoot ? <article aria-label="Thread root" className="border-b border-[var(--border)] px-4 py-4 sm:px-6">
               <strong className="text-sm">{participantLabel(attributionParticipants.find(({ id }) => id === threadRoot.participantId), threadRoot.participantId)}</strong>
               <div className="mt-2"><MessageMarkdown body={threadRoot.body} /><MessageImages attachments={threadRoot.attachments ?? []} conversationId={threadRoot.conversationId} /></div>
+              <button type="button" className="mt-2 text-xs text-[var(--accent)] hover:underline" disabled={!canReply}
+                onClick={() => replyToMessage(threadRoot)}>Reply</button>
             </article> : null}
             <ConversationTimeline
               messages={messages.data ?? []}
               threads={threads.data}
               hideEmptyState={activeThread}
+              onReply={replyToMessage}
+              canReply={canReply}
               canStartThread={!settled && !openThread.isPending && currentParticipant?.type === "human" && currentParticipant.status !== "disabled"}
               onOpenThread={activeThread ? undefined : (message, trigger) => {
                 threadTriggerRef.current = trigger;
                 const thread = threads.data?.find((candidate) => candidate.thread.rootMessageId === message.id);
-                if (thread) setSelectedThread(thread);
+                if (thread) selectThread(thread);
                 else openThread.mutate(message);
               }}
               participants={participants}
@@ -596,6 +646,9 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
           currentHumanIdentityId={currentSession.isSuccess ? currentSession.data.identityId : undefined}
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
           thread={activeThread}
+          defaultRecipientId={threadDefaultRecipient(metadata.data)}
+          replyTarget={replyTarget?.actorIdentityId === replyActorId ? replyTarget : undefined}
+          onReplyConsumed={consumeReplyTarget}
           activity={<ConversationActivityStrip agents={localAgents.data?.agents ?? []} participants={participants} />}
           readOnlyReason={settled ? "This Conversation is archived. Reopen it to send a message." : undefined}
         />
@@ -636,7 +689,13 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       {selectedThread ? <Dialog.Content
         aria-describedby={undefined}
         onInteractOutside={(event) => event.preventDefault()}
-        onCloseAutoFocus={(event) => { event.preventDefault(); if (threadTriggerRef.current?.isConnected) threadTriggerRef.current.focus(); }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const root = selectedThread.thread.context.find((message) => message.id === selectedThread.thread.rootMessageId);
+          const trigger = threadTriggerRef.current?.isConnected ? threadTriggerRef.current
+            : scrollRef.current?.querySelector<HTMLButtonElement>(`button[aria-label="Open actions for message ${root?.sequence}"]`);
+          trigger?.focus();
+        }}
         className="fixed inset-0 z-40 flex min-h-0 min-w-0 flex-col border-l border-[var(--border)] bg-[var(--bg)] outline-none md:static md:z-auto md:w-[min(34rem,48vw)] md:shrink-0"
       >
         <Dialog.Title className="sr-only">Thread</Dialog.Title>
@@ -645,7 +704,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
           workspaceId={workspaceId}
           conversationId={selectedThread.id}
           rootMessage={selectedThread.thread.context.find((message) => message.id === selectedThread.thread.rootMessageId)}
-          onCloseThread={() => setSelectedThread(undefined)}
+          onCloseThread={() => selectThread()}
         />
       </Dialog.Content> : null}
       {issueDialogParticipant ? <ParticipantDetailsDialog

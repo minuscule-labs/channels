@@ -1,13 +1,14 @@
 import type { LocalTurnFailureNotice } from "@minu/channels-control/contracts";
 import type { ConversationMessage, ConversationThread, Participant } from "@minu/channels-core/types";
 import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
-import { AlertCircle, Menu, MessageSquare } from "lucide-react";
-import { useMemo } from "react";
+import { AlertCircle, EllipsisVertical, Menu, MessageSquare } from "lucide-react";
+import { useMemo, useRef } from "react";
 import { shortId } from "../lib/messages";
 import { participantHandle, participantLabel } from "../lib/participants";
 import { projectTimeline, type TimelineRow } from "../lib/timeline";
 import { MessageImages } from "./message-images";
 import { MessageMarkdown } from "./message-markdown";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "./ui/dropdown-menu";
 
 type BroadcastTargetLabel = "@channel" | "@conversation";
 
@@ -19,15 +20,22 @@ function MessageRow({
   thread,
   onOpenThread,
   canStartThread,
+  onReply,
+  canReply,
 }: {
   thread?: ConversationThread;
   onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
   canStartThread?: boolean;
+  onReply?(message: ConversationMessage): void;
+  canReply?: boolean;
   message: ConversationMessage;
   participants: Participant[];
   continuation: boolean;
   broadcastTargetLabel: BroadcastTargetLabel;
 }) {
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const openingThread = useRef(false);
+  const replying = useRef<(() => void) | undefined>(undefined);
   const author = participants.find(({ id }) => id === message.participantId);
   const targets = message.to.map((id) =>
     id === "@conversation" ? broadcastTargetLabel
@@ -69,26 +77,62 @@ function MessageRow({
             <MessageMarkdown body={message.body} />
             <MessageImages attachments={message.attachments ?? []} conversationId={message.conversationId} />
           </div>
-          {onOpenThread ? <button
+          {onOpenThread && thread ? <button
             type="button"
-            className="mt-2 inline-flex items-center gap-1.5 rounded text-xs text-[var(--accent)] hover:underline disabled:opacity-40"
-            disabled={!thread && !canStartThread}
+            className="mt-2 inline-flex items-center gap-1.5 rounded text-xs text-[var(--accent)] hover:underline"
             onClick={(event) => onOpenThread(message, event.currentTarget)}
-            aria-label={thread ? `Open thread for message ${message.sequence}: ${thread.replyCount} replies` : `Start thread on message ${message.sequence}`}
+            aria-label={`Open thread for message ${message.sequence}: ${thread.replyCount} replies`}
           >
             <MessageSquare aria-hidden="true" className="h-3.5 w-3.5" />
-            {thread ? `${thread.replyCount} ${thread.replyCount === 1 ? "reply" : "replies"}` : "Start thread"}
+            {thread.replyCount} {thread.replyCount === 1 ? "reply" : "replies"}
           </button> : null}
         </div>
+        {onOpenThread || onReply ? <DropdownMenu onOpenChange={(open) => { if (open) { openingThread.current = false; replying.current = undefined; } }}>
+          <DropdownMenuTrigger asChild>
+            <button
+              ref={actionsTriggerRef}
+              type="button"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center self-start rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
+              aria-label={`Open actions for message ${message.sequence}`}
+              title="Message actions"
+            >
+              <EllipsisVertical aria-hidden="true" className="h-4 w-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
+            if (openingThread.current || replying.current) event.preventDefault();
+            // Select/focus the composer only after the menu's focus scope closes.
+            const reply = replying.current;
+            replying.current = undefined;
+            reply?.();
+            openingThread.current = false;
+          }}>
+            {onOpenThread ? <DropdownMenuItem disabled={!thread && !canStartThread} onSelect={() => {
+              if (!actionsTriggerRef.current) return;
+              // New threads open asynchronously; keep focus recoverable if creation fails.
+              openingThread.current = Boolean(thread);
+              onOpenThread(message, actionsTriggerRef.current);
+            }}>
+              {thread ? "Open thread" : "Start thread"}
+            </DropdownMenuItem> : null}
+            {onReply ? <DropdownMenuItem disabled={!canReply || !author || author.status === "disabled"} onSelect={() => {
+              // Capture the selecting render's actor-qualified callback, not
+              // a later render's identity while the menu is closing.
+              replying.current = () => onReply(message);
+            }}>Reply</DropdownMenuItem> : null}
+          </DropdownMenuContent>
+        </DropdownMenu> : null}
       </div>
     </article>
   );
 }
 
-function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOpenThread, canStartThread }: {
+function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOpenThread, canStartThread, onReply, canReply }: {
   thread?: ConversationThread;
   onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
   canStartThread?: boolean;
+  onReply?(message: ConversationMessage): void;
+  canReply?: boolean;
   row: TimelineRow;
   participants: Participant[];
   broadcastTargetLabel: BroadcastTargetLabel;
@@ -104,7 +148,7 @@ function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOp
       </div>
     );
   }
-  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} thread={thread} onOpenThread={onOpenThread} canStartThread={canStartThread} />;
+  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} thread={thread} onOpenThread={onOpenThread} canStartThread={canStartThread} onReply={onReply} canReply={canReply} />;
 }
 
 function TurnFailureNoticeRow({ notice, canOpenDetails, onViewDetails }: {
@@ -145,11 +189,15 @@ export function ConversationTimeline({
   threads = [],
   onOpenThread,
   canStartThread = false,
+  onReply,
+  canReply = false,
   hideEmptyState = false,
 }: {
   threads?: ConversationThread[];
   onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
   canStartThread?: boolean;
+  onReply?(message: ConversationMessage): void;
+  canReply?: boolean;
   hideEmptyState?: boolean;
   messages: ConversationMessage[];
   participants: Participant[];
@@ -205,7 +253,7 @@ export function ConversationTimeline({
       {timelineItems.map((item) => item.kind === "row"
         ? <TimelineRowView key={item.row.id} row={item.row} participants={attributionParticipants} broadcastTargetLabel={broadcastTargetLabel}
           thread={item.row.kind === "message" ? threadsByRoot.get(item.row.message.id) : undefined}
-          onOpenThread={onOpenThread} canStartThread={canStartThread} />
+          onOpenThread={onOpenThread} canStartThread={canStartThread} onReply={onReply} canReply={canReply} />
         : <TurnFailureNoticeRow
           key={`${item.notice.participant.identityId}:${item.notice.triggerSequence}:${item.notice.failedAt}`}
           notice={item.notice}

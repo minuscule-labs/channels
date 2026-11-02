@@ -1,8 +1,12 @@
 import type {
   ConversationMetadata,
+  ConversationMessage,
+  CreateMessageInput,
   EffectiveConversationLifecycle,
   UpdateConversationLifecycleInput,
 } from "@minu/channels-core/types";
+import { ConversationClientError, ConversationValidationError, resolveMessageTargets } from "@minu/channels-core";
+import { threadDefaultRecipient } from "@minu/channels-core/mentions";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { agentActionInput, LocalAgentActions } from "./agent-actions.ts";
@@ -81,6 +85,8 @@ import {
 
 export interface LocalControlConversationDirectory {
   getConversation(conversationId: string): Promise<ConversationMetadata>;
+  listMessages?(conversationId: string, options?: { limit?: number }): Promise<ConversationMessage[]>;
+  postMessage?(conversationId: string, input: CreateMessageInput, options?: { idempotencyKey?: string }): Promise<ConversationMessage>;
   listThreads?(conversationId: string): Promise<ConversationMetadata[]>;
   getConversationLifecycle?(conversationId: string): Promise<EffectiveConversationLifecycle>;
   updateConversationLifecycle?(
@@ -138,6 +144,7 @@ export interface LocalControlAgentLifecyclePort {
     actorIdentityId: string,
     contextMode?: LocalSessionContextMode,
   ): Promise<void>;
+  autoStartConversationAgent?(conversationId: string, agentIdentityId: string, actorIdentityId: string, triggerMessageId: string): Promise<void>;
   replaceConversationAgent(
     conversationId: string,
     agentIdentityId: string,
@@ -300,6 +307,7 @@ export class LocalControlService {
   private readonly statusTimeoutMs: number;
   private readonly lifecycleTransitions = new Map<string, Promise<EffectiveConversationLifecycle>>();
   private readonly agentActions = new LocalAgentActions();
+  private readonly conversationSends = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: LocalControlServiceOptions) {
     this.statusTimeoutMs = options.statusTimeoutMs ?? 2_000;
@@ -609,6 +617,75 @@ export class LocalControlService {
     }
   }
 
+  async postConversationMessage(conversationId: string, actorIdentityId: string, input: unknown, idempotencyKey?: string): Promise<ConversationMessage> {
+    return this.withConversationSendOrder(conversationId, () => this.postConversationMessageOnce(conversationId, actorIdentityId, input, idempotencyKey));
+  }
+
+  // Manual activation snapshots and saved sends must be ordered together.
+  // Stop/cancellation deliberately remain outside this queue.
+  private async withConversationSendOrder<T>(conversationId: string, execute: () => Promise<T>): Promise<T> {
+    const prior = this.conversationSends.get(conversationId) ?? Promise.resolve();
+    const operation = prior.catch(() => undefined).then(execute);
+    this.conversationSends.set(conversationId, operation);
+    try { return await operation; }
+    finally { if (this.conversationSends.get(conversationId) === operation) this.conversationSends.delete(conversationId); }
+  }
+
+  private async postConversationMessageOnce(conversationId: string, actorIdentityId: string, value: unknown, idempotencyKey?: string): Promise<ConversationMessage> {
+    if (typeof idempotencyKey !== "string" || !idempotencyKey.trim() || Buffer.byteLength(idempotencyKey, "utf8") > 255) {
+      throw new LocalConfigurationRequestError("A valid idempotency key is required", 400, "invalid");
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new LocalConfigurationRequestError("A message is required", 400, "invalid");
+    }
+    const input = value as CreateMessageInput;
+    if (input.participantId !== actorIdentityId) throw new LocalConfigurationRequestError("Message author must match the browser session", 403, "forbidden");
+    if (typeof input.body !== "string") throw new LocalConfigurationRequestError("Message body must be a string", 400, "invalid");
+    const directory = this.options.conversations;
+    if (!directory.listMessages || !directory.postMessage) throw new LocalConfigurationRequestError("Conversation sending is unavailable", 404, "unavailable");
+    try {
+      const conversation = await directory.getConversation(conversationId);
+      if (!conversation.participants.some(({ id, type, status }) => id === actorIdentityId && type === "human" && status !== "disabled")) {
+        throw new LocalConfigurationRequestError("An active human participant is required", 403, "forbidden");
+      }
+      let targets = resolveMessageTargets(conversation, input);
+      // Browser sends always include the displayed targets (even []). Omitted
+      // targets retain human-only API defaults without borrowing anyone else's selection.
+      if (input.to === undefined && !targets.length) {
+        const messages = await directory.listMessages(conversationId);
+        const reply = input.replyTo ? messages.find(({ id }) => id === input.replyTo) : undefined;
+        // Keep omitted-target compatibility deterministic for exact retries:
+        // later sends must not reinterpret an older request's effective payload.
+        const first = messages.find((message) => message.participantId === actorIdentityId);
+        const initial = first?.to.length === 1 && first.to[0] !== "@conversation" ? first.to[0] : undefined;
+        const fallback = reply?.participantId ?? (first ? initial : threadDefaultRecipient(conversation));
+        if (fallback && conversation.participants.some(({ id, status }) => id === fallback && status !== "disabled")) targets = [fallback];
+      }
+      const message = await directory.postMessage(conversationId, { ...input, to: targets }, { idempotencyKey });
+      const agents = message.to.includes("@conversation") ? [] : conversation.participants
+        .filter(({ id, type, status }) => message.to.includes(id) && (type === "agent" || type === "service") && status === "active");
+      const lifecycle = this.options.lifecycle;
+      if (agents.length && lifecycle?.available && lifecycle.autoStartConversationAgent && this.options.configuration) {
+        try { await this.options.configuration.getWorkspaceConfiguration(conversation.workspaceId, actorIdentityId); }
+        catch (error) {
+          if (error instanceof LocalConfigurationRequestError && error.status === 403) return message;
+          throw error;
+        }
+        const results = await Promise.allSettled(agents.map(({ id }) =>
+          lifecycle.autoStartConversationAgent!(conversationId, id, actorIdentityId, message.id)));
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+      }
+      return message;
+    } catch (error) {
+      if (error instanceof ConversationClientError || error instanceof ConversationValidationError) {
+        const status = error instanceof ConversationValidationError ? 400
+          : error.status === 400 ? 400 : error.status === 403 ? 403 : error.status === 404 ? 404 : error.status === 413 ? 413 : 409;
+        throw new LocalConfigurationRequestError(error.message, status, status === 403 ? "forbidden" : status === 400 ? "invalid" : "unavailable");
+      }
+      throw error;
+    }
+  }
+
   async startConversationAgent(
     conversationId: string,
     identityId: string,
@@ -768,9 +845,11 @@ export class LocalControlService {
     const id = input.identityId!;
     switch (input.action) {
       case "start": case "start-fresh":
-        await lifecycle.startConversationAgent(conversationId, id, actorIdentityId, input.action === "start-fresh" ? "fresh" : "with_context"); break;
+        await this.withConversationSendOrder(conversationId, () => lifecycle.startConversationAgent(conversationId, id, actorIdentityId,
+          input.action === "start-fresh" ? "fresh" : "with_context")); break;
       case "replace": case "replace-fresh":
-        await lifecycle.replaceConversationAgent(conversationId, id, actorIdentityId, input.action === "replace-fresh" ? "fresh" : "with_context"); break;
+        await this.withConversationSendOrder(conversationId, () => lifecycle.replaceConversationAgent(conversationId, id, actorIdentityId,
+          input.action === "replace-fresh" ? "fresh" : "with_context")); break;
       case "stop":
         // Shared request admission and the host binding fence isolate this target;
         // a Conversation-wide fence would also reject unrelated participants.
@@ -784,7 +863,7 @@ export class LocalControlService {
         await lifecycle.reconnectConversationAgent(conversationId, id, actorIdentityId); break;
       case "start-all":
         if (!lifecycle.startAllConversationAgents) throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
-        return lifecycle.startAllConversationAgents(conversationId, actorIdentityId);
+        return this.withConversationSendOrder(conversationId, () => lifecycle.startAllConversationAgents!(conversationId, actorIdentityId));
       case "stop-all":
         if (!lifecycle.stopAllConversationAgents) throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
         return this.withStopAdmissionFence(conversationId, () => lifecycle.stopAllConversationAgents!(conversationId, actorIdentityId));
@@ -1276,6 +1355,7 @@ export async function createLocalControlHttpServer(
       /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agent-actions$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/messages$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
@@ -1332,6 +1412,18 @@ export async function createLocalControlHttpServer(
       }
       if (path === "/local/capabilities" && request.method === "GET") {
         json(response, 200, options.service.capabilities(), origin);
+        return;
+      }
+      const threadSendMatch = path.match(/^\/local\/conversations\/([^/]+)\/messages$/);
+      if (threadSendMatch && request.method === "POST" && browserSession) {
+        const message = await options.service.postConversationMessage(decodeURIComponent(threadSendMatch[1]!), browserSession.identityId,
+          await readJson(request), typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        json(response, 201, { message }, origin);
         return;
       }
       const actionMatch = path.match(/^\/local\/conversations\/([^/]+)\/agent-actions(?:\/([^/]+))?$/);

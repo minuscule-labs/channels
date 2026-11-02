@@ -579,23 +579,23 @@ test("owner-governed Conversation roster replacement is revisioned and preserves
   }
 });
 
-test("assigns per-conversation sequences and resolves conversation mentions", async () => {
+test("assigns per-conversation sequences and canonicalizes explicit conversation recipients", async () => {
   const server = await createConversationHttpServer();
   try {
     const conversation = await createTestConversation(server);
-    const clientMessage = async (body: string) =>
+    const clientMessage = async (body: string, to?: string[]) =>
       (
         await jsonRequest(server, `/conversations/${conversation.id}/messages`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ participantId: "agent-a", body }),
+          body: JSON.stringify({ participantId: "agent-a", body, to }),
         })
       ).body.message as { sequence: number; to: string[] };
 
     const first = await clientMessage("status update");
     assert.equal(first.sequence, 1);
     assert.deepEqual(first.to, []);
-    const second = await clientMessage("@conversation please inspect");
+    const second = await clientMessage("@conversation please inspect", ["@conversation"]);
     assert.equal(second.sequence, 2);
     assert.deepEqual(second.to, ["@conversation"]);
   } finally {
@@ -822,7 +822,7 @@ test("posts a message and emits it over SSE", async () => {
     const posted = await jsonRequest(server, `/conversations/${conversation.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ participantId: "agent-a", body: "@agent-b Please review README.md" }),
+      body: JSON.stringify({ participantId: "agent-a", body: "@agent-b Please review README.md", to: ["agent-b"] }),
     });
     assert.equal(posted.response.status, 201);
     const postedMessage = posted.body.message as { sequence: number; to: string[] };

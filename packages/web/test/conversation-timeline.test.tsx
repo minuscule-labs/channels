@@ -80,7 +80,7 @@ describe("Conversation broadcast labels", () => {
     expect(memberHtml).not.toContain('aria-label="View Runtime issue details for Builder"');
   });
 
-  it("shows existing reply counts in read-only mode without enabling new or nested threads", () => {
+  it("keeps reply shortcuts and message menus on parent timelines only", () => {
     const thread = {
       id: "thread-scope", workspaceId: "workspace-id", name: "Thread", participants: [human, builder],
       rosterRevision: 1, createdAt: messages[0]!.createdAt, replyCount: 2,
@@ -90,9 +90,12 @@ describe("Conversation broadcast labels", () => {
       threads={[thread]} onOpenThread={() => undefined} canStartThread={false} />);
     expect(html).toContain("2 replies");
     expect(html).toContain('aria-label="Open thread for message 1: 2 replies"');
-    expect(html).toContain('disabled="" aria-label="Start thread on message 2"');
+    expect(html.match(/aria-label="Open actions for message \d+"/g)).toHaveLength(messages.length);
+    expect(html.match(/aria-haspopup="menu"/g)).toHaveLength(messages.length);
+    expect(html).not.toContain("Start thread on message");
     const replies = renderToStaticMarkup(<ConversationTimeline messages={messages} participants={[human, builder]} />);
-    expect(replies).not.toContain("Start thread");
+    expect(replies).not.toContain("Open actions for message");
+    expect(replies).not.toContain("Open thread for message");
     expect(renderToStaticMarkup(<ConversationTimeline messages={[]} participants={[human, builder]} hideEmptyState />)).toBe("");
   });
 });

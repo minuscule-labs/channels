@@ -389,6 +389,7 @@ test("Relay gives agents attachment metadata but never image bytes or vision cla
     await humanClient.postMessage(conversation.id, {
       participantId: human.id,
       body: "",
+      to: [agent.id],
       attachmentIds: [attachment.id],
     });
     await waitUntil(async () => (await setupClient.listMessages(conversation.id)).length === 2);
@@ -1162,7 +1163,7 @@ test("dynamic attach orders high-water live events behind catch-up", async () =>
   }
 });
 
-test("two-participant Conversations implicitly wake the sole agent for human messages", async () => {
+test("unaddressed human messages do not guess the sole agent; explicit recipients wake it", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
@@ -1180,16 +1181,18 @@ test("two-participant Conversations implicitly wake the sole agent for human mes
 
   try {
     await relay.start();
-    await client.postMessage(conversation.id, {
-      participantId: "user",
-      body: "Create the query without requiring a mention",
+    const unaddressed = await client.postMessage(conversation.id, {
+      participantId: "user", body: "Shared history without a recipient", to: [],
     });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
+    relay.observeConversationHead("agent-a", unaddressed.sequence);
+    await relay.waitForIdle();
+    assert.equal(runtime.prompts.get("session-a")?.length ?? 0, 0);
+    await client.postMessage(conversation.id, {
+      participantId: "user", body: "Create the query without repeating a mention", to: ["agent-a"],
+    });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
-    assert.match(
-      runtime.prompts.get("session-a")![0]!,
-      /implicitly addressed you in this two-participant Conversation/,
-    );
+    assert.match(runtime.prompts.get("session-a")![0]!, /explicitly addressed you/);
   } finally {
     await relay.stop();
     await server.close();
@@ -2201,7 +2204,7 @@ test("Relay shutdown is bounded when a Runtime request stalls", async () => {
   } finally { await relay.stop(); await server.close(); }
 });
 
-test("relay supports an explicit agent-to-agent mention handoff", async () => {
+test("generated agent mentions cannot redirect work to another running participant", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime((sessionId) =>
@@ -2229,13 +2232,15 @@ test("relay supports an explicit agent-to-agent mention handoff", async () => {
       participantId: "user",
       body: "@agent-a Implement the change, then hand off review",
     });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
     const messages = await client.listMessages(conversation.id);
-    assert.deepEqual(messages.map((message) => message.participantId), ["user", "agent-a", "agent-b"]);
-    assert.deepEqual(messages[1]!.to, ["agent-b"]);
-    assert.deepEqual(messages[2]!.to, []);
+    relay.observeConversationHead("agent-b", messages[1]!.sequence);
+    await relay.waitForIdle();
+    assert.deepEqual(messages.map((message) => message.participantId), ["user", "agent-a"]);
+    assert.deepEqual(messages[1]!.to, []);
+    assert.equal(messages[1]!.body, "@agent-b Please review Agent A's work");
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
-    assert.equal(runtime.prompts.get("session-b")?.length, 1);
+    assert.equal(runtime.prompts.get("session-b")?.length ?? 0, 0);
   } finally {
     await relay.stop();
     await server.close();
@@ -3127,7 +3132,7 @@ test("relay wakes only addressed agents and posts responses without reply loops"
       runtime.prompts.get("session-a")![0]!,
       /Role: Reviews correctness and regressions\./,
     );
-    assert.match(runtime.prompts.get("session-a")![0]!, /Mentions wake agents and consume compute/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /Generated replies do not change that selection/);
     assert.match(runtime.prompts.get("session-a")![0]!, /TRIGGER/);
     assert.equal(relay.cursor("agent-a"), 2);
 
@@ -3145,4 +3150,30 @@ test("relay wakes only addressed agents and posts responses without reply loops"
     await relay.stop();
     await server.close();
   }
+});
+
+test("all-messages policy admits human work but never reactivates agents on generated replies", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime(() => "@agent-a @agent-b generated references");
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" }, { id: "agent-b", type: "agent" },
+  ] });
+  const relay = new ConversationRuntimeRelay({ client, conversationId: conversation.id, bindings: [
+    { participantId: "agent-a", sessionId: "session-a", runtime },
+    { participantId: "agent-b", sessionId: "session-b", runtime, wakePolicy: "all_messages" },
+  ] });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, { participantId: "user", body: "A human question", to: ["agent-a"] });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length >= 3);
+    const head = (await client.listMessages(conversation.id)).at(-1)!.sequence;
+    for (const id of ["agent-a", "agent-b"]) relay.observeConversationHead(id, head);
+    await relay.waitForIdle();
+    assert.equal(runtime.prompts.get("session-a")?.length, 1);
+    assert.equal(runtime.prompts.get("session-b")?.length, 1);
+    const messages = await client.listMessages(conversation.id);
+    assert.equal(messages.length, 3);
+    assert.ok(messages.filter(({ participantId }) => participantId !== "user").every(({ to }) => to.length === 0));
+  } finally { await relay.stop(); await server.close(); }
 });

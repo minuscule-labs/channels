@@ -365,6 +365,10 @@ function shouldWake(
   participants: Participant[],
 ): boolean {
   if (message.participantId === binding.participantId) return false;
+  const sender = participants.find(({ id }) => id === message.participantId);
+  // A generated reply is never a new activation, even under all_messages.
+  // Proactive tool sends can still use explicit recipients on existing sessions.
+  if (sender?.type !== "human" && (message.replyTo || !message.to.includes(binding.participantId))) return false;
   const policy = binding.wakePolicy ?? "mentions";
   if (policy === "muted") return false;
   if (message.to.includes(binding.participantId)) return true;
@@ -372,11 +376,7 @@ function shouldWake(
   if (policy === "all_messages") return true;
   if (policy === "direct_mentions") return false;
 
-  const active = participants.filter((participant) => participant.status !== "disabled");
-  const sender = active.find((participant) => participant.id === message.participantId);
-  return active.length === 2
-    && sender?.type === "human"
-    && active.some((participant) => participant.id === binding.participantId);
+  return false;
 }
 
 function latestAssistant(
@@ -461,7 +461,7 @@ function contextEnvelope(
 
   const triggerDescription = isExplicitlyAddressed(trigger, participantId)
     ? "explicitly addressed you"
-    : "implicitly addressed you in this two-participant Conversation";
+    : "was admitted by your configured wake policy";
 
   return { selected, text: `You are @${self?.handle ?? participantId} (identity ${participantId}), participating in a shared MinuConversation.
 Message ${trigger.sequence} from ${label(trigger.participantId)} ${triggerDescription}.
@@ -472,10 +472,10 @@ ${participantRoster(participants, connectedAgents)}
 
 Use this roster to choose the right collaborator for delegation.
 Perform the requested work using the current project and respond concisely for the Conversation.
-To hand work to another participant, mention its exact @handle from the roster in your response.
-Mentions wake agents and consume compute, so mention only when concrete follow-up work is needed.
-In a two-participant human-agent Conversation, the human's messages implicitly wake the agent without a mention.
-In larger Conversations, an unaddressed response remains shared history without waking anyone.
+Recipient selection belongs to each human separately in each Conversation or thread.
+Generated replies do not change that selection; mention-like text in your reply does not route or activate other participants.
+Intentional routing through collaboration tools must use their explicit recipient fields.
+An unaddressed message remains shared history unless an agent's configured wake policy explicitly admits it.
 
 Conversation context${omitted > 0 ? ` (${omitted} older message(s) omitted; request history if needed)` : ""}:
 ${transcript}` };
