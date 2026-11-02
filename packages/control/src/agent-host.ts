@@ -764,6 +764,10 @@ export class LocalAgentHost {
     this.startIdleSleepScheduler();
   }
 
+  async autoStartConversationAgent(conversationId: string, agentIdentityId: string, actorIdentityId: string, triggerMessageId: string): Promise<void> {
+    return this.startConversationAgent(conversationId, agentIdentityId, actorIdentityId, "with_context", undefined, undefined, triggerMessageId);
+  }
+
   async startConversationAgent(
     conversationId: string,
     agentIdentityId: string,
@@ -771,6 +775,7 @@ export class LocalAgentHost {
     contextMode: RuntimeSessionContextMode = "with_context",
     expectedBinding?: Pick<ConversationAgentBindingRecord, "id" | "generation" | "state"> | null,
     diagnostic?: BulkDiagnosticContext,
+    initialMessageId?: string,
   ): Promise<void> {
     const key = this.bindingKey(conversationId, agentIdentityId);
     this.startingBindings.add(key);
@@ -810,6 +815,17 @@ export class LocalAgentHost {
           );
         }
         const existingBindings = bindings.filter((binding) => binding.agentIdentityId === agentIdentityId);
+        if (initialMessageId) {
+          // Any existing binding, including Stop/uncertainty/retirement, prevents
+          // implicit resume or replacement. Automatic startup requires a saved human send.
+          if (existingBindings.length) return;
+          const trigger = (await this.options.client.listMessages(conversationId)).find(({ id }) => id === initialMessageId);
+          if (!trigger || trigger.participantId !== actorIdentityId || !trigger.to.includes(agentIdentityId)
+            || trigger.to.includes("@conversation")) {
+            throw new LocalConfigurationRequestError("Automatic startup requires an addressed saved message", 409, "unavailable");
+          }
+          if (await this.options.client.getCursor(conversationId, agentIdentityId) >= trigger.sequence) return;
+        }
         if (expectedBinding === null && existingBindings.length > 0) {
           throw new BulkSnapshotChangedError("Agent binding changed after bulk acceptance");
         }
@@ -889,7 +905,19 @@ export class LocalAgentHost {
         let bindingId: string | undefined;
         try {
           const messages = await this.options.client.listMessages(conversationId);
-          const conversationSequence = messages.at(-1)?.sequence ?? 0;
+          const trigger = initialMessageId ? messages.find(({ id }) => id === initialMessageId) : undefined;
+          if (initialMessageId && (!trigger || trigger.participantId !== actorIdentityId
+            || !trigger.to.includes(agentIdentityId) || trigger.to.includes("@conversation"))) {
+            throw new LocalConfigurationRequestError("Activation message changed", 409, "unavailable");
+          }
+          const floor = trigger ? await this.options.client.getCursor(conversationId, agentIdentityId) : 0;
+          if (trigger && floor >= trigger.sequence) {
+            throw new LocalConfigurationRequestError("Activation message was retired", 409, "unavailable");
+          }
+          // Preserve earlier addressed work too (e.g. a member could post but not start).
+          const firstPending = trigger ? messages.find((message) => message.sequence > floor
+            && message.sequence <= trigger.sequence && message.to.includes(agentIdentityId)) : undefined;
+          const conversationSequence = trigger ? (firstPending ?? trigger).sequence - 1 : messages.at(-1)?.sequence ?? 0;
           observation?.event("activation_boundary", "confirmed");
           observation?.event("launch_requested", "started");
           mutationStarted = true;

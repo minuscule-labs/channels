@@ -1,9 +1,9 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
-import { hasChannelMentionCollision } from "@minu/channels-core/mentions";
+import { hasChannelMentionCollision, mentionHandles } from "@minu/channels-core/mentions";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ImagePlus, LoaderCircle, RotateCcw, Send, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { conversations } from "../lib/api";
+import { localControl } from "../lib/api";
 import {
   createMessageSubmission,
   draftStorageKey,
@@ -17,7 +17,10 @@ import {
 import { imageContentUrl, useImageDraft } from "../lib/image-draft";
 import { mergeMessages } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
+import { messageRecipients, readRecipient, readRecipientOverride, recipientStorageKey, writeRecipient, writeRecipientOverride } from "../lib/recipient-selection";
 import { ErrorNotice } from "./ui/error-notice";
+
+export interface ComposerReplyTarget { actorIdentityId: string; identityId: string; messageId?: string }
 
 interface MentionSuggestion {
   id: string;
@@ -39,6 +42,9 @@ export function ConversationComposer({
   activity,
   readOnlyReason,
   thread = false,
+  defaultRecipientId,
+  replyTarget,
+  onReplyConsumed,
 }: {
   participants: Participant[];
   workspaceId: string;
@@ -48,6 +54,9 @@ export function ConversationComposer({
   activity?: ReactNode;
   readOnlyReason?: string;
   thread?: boolean;
+  defaultRecipientId?: string;
+  replyTarget?: ComposerReplyTarget;
+  onReplyConsumed(target: ComposerReplyTarget): void;
 }) {
   const queryClient = useQueryClient();
   const mentionListId = `${conversationId}-mention-suggestions`;
@@ -73,6 +82,26 @@ export function ConversationComposer({
           && value.input.attachmentIds.every((id: unknown) => typeof id === "string"))) ? value : undefined;
     } catch { return undefined; }
   });
+  const recipientKey = recipientStorageKey(workspaceId, conversationId, activeAuthorId);
+  const [storedRecipient, setStoredRecipient] = useState(() => readRecipient(recipientKey));
+  const initialFailure = failedSubmission?.input.participantId === activeAuthorId && failedSubmission.input.body === body ? failedSubmission : undefined;
+  const [manualTargets, setManualTargets] = useState<string[] | undefined>(() => initialFailure?.input.to
+    ?? readRecipientOverride(`${storageKey}.recipients`, body));
+  const [replyTo, setReplyTo] = useState<string | undefined>(() => initialFailure?.input.replyTo);
+  const handledReply = useRef<ComposerReplyTarget | undefined>(undefined);
+  const selectedRecipient = storedRecipient ?? defaultRecipientId ?? "";
+  const recipients = messageRecipients(body, participants, selectedRecipient, manualTargets);
+  const targets = recipients.targets;
+  const recipientInvalid = recipients.invalid.length > 0 || targets.some((id) => id !== "@conversation"
+    && !participants.some((participant) => participant.id === id && participant.status !== "disabled"));
+  const targetLabel = (id: string) => id === "@conversation"
+    ? hasChannelMentionCollision(participants) ? "@conversation" : "@channel"
+    : `@${participants.find((participant) => participant.id === id)?.handle ?? id}`;
+  const persistRecipient = (id: string) => {
+    if (!activeAuthorId) return;
+    writeRecipient(recipientKey, id);
+    setStoredRecipient(id);
+  };
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
   useEffect(() => {
@@ -157,9 +186,7 @@ export function ConversationComposer({
   const activeSuggestionIndex = Math.min(selectedSuggestion, Math.max(0, suggestions.length - 1));
 
   const mutation = useMutation({
-    mutationFn: (submission: MessageSubmission) => conversations.postMessage(conversationId, submission.input, {
-      idempotencyKey: submission.idempotencyKey,
-    }),
+    mutationFn: (submission: MessageSubmission) => localControl.postConversationMessage(conversationId, submission.input, { idempotencyKey: submission.idempotencyKey }),
     onSuccess: (message, submission) => {
       queryClient.setQueryData<ConversationMessage[]>(
         queryKeys.conversationMessages(conversationId),
@@ -171,23 +198,54 @@ export function ConversationComposer({
       if (draftRef.current.authorId === submission.input.participantId && draftRef.current.body === submission.input.body) {
         setBody("");
         setCursor(0);
+        setManualTargets(undefined);
+        writeRecipientOverride(`${storageKey}.recipients`, "");
+        setReplyTo(undefined);
       }
     },
     onError: (_error, submission) => {
       setFailedSubmission(submission);
       setErrorDismissed(false);
     },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
+    },
   });
 
+  useEffect(() => {
+    if (!replyTarget || handledReply.current === replyTarget) return;
+    if (replyTarget.actorIdentityId !== activeAuthorId) {
+      handledReply.current = replyTarget;
+      onReplyConsumed(replyTarget);
+      return;
+    }
+    if (mutation.isPending) return;
+    handledReply.current = replyTarget;
+    if (!participants.some(({ id, status }) => id === replyTarget.identityId && status !== "disabled")) {
+      onReplyConsumed(replyTarget);
+      return;
+    }
+    persistRecipient(replyTarget.identityId);
+    setManualTargets([replyTarget.identityId]);
+    writeRecipientOverride(`${storageKey}.recipients`, body, [replyTarget.identityId]);
+    setReplyTo(replyTarget.messageId);
+    setFailedSubmission(undefined);
+    mutation.reset();
+    textareaRef.current?.focus();
+    onReplyConsumed(replyTarget);
+  }, [replyTarget, mutation.isPending, activeAuthorId, participants, onReplyConsumed]);
+
   const canAttach = Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
-  const canSubmit = (Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && canAttach;
+  const canSubmit = (Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && !recipientInvalid && canAttach;
   const submit = (submission?: MessageSubmission) => {
     if (!canSubmit) return;
     // Dismissing feedback must not discard the key of an ambiguously failed send.
-    const matchingFailure = failedSubmission && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids)
+    const matchingFailure = failedSubmission && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids, targets, replyTo)
       ? failedSubmission
       : undefined;
-    const next = submission ?? matchingFailure ?? createMessageSubmission(activeAuthorId, body, participants, undefined, imageDraft.ids);
+    const next = submission ?? matchingFailure ?? createMessageSubmission(activeAuthorId, body, participants, undefined, imageDraft.ids, targets, replyTo);
+    if (next.input.to?.length === 1 && next.input.to[0] !== "@conversation") persistRecipient(next.input.to[0]!);
     // Persist before the request: a lost response or navigation must retain the same retry key.
     localStorage.setItem(`${storageKey}.submission`, JSON.stringify(next));
     setFailedSubmission(next);
@@ -198,7 +256,13 @@ export function ConversationComposer({
     setBody(nextBody);
     setCursor(nextCursor);
     setDismissedMention(undefined);
-    if (failedSubmission && !submissionMatchesDraft(failedSubmission, activeAuthorId, nextBody, participants, imageDraft.ids)) {
+    const override = mentionHandles(nextBody).join("\0") === mentionHandles(body).join("\0") ? manualTargets : undefined;
+    if (override !== manualTargets) {
+      setManualTargets(override);
+      writeRecipientOverride(`${storageKey}.recipients`, nextBody, override);
+    }
+    const nextTargets = messageRecipients(nextBody, participants, selectedRecipient, override).targets;
+    if (failedSubmission && !submissionMatchesDraft(failedSubmission, activeAuthorId, nextBody, participants, imageDraft.ids, nextTargets, replyTo)) {
       setFailedSubmission(undefined);
       mutation.reset();
     }
@@ -222,7 +286,7 @@ export function ConversationComposer({
   };
 
   const retryAvailable = canSubmit && failedSubmission
-    && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids);
+    && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids, targets, replyTo);
 
   return (
     <div className="bg-[var(--bg)] px-3 pt-3 pb-1 sm:px-6">
@@ -342,6 +406,30 @@ export function ConversationComposer({
           <div className="flex flex-wrap items-center justify-between gap-3 px-2.5 py-2">
             <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images"
               onChange={(event) => { imageDraft.add(Array.from(event.target.files ?? [])); event.target.value = ""; }} disabled={!canAttach} />
+            <select
+              aria-label="Message recipient"
+              className="button-secondary min-w-0 max-w-64"
+              disabled={!canAttach}
+              value={recipients.invalid.length ? "__invalid__" : targets.length > 1 ? "__multiple__" : targets[0] ?? ""}
+              onChange={(event) => {
+                const id = event.target.value;
+                if (id !== "@conversation") persistRecipient(id);
+                setManualTargets(id ? [id] : []);
+                writeRecipientOverride(`${storageKey}.recipients`, body, id ? [id] : []);
+                setReplyTo(undefined);
+                setFailedSubmission(undefined);
+                mutation.reset();
+                textareaRef.current?.focus();
+              }}
+            >
+              <option value="">No recipient</option>
+              <option value="@conversation">{targetLabel("@conversation")}</option>
+              {participants.filter(({ status }) => status !== "disabled").map(({ id }) => <option key={id} value={id}>{targetLabel(id)}</option>)}
+              {targets.length > 1 ? <option value="__multiple__" disabled>{targets.map(targetLabel).join(", ")}</option> : null}
+              {recipients.invalid.length ? <option value="__invalid__" disabled>{recipients.invalid.map((handle) => `@${handle}`).join(", ")}</option> : null}
+              {targets.length === 1 && targets[0] !== "@conversation" && !participants.some(({ id, status }) => id === targets[0] && status !== "disabled")
+                ? <option value={targets[0]} disabled>{targetLabel(targets[0]!)}</option> : null}
+            </select>
             <button type="button" className="button-secondary" aria-label="Attach images" title="Attach images" disabled={!canAttach}
               onClick={() => fileInputRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /></button>
             <div className="flex items-center gap-2">

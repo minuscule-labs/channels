@@ -250,6 +250,7 @@ export interface UpdateConversationParticipantsInput {
 
 export interface CreateMessageInput {
   participantId: string;
+  /** Authoritative recipients, including []. Omit to resolve intentional human mentions. */
   to?: string[];
   body: string;
   replyTo?: string;

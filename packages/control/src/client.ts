@@ -1,6 +1,8 @@
 import type {
   EffectiveConversationLifecycle,
   ConversationLifecycleState,
+  ConversationMessage,
+  CreateMessageInput,
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
@@ -54,6 +56,13 @@ export class LocalControlClient {
 
   async health(): Promise<LocalControlHealth> {
     return this.get<LocalControlHealth>("/local/health");
+  }
+
+  async postConversationMessage(conversationId: string, input: CreateMessageInput, options: { idempotencyKey: string }): Promise<ConversationMessage> {
+    const result = await this.request<{ message: ConversationMessage }>(`/local/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: "POST", headers: { "idempotency-key": options.idempotencyKey }, body: JSON.stringify(input),
+    }, this.lifecycleTimeoutMs);
+    return result.message;
   }
 
   async currentSession(): Promise<LocalCurrentSession> {

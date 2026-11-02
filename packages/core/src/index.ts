@@ -19,6 +19,7 @@ export {
   ConversationPayloadTooLargeError,
   ConversationService,
   ConversationValidationError,
+  resolveMessageTargets,
 } from "./conversation-service.ts";
 export {
   ConversationAttachmentUnavailableError,

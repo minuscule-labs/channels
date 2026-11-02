@@ -167,7 +167,7 @@ function validateAttachmentIds(value: unknown): string[] {
   return ids;
 }
 
-function messageTargets(conversation: Conversation, input: CreateMessageInput): string[] {
+export function resolveMessageTargets(conversation: Pick<Conversation, "participants">, input: CreateMessageInput): string[] {
   if (input.to !== undefined && !Array.isArray(input.to)) {
     throw new ConversationValidationError("to must be an array of participant ids");
   }
@@ -190,7 +190,10 @@ function messageTargets(conversation: Conversation, input: CreateMessageInput): 
     }
     return participant.id;
   };
-  const mentioned = mentionHandles(input.body).map(resolveTarget);
+  // Structured recipients are the sender's explicit choice, including an empty
+  // list. Generated agent text is content, never an implicit routing command.
+  const human = conversation.participants.find(({ id }) => id === input.participantId)?.type === "human";
+  const mentioned = input.to === undefined && human ? mentionHandles(input.body).map(resolveTarget) : [];
   const structured = (input.to ?? []).map((target) => {
     if (typeof target !== "string" || !target.trim()) {
       throw new ConversationValidationError("to must contain non-empty participant ids");
@@ -1175,7 +1178,7 @@ export class ConversationService {
       throw new ConversationValidationError(`Reply message is not in conversation: ${input.replyTo}`);
     }
 
-    const to = messageTargets(conversation, input);
+    const to = resolveMessageTargets(conversation, input);
     await Promise.all(to.filter((target) => target !== "@conversation").map(
       (target) => this.assertActiveWorkspaceIdentity(conversation, target),
     ));
@@ -1277,7 +1280,7 @@ export class ConversationService {
       throw new ConversationValidationError("trigger message and sequence do not match this conversation");
     }
 
-    const to = messageTargets(conversation, { participantId: input.participantId, body: input.body });
+    const to = resolveMessageTargets(conversation, { participantId: input.participantId, body: input.body });
     await Promise.all(to.filter((target) => target !== "@conversation").map(
       (target) => this.assertActiveWorkspaceIdentity(conversation, target),
     ));
