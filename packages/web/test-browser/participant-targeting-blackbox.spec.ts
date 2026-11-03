@@ -1,14 +1,14 @@
 import { ConversationClient } from "@minu/channels-core";
-import type { ConversationMessage, ConversationThread } from "@minu/channels-core/types";
+import type { ConversationMessage, ConversationThread, CreateMessageInput } from "@minu/channels-core/types";
 import { createLocalControlDaemon, type LocalControlDaemon, type LocalControlDaemonOptions } from "@minu/channels-control/daemon";
-import { expect, test as base, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test as base, type BrowserContext, type Page, type Route } from "@playwright/test";
 import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Human messages 159/166/171 are the oracle. No recipient-selection, mention
-// parsing or composer-state implementation is imported. Observe visible controls,
-// actual persisted targets, authenticated control and the external Runtime boundary.
+// Human messages 159/171, 215/217 and 238 are the oracle. Recipient controls and
+// Reply actions are removed. No recipient-selection, mention parsing or composer-
+// state implementation is imported; real mentions drive the observed boundaries.
 const api = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const web = `http://minu-channels.localhost:${process.env.MINU_TEST_WEB_PORT ?? 58412}`;
 const serviceToken = "browser-fixture-service-token";
@@ -108,7 +108,6 @@ async function application(page: Page, context: BrowserContext) {
     const view = (scope: Scope) => scope === "thread" ? panel(page) : page.locator("section")
       .filter({ has: page.getByRole("combobox", { name: "Conversation message", exact: true }) }).last();
     const composer = (scope: Scope) => view(scope).getByRole("combobox", { name: scope === "thread" ? "Thread reply" : "Conversation message", exact: true });
-    const recipient = (scope: Scope) => view(scope).getByRole("combobox", { name: "Message recipient", exact: true });
     const scopeId = (scope: Scope) => scope === "main" ? main.id : selectedThread!.id;
     async function visitMain(conversation = parent) {
       main = conversation;
@@ -126,35 +125,60 @@ async function application(page: Page, context: BrowserContext) {
       selectedThread = (await client.listThreads(parent.id)).find(({ thread }) => thread.rootMessageId === message.id)!;
       expect(selectedThread).toBeTruthy(); return selectedThread;
     }
+    async function blockedSend(scope: Scope, expected: string[]) {
+      const body = await composer(scope).inputValue();
+      expect(body.trim()).not.toBe("");
+      let input: CreateMessageInput | undefined;
+      const pattern = `**/local/conversations/${scopeId(scope)}/messages`;
+      const handler = async (route: Route) => {
+        if (route.request().method() !== "POST") return route.fallback();
+        input = route.request().postDataJSON() as CreateMessageInput;
+        await route.fulfill({ status: 503, json: { error: "Blocked routing probe" } });
+      };
+      await page.route(pattern, handler);
+      try {
+        await view(scope).getByRole("button", { name: "Send message", exact: true }).click();
+        await expect(view(scope).getByRole("alert")).toContainText("Your draft was preserved");
+        expect(input?.participantId).toBe(identities[actor].id);
+        expect(input?.to, "The actual outgoing intent must keep this person's recipient").toEqual(expected);
+        await expect(composer(scope)).toHaveValue(body);
+      } finally { await page.unroute(pattern, handler); }
+    }
+    let selection = 0;
     return {
-      client, identities, workspace, parent, defaultRoot, runtime, view, composer, recipient, scopeId, visitMain, openThread,
+      client, identities, workspace, parent, defaultRoot, runtime, view, composer, scopeId, visitMain, openThread, blockedSend,
       get thread() { expect(selectedThread).toBeTruthy(); return selectedThread!; },
       async as(name: Actor) { await page.goto("about:blank"); await bindIdentity(name); await visitMain(parent); },
       async rebindIdentity(name: Actor) { await bindIdentity(name); },
       newRoot(name: Actor | Agent, body: string, to: string[] = []) { return client.postMessage(parent.id, { participantId: identities[name].id, body, to }); },
       newChannel(name: string) { return client.createConversation({ workspaceId: workspace.id, name, participantIds }); },
       async begin(scope: Scope) { if (scope === "thread") await openThread(); else await visitMain(); },
-      async choose(scope: Scope, id: string) { await recipient(scope).selectOption(id); await expect(recipient(scope)).toHaveValue(id); },
+      async choose(scope: Scope, id: string) {
+        const name = (Object.keys(identities) as Array<Actor | Agent>).find((name) => identities[name].id === id)!;
+        const question = await this.send(scope, `@${name} RECIPIENT_SELECTION_${++selection}`, [id]);
+        if (name !== "owner" && name !== "peer") await this.answer(scope, question, name);
+      },
       async mention(scope: Scope, name: Agent, tail: string) {
         await composer(scope).fill(`@${name.slice(0, 2)}`);
         const option = view(scope).getByRole("listbox", { name: "Mention suggestions", exact: true }).getByRole("option", { name: new RegExp(`@${name}\\b`) });
         await expect(option).toBeVisible(); await option.click();
         await composer(scope).pressSequentially(tail);
-        await expect(recipient(scope)).toHaveValue(identities[name].id);
+        await expect(composer(scope)).toHaveValue(`@${name} ${tail}`);
       },
       async send(scope: Scope, body: string | undefined, expected: string[]) {
         if (body !== undefined) await composer(scope).fill(body);
-        if (expected.length <= 1) await expect(recipient(scope)).toHaveValue(expected[0] ?? "");
-        else for (const id of expected) {
-          const name = Object.entries(identities).find(([, value]) => value.id === id)![0];
-          await expect(recipient(scope).getByRole("option", { selected: true })).toContainText(`@${name}`);
-        }
         const text = await composer(scope).inputValue();
+        const outgoing = page.waitForRequest((request) => request.method() === "POST"
+          && new URL(request.url()).pathname === `/local/conversations/${scopeId(scope)}/messages`);
         await view(scope).getByRole("button", { name: "Send message", exact: true }).click();
+        const input = (await outgoing).postDataJSON() as CreateMessageInput;
+        expect(input.participantId).toBe(identities[actor].id);
+        expect(input.to).toBeDefined();
+        expect([...input.to!].sort(), "Chosen recipients must match the submitted targets").toEqual([...expected].sort());
         await expect(composer(scope)).toHaveValue("");
         const message = (await client.listMessages(scopeId(scope))).find((value) => value.participantId === identities[actor].id && value.body === text);
         expect(message, "The actual scoped message must persist").toBeTruthy();
-        expect([...message!.to].sort(), "Displayed recipients must equal actual delivery targets").toEqual([...expected].sort());
+        expect([...message!.to].sort(), "Chosen recipients must equal actual delivery targets").toEqual([...expected].sort());
         return message!;
       },
       async answer(scope: Scope, question: ConversationMessage, name: Agent) {
@@ -164,12 +188,7 @@ async function application(page: Page, context: BrowserContext) {
         expect(call!.agent).toBe(name); expect(call!.input).toContain(question.body);
         await expect(view(scope).getByText(reply.body, { exact: true })).toBeVisible(); return call!;
       },
-      async reply(scope: Scope, message: ConversationMessage) {
-        const row = view(scope).getByRole("log", { name: "Conversation messages", exact: true }).getByRole("article").filter({ hasText: message.body });
-        await row.getByRole("button", { name: new RegExp(`^Open (?:message )?actions for message ${message.sequence}$`) }).click();
-        await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
-        await expect(recipient(scope)).toHaveValue(message.participantId);
-      },
+
       async close() { try { if (!page.isClosed()) await page.close(); } finally { try { await daemon?.close(); } finally { await rm(directory, { recursive: true, force: true }); } } },
     };
   } catch (error) { await daemon?.close(); await rm(directory, { recursive: true, force: true }); throw error; }
@@ -183,10 +202,8 @@ const test = base.extend<{ app: Application }>({
 for (const scope of ["main", "thread"] as const) {
   test(`targeting blackbox UI: ${scope} select once, five followups, mention-switch and reload`, async ({ app, page }) => {
     await app.begin(scope);
-    await expect(app.recipient(scope)).toHaveValue(scope === "thread" ? app.identities.alpha.id : "");
-    await app.choose(scope, app.identities.alpha.id);
-    await app.composer(scope).fill("DRAFT_STARTS_NOBODY"); expect(app.runtime.starts).toHaveLength(0);
-    const first = await app.send(scope, "FIRST_STICKY_ALPHA", [app.identities.alpha.id]); const call = await app.answer(scope, first, "alpha");
+    await app.mention(scope, "alpha", "DRAFT_STARTS_NOBODY"); expect(app.runtime.starts).toHaveLength(0);
+    const first = await app.send(scope, undefined, [app.identities.alpha.id]); const call = await app.answer(scope, first, "alpha");
     for (let index = 1; index <= 5; index += 1) {
       const followup = await app.send(scope, `ALPHA_FOLLOWUP_${index}`, [app.identities.alpha.id]);
       expect((await app.answer(scope, followup, "alpha")).sessionId).toBe(call.sessionId);
@@ -194,7 +211,6 @@ for (const scope of ["main", "thread"] as const) {
     await app.mention(scope, "beta", "SWITCH_TO_BETA");
     await app.answer(scope, await app.send(scope, undefined, [app.identities.beta.id]), "beta");
     await page.reload();
-    await expect(app.recipient(scope)).toHaveValue(app.identities.beta.id);
     await app.answer(scope, await app.send(scope, "BETA_AFTER_RELOAD", [app.identities.beta.id]), "beta");
     expect(app.runtime.starts.map(({ agent }) => agent).sort()).toEqual(["alpha", "beta"]);
   });
@@ -203,10 +219,8 @@ for (const scope of ["main", "thread"] as const) {
     await app.begin(scope); await app.choose(scope, app.identities.alpha.id);
     app.runtime.output.alpha = "Generated text mentions @beta and @gamma without choosing them";
     await app.answer(scope, await app.send(scope, "ASK_ALPHA_BEFORE_QUOTED_EXAMPLES", [app.identities.alpha.id]), "alpha");
-    await expect(app.recipient(scope)).toHaveValue(app.identities.alpha.id);
     const other = await app.client.postMessage(app.scopeId(scope), { participantId: app.identities.peer.id, body: "@beta OTHER_PERSON_TARGETS_BETA", to: [app.identities.beta.id] });
     await expect(app.view(scope).getByText(other.body, { exact: true })).toBeVisible();
-    await expect(app.recipient(scope)).toHaveValue(app.identities.alpha.id);
     const body = "QUOTED_EXAMPLES\n```ts\n@beta @unknown_agent\n```\n`@gamma`\n> @beta\n\nFOLLOWUP_FOR_ALPHA";
     await app.answer(scope, await app.send(scope, body, [app.identities.alpha.id]), "alpha");
     expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["alpha"]);
@@ -215,35 +229,31 @@ for (const scope of ["main", "thread"] as const) {
   test(`targeting blackbox UI: ${scope} broadcasts and multiple recipients are one-message overrides`, async ({ app }) => {
     await app.begin(scope); await app.choose(scope, app.identities.alpha.id);
     await app.answer(scope, await app.send(scope, "SET_STICKY_ALPHA", [app.identities.alpha.id]), "alpha");
-    await app.choose(scope, "@conversation");
-    await app.answer(scope, await app.send(scope, "ONE_MESSAGE_BROADCAST", ["@conversation"]), "alpha");
+    await app.answer(scope, await app.send(scope, "@channel ONE_MESSAGE_BROADCAST", ["@conversation"]), "alpha");
     expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["alpha"]);
-    await expect(app.recipient(scope)).toHaveValue(app.identities.alpha.id);
     const multi = await app.send(scope, "@alpha @beta ONE_MESSAGE_MULTIPLE", [app.identities.alpha.id, app.identities.beta.id]);
     await app.answer(scope, multi, "alpha"); await app.answer(scope, multi, "beta");
-    await expect(app.recipient(scope)).toHaveValue(app.identities.alpha.id);
     await app.answer(scope, await app.send(scope, "FOLLOWUP_RETAINS_ALPHA", [app.identities.alpha.id]), "alpha");
     expect(app.runtime.starts.map(({ agent }) => agent).sort()).toEqual(["alpha", "beta"]);
   });
 }
 
-test("targeting blackbox UI: Reply in main selects the author without creating a thread", async ({ app }) => {
-  await app.visitMain(); await app.reply("main", app.defaultRoot);
+test("targeting blackbox UI: a main mention addresses the agent without creating a thread", async ({ app }) => {
+  await app.visitMain(); await app.mention("main", "alpha", "MAIN_MENTION_NOT_A_THREAD");
   expect(await app.client.listThreads(app.parent.id)).toEqual([]); expect(app.runtime.starts).toHaveLength(0);
-  const question = await app.send("main", "MAIN_REPLY_NOT_A_THREAD", [app.identities.alpha.id]);
-  expect(question.replyTo).toBe(app.defaultRoot.id); await app.answer("main", question, "alpha");
+  const question = await app.send("main", undefined, [app.identities.alpha.id]);
+  expect(question.replyTo).toBeUndefined(); await app.answer("main", question, "alpha");
   expect(await app.client.listThreads(app.parent.id)).toEqual([]);
 });
 
-test("targeting blackbox UI: Reply within a thread switches its recipient without changing main", async ({ app, page }) => {
+test("targeting blackbox UI: a thread mention switches its recipient without changing main", async ({ app, page }) => {
   await app.visitMain(); await app.choose("main", app.identities.alpha.id); await app.openThread();
-  const beta = await app.client.postMessage(app.thread.id, { participantId: app.identities.beta.id, body: "BETA_THREAD_MESSAGE_TO_REPLY_TO" });
-  await app.reply("thread", beta);
-  const question = await app.send("thread", "REPLY_TO_BETA_IN_THREAD", [app.identities.beta.id]);
-  expect(question.replyTo).toBe(beta.id); await app.answer("thread", question, "beta");
+  await app.mention("thread", "beta", "MENTION_BETA_IN_THREAD");
+  const question = await app.send("thread", undefined, [app.identities.beta.id]);
+  expect(question.replyTo).toBeUndefined(); await app.answer("thread", question, "beta");
   await panel(page).getByRole("button", { name: "Close thread", exact: true }).click();
-  await expect(app.recipient("main")).toHaveValue(app.identities.alpha.id);
-  expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["beta"]);
+  await app.answer("main", await app.send("main", "MAIN_AFTER_THREAD_MENTION", [app.identities.alpha.id]), "alpha");
+  expect(app.runtime.starts.map(({ agent }) => agent).sort()).toEqual(["alpha", "beta"]);
 });
 
 test("targeting blackbox UI: parent and sibling threads retain independent selections, sessions and frozen context", async ({ app, page }) => {
@@ -256,9 +266,14 @@ test("targeting blackbox UI: parent and sibling threads retain independent selec
   const parentQuestion = await app.send("main", "PARENT_ALPHA_ONLY", [app.identities.alpha.id]);
   const alpha = await app.answer("main", parentQuestion, "alpha"); expect(alpha.sessionId).not.toBe(beta.sessionId);
   const siblingRoot = await app.newRoot("gamma", "LATER_SIBLING_GAMMA_ROOT");
-  await app.openThread(siblingRoot); await expect(app.recipient("thread")).toHaveValue(app.identities.gamma.id);
+  await app.openThread(siblingRoot);
   expect(app.runtime.starts).toHaveLength(2);
-  await app.openThread(app.defaultRoot); await expect(app.recipient("thread")).toHaveValue(app.identities.beta.id);
+  const gamma = await app.answer("thread", await app.send("thread", "SIBLING_ROOT_DEFAULT_GAMMA", [app.identities.gamma.id]), "gamma");
+  expect(gamma.sessionId).not.toBe(beta.sessionId);
+  await app.openThread(app.defaultRoot);
+  const returned = await app.answer("thread", await app.send("thread", "RETURNED_THREAD_RETAINS_BETA", [app.identities.beta.id]), "beta");
+  expect(returned.sessionId).toBe(beta.sessionId);
+  expect(app.runtime.starts).toHaveLength(3);
   expect((await app.client.getConversation(firstThread.id)).thread?.context).toEqual(frozen);
   expect((await app.client.listMessages(app.parent.id)).some(({ body }) => body === beta.reply)).toBe(false);
 });
@@ -266,46 +281,53 @@ test("targeting blackbox UI: parent and sibling threads retain independent selec
 test("targeting blackbox UI: two real human sessions and two main conversations keep independent browser-local selections", async ({ app, page }) => {
   await app.visitMain(); await app.choose("main", app.identities.alpha.id);
   const other = await app.newChannel("Other targeting conversation"); await app.visitMain(other);
-  await expect(app.recipient("main")).toHaveValue(""); await app.choose("main", app.identities.gamma.id);
-  await app.as("peer"); await expect(app.recipient("main")).toHaveValue("");
-  await app.choose("main", app.identities.beta.id); await page.reload(); await expect(app.recipient("main")).toHaveValue(app.identities.beta.id);
-  await app.as("owner"); await expect(app.recipient("main")).toHaveValue(app.identities.alpha.id);
-  await app.visitMain(other); await expect(app.recipient("main")).toHaveValue(app.identities.gamma.id);
-  await app.visitMain(); await expect(app.recipient("main")).toHaveValue(app.identities.alpha.id);
-  expect(app.runtime.starts).toHaveLength(0);
+  await app.send("main", "OWNER_OTHER_HAS_NO_SELECTION", []);
+  await app.choose("main", app.identities.gamma.id);
+  await app.as("peer"); await app.send("main", "PEER_HAS_NO_SELECTION", []);
+  await app.choose("main", app.identities.beta.id);
+  expect(app.runtime.starts).toHaveLength(3);
+  await page.reload();
+  await app.answer("main", await app.send("main", "PEER_RELOADED_BETA", [app.identities.beta.id]), "beta");
+  await app.as("owner");
   await app.answer("main", await app.send("main", "OWNER_SELECTION_STILL_ALPHA", [app.identities.alpha.id]), "alpha");
+  await app.visitMain(other);
+  await app.answer("main", await app.send("main", "OWNER_OTHER_STILL_GAMMA", [app.identities.gamma.id]), "gamma");
+  await app.visitMain();
+  await app.answer("main", await app.send("main", "OWNER_RETURNED_TO_ALPHA", [app.identities.alpha.id]), "alpha");
+  expect(app.runtime.starts.map(({ agent }) => agent).sort()).toEqual(["alpha", "beta", "gamma"]);
 });
 
-test("targeting blackbox UI: changing the composer control overrides stale mention-looking body text and matches delivery", async ({ app }) => {
+test("targeting blackbox UI: editing a mention changes the target on Send and matches delivery", async ({ app }) => {
   await app.visitMain(); await app.choose("main", app.identities.alpha.id);
   await app.composer("main").fill("@beta EARLIER_RECIPIENT_INTENT");
-  await app.choose("main", app.identities.gamma.id);
+  await app.mention("main", "gamma", "UPDATED_RECIPIENT_INTENT");
+  expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["alpha"]);
   await app.answer("main", await app.send("main", undefined, [app.identities.gamma.id]), "gamma");
-  await app.answer("main", await app.send("main", "FOLLOWUP_TO_VISIBLE_GAMMA", [app.identities.gamma.id]), "gamma");
-  expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["gamma"]);
+  await app.answer("main", await app.send("main", "FOLLOWUP_TO_GAMMA", [app.identities.gamma.id]), "gamma");
+  expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["alpha", "gamma"]);
 });
 
-test("targeting blackbox UI: human root's sole agent default is visible before Send and an explicit choice overrides it", async ({ app }) => {
+test("targeting blackbox UI: a mention overrides a human root's sole agent default on Send", async ({ app }) => {
   const root = await app.newRoot("owner", "HUMAN_ROOT_ADDRESSED_TO_ALPHA", [app.identities.alpha.id]);
-  await app.openThread(root); await expect(app.recipient("thread")).toHaveValue(app.identities.alpha.id);
+  await app.openThread(root);
   expect(app.runtime.starts).toHaveLength(0); await app.choose("thread", app.identities.beta.id);
   await app.answer("thread", await app.send("thread", "EXPLICIT_BETA_OVERRIDES_ROOT", [app.identities.beta.id]), "beta");
   expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["beta"]);
 });
 
-test("targeting blackbox UI: Reply to a human thread root addresses that human without starting an agent", async ({ app, page }) => {
+test("targeting blackbox UI: mentioning a human overrides the thread default without starting an agent", async ({ app, page }) => {
   const root = await app.newRoot("peer", "PEER_COMMENT_ADDRESSED_TO_ALPHA", [app.identities.alpha.id]);
-  await app.openThread(root); await expect(app.recipient("thread")).toHaveValue(app.identities.alpha.id);
-  await panel(page).getByRole("article", { name: "Thread root", exact: true }).getByRole("button", { name: "Reply", exact: true }).click();
-  await expect(app.recipient("thread")).toHaveValue(app.identities.peer.id);
-  await app.send("thread", "HUMAN_DIRECT_REPLY", [app.identities.peer.id]);
+  await app.openThread(root);
+  await expect(panel(page).getByRole("button", { name: "Reply", exact: true })).toHaveCount(0);
+  await app.send("thread", "@peer HUMAN_DIRECT_MESSAGE", [app.identities.peer.id]);
   await app.send("thread", "HUMAN_DIRECT_FOLLOWUP", [app.identities.peer.id]);
   expect(app.runtime.starts).toHaveLength(0); expect(app.runtime.calls).toHaveLength(0);
 });
 
-test("targeting blackbox UI: an in-place identity change must not replay another person's pending Reply selection", async ({ app, page }) => {
+test("targeting blackbox UI: an in-place identity change keeps mention drafts separate", async ({ app, page }) => {
   await page.clock.install();
   await app.visitMain();
+  await app.composer("main").fill("OWNER_IDENTITY_DRAFT");
   const switchIdentity = async (name: Actor) => {
     const refreshed = page.waitForResponse(async (response) => new URL(response.url()).pathname === "/local/session"
       && response.status() === 200 && (await response.json()).identityId === app.identities[name].id);
@@ -314,17 +336,20 @@ test("targeting blackbox UI: an in-place identity change must not replay another
     await refreshed;
   };
   await switchIdentity("peer");
-  await app.choose("main", app.identities.beta.id);
+  await expect(app.composer("main")).toHaveValue("");
+  await app.composer("main").fill("@beta PEER_IDENTITY_DRAFT");
   await switchIdentity("owner");
-  await app.reply("main", app.defaultRoot);
-  await expect(app.recipient("main")).toHaveValue(app.identities.alpha.id);
+  await expect(app.composer("main")).toHaveValue("OWNER_IDENTITY_DRAFT");
+  await app.composer("main").fill("@alpha OWNER_IDENTITY_DRAFT");
   await switchIdentity("peer");
-  await expect(app.recipient("main"), "Peer's Beta selection must survive the owner's pending Alpha Reply").toHaveValue(app.identities.beta.id);
+  await expect(app.composer("main")).toHaveValue("@beta PEER_IDENTITY_DRAFT");
+  expect(app.runtime.starts).toHaveLength(0);
+  await app.blockedSend("main", [app.identities.beta.id]);
   expect(app.runtime.starts).toHaveLength(0);
 });
 
-// Owner regression: also cover an unapplied Reply waiting behind a pending send.
-test("targeting: an identity change cancels a deferred Reply without changing either person's draft or target", async ({ app, page }) => {
+// Owner regression: changing identity during a pending send preserves each person's draft and targets.
+test("targeting: an identity change during a pending send keeps drafts and mention targets separate", async ({ app, page }) => {
   await page.clock.install();
   await app.visitMain();
   await app.composer("main").fill("OWNER_BEFORE_SWITCH");
@@ -337,36 +362,39 @@ test("targeting: an identity change cancels a deferred Reply without changing ei
   };
   await switchIdentity("peer");
   await expect(app.composer("main")).toHaveValue("");
-  await app.choose("main", app.identities.beta.id);
-  await app.composer("main").fill("PEER_DRAFT_STAYS_SEPARATE");
+  await app.composer("main").fill("@beta PEER_DRAFT_STAYS_SEPARATE");
   await switchIdentity("owner");
   await expect(app.composer("main")).toHaveValue("OWNER_BEFORE_SWITCH");
-  await app.choose("main", app.identities.gamma.id);
   // Put the next session refresh before the 30-second send deadline.
   await page.clock.fastForward(55_000);
   let release!: () => void;
   let entered!: () => void;
+  let pendingInput: CreateMessageInput | undefined;
   const held = new Promise<void>((resolve) => { release = resolve; });
   const intercepted = new Promise<void>((resolve) => { entered = resolve; });
   const pattern = `**/local/conversations/${app.parent.id}/messages`;
-  await page.route(pattern, async (route) => { entered(); await held; await route.abort("aborted"); });
+  await page.route(pattern, async (route) => {
+    pendingInput = route.request().postDataJSON() as CreateMessageInput;
+    entered(); await held; await route.abort("aborted");
+  });
   try {
-    await app.composer("main").fill("OWNER_PENDING_DRAFT");
+    await app.composer("main").fill("@gamma OWNER_PENDING_DRAFT");
     await app.view("main").getByRole("button", { name: "Send message", exact: true }).click();
     await intercepted;
+    expect(pendingInput?.to).toEqual([app.identities.gamma.id]);
     const root = app.view("main").getByRole("log", { name: "Conversation messages", exact: true })
       .getByRole("article").filter({ hasText: app.defaultRoot.body });
     await root.getByRole("button", { name: new RegExp(`^Open (?:message )?actions for message ${app.defaultRoot.sequence}$`) }).click();
-    await page.getByRole("menuitem", { name: "Reply", exact: true }).click();
-    await expect(app.recipient("main")).toHaveValue(app.identities.gamma.id);
+    await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     await switchIdentity("peer", 6_000);
-    await expect(app.recipient("main")).toHaveValue(app.identities.beta.id);
-    await expect(app.composer("main")).toHaveValue("PEER_DRAFT_STAYS_SEPARATE");
+    await expect(app.composer("main")).toHaveValue("@beta PEER_DRAFT_STAYS_SEPARATE");
+    await app.blockedSend("main", [app.identities.beta.id]);
     release();
     await page.unroute(pattern);
     await switchIdentity("owner");
-    await expect(app.recipient("main"), "The old deferred Alpha Reply must not replay on the owner's return").toHaveValue(app.identities.gamma.id);
-    await expect(app.composer("main")).toHaveValue("OWNER_PENDING_DRAFT");
+    await expect(app.composer("main")).toHaveValue("@gamma OWNER_PENDING_DRAFT");
+    await app.blockedSend("main", [app.identities.gamma.id]);
     expect(app.runtime.starts).toHaveLength(0);
     expect(app.runtime.calls).toHaveLength(0);
   } finally { release(); }

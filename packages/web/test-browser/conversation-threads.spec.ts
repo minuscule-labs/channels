@@ -49,6 +49,8 @@ test("threads keep replies and drafts separate, update counts live, and reopen a
   await messageMenu.press("ArrowDown");
   const startThread = page.getByRole("menuitem", { name: "Start thread", exact: true });
   await expect(startThread).toBeFocused();
+  await expect(page.getByRole("menuitem")).toHaveCount(1);
+  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(messageMenu).toBeFocused();
@@ -91,10 +93,8 @@ test("threads keep replies and drafts separate, update counts live, and reopen a
   await replyComposer.press("Enter");
   await expect(replyComposer).toHaveValue("");
   await expect(panel.getByText("Thread reply one", { exact: true })).toBeVisible();
-  await panel.getByRole("button", { name: /Open actions for message/ }).first().click();
-  await expect(page.getByRole("menuitem", { name: "Reply", exact: true })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: /^(Start|Open) thread$/ })).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  await expect(panel.getByRole("button", { name: /Open actions for message/ })).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "Reply", exact: true })).toHaveCount(0);
   await expect(panel).toBeVisible();
   await expect(mainComposer).toHaveValue("Main draft remains here");
   await expect(page.getByRole("button", { name: "Open thread for message 1: 1 replies", exact: true })).toBeVisible();

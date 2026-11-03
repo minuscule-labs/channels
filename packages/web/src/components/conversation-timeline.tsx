@@ -20,14 +20,10 @@ function MessageRow({
   thread,
   onOpenThread,
   canStartThread,
-  onReply,
-  canReply,
 }: {
   thread?: ConversationThread;
   onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
   canStartThread?: boolean;
-  onReply?(message: ConversationMessage): void;
-  canReply?: boolean;
   message: ConversationMessage;
   participants: Participant[];
   continuation: boolean;
@@ -35,7 +31,6 @@ function MessageRow({
 }) {
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const openingThread = useRef(false);
-  const replying = useRef<(() => void) | undefined>(undefined);
   const author = participants.find(({ id }) => id === message.participantId);
   const targets = message.to.map((id) =>
     id === "@conversation" ? broadcastTargetLabel
@@ -87,7 +82,7 @@ function MessageRow({
             {thread.replyCount} {thread.replyCount === 1 ? "reply" : "replies"}
           </button> : null}
         </div>
-        {onOpenThread || onReply ? <DropdownMenu onOpenChange={(open) => { if (open) { openingThread.current = false; replying.current = undefined; } }}>
+        {onOpenThread ? <DropdownMenu onOpenChange={(open) => { if (open) openingThread.current = false; }}>
           <DropdownMenuTrigger asChild>
             <button
               ref={actionsTriggerRef}
@@ -100,26 +95,17 @@ function MessageRow({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" onCloseAutoFocus={(event) => {
-            if (openingThread.current || replying.current) event.preventDefault();
-            // Select/focus the composer only after the menu's focus scope closes.
-            const reply = replying.current;
-            replying.current = undefined;
-            reply?.();
+            if (openingThread.current) event.preventDefault();
             openingThread.current = false;
           }}>
-            {onOpenThread ? <DropdownMenuItem disabled={!thread && !canStartThread} onSelect={() => {
+            <DropdownMenuItem disabled={!thread && !canStartThread} onSelect={() => {
               if (!actionsTriggerRef.current) return;
               // New threads open asynchronously; keep focus recoverable if creation fails.
               openingThread.current = Boolean(thread);
               onOpenThread(message, actionsTriggerRef.current);
             }}>
               {thread ? "Open thread" : "Start thread"}
-            </DropdownMenuItem> : null}
-            {onReply ? <DropdownMenuItem disabled={!canReply || !author || author.status === "disabled"} onSelect={() => {
-              // Capture the selecting render's actor-qualified callback, not
-              // a later render's identity while the menu is closing.
-              replying.current = () => onReply(message);
-            }}>Reply</DropdownMenuItem> : null}
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu> : null}
       </div>
@@ -127,12 +113,10 @@ function MessageRow({
   );
 }
 
-function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOpenThread, canStartThread, onReply, canReply }: {
+function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOpenThread, canStartThread }: {
   thread?: ConversationThread;
   onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
   canStartThread?: boolean;
-  onReply?(message: ConversationMessage): void;
-  canReply?: boolean;
   row: TimelineRow;
   participants: Participant[];
   broadcastTargetLabel: BroadcastTargetLabel;
@@ -148,7 +132,7 @@ function TimelineRowView({ row, participants, broadcastTargetLabel, thread, onOp
       </div>
     );
   }
-  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} thread={thread} onOpenThread={onOpenThread} canStartThread={canStartThread} onReply={onReply} canReply={canReply} />;
+  return <MessageRow message={row.message} participants={participants} continuation={row.continuation} broadcastTargetLabel={broadcastTargetLabel} thread={thread} onOpenThread={onOpenThread} canStartThread={canStartThread} />;
 }
 
 function TurnFailureNoticeRow({ notice, canOpenDetails, onViewDetails }: {
@@ -189,15 +173,11 @@ export function ConversationTimeline({
   threads = [],
   onOpenThread,
   canStartThread = false,
-  onReply,
-  canReply = false,
   hideEmptyState = false,
 }: {
   threads?: ConversationThread[];
   onOpenThread?(message: ConversationMessage, trigger: HTMLButtonElement): void;
   canStartThread?: boolean;
-  onReply?(message: ConversationMessage): void;
-  canReply?: boolean;
   hideEmptyState?: boolean;
   messages: ConversationMessage[];
   participants: Participant[];
@@ -253,7 +233,7 @@ export function ConversationTimeline({
       {timelineItems.map((item) => item.kind === "row"
         ? <TimelineRowView key={item.row.id} row={item.row} participants={attributionParticipants} broadcastTargetLabel={broadcastTargetLabel}
           thread={item.row.kind === "message" ? threadsByRoot.get(item.row.message.id) : undefined}
-          onOpenThread={onOpenThread} canStartThread={canStartThread} onReply={onReply} canReply={canReply} />
+          onOpenThread={onOpenThread} canStartThread={canStartThread} />
         : <TurnFailureNoticeRow
           key={`${item.notice.participant.identityId}:${item.notice.triggerSequence}:${item.notice.failedAt}`}
           notice={item.notice}

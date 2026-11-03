@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.29
+
+Release overview: [Simpler composer and thread-only message menus](docs/releases/v0.0.29.md).
+
+- Remove the composer recipient dropdown without a replacement indicator or helper text. Keep attachment on the left and Send on the right in main conversations and threads.
+- Remove the separate Reply action. Message popups offer only Start/Open thread; thread messages no longer show an otherwise empty actions menu.
+- Keep intentional mention selection, per-human/conversation sticky follow-ups, thread defaults and Send-triggered activation. Preserve saved retry metadata, backend reply support, permissions and independent thread sessions/frozen context.
+- Keep Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`, protocol v24, dependencies and database schemas unchanged from v0.0.28. Browser-login/dev-instance isolation improvements and CI/CD changes remain separate work.
+- Retain the recovery/context-reconstruction and intermittent native Neon database-abort limitations disclosed in v0.0.28; this UI patch does not claim to fix them.
+
 ## 0.0.28
 
 Release overview: [Agent recovery without installation-wide transcript scans](docs/releases/v0.0.28.md).
