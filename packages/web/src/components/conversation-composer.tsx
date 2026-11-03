@@ -20,8 +20,6 @@ import { queryKeys } from "../lib/query-keys";
 import { messageRecipients, readRecipient, readRecipientOverride, recipientStorageKey, writeRecipient, writeRecipientOverride } from "../lib/recipient-selection";
 import { ErrorNotice } from "./ui/error-notice";
 
-export interface ComposerReplyTarget { actorIdentityId: string; identityId: string; messageId?: string }
-
 interface MentionSuggestion {
   id: string;
   handle: string;
@@ -43,8 +41,6 @@ export function ConversationComposer({
   readOnlyReason,
   thread = false,
   defaultRecipientId,
-  replyTarget,
-  onReplyConsumed,
 }: {
   participants: Participant[];
   workspaceId: string;
@@ -55,8 +51,6 @@ export function ConversationComposer({
   readOnlyReason?: string;
   thread?: boolean;
   defaultRecipientId?: string;
-  replyTarget?: ComposerReplyTarget;
-  onReplyConsumed(target: ComposerReplyTarget): void;
 }) {
   const queryClient = useQueryClient();
   const mentionListId = `${conversationId}-mention-suggestions`;
@@ -88,15 +82,11 @@ export function ConversationComposer({
   const [manualTargets, setManualTargets] = useState<string[] | undefined>(() => initialFailure?.input.to
     ?? readRecipientOverride(`${storageKey}.recipients`, body));
   const [replyTo, setReplyTo] = useState<string | undefined>(() => initialFailure?.input.replyTo);
-  const handledReply = useRef<ComposerReplyTarget | undefined>(undefined);
   const selectedRecipient = storedRecipient ?? defaultRecipientId ?? "";
   const recipients = messageRecipients(body, participants, selectedRecipient, manualTargets);
   const targets = recipients.targets;
   const recipientInvalid = recipients.invalid.length > 0 || targets.some((id) => id !== "@conversation"
     && !participants.some((participant) => participant.id === id && participant.status !== "disabled"));
-  const targetLabel = (id: string) => id === "@conversation"
-    ? hasChannelMentionCollision(participants) ? "@conversation" : "@channel"
-    : `@${participants.find((participant) => participant.id === id)?.handle ?? id}`;
   const persistRecipient = (id: string) => {
     if (!activeAuthorId) return;
     writeRecipient(recipientKey, id);
@@ -212,29 +202,6 @@ export function ConversationComposer({
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConfiguration(workspaceId) });
     },
   });
-
-  useEffect(() => {
-    if (!replyTarget || handledReply.current === replyTarget) return;
-    if (replyTarget.actorIdentityId !== activeAuthorId) {
-      handledReply.current = replyTarget;
-      onReplyConsumed(replyTarget);
-      return;
-    }
-    if (mutation.isPending) return;
-    handledReply.current = replyTarget;
-    if (!participants.some(({ id, status }) => id === replyTarget.identityId && status !== "disabled")) {
-      onReplyConsumed(replyTarget);
-      return;
-    }
-    persistRecipient(replyTarget.identityId);
-    setManualTargets([replyTarget.identityId]);
-    writeRecipientOverride(`${storageKey}.recipients`, body, [replyTarget.identityId]);
-    setReplyTo(replyTarget.messageId);
-    setFailedSubmission(undefined);
-    mutation.reset();
-    textareaRef.current?.focus();
-    onReplyConsumed(replyTarget);
-  }, [replyTarget, mutation.isPending, activeAuthorId, participants, onReplyConsumed]);
 
   const canAttach = Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
   const canSubmit = (Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && !recipientInvalid && canAttach;
@@ -406,30 +373,6 @@ export function ConversationComposer({
           <div className="flex flex-wrap items-center justify-between gap-3 px-2.5 py-2">
             <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images"
               onChange={(event) => { imageDraft.add(Array.from(event.target.files ?? [])); event.target.value = ""; }} disabled={!canAttach} />
-            <select
-              aria-label="Message recipient"
-              className="button-secondary min-w-0 max-w-64"
-              disabled={!canAttach}
-              value={recipients.invalid.length ? "__invalid__" : targets.length > 1 ? "__multiple__" : targets[0] ?? ""}
-              onChange={(event) => {
-                const id = event.target.value;
-                if (id !== "@conversation") persistRecipient(id);
-                setManualTargets(id ? [id] : []);
-                writeRecipientOverride(`${storageKey}.recipients`, body, id ? [id] : []);
-                setReplyTo(undefined);
-                setFailedSubmission(undefined);
-                mutation.reset();
-                textareaRef.current?.focus();
-              }}
-            >
-              <option value="">No recipient</option>
-              <option value="@conversation">{targetLabel("@conversation")}</option>
-              {participants.filter(({ status }) => status !== "disabled").map(({ id }) => <option key={id} value={id}>{targetLabel(id)}</option>)}
-              {targets.length > 1 ? <option value="__multiple__" disabled>{targets.map(targetLabel).join(", ")}</option> : null}
-              {recipients.invalid.length ? <option value="__invalid__" disabled>{recipients.invalid.map((handle) => `@${handle}`).join(", ")}</option> : null}
-              {targets.length === 1 && targets[0] !== "@conversation" && !participants.some(({ id, status }) => id === targets[0] && status !== "disabled")
-                ? <option value={targets[0]} disabled>{targetLabel(targets[0]!)}</option> : null}
-            </select>
             <button type="button" className="button-secondary" aria-label="Attach images" title="Attach images" disabled={!canAttach}
               onClick={() => fileInputRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /></button>
             <div className="flex items-center gap-2">
