@@ -97,7 +97,7 @@ test("targeting: main followups stay selected; human mentions switch; broadcasts
   const { message: generated } = await json<{ message: ConversationMessage }>(request.post(`${api}/conversations/${f.conversation.id}/messages`, {
     data: { participantId: f.agent.id, body: `@${f.peerHandle} Agent generated reference` },
   }));
-  expect(generated.to).toEqual([]);
+  expect(generated.to).toEqual([f.peer.id]);
   expect((await f.send("Incoming messages did not switch me")).to).toEqual([f.agent.id]);
   expect((await f.send("@channel Broadcast only")).to).toEqual(["@conversation"]);
   const multiple = await f.send(`@${f.agent.handle} @${f.peerHandle} Both recipients`);

@@ -190,10 +190,10 @@ export function resolveMessageTargets(conversation: Pick<Conversation, "particip
     }
     return participant.id;
   };
-  // Structured recipients are the sender's explicit choice, including an empty
-  // list. Generated agent text is content, never an implicit routing command.
-  const human = conversation.participants.find(({ id }) => id === input.participantId)?.type === "human";
-  const mentioned = input.to === undefined && human ? mentionHandles(input.body).map(resolveTarget) : [];
+  // Structured recipients are authoritative, including an empty list.
+  // Otherwise intentional mentions route both human messages and agent handoffs;
+  // neither changes a human's browser-local sticky recipient selection.
+  const mentioned = input.to === undefined ? mentionHandles(input.body).map(resolveTarget) : [];
   const structured = (input.to ?? []).map((target) => {
     if (typeof target !== "string" || !target.trim()) {
       throw new ConversationValidationError("to must contain non-empty participant ids");

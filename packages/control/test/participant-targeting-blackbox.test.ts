@@ -261,15 +261,26 @@ test("targeting blackbox: code/quoted mention-looking text cannot widen an expli
   assert.deepEqual(f.runtime.starts.map(({ agent }) => agent), ["alpha"]);
 });
 
-test("targeting blackbox: agent-generated mentions neither redirect replies nor trigger other agents", { timeout: 15_000 }, async (t) => {
-  const f = await fixture(t); await f.answer("main", await f.send("main", "CALIBRATE_BETA", [f.identities.beta.id]), "beta");
-  f.runtime.output.alpha = "Generated prose mentioning @beta and @gamma is not a human recipient choice";
-  const generated = await f.answer("main", await f.send("main", "ASK_ALPHA", [f.identities.alpha.id]), "alpha");
-  assert.equal(generated.to.includes(f.identities.beta.id) || generated.to.includes(f.identities.gamma.id), false);
-  await f.answer("main", await f.send("main", "DRAIN_BETA_AFTER_GENERATED_PROSE", [f.identities.beta.id]), "beta");
-  assert.equal(f.runtime.calls.filter(({ agent }) => agent === "beta").length, 2, "Only the two human-addressed Beta questions may execute");
-  assert.equal(f.runtime.starts.filter(({ agent }) => agent === "gamma").length, 0);
-});
+for (const scope of ["main", "thread"] as const) {
+  test(`targeting blackbox: ${scope} agent handoffs reach running peers without starting idle or resuming stopped agents`, { timeout: 15_000 }, async (t) => {
+    const f = await fixture(t);
+    await f.answer(scope, await f.send(scope, "CALIBRATE_BETA", [f.identities.beta.id]), "beta");
+    f.runtime.output.alpha = "@beta Please review this work; @gamma please follow up when available";
+    const generated = await f.answer(scope, await f.send(scope, "ASK_ALPHA", [f.identities.alpha.id]), "alpha");
+    assert.deepEqual(generated.to, [f.identities.beta.id, f.identities.gamma.id]);
+    await f.answer(scope, generated, "beta");
+    assert.equal(f.runtime.calls.filter(({ agent }) => agent === "beta").length, 2, "Beta answers its human question and the agent handoff");
+    assert.deepEqual(f.runtime.starts.map(({ agent }) => agent).sort(), ["alpha", "beta"]);
+    if (scope === "thread") assert.equal((await f.client.listMessages(f.parent.id)).some(({ body }) => body.includes("TARGETING_REPLY_")), false);
+
+    await f.action(scope, "beta", "stop");
+    const afterStop = await f.answer(scope, await f.send(scope, "HANDOFF_AFTER_STOP", [f.identities.alpha.id]), "alpha");
+    assert.deepEqual(afterStop.to, [f.identities.beta.id, f.identities.gamma.id]);
+    assert.equal(f.runtime.calls.filter(({ agent }) => agent === "beta").length, 2);
+    assert.equal(f.runtime.resumes.length, 0);
+    assert.deepEqual(f.runtime.starts.map(({ agent }) => agent).sort(), ["alpha", "beta"]);
+  });
+}
 
 test("targeting blackbox: a member can post without gaining startup permission, and explicit Stop remains authoritative", { timeout: 15_000 }, async (t) => {
   const f = await fixture(t);

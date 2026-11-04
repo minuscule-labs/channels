@@ -32,10 +32,24 @@ test("structured recipients, including no recipient, override body references", 
   assert.deepEqual(resolveMessageTargets({ participants }, { ...input, to: [] }), []);
 });
 
-test("generated agent content never becomes routing; explicit tool recipients remain explicit", () => {
-  const input = { participantId: "alpha", body: "@beta @missing @channel generated" };
-  assert.deepEqual(resolveMessageTargets({ participants }, input), []);
-  assert.deepEqual(resolveMessageTargets({ participants }, { ...input, to: ["beta"] }), ["beta"]);
+test("agent mentions route handoffs while explicit recipients remain authoritative", () => {
+  const input = { participantId: "alpha", body: "@beta Please review this work" };
+  assert.deepEqual(resolveMessageTargets({ participants }, input), ["beta"]);
+  assert.deepEqual(resolveMessageTargets({ participants }, { ...input, to: ["owner"] }), ["owner"]);
+  assert.deepEqual(resolveMessageTargets({ participants }, { ...input, to: [] }), []);
+  assert.deepEqual(resolveMessageTargets({ participants }, {
+    participantId: "alpha", body: "`@beta`\n> @beta\n\n\\@beta is escaped",
+  }), []);
+});
+
+test("agent handoffs retain unknown and disabled recipient validation", () => {
+  assert.throws(() => resolveMessageTargets({ participants }, {
+    participantId: "alpha", body: "@missing Please review",
+  }), /Target participant is not in conversation/);
+  assert.throws(() => resolveMessageTargets({
+    participants: participants.map((participant) => participant.id === "beta"
+      ? { ...participant, status: "disabled" as const } : participant),
+  }, { participantId: "alpha", body: "@beta Please review" }), /Target participant is disabled/);
 });
 
 test("a root without thread metadata never invents an initial recipient", () => {

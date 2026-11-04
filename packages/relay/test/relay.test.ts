@@ -2204,48 +2204,56 @@ test("Relay shutdown is bounded when a Runtime request stalls", async () => {
   } finally { await relay.stop(); await server.close(); }
 });
 
-test("generated agent mentions cannot redirect work to another running participant", async () => {
-  const server = await createConversationHttpServer();
-  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
-  const runtime = new FakeRuntime((sessionId) =>
-    sessionId === "session-a" ? "@agent-b Please review Agent A's work" : "Review complete",
-  );
-  const conversation = await client.createConversation({
-    participants: [
-      { id: "user", type: "human" },
-      { id: "agent-a", type: "agent" },
-      { id: "agent-b", type: "agent" },
-    ],
-  });
-  const relay = new ConversationRuntimeRelay({
-    client,
-    conversationId: conversation.id,
-    bindings: [
-      { participantId: "agent-a", sessionId: "session-a", runtime },
-      { participantId: "agent-b", sessionId: "session-b", runtime },
-    ],
-  });
-
-  try {
-    await relay.start();
-    await client.postMessage(conversation.id, {
-      participantId: "user",
-      body: "@agent-a Implement the change, then hand off review",
+for (const wakePolicy of ["mentions", "direct_mentions", "all_messages", "muted"] as const) {
+  test(`agent mention handoffs respect the recipient's ${wakePolicy} wake policy`, async () => {
+    const server = await createConversationHttpServer();
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    const runtime = new FakeRuntime((sessionId) =>
+      sessionId === "session-a" ? "@agent-b Please review Agent A's work" : "Review complete",
+    );
+    const conversation = await client.createConversation({
+      participants: [
+        { id: "user", type: "human" },
+        { id: "agent-a", type: "agent" },
+        { id: "agent-b", type: "agent" },
+      ],
     });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
-    const messages = await client.listMessages(conversation.id);
-    relay.observeConversationHead("agent-b", messages[1]!.sequence);
-    await relay.waitForIdle();
-    assert.deepEqual(messages.map((message) => message.participantId), ["user", "agent-a"]);
-    assert.deepEqual(messages[1]!.to, []);
-    assert.equal(messages[1]!.body, "@agent-b Please review Agent A's work");
-    assert.equal(runtime.prompts.get("session-a")?.length, 1);
-    assert.equal(runtime.prompts.get("session-b")?.length ?? 0, 0);
-  } finally {
-    await relay.stop();
-    await server.close();
-  }
-});
+    const relay = new ConversationRuntimeRelay({
+      client,
+      conversationId: conversation.id,
+      bindings: [
+        { participantId: "agent-a", sessionId: "session-a", runtime },
+        { participantId: "agent-b", sessionId: "session-b", runtime, wakePolicy },
+      ],
+    });
+
+    try {
+      await relay.start();
+      await client.postMessage(conversation.id, {
+        participantId: "user",
+        body: "@agent-a Implement the change, then hand off review",
+      });
+      const expectedBetaTurns = wakePolicy === "muted" ? 0 : wakePolicy === "all_messages" ? 2 : 1;
+      await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2 + expectedBetaTurns);
+      const messages = await client.listMessages(conversation.id);
+      for (const id of ["agent-a", "agent-b"]) relay.observeConversationHead(id, messages.at(-1)!.sequence);
+      await relay.waitForIdle();
+      const handoff = messages.find(({ participantId }) => participantId === "agent-a")!;
+      assert.deepEqual(handoff.to, ["agent-b"]);
+      assert.equal(handoff.body, "@agent-b Please review Agent A's work");
+      assert.equal(runtime.prompts.get("session-a")?.length, 1, "Unaddressed review replies never wake the sender");
+      assert.equal(runtime.prompts.get("session-b")?.length ?? 0, expectedBetaTurns);
+      if (expectedBetaTurns) {
+        const review = messages.find(({ replyTo }) => replyTo === handoff.id)!;
+        assert.equal(review.participantId, "agent-b");
+        assert.match(runtime.prompts.get("session-b")!.at(-1)!, /Please review Agent A's work/);
+      }
+    } finally {
+      await relay.stop();
+      await server.close();
+    }
+  });
+}
 
 test("explicit steering reaches a working agent without creating another wake-up", async () => {
   const server = await createConversationHttpServer();
@@ -3133,6 +3141,8 @@ test("relay wakes only addressed agents and posts responses without reply loops"
       /Role: Reviews correctness and regressions\./,
     );
     assert.match(runtime.prompts.get("session-a")![0]!, /Generated replies do not change that selection/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /To hand work to another participant, mention its exact @handle/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /Agent handoffs never start unbound agents or resume stopped agents/);
     assert.match(runtime.prompts.get("session-a")![0]!, /TRIGGER/);
     assert.equal(relay.cursor("agent-a"), 2);
 
@@ -3152,10 +3162,10 @@ test("relay wakes only addressed agents and posts responses without reply loops"
   }
 });
 
-test("all-messages policy admits human work but never reactivates agents on generated replies", async () => {
+test("all-messages policy admits human work but ignores unaddressed generated replies", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
-  const runtime = new FakeRuntime(() => "@agent-a @agent-b generated references");
+  const runtime = new FakeRuntime(() => "An unaddressed answer with `@agent-a` and quoted \"@agent-b\" examples");
   const conversation = await client.createConversation({ participants: [
     { id: "user", type: "human" }, { id: "agent-a", type: "agent" }, { id: "agent-b", type: "agent" },
   ] });
