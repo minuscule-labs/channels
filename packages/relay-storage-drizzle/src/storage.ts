@@ -1,6 +1,8 @@
 import { createClient, type Client, type ResultSet } from "@libsql/client";
 import { randomUUID } from "node:crypto";
 import type {
+  ConversationPreset,
+  ConversationCreationSetup,
   ConversationAgentBindingRecord,
   ConversationAgentBindingState,
   ConversationWorkingFolder,
@@ -245,6 +247,48 @@ function conversationWorkingFolder(
 }
 
 export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
+  async listConversationPresets(workspaceId: string): Promise<ConversationPreset[]> {
+    const rows = await this.database.select().from(schema.conversationPresets)
+      .where(eq(schema.conversationPresets.workspaceId, workspaceId));
+    return rows.map((row) => JSON.parse(row.definition) as ConversationPreset);
+  }
+
+  async putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean> {
+    const table = schema.conversationPresets;
+    if (expectedRevision === null) {
+      const rows = await this.database.insert(table).values({
+        workspaceId: preset.workspaceId, id: preset.id, revision: preset.revision, definition: JSON.stringify(preset),
+      }).onConflictDoNothing().returning({ id: table.id });
+      return rows.length === 1;
+    }
+    const rows = await this.database.update(table).set({ revision: preset.revision, definition: JSON.stringify(preset) })
+      .where(and(eq(table.workspaceId, preset.workspaceId), eq(table.id, preset.id), eq(table.revision, expectedRevision)))
+      .returning({ id: table.id });
+    return rows.length === 1;
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean> {
+    const table = schema.conversationPresets;
+    const rows = await this.database.delete(table)
+      .where(and(eq(table.workspaceId, workspaceId), eq(table.id, presetId), eq(table.revision, expectedRevision)))
+      .returning({ id: table.id });
+    return rows.length === 1;
+  }
+
+  async getConversationCreationSetup(workspaceId: string, conversationId: string): Promise<ConversationCreationSetup | undefined> {
+    const table = schema.conversationCreationSetups;
+    const rows = await this.database.select().from(table)
+      .where(and(eq(table.workspaceId, workspaceId), eq(table.conversationId, conversationId)));
+    return rows[0] ? JSON.parse(rows[0].definition) as ConversationCreationSetup : undefined;
+  }
+
+  async putConversationCreationSetup(setup: ConversationCreationSetup): Promise<ConversationCreationSetup> {
+    await this.database.insert(schema.conversationCreationSetups).values({
+      workspaceId: setup.workspaceId, conversationId: setup.conversationId, definition: JSON.stringify(setup),
+    }).onConflictDoNothing();
+    return (await this.getConversationCreationSetup(setup.workspaceId, setup.conversationId))!;
+  }
+
   private constructor(
     private readonly client: Client,
     private readonly database: LibSQLDatabase<typeof schema>,

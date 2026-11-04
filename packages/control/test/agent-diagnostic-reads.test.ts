@@ -235,6 +235,7 @@ test("events cannot wake transitional/offline sessions or cross ambiguous/legacy
   for (const source of sources) {
     const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
       getSessionInspectionRecords: async () => source as typeof snapshot,
+      getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
       getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
     }, runtimes: { pi: { inspectSessionEvents: async () => { calls++; return f.events(); } } } });
     assert.equal((await inspector.events(f.conversation.id, f.agent.id, f.owner.id)).availability, "unavailable");
@@ -327,6 +328,7 @@ test("event inspection caps total physical metadata work and retains canceled sl
   const targets = Array.from({ length: 17 }, (_, i) => ({ ...f.conversation.participants.find(participant => participant.id === f.agent.id)!, id: `target-${i}` }));
   const inspector = new LocalAgentSessionInspections({ client: { ...f.directoryClient, getConversation: async () => ({ ...f.conversation, participants: [...f.conversation.participants, ...targets] }) }, store: {
     getSessionInspectionRecords: async () => { if (++calls === 16) entered.release(); await pending.promise; return { bindings: [] }; },
+    getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
     getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
   }, runtimes: {} });
   const controllers = targets.slice(0, 16).map(() => new AbortController());
@@ -474,6 +476,7 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
   for (const source of cases) {
     const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
       getSessionInspectionRecords: async () => source, getWorkspaceAgentConfig: f.store.getWorkspaceAgentConfig.bind(f.store),
+      getConversationCreationSetup: f.store.getConversationCreationSetup.bind(f.store),
     }, runtimes: { pi: { inspectSessionProfile: async () => { calls++; return f.profile(); } } } });
     const value = await inspector.read(f.conversation.id, f.agent.id, f.owner.id);
     assert.equal(value.running.status, "not_verified");
@@ -484,6 +487,7 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
   await f.member({ accessRole: "member" });
   const denied = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
     getSessionInspectionRecords: async () => { calls++; return snapshot; },
+    getConversationCreationSetup: async () => { calls++; return undefined; },
     getWorkspaceAgentConfig: async () => { calls++; return undefined; },
   }, runtimes: {} });
   await assert.rejects(denied.read(f.conversation.id, f.agent.id, f.owner.id));

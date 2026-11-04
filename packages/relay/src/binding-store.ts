@@ -1,6 +1,7 @@
 import { createResourceId, type ConversationClient } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
 import { getManagedRuntimeSession, resumeManagedRuntimeSession } from "./managed-sessions.ts";
+import type { ConversationPreset, ConversationCreationSetup } from "./conversation-presets.ts";
 import type {
   AgentConversationBinding,
   AgentRuntimePort,
@@ -199,6 +200,12 @@ export interface ConversationWorkingFolder {
 }
 
 export interface RelayBindingStore extends RelayCursorStore {
+  listConversationPresets(workspaceId: string): Promise<ConversationPreset[]>;
+  putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean>;
+  deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean>;
+  getConversationCreationSetup(workspaceId: string, conversationId: string): Promise<ConversationCreationSetup | undefined>;
+  /** Insert once; retries return the original immutable snapshot. */
+  putConversationCreationSetup(setup: ConversationCreationSetup): Promise<ConversationCreationSetup>;
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
   getConversationWorkingFolders(workspaceId: string, conversationId: string): Promise<ConversationWorkingFolder[]>;
@@ -370,6 +377,38 @@ export function validateConversationWorkingFolders(
 }
 
 export class InMemoryRelayBindingStore implements RelayBindingStore {
+  private readonly conversationPresets = new Map<string, ConversationPreset>();
+  private readonly conversationSetups = new Map<string, ConversationCreationSetup>();
+
+  async listConversationPresets(workspaceId: string): Promise<ConversationPreset[]> {
+    return [...this.conversationPresets.values()].filter((preset) => preset.workspaceId === workspaceId)
+      .map((preset) => structuredClone(preset));
+  }
+
+  async putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean> {
+    const key = JSON.stringify([preset.workspaceId, preset.id]);
+    if ((this.conversationPresets.get(key)?.revision ?? null) !== expectedRevision) return false;
+    this.conversationPresets.set(key, structuredClone(preset));
+    return true;
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean> {
+    const key = JSON.stringify([workspaceId, presetId]);
+    if (this.conversationPresets.get(key)?.revision !== expectedRevision) return false;
+    return this.conversationPresets.delete(key);
+  }
+
+  async getConversationCreationSetup(workspaceId: string, conversationId: string): Promise<ConversationCreationSetup | undefined> {
+    const setup = this.conversationSetups.get(JSON.stringify([workspaceId, conversationId]));
+    return setup ? structuredClone(setup) : undefined;
+  }
+
+  async putConversationCreationSetup(setup: ConversationCreationSetup): Promise<ConversationCreationSetup> {
+    const key = JSON.stringify([setup.workspaceId, setup.conversationId]);
+    if (!this.conversationSetups.has(key)) this.conversationSetups.set(key, structuredClone(setup));
+    return structuredClone(this.conversationSetups.get(key)!);
+  }
+
   private readonly workspaceConfigs = new Map<string, LocalWorkspaceConfig>();
   private readonly conversationWorkingFolders = new Map<string, ConversationWorkingFolder[]>();
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();

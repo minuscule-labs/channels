@@ -1,4 +1,36 @@
 import type { DiagnosticDetail, DiagnosticHistory, DeliveryHistory, DeliveryDetail } from "@minu/channels-relay";
+import type { ConversationPreset, ConversationSetup, ConversationCreationSetup } from "@minu/channels-relay";
+export type { ConversationPreset, ConversationSetup, ConversationCreationSetup } from "@minu/channels-relay";
+
+export interface LocalConversationPresets {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  presets: ConversationPreset[];
+}
+
+export interface SaveConversationPresetInput extends ConversationSetup {
+  name: string;
+  expectedRevision: number | null;
+}
+
+export interface CreateLocalConversationInput extends ConversationSetup {
+  /** Retain across retries so a lost response cannot create a duplicate. */
+  id: string;
+  name: string;
+}
+
+export interface LocalConversationCreationSetup {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  setup: ConversationCreationSetup | null;
+}
+
+export const CONVERSATION_PRESET_STARTERS: Array<ConversationSetup & { id: string; name: string }> = [
+  { id: "exploration", name: "Exploration", participants: [{ role: "Explorer" }],
+    guidance: "Explore the problem, compare options, and surface assumptions. Check in with findings and open questions before committing to an approach." },
+  { id: "feature-delivery", name: "Feature delivery", participants: [{ role: "Builder" }, { role: "Reviewer" }],
+    guidance: "Agree on the intended behavior and acceptance criteria. Check in at implementation and verification milestones. The reviewer should assess correctness, risks, and test evidence." },
+  { id: "incident-debug", name: "Incident / debug", participants: [{ role: "Investigator" }],
+    guidance: "Reproduce the issue, gather evidence, and test hypotheses. Check in with the cause, proposed fix, and verification results. Ask before disruptive mitigation." },
+];
 
 export const LOCAL_CONTROL_PROTOCOL_VERSION = 24 as const;
 

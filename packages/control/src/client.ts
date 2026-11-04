@@ -1,4 +1,5 @@
 import type {
+  ConversationMetadata,
   EffectiveConversationLifecycle,
   ConversationLifecycleState,
   ConversationMessage,
@@ -27,6 +28,11 @@ import type {
   UpdateLocalRuntimeModelPolicyInput,
   UpdateLocalWorkspaceAgentConfigurationInput,
   UpdateLocalWorkspaceConfigurationInput,
+  LocalConversationPresets,
+  LocalConversationCreationSetup,
+  ConversationPreset,
+  SaveConversationPresetInput,
+  CreateLocalConversationInput,
 } from "./contracts.ts";
 
 export class LocalControlClientError extends Error {
@@ -91,6 +97,30 @@ export class LocalControlClient {
 
   async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
     return this.get<LocalConversationAgentsResponse>(`/local/conversations/${encodeURIComponent(conversationId)}/agents`);
+  }
+
+  async listConversationPresets(workspaceId: string): Promise<LocalConversationPresets> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversation-presets`);
+  }
+
+  async saveConversationPreset(workspaceId: string, presetId: string, input: SaveConversationPresetInput): Promise<ConversationPreset> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversation-presets/${encodeURIComponent(presetId)}`,
+      { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<void> {
+    await this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversation-presets/${encodeURIComponent(presetId)}`,
+      { method: "DELETE", body: JSON.stringify({ expectedRevision }) });
+  }
+
+  async createConversationWithSetup(workspaceId: string, input: CreateLocalConversationInput): Promise<ConversationMetadata> {
+    const result = await this.request<{ conversation: ConversationMetadata }>(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+      { method: "POST", body: JSON.stringify(input) });
+    return result.conversation;
+  }
+
+  async getConversationCreationSetup(conversationId: string): Promise<LocalConversationCreationSetup> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/creation-setup`);
   }
 
   async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
