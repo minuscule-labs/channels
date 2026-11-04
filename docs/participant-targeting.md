@@ -7,7 +7,7 @@ Main conversations and threads use the same flow: mention a participant to choos
 - Each human has a separate selection per workspace and conversation/thread, stored in this browser. It survives reloads, not device changes. Parent/thread selections and other people's selections are independent.
 - Choose or switch recipients through intentional mentions, without a composer recipient dropdown or replacement indicator. Message menus offer only Start/Open thread; there is no separate Reply action.
 - An intentional single mention on Send changes the sticky recipient. Ordinary followups keep it. Exact retry targets survive reloads.
-- Code, quoted text, escaped mentions and generated agent replies are not implicit recipient commands. Incoming messages never change a person's selection.
+- Code, quoted text and escaped mentions are not recipient commands. Incoming messages, including agent handoffs, never change a person's selection.
 - Broadcast and multiple-recipient overrides apply only to that message and preserve the previous sticky selection. Unknown/disabled recipients do not silently fall back to somebody else. An unselected conversation does not guess a recipient; previously stored empty selections remain valid.
 
 Threads initially default to the active agent author of the root, or the sole active agent recipient of a human-authored root. Broadcast/multiple/unclear roots infer nobody. Explicit choices override that default.
@@ -21,13 +21,13 @@ The authenticated local message endpoint handles main and thread sends. It saves
 - Broadcast never starts idle agents or resumes stopped ones. Eligible already-running agents retain their configured broadcast/wake policy. A message combining broadcast and direct targets does not initiate automatic startup.
 - Workspace Start permissions and conversation/parent archive restrictions remain authoritative. Ordinary members may post without gaining Start privileges. Retired work cannot execute.
 - Startup includes the triggering question and earlier pending directly addressed work above the retirement floor. A partial multi-agent startup failure leaves the saved message intact; same-key retry cannot duplicate messages or existing sessions.
-- Generated replies cannot wake other agents, including under `all_messages`. Intentional proactive collaboration-tool sends can still use explicit recipients on existing sessions.
+- Intentional mentions in agent replies hand work to eligible existing agent sessions in the same conversation/thread, respecting the recipient's wake policy. They never start unbound agents or resume stopped ones. Unaddressed agent replies remain shared history, even under `all_messages`, and never change any human's sticky selection. Code, quotations and escaped mentions do not route handoffs. Proactive collaboration-tool sends can also use explicit recipients on existing sessions.
 
 Thread agents retain separate sessions, frozen inherited public context and thread-only responses. Visibility, parent administration, working folders and permissions are unchanged; this is not filesystem isolation.
 
 ## Message API contract
 
-`CreateMessageInput.to`, when supplied, is authoritative, including `[]`. Callers wanting human body-mention resolution must omit `to`; callers selecting recipients should send their intended recipient IDs explicitly. This replaces the former union of structured recipients and arbitrary body matches. Generated agent text is never parsed into recipients; explicit proactive tool recipients remain explicit.
+`CreateMessageInput.to`, when supplied, is authoritative, including `[]`. Callers wanting intentional body-mention resolution must omit `to`; callers selecting recipients should send their intended recipient IDs explicitly. This replaces the former union of structured recipients and arbitrary body matches. Agent responses resolve intentional mentions into handoff recipients without changing human selection. Explicit proactive tool recipients remain authoritative.
 
 The browser always supplies its effective targets. Omitted-target local API compatibility uses the reply author, or a stable seed from that sender's first saved message; when no such message exists it uses the thread-root default. An initial no-recipient/broadcast/multiple seed does not become an arbitrary recipient later. This compatibility default is not an evolving server-side sticky selection: later sends cannot reinterpret an older same-key retry. API callers implementing sticky targeting must submit their effective `to` on each Send, as the browser does. These defaults never borrow another person's history or synchronize browser preferences across devices. Direct public message API writes do not launch workers.
 

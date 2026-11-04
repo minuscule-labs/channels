@@ -215,15 +215,27 @@ for (const scope of ["main", "thread"] as const) {
     expect(app.runtime.starts.map(({ agent }) => agent).sort()).toEqual(["alpha", "beta"]);
   });
 
-  test(`targeting blackbox UI: ${scope} ignores code, quotes, agent output and other people's messages for sticky targeting`, async ({ app }) => {
-    await app.begin(scope); await app.choose(scope, app.identities.alpha.id);
-    app.runtime.output.alpha = "Generated text mentions @beta and @gamma without choosing them";
-    await app.answer(scope, await app.send(scope, "ASK_ALPHA_BEFORE_QUOTED_EXAMPLES", [app.identities.alpha.id]), "alpha");
+  test(`targeting blackbox UI: ${scope} agent handoffs preserve human sticky targeting through reload`, async ({ app, page }) => {
+    await app.begin(scope);
+    await app.choose(scope, app.identities.beta.id);
+    await app.choose(scope, app.identities.alpha.id);
+    app.runtime.output.alpha = "@beta Please review this work; @gamma please follow up when available";
+    const question = await app.send(scope, "ASK_ALPHA_FOR_HANDOFF", [app.identities.alpha.id]);
+    await app.answer(scope, question, "alpha");
+    const handoff = (await app.client.listMessages(app.scopeId(scope))).find((message) => message.replyTo === question.id)!;
+    expect(handoff.to).toEqual([app.identities.beta.id, app.identities.gamma.id]);
+    await app.answer(scope, handoff, "beta");
+    delete app.runtime.output.alpha;
     const other = await app.client.postMessage(app.scopeId(scope), { participantId: app.identities.peer.id, body: "@beta OTHER_PERSON_TARGETS_BETA", to: [app.identities.beta.id] });
     await expect(app.view(scope).getByText(other.body, { exact: true })).toBeVisible();
+    await app.answer(scope, other, "beta");
     const body = "QUOTED_EXAMPLES\n```ts\n@beta @unknown_agent\n```\n`@gamma`\n> @beta\n\nFOLLOWUP_FOR_ALPHA";
     await app.answer(scope, await app.send(scope, body, [app.identities.alpha.id]), "alpha");
-    expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["alpha"]);
+    await page.reload();
+    await app.answer(scope, await app.send(scope, "STILL_ALPHA_AFTER_HANDOFF_AND_RELOAD", [app.identities.alpha.id]), "alpha");
+    expect(app.runtime.starts.map(({ agent }) => agent)).toEqual(["beta", "alpha"]);
+    expect(app.runtime.calls.filter(({ agent }) => agent === "beta")).toHaveLength(3);
+    expect(app.runtime.calls.filter(({ agent }) => agent === "alpha")).toHaveLength(4);
   });
 
   test(`targeting blackbox UI: ${scope} broadcasts and multiple recipients are one-message overrides`, async ({ app }) => {

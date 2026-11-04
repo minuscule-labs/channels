@@ -12,7 +12,7 @@ async function workspace(client: ConversationClient) {
   return { owner, agent, workspace, member };
 }
 
-test("the real API canonicalizes human broadcasts without routing generated response text", async () => {
+test("the real API canonicalizes broadcasts from humans and agent responses", async () => {
   const server = await createConversationHttpServer();
   try {
     const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -33,13 +33,13 @@ test("the real API canonicalizes human broadcasts without routing generated resp
     const response = await client.postResponse(conversation.id, {
       participantId: agent.id, triggerMessageId: trigger.id, triggerSequence: trigger.sequence, body: "@channel result",
     });
-    assert.deepEqual(response.message.to, []);
+    assert.deepEqual(response.message.to, ["@conversation"]);
   } finally {
     await server.close();
   }
 });
 
-test("complete trailing-hyphen human handles stay direct; generated responses remain content", async () => {
+test("complete trailing-hyphen handles stay direct for humans and agent responses", async () => {
   const server = await createConversationHttpServer();
   try {
     const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -61,7 +61,7 @@ test("complete trailing-hyphen human handles stay direct; generated responses re
           participantId: agent.id, triggerMessageId: explicit.id, triggerSequence: explicit.sequence,
           body: `Result for @${spelling}`,
         });
-        assert.deepEqual(response.message.to, []);
+        assert.deepEqual(response.message.to, [agent.id]);
       }
     }
     const explicit = await client.postMessage(conversation.id, {
