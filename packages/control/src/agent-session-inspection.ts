@@ -90,7 +90,7 @@ export class LocalAgentSessionInspections {
         const before = await this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, identityId);
         controller.signal.throwIfAborted();
         const config = await conversationAgentConfiguration(this.options.store, conversation.workspaceId,
-          conversationId, identityId);
+          conversation.thread?.parentConversationId ?? conversationId, identityId);
         result.saved = config && (config.workspaceId !== conversation.workspaceId || config.agentIdentityId !== identityId) ? { status: "unavailable" } : savedProfile(config);
         controller.signal.throwIfAborted();
         if (before.bindings.length > 1) return { ...result, availability: "conflict" as const };

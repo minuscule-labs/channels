@@ -156,31 +156,39 @@ test("creation rejects incompatible explicit and inherited model/effort pairs be
   assert.deepEqual(await f.store.getWorkspaceAgentConfig(f.workspace.id, f.agent.id), original);
 });
 
-test("Conversation launch defaults and roles reach initial and fresh replacement sessions without changing other Conversations", async (t) => {
+test("Conversation launch defaults and roles reach initial and fresh replacement sessions in main and threads without changing other Conversations", async (t) => {
   const f = await fixture(t);
   const created = await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, f.input);
+  const root = await f.client.postMessage(created.id, { participantId: f.owner.id, body: "Investigate this in a thread." });
+  const thread = await f.client.createThread(created.id, { actorIdentityId: f.owner.id, rootMessageId: root.id });
   const other = await f.client.createConversation({ workspaceId: f.workspace.id, participantIds: [f.owner.id, f.agent.id] });
   const host = new LocalAgentHost({ client: f.client, store: f.store, runtimes: { test: f.runtime } });
   t.after(() => host.close());
   await host.startConversationAgent(created.id, f.agent.id, f.owner.id);
   await host.replaceConversationAgent(created.id, f.agent.id, f.owner.id, "fresh");
+  await host.startConversationAgent(thread.id, f.agent.id, f.owner.id);
+  await host.replaceConversationAgent(thread.id, f.agent.id, f.owner.id, "fresh");
   await host.startConversationAgent(other.id, f.agent.id, f.owner.id);
-  assert.equal(f.starts.length, 3);
-  for (const start of f.starts.slice(0, 2)) {
+  assert.equal(f.starts.length, 5);
+  for (const start of f.starts.slice(0, 4)) {
     assert.deepEqual(start.model, f.input.model); assert.equal(start.reasoningLevel, "high");
     assert.match(start.appendSystemPrompt!, /Workspace instructions/);
     assert.match(start.appendSystemPrompt!, /Your role in this Conversation: Investigator/);
     assert.match(start.appendSystemPrompt!, /Check in after diagnosis/);
   }
-  assert.deepEqual(f.starts[2]!.model, { provider: "test", id: "saved" });
-  assert.equal(f.starts[2]!.reasoningLevel, "low");
-  assert.doesNotMatch(f.starts[2]!.appendSystemPrompt!, /Investigator|diagnosis/);
+  assert.deepEqual(f.starts[4]!.model, { provider: "test", id: "saved" });
+  assert.equal(f.starts[4]!.reasoningLevel, "low");
+  assert.doesNotMatch(f.starts[4]!.appendSystemPrompt!, /Investigator|diagnosis/);
   assert.equal((await f.store.getWorkspaceAgentConfig(f.workspace.id, f.agent.id))!.modelId, "saved");
   const inspection = new LocalAgentSessionInspections({ client: f.client, store: f.store, runtimes: {} });
-  const read = await inspection.read(created.id, f.agent.id, f.owner.id);
-  assert.equal(read.saved.status, "available");
-  if (read.saved.status === "available") assert.deepEqual(read.saved.profile.model, f.input.model);
+  for (const scope of [created.id, thread.id]) {
+    const read = await inspection.read(scope, f.agent.id, f.owner.id);
+    assert.equal(read.saved.status, "available");
+    if (read.saved.status === "available") assert.deepEqual(read.saved.profile.model, f.input.model);
+  }
   await f.store.putWorkspaceConfig({ ...(await f.store.getWorkspaceConfig(f.workspace.id))!, runtimeModelPolicies: { test: [{ provider: "test", id: "saved" }] } });
-  await assert.rejects(host.replaceConversationAgent(created.id, f.agent.id, f.owner.id, "fresh"), /disabled/);
-  assert.equal(f.starts.length, 3);
+  for (const scope of [created.id, thread.id]) {
+    await assert.rejects(host.replaceConversationAgent(scope, f.agent.id, f.owner.id, "fresh"), /disabled/);
+  }
+  assert.equal(f.starts.length, 5);
 });

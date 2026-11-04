@@ -794,7 +794,8 @@ export class LocalAgentHost {
           this.options.client.getIdentity(actorIdentityId),
           this.options.client.getIdentity(agentIdentityId),
           this.options.store.getWorkspaceConfig(conversation.workspaceId),
-          conversationAgentConfiguration(this.options.store, conversation.workspaceId, conversationId, agentIdentityId),
+          conversationAgentConfiguration(this.options.store, conversation.workspaceId,
+            conversation.thread?.parentConversationId ?? conversationId, agentIdentityId),
           this.options.store.listConversationBindings(conversationId),
         ]);
         const actorMembership = members.find(({ identityId }) => identityId === actorIdentityId);
@@ -2190,7 +2191,8 @@ export class LocalAgentHost {
     const context = await this.baseContext(conversationId, agentIdentityId, actorIdentityId);
     const [workspaceConfig, agentConfig] = await Promise.all([
       this.options.store.getWorkspaceConfig(context.conversation.workspaceId),
-      conversationAgentConfiguration(this.options.store, context.conversation.workspaceId, conversationId, agentIdentityId),
+      conversationAgentConfiguration(this.options.store, context.conversation.workspaceId,
+        context.conversation.thread?.parentConversationId ?? conversationId, agentIdentityId),
     ]);
     if (!workspaceConfig || !agentConfig || agentConfig.status !== "active"
       || !agentConfig.runtimeAdapter) {
