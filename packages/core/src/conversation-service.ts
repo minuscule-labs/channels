@@ -12,6 +12,7 @@ import { createResourceId, isResourceId } from "./ids.ts";
 import { isReservedMentionHandle, mentionHandles } from "./mentions.ts";
 import {
   ConversationAttachmentUnavailableError,
+  ConversationFolderConflictError,
   ConversationResponseRetiredError,
   InMemoryConversationStorage,
   type ConversationAttachmentRecord,
@@ -21,7 +22,12 @@ import {
   type NewConversationMessage,
   type WorkspaceMemberUpdateResult,
 } from "./storage.ts";
+import { normalizeConversationFolderName } from "./types.ts";
 import type {
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
+  ConversationFolder,
   Conversation,
   ConversationEvent,
   ConversationLifecycle,
@@ -59,6 +65,18 @@ export class ConversationAttachmentStorageError extends Error {}
 type EventListener = (event: ConversationEvent) => void;
 
 const LEGACY_WORKSPACE_ID = "legacy-default-workspace";
+
+function folderMutationName(input: CreateConversationFolderInput): string {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+    throw new ConversationValidationError("actorIdentityId is required");
+  }
+  try {
+    return normalizeConversationFolderName(input.name);
+  } catch (error) {
+    throw new ConversationValidationError(error instanceof Error ? error.message : "Invalid folder name");
+  }
+}
 
 function assertUnreservedMentionHandle(handle: string): void {
   if (isReservedMentionHandle(handle)) {
@@ -848,8 +866,12 @@ export class ConversationService {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<void> {
-    const actor = await this.storage.getWorkspaceMember(workspaceId, actorIdentityId);
-    if (!actor || actor.status !== "active" || !["owner", "admin"].includes(actor.accessRole)) {
+    const [actor, identity] = await Promise.all([
+      this.storage.getWorkspaceMember(workspaceId, actorIdentityId),
+      this.storage.getIdentity(actorIdentityId),
+    ]);
+    if (!actor || actor.status !== "active" || !["owner", "admin"].includes(actor.accessRole)
+      || identity?.status !== "active" || identity.type !== "human") {
       throw new ConversationValidationError("An active Workspace owner or admin is required");
     }
   }
@@ -887,8 +909,79 @@ export class ConversationService {
     }));
   }
 
+  private async resolveWorkspaceFolder(workspaceId: string, folderId: string): Promise<ConversationFolder> {
+    if (!isResourceId(folderId, "folder")) throw new ConversationValidationError("folderId must be a typed folder id");
+    const folder = await this.storage.getConversationFolder(folderId);
+    if (!folder) throw new ConversationNotFoundError(`Folder not found: ${folderId}`);
+    if (folder.workspaceId !== workspaceId) throw new ConversationValidationError("Folder must belong to this Workspace");
+    return folder;
+  }
+
+  async listWorkspaceFolders(workspaceId: string): Promise<ConversationFolder[]> {
+    await this.getWorkspace(workspaceId);
+    return await this.storage.listWorkspaceConversationFolders(workspaceId);
+  }
+
+  async createWorkspaceFolder(workspaceId: string, input: CreateConversationFolderInput): Promise<ConversationFolder> {
+    const name = folderMutationName(input);
+    const workspace = await this.getWorkspace(workspaceId);
+    if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+    await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+    const timestamp = new Date().toISOString();
+    try {
+      return await this.storage.createConversationFolder({
+        id: createResourceId("folder"), workspaceId, name, createdAt: timestamp, updatedAt: timestamp,
+      });
+    } catch (error) {
+      if (error instanceof ConversationFolderConflictError) throw new ConversationConflictError(error.message);
+      throw error;
+    }
+  }
+
+  async updateWorkspaceFolder(workspaceId: string, folderId: string, input: UpdateConversationFolderInput): Promise<ConversationFolder> {
+    const name = folderMutationName(input);
+    const workspace = await this.getWorkspace(workspaceId);
+    if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+    await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+    await this.resolveWorkspaceFolder(workspaceId, folderId);
+    try {
+      const updated = await this.storage.updateConversationFolderName(folderId, name, new Date().toISOString());
+      if (!updated) throw new ConversationNotFoundError(`Folder not found: ${folderId}`);
+      return updated;
+    } catch (error) {
+      if (error instanceof ConversationFolderConflictError) throw new ConversationConflictError(error.message);
+      throw error;
+    }
+  }
+
+  async assignConversationFolder(conversationId: string, input: AssignConversationFolderInput): Promise<ConversationMetadata> {
+    return await this.serializeConversation(conversationId, async () => {
+      if (!input || typeof input !== "object" || Array.isArray(input)
+        || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+        throw new ConversationValidationError("actorIdentityId is required");
+      }
+      const folderId = input.folderId;
+      if (folderId !== null && !isResourceId(folderId, "folder")) {
+        throw new ConversationValidationError("folderId must be a typed folder id or null");
+      }
+      const conversation = await this.getConversationMetadata(conversationId);
+      const workspace = await this.getWorkspace(conversation.workspaceId);
+      if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+      await this.assertConversationMutable(conversationId);
+      await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
+      if (conversation.thread) throw new ConversationValidationError("Threads inherit parent Conversation organization");
+      if (folderId !== null) await this.resolveWorkspaceFolder(conversation.workspaceId, folderId);
+      if ((conversation.folderId ?? null) === folderId) return conversation;
+      const updated = await this.storage.assignConversationFolder(conversationId, folderId);
+      if (!updated) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
+      this.notifyConversationUpdated(conversationId);
+      return updated;
+    });
+  }
+
   async createConversation(input: CreateConversationInput): Promise<Conversation> {
-    if (!input || (input.participantIds === undefined && input.participants === undefined)) {
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || (input.participantIds === undefined && input.participants === undefined)) {
       throw new ConversationValidationError("participantIds must be an array");
     }
     if (input.id !== undefined && !isResourceId(input.id, "conversation")) {
@@ -896,6 +989,15 @@ export class ConversationService {
     }
     if (input.participantIds !== undefined && input.participants !== undefined) {
       throw new ConversationValidationError("participantIds and legacy participants are mutually exclusive");
+    }
+    const folderId = input.folderId ?? null;
+    if (folderId !== null && !isResourceId(folderId, "folder")) {
+      throw new ConversationValidationError("folderId must be a typed folder id or null");
+    }
+    if (folderId !== null && (typeof input.workspaceId !== "string" || !input.workspaceId
+      || !Array.isArray(input.participantIds)
+      || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim())) {
+      throw new ConversationValidationError("Filed Conversations require workspaceId, participantIds and actorIdentityId");
     }
     if (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim())) {
       throw new ConversationValidationError("Conversation name must be a non-empty string");
@@ -921,6 +1023,7 @@ export class ConversationService {
           throw new ConversationValidationError("Conversation participants must include the acting human");
         }
       }
+      if (folderId !== null) await this.resolveWorkspaceFolder(workspaceId, folderId);
       participants = await this.resolveActiveParticipants(workspaceId, input.participantIds);
     } else {
       if (input.workspaceId && input.workspaceId !== LEGACY_WORKSPACE_ID) {
@@ -987,6 +1090,7 @@ export class ConversationService {
       id: conversationId,
       workspaceId: workspaceId!,
       name: requestedName ?? `Conversation ${conversationId.slice("conversation_".length, "conversation_".length + 8)}`,
+      folderId,
       participants,
       messages: [],
       rosterRevision: 1,

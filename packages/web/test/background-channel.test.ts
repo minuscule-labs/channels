@@ -159,6 +159,39 @@ describe("inactive Conversation catch-up ordering", () => {
     expect(cached.map(({ sequence }) => sequence)).toEqual([1, 2, 3, 50, 99, 100]);
   });
 
+  it("refreshes navigation on readiness and routes metadata updates without creating message notifications", async () => {
+    const updates: string[] = [];
+    const rosters: string[] = [];
+    const live: string[] = [];
+    const caughtUp: string[] = [];
+    let ready = 0;
+    await runBackgroundConversationsConnection({
+      signal: new AbortController().signal,
+      onReady: () => { ready++; },
+      conversations: ["conversation-a", "conversation-b"].map(conversationId => ({
+        conversationId,
+        currentMessages: () => [message(1, conversationId)],
+        listMessages: async () => [message(2, conversationId)],
+        onLiveMessage: next => { live.push(next.id); },
+        onCatchUpMessage: next => { caughtUp.push(next.id); },
+        onRosterUpdated: () => { rosters.push(conversationId); },
+        onConversationUpdated: () => { updates.push(conversationId); },
+      })),
+      events: async function* ({ onReady }) {
+        onReady();
+        yield { id: "move", type: "conversation.updated", conversationId: "conversation-a", createdAt: "2026-01-01" };
+        yield { id: "roster", type: "roster.updated", conversationId: "conversation-b", rosterRevision: 2, createdAt: "2026-01-01" };
+        yield { id: "unknown", type: "conversation.updated", conversationId: "not-subscribed", createdAt: "2026-01-01" };
+        yield { id: "message", type: "message.created", conversationId: "conversation-b", message: message(3, "conversation-b"), createdAt: "2026-01-01" };
+      },
+    });
+    expect(ready).toBe(1);
+    expect(updates).toEqual(["conversation-a"]);
+    expect(rosters).toEqual(["conversation-b"]);
+    expect(live).toEqual(["conversation-b-message-3"]);
+    expect(caughtUp).toEqual(["conversation-a-message-2", "conversation-b-message-2"]);
+  });
+
   it("rejects a stream that closes before readiness", async () => {
     await expect(runBackgroundConversationsConnection({
       signal: new AbortController().signal,

@@ -1,7 +1,8 @@
-import { assertConversationLifecycle } from "./types.ts";
+import { assertConversationLifecycle, normalizeConversationFolderName } from "./types.ts";
 import type {
   Conversation,
   ConversationCursorStore,
+  ConversationFolder,
   ConversationLifecycle,
   ConversationMessage,
   ConversationMetadata,
@@ -17,6 +18,7 @@ export type ConversationAttachmentStatus = "staged" | "attached" | "deleting";
 
 export class ConversationAttachmentUnavailableError extends Error {}
 export class ConversationResponseRetiredError extends Error {}
+export class ConversationFolderConflictError extends Error {}
 
 export interface ConversationAttachmentRecord {
   id: string;
@@ -78,6 +80,11 @@ export interface ConversationStorage extends ConversationCursorStore {
   ): Promise<WorkspaceMemberUpdateResult | undefined>;
   getWorkspaceMember(workspaceId: string, identityId: string): Promise<WorkspaceMember | undefined>;
   listWorkspaceMembers(workspaceId: string): Promise<WorkspaceMember[]>;
+  createConversationFolder(folder: ConversationFolder): Promise<ConversationFolder>;
+  getConversationFolder(folderId: string): Promise<ConversationFolder | undefined>;
+  listWorkspaceConversationFolders(workspaceId: string): Promise<ConversationFolder[]>;
+  updateConversationFolderName(folderId: string, name: string, updatedAt: string): Promise<ConversationFolder | undefined>;
+  assignConversationFolder(conversationId: string, folderId: string | null): Promise<ConversationMetadata | undefined>;
   createConversation(conversation: Conversation): Promise<Conversation>;
   listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]>;
   getConversation(conversationId: string): Promise<Conversation | undefined>;
@@ -133,6 +140,7 @@ function copyMessage(message: ConversationMessage): ConversationMessage {
 function copyConversation(conversation: Conversation): Conversation {
   return {
     ...conversation,
+    folderId: conversation.folderId ?? null,
     ...(conversation.thread ? { thread: structuredClone(conversation.thread) } : {}),
     participants: conversation.participants.map((participant) => ({ ...participant })),
     messages: conversation.messages.map(copyMessage),
@@ -144,6 +152,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   private readonly workspaces = new Map<string, Workspace>();
   private readonly workspaceMembers = new Map<string, WorkspaceMember>();
   private readonly conversations = new Map<string, Conversation>();
+  private readonly folders = new Map<string, ConversationFolder>();
   private readonly lifecycles = new Map<string, ConversationLifecycle>();
   private readonly cursors = new Map<string, number>();
   private readonly responses = new Map<string, ConversationMessage>();
@@ -267,7 +276,63 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
       .map((member) => ({ ...member }));
   }
 
+  async createConversationFolder(folder: ConversationFolder): Promise<ConversationFolder> {
+    if (!this.workspaces.has(folder.workspaceId)) throw new Error("Folder Workspace not found");
+    const name = normalizeConversationFolderName(folder.name);
+    if (this.folders.has(folder.id) || [...this.folders.values()].some((existing) =>
+      existing.workspaceId === folder.workspaceId && existing.name.toLowerCase() === name.toLowerCase())) {
+      throw new ConversationFolderConflictError("Folder id or name already exists in this Workspace");
+    }
+    const stored = { ...folder, name };
+    this.folders.set(folder.id, stored);
+    return { ...stored };
+  }
+
+  async getConversationFolder(folderId: string): Promise<ConversationFolder | undefined> {
+    const folder = this.folders.get(folderId);
+    return folder ? { ...folder } : undefined;
+  }
+
+  async listWorkspaceConversationFolders(workspaceId: string): Promise<ConversationFolder[]> {
+    return [...this.folders.values()].filter((folder) => folder.workspaceId === workspaceId)
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id))
+      .map((folder) => ({ ...folder }));
+  }
+
+  async updateConversationFolderName(folderId: string, name: string, updatedAt: string): Promise<ConversationFolder | undefined> {
+    const folder = this.folders.get(folderId);
+    if (!folder) return undefined;
+    const normalized = normalizeConversationFolderName(name);
+    if ([...this.folders.values()].some((existing) =>
+      existing.id !== folderId && existing.workspaceId === folder.workspaceId
+      && existing.name.toLowerCase() === normalized.toLowerCase())) {
+      throw new ConversationFolderConflictError("Folder name already exists in this Workspace");
+    }
+    const updated = { ...folder, name: normalized, updatedAt };
+    this.folders.set(folderId, updated);
+    return { ...updated };
+  }
+
+  private assertFolderAssignment(conversation: Conversation, folderId: string | null | undefined): void {
+    if (folderId == null) return;
+    if (conversation.thread) throw new Error("Threads cannot be independently filed");
+    const folder = this.folders.get(folderId);
+    if (!folder || folder.workspaceId !== conversation.workspaceId) {
+      throw new Error("Folder must belong to the Conversation Workspace");
+    }
+  }
+
+  async assignConversationFolder(conversationId: string, folderId: string | null): Promise<ConversationMetadata | undefined> {
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return undefined;
+    if (conversation.thread) throw new Error("Threads cannot be independently filed");
+    this.assertFolderAssignment(conversation, folderId);
+    conversation.folderId = folderId;
+    return await this.getConversationMetadata(conversationId);
+  }
+
   async createConversation(conversation: Conversation): Promise<Conversation> {
+    this.assertFolderAssignment(conversation, conversation.folderId);
     if (this.conversations.has(conversation.id)) throw new Error(`Conversation id already exists: ${conversation.id}`);
     if (conversation.thread && [...this.conversations.values()].some((existing) =>
       existing.thread?.parentConversationId === conversation.thread!.parentConversationId
@@ -285,6 +350,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
         id: conversation.id,
         workspaceId: conversation.workspaceId,
         name: conversation.name,
+        folderId: conversation.folderId ?? null,
         createdAt: conversation.createdAt,
         rosterRevision: conversation.rosterRevision,
         ...(conversation.thread ? { thread: structuredClone(conversation.thread) } : {}),
@@ -329,6 +395,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
       id: conversation.id,
       workspaceId: conversation.workspaceId,
       name: conversation.name,
+      folderId: conversation.folderId ?? null,
       createdAt: conversation.createdAt,
       rosterRevision: conversation.rosterRevision,
       ...(conversation.thread ? { thread: structuredClone(conversation.thread) } : {}),

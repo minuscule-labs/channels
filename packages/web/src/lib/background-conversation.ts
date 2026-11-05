@@ -8,10 +8,12 @@ export interface BackgroundConversationConnection {
   onLiveMessage: (message: ConversationMessage) => void;
   onCatchUpMessage: (message: ConversationMessage) => void;
   onRosterUpdated: () => void;
+  onConversationUpdated?: () => void;
 }
 
 export async function runBackgroundConversationsConnection(input: {
   signal: AbortSignal;
+  onReady?(): void;
   conversations: readonly BackgroundConversationConnection[];
   events: (options: SharedEventOptions) => AsyncIterable<ConversationEvent>;
 }) {
@@ -37,6 +39,7 @@ export async function runBackgroundConversationsConnection(input: {
   fence();
   const reconcile = () => {
     ready = true;
+    input.onReady?.();
     const snapshot = new Map(cursors);
     pending++;
     catchUp = catchUp.then(async () => {
@@ -59,6 +62,7 @@ export async function runBackgroundConversationsConnection(input: {
       if (!conversation) continue;
       if (event.type === "message.created") conversation.onLiveMessage(event.message);
       else if (event.type === "roster.updated") conversation.onRosterUpdated();
+      else if (event.type === "conversation.updated") conversation.onConversationUpdated?.();
     }
     if (!ready && !controller.signal.aborted) throw new Error("Conversation event stream closed before readiness");
     await catchUp;

@@ -23,6 +23,7 @@ export {
 } from "./conversation-service.ts";
 export {
   ConversationAttachmentUnavailableError,
+  ConversationFolderConflictError,
   ConversationResponseRetiredError,
   InMemoryConversationStorage,
   type ConversationAttachmentRecord,
@@ -41,12 +42,16 @@ export {
   type ConversationHttpServer,
   type ConversationHttpServerOptions,
 } from "./http-server.ts";
-export { assertConversationLifecycle } from "./types.ts";
+export { assertConversationLifecycle, normalizeConversationFolderName } from "./types.ts";
 export type {
   AddWorkspaceMemberInput,
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
   Conversation,
   ConversationCursorStore,
   ConversationEvent,
+  ConversationFolder,
   ConversationLifecycle,
   ConversationLifecycleState,
   EffectiveConversationLifecycle,

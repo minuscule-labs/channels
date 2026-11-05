@@ -19,6 +19,8 @@ Active Workspace owners and admins can open a Conversation’s sidebar action me
 
 Snoozed and archived Conversations are grouped under collapsible **Snoozed** and **Archive** sidebar sections. An expired snooze is evaluated as Active when it is read; no background cleanup job is required.
 
+[Conversation folder membership](conversation-folders.md) survives Snooze, Archive, and Reopen. Active Conversations appear in their assigned folder or Unfiled; reopening restores that grouping. A Snoozed Conversation may still be filed or unfiled without waking its agents. Archived Conversations must be reopened before their assignment can change. Folder operations themselves do not change lifecycle or Runtime sessions.
+
 Archived Conversations show an **Archived** status and are read-only. Sending messages, generating responses, renaming the Conversation, editing its participants, and managing its agents require reopening first. Reopen returns the lifecycle to Active, but deliberately does not start, reconnect, replace, or otherwise change any Runtime session.
 
 ## Managed work safety

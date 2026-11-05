@@ -10,6 +10,7 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 ## What it includes
 
 - Persistent Workspaces, Conversations, messages, and membership
+- Flat Workspace folders for organizing Conversations, with Unfiled navigation and remembered collapse state
 - Message-based threads with isolated agent sessions and a fixed creation-time public-context snapshot
 - Reusable human, agent, and service identities
 - Live updates, mentions, Markdown, Mermaid diagrams, syntax highlighting, and code-copy controls
@@ -143,6 +144,7 @@ These are internal boundaries of one product, not separate services users must c
 - [Product boundary and architecture](docs/product-boundary.md)
 - [Execution configuration](docs/execution-configuration.md)
 - [Participant recovery and diagnostics](docs/participant-recovery.md)
+- [Conversation folders and organization](docs/conversation-folders.md)
 - [Conversation lifecycle and archive behavior](docs/conversation-lifecycle.md)
 - [Conversation threads and context](docs/conversation-threads.md)
 - [Skills](docs/skills.md)

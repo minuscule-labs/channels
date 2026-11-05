@@ -5,6 +5,7 @@ import { Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { cacheConversationMetadata, writeFolderCollapsed } from "../lib/conversation-folders";
 import { mergeMessages } from "../lib/messages";
 import { runBackgroundConversationsConnection } from "../lib/background-conversation";
 import { sharedConversationEvents } from "../lib/shared-conversation-events";
@@ -25,6 +26,11 @@ export function AppShell() {
   const viewingActiveConversationEnd = useRef(false);
   const audioContext = useRef<AudioContext | undefined>(undefined);
   const [knownConversations, setKnownConversations] = useState<ConversationMetadata[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const changeFolderCollapse = useCallback((key: string, collapsed: boolean) => {
+    writeFolderCollapsed(localStorage, key, collapsed);
+    setCollapsedFolders(current => current[key] === collapsed ? current : { ...current, [key]: collapsed });
+  }, []);
   const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => conversations.listWorkspaces() });
   const routeWorkspaceId = pathname.match(/\/app\/workspaces\/([^/]+)/)?.[1];
   const selectedWorkspaceId = routeWorkspaceId
@@ -36,7 +42,25 @@ export function AppShell() {
     queryFn: () => conversations.listWorkspaceConversations(selectedWorkspace!.id),
     enabled: Boolean(selectedWorkspace),
     staleTime: 5_000,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
   });
+  const workspaceFolders = useQuery({
+    queryKey: selectedWorkspace ? queryKeys.workspaceFolders(selectedWorkspace.id) : ["workspace", "none", "folders"],
+    queryFn: () => conversations.listWorkspaceFolders(selectedWorkspace!.id),
+    enabled: Boolean(selectedWorkspace),
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
+  });
+  const refreshWorkspaceNavigation = useCallback(() => {
+    if (!selectedWorkspaceId) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(selectedWorkspaceId), exact: true });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(selectedWorkspaceId), exact: true });
+  }, [queryClient, selectedWorkspaceId]);
+  useEffect(() => {
+    window.addEventListener("focus", refreshWorkspaceNavigation);
+    return () => window.removeEventListener("focus", refreshWorkspaceNavigation);
+  }, [refreshWorkspaceNavigation]);
   const currentSession = useQuery({
     queryKey: queryKeys.localCurrentSession(),
     queryFn: () => localControl.currentSession(),
@@ -76,6 +100,7 @@ export function AppShell() {
     && member.status === "active"
     && (member.accessRole === "owner" || member.accessRole === "admin"),
   ) ?? false;
+  const canAdministerFolders = canAdministerLifecycle && selectedWorkspace?.status === "active";
   const runLifecycleChange = (
     conversationId: string,
     input: { state: "active" | "snoozed" | "settled"; snoozedUntil?: string },
@@ -89,6 +114,12 @@ export function AppShell() {
     for (const conversation of selectedConversations.data ?? []) byId.set(conversation.id, conversation);
     return [...byId.values()];
   }, [knownConversations, selectedConversations.data]);
+  const observedConversationsRef = useRef(observedConversations);
+  useEffect(() => { observedConversationsRef.current = observedConversations; }, [observedConversations]);
+  // Metadata changes must not tear down the same topic subscription. Otherwise
+  // readiness refetches can feed back into another unsubscribe/ready cycle.
+  const backgroundConversationIdsKey = JSON.stringify(observedConversations
+    .filter(({ id }) => id !== activeConversationId).map(({ id }) => id).sort());
   const conversationMessageQueries = useQueries({
     queries: observedConversations.map((conversation) => ({
       queryKey: queryKeys.conversationMessages(conversation.id),
@@ -128,10 +159,11 @@ export function AppShell() {
   const navigationItems = useMemo<WorkspaceNavigationItem[]>(() => selectedWorkspace ? [{
     workspace: selectedWorkspace,
     conversations: selectedConversations.data ?? [],
+    folders: workspaceFolders.data ?? [],
     loading: selectedConversations.isLoading,
     lifecycle: conversationLifecycles,
     unread,
-  }] : [], [conversationLifecycles, selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, unread]);
+  }] : [], [conversationLifecycles, selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, workspaceFolders.data, unread]);
 
   const selectWorkspace = async (workspaceId: string) => {
     const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);
@@ -226,35 +258,47 @@ export function AppShell() {
   }, [currentSession.data?.identityId, selectedConversations.data, selectedWorkspaceId]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
-    const backgroundConversations = observedConversations.filter(({ id }) => id !== activeConversationId);
-    if (!identityId || backgroundConversations.length === 0) return;
+    const backgroundConversationIds = JSON.parse(backgroundConversationIdsKey) as string[];
+    if (!identityId || backgroundConversationIds.length === 0) return;
     const controller = new AbortController();
-    const connections = backgroundConversations.map((conversation) => {
+    const connections = backgroundConversationIds.map((conversationId) => {
       const mergeMessage = (message: ConversationMessage) => {
         queryClient.setQueryData<ConversationMessage[]>(
-          queryKeys.conversationMessages(conversation.id),
+          queryKeys.conversationMessages(conversationId),
           (current) => mergeMessages(current, [message]),
         );
       };
+      let metadataGeneration = 0;
+      const refreshMetadata = () => {
+        const generation = ++metadataGeneration;
+        void conversations.getConversation(conversationId).then(updated => {
+          // Responses may arrive out of order within this stable subscription.
+          if (controller.signal.aborted || generation !== metadataGeneration) return;
+          cacheConversationMetadata(queryClient, updated);
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(updated.workspaceId), exact: true });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(updated.id), exact: true });
+          setKnownConversations(current => {
+            if (controller.signal.aborted || generation !== metadataGeneration) return current;
+            const previous = current.find(item => item.id === updated.id);
+            if (!previous || JSON.stringify(previous) === JSON.stringify(updated)) return current;
+            const next = current.map(item => item.id === updated.id ? updated : item);
+            localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(next));
+            return next;
+          });
+        }).catch(() => undefined);
+      };
       return {
-        conversationId: conversation.id,
-        currentMessages: () => queryClient.getQueryData<ConversationMessage[]>(queryKeys.conversationMessages(conversation.id)),
-        listMessages: (options: { afterSequence: number; limit: number }) => conversations.listMessages(conversation.id, options),
+        conversationId,
+        currentMessages: () => queryClient.getQueryData<ConversationMessage[]>(queryKeys.conversationMessages(conversationId)),
+        listMessages: (options: { afterSequence: number; limit: number }) => conversations.listMessages(conversationId, options),
         onLiveMessage: (message: ConversationMessage) => {
           mergeMessage(message);
-          window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { conversation, message } }));
+          const conversation = observedConversationsRef.current.find(item => item.id === conversationId);
+          if (conversation) window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { conversation, message } }));
         },
         onCatchUpMessage: mergeMessage,
-        onRosterUpdated: () => {
-          void conversations.getConversation(conversation.id).then((updated) => {
-            queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
-            setKnownConversations((current) => {
-              const next = current.map((item) => item.id === updated.id ? updated : item);
-              localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(next));
-              return next;
-            });
-          }).catch(() => undefined);
-        },
+        onRosterUpdated: refreshMetadata,
+        onConversationUpdated: refreshMetadata,
       };
     });
     void (async () => {
@@ -262,8 +306,9 @@ export function AppShell() {
         try {
           await runBackgroundConversationsConnection({
             signal: controller.signal,
+            onReady: refreshWorkspaceNavigation,
             conversations: connections,
-            events: (options) => sharedConversationEvents(identityId, backgroundConversations.map(({ id }) => id), options),
+            events: (options) => sharedConversationEvents(identityId, backgroundConversationIds, options),
           });
         } catch {
           // The next bounded catch-up reconciles messages missed while disconnected.
@@ -272,7 +317,7 @@ export function AppShell() {
       }
     })();
     return () => controller.abort();
-  }, [activeConversationId, currentSession.data?.identityId, observedConversations, queryClient]);
+  }, [backgroundConversationIdsKey, currentSession.data?.identityId, queryClient, refreshWorkspaceNavigation]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
     if (!identityId || sound === "off") return;
@@ -359,9 +404,19 @@ export function AppShell() {
           <button className="icon-button inline-flex" type="button" aria-label="Dismiss lifecycle error" onClick={() => lifecycleAction.reset()}>×</button>
         </div>
       ) : null}
+      {workspaceFolders.error ? (
+        <div role="alert" className="fixed right-4 top-3 z-50 rounded-md border border-[var(--danger)] bg-[var(--panel)] p-3 text-xs">
+          {workspaceFolders.error.message}
+          <button className="ml-2 underline" type="button" onClick={() => void workspaceFolders.refetch()}>Retry folders</button>
+        </div>
+      ) : null}
       <div className="hidden md:block">
         <NavigationSidebar
           items={navigationItems}
+          identityId={currentSession.data?.identityId}
+          actorIdentityId={canAdministerFolders ? currentSession.data?.identityId : undefined}
+          collapsedFolders={collapsedFolders}
+          onFolderCollapseChange={changeFolderCollapse}
           activeConversationId={activeConversationId}
           activeAgentsWorkspaceId={activeAgentsWorkspaceId}
           workspaces={workspaces.data ?? []}
@@ -393,6 +448,10 @@ export function AppShell() {
         >
           <NavigationSidebar
             items={navigationItems}
+            identityId={currentSession.data?.identityId}
+            actorIdentityId={canAdministerFolders ? currentSession.data?.identityId : undefined}
+            collapsedFolders={collapsedFolders}
+            onFolderCollapseChange={changeFolderCollapse}
             activeConversationId={activeConversationId}
             activeAgentsWorkspaceId={activeAgentsWorkspaceId}
             workspaces={workspaces.data ?? []}

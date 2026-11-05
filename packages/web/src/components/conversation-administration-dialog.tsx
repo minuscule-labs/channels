@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import { conversations, localControl } from "../lib/api";
 import { isConversationParticipantChoice } from "../lib/participants";
 import { queryKeys } from "../lib/query-keys";
+import { cacheConversationMetadata } from "../lib/conversation-folders";
 import { ErrorNotice } from "./ui/error-notice";
 import { ConversationWorkingFolders } from "./conversation-working-folders";
 
@@ -121,7 +122,7 @@ function ParticipantChoices({
   );
 }
 
-function AdministrationDialog({
+export function AdministrationDialog({
   open,
   onOpenChange,
   title,
@@ -133,7 +134,7 @@ function AdministrationDialog({
   open: boolean;
   onOpenChange(open: boolean): void;
   title: string;
-  description: string;
+  description?: string;
   trigger: ReactNode;
   onCloseAutoFocus?(event: Event): void;
   children: ReactNode;
@@ -143,11 +144,11 @@ function AdministrationDialog({
       {trigger ? <Dialog.Trigger asChild>{trigger}</Dialog.Trigger> : null}
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-[70] bg-black/55" />
-        <Dialog.Content onCloseAutoFocus={onCloseAutoFocus} className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(36rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
+        <Dialog.Content {...(!description ? { "aria-describedby": undefined } : {})} onCloseAutoFocus={onCloseAutoFocus} className="fixed top-1/2 left-1/2 z-[71] flex max-h-[min(46rem,94vh)] w-[min(36rem,94vw)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl outline-none">
           <header className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4">
             <div>
               <Dialog.Title className="text-base font-semibold">{title}</Dialog.Title>
-              <Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">{description}</Dialog.Description>
+              {description ? <Dialog.Description className="mt-1 text-xs leading-5 text-[var(--muted)]">{description}</Dialog.Description> : null}
             </div>
             <Dialog.Close className="icon-button inline-flex" aria-label={`Close ${title}`}>
               <X className="h-4 w-4" />
@@ -195,6 +196,12 @@ export function CreateConversationDialog({
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [initializedFor, setInitializedFor] = useState<string>();
+  const [folderId, setFolderId] = useState("");
+  const folders = useQuery({
+    queryKey: queryKeys.workspaceFolders(workspace.id),
+    queryFn: () => conversations.listWorkspaceFolders(workspace.id),
+    enabled: open,
+  });
   const data = useWorkspaceParticipants(workspace.id, open);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -214,15 +221,14 @@ export function CreateConversationDialog({
     mutationFn: () => conversations.createConversation({
       workspaceId: workspace.id,
       name: name.trim(),
+      folderId: folderId || null,
       participantIds: [...new Set([...selected, data.session.data!.identityId])],
       actorIdentityId: data.session.data!.identityId,
     }),
     onSuccess: (conversation) => {
-      queryClient.setQueryData<ConversationMetadata[]>(
-        queryKeys.workspaceConversations(workspace.id),
-        (current = []) => [...current.filter(({ id }) => id !== conversation.id), conversation],
-      );
-      queryClient.setQueryData(queryKeys.conversation(conversation.id), conversation);
+      cacheConversationMetadata(queryClient, conversation);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspace.id), exact: true });
+      setFolderId("");
       setName("");
       setSelected(new Set());
       setOpen(false);
@@ -250,7 +256,7 @@ export function CreateConversationDialog({
         </button>
       )}
     >
-      <QueryState pending={data.pending} error={data.error} canAdminister={data.canAdminister}>
+      <QueryState pending={data.pending || folders.isPending} error={data.error ?? folders.error} canAdminister={data.canAdminister}>
         <form className="space-y-5" onSubmit={submit}>
           <label className="block text-xs font-medium">
             Conversation name
@@ -262,6 +268,13 @@ export function CreateConversationDialog({
               placeholder="implementation"
               className="settings-input mt-1.5"
             />
+          </label>
+          <label className="block text-xs font-medium">
+            Folder
+            <select className="settings-input mt-1.5" value={folderId} onChange={event => setFolderId(event.target.value)} disabled={mutation.isPending}>
+              <option value="">Unfiled</option>
+              {(folders.data ?? []).map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+            </select>
           </label>
           <ParticipantChoices
             participants={data.participants}

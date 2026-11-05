@@ -184,6 +184,35 @@ export interface ConversationThread extends ConversationMetadata {
   replyCount: number;
 }
 
+export interface ConversationFolder {
+  id: string;
+  workspaceId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateConversationFolderInput {
+  actorIdentityId: string;
+  name: string;
+}
+
+export type UpdateConversationFolderInput = CreateConversationFolderInput;
+
+export interface AssignConversationFolderInput {
+  actorIdentityId: string;
+  folderId: string | null;
+}
+
+/** Names are trimmed and exclude NUL; uniqueness uses locale-independent Unicode
+ * toLowerCase without accent folding or Unicode normalization, in both adapters. */
+export function normalizeConversationFolderName(value: unknown): string {
+  if (typeof value !== "string" || value.includes("\u0000") || !value.trim() || value.trim().length > 100) {
+    throw new Error("Folder name must be a non-empty string of at most 100 characters without NUL");
+  }
+  return value.trim();
+}
+
 export interface ConversationMetadata {
   id: string;
   workspaceId: string;
@@ -191,6 +220,8 @@ export interface ConversationMetadata {
   participants: Participant[];
   rosterRevision: number;
   createdAt: string;
+  /** Omitted legacy input is Unfiled; storage reads normalize it to null. Threads are not independently filed. */
+  folderId?: string | null;
   thread?: ConversationThreadOrigin;
 }
 
@@ -228,6 +259,7 @@ export interface CreateConversationInput {
   id?: string;
   workspaceId?: string;
   name?: string;
+  folderId?: string | null;
   participantIds?: string[];
   /** Advisory product policy until requests are authenticated. */
   actorIdentityId?: string;

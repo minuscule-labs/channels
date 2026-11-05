@@ -23,10 +23,12 @@ const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
 const imageDirectory = await mkdtemp(join(tmpdir(), "channels-browser-images-"));
 const service = new ConversationService(undefined, new FilesystemAttachmentContentStore(imageDirectory));
 const activeEventStreams = new Set();
+let openedEventStreams = 0;
 const subscribeMany = service.subscribeMany.bind(service);
 service.subscribeMany = async (ids, listener) => {
   const unsubscribe = await subscribeMany(ids, listener);
   const stream = { ids: [...ids] };
+  openedEventStreams++;
   activeEventStreams.add(stream);
   return () => { activeEventStreams.delete(stream); unsubscribe(); };
 };
@@ -267,7 +269,7 @@ const controlServer = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${fixturePort}`);
   if (request.method === "GET" && url.pathname === "/stream-metrics") {
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-    response.end(JSON.stringify({ active: activeEventStreams.size, topics: [...activeEventStreams].map(({ ids }) => ids) }));
+    response.end(JSON.stringify({ active: activeEventStreams.size, opened: openedEventStreams, topics: [...activeEventStreams].map(({ ids }) => ids) }));
     return;
   }
   if (request.method === "GET" && url.pathname === "/control-launch") {

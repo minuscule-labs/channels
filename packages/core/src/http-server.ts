@@ -10,6 +10,9 @@ import {
 } from "./conversation-service.ts";
 import type {
   AddWorkspaceMemberInput,
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
   ConversationEvent,
   CreateConversationInput,
   CreateThreadInput,
@@ -86,6 +89,14 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   } catch {
     throw new ConversationValidationError("request body must be valid JSON");
   }
+}
+
+async function readJsonObject(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const input = await readJson(request);
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new ConversationValidationError("request body must be a JSON object");
+  }
+  return input as Record<string, unknown>;
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
@@ -202,6 +213,28 @@ export async function createConversationHttpServer(
         ) });
         return;
       }
+      const workspaceFoldersMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/folders$/);
+      if (workspaceFoldersMatch && request.method === "GET") {
+        json(response, 200, { folders: await service.listWorkspaceFolders(workspaceFoldersMatch[1]!) });
+        return;
+      }
+      if (workspaceFoldersMatch && request.method === "POST") {
+        const input = await readJsonObject(request);
+        requireActor(input, actor, "actorIdentityId");
+        json(response, 201, { folder: await service.createWorkspaceFolder(
+          workspaceFoldersMatch[1]!, input as unknown as CreateConversationFolderInput,
+        ) });
+        return;
+      }
+      const workspaceFolderMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/folders\/([^/]+)$/);
+      if (workspaceFolderMatch && request.method === "PATCH") {
+        const input = await readJsonObject(request);
+        requireActor(input, actor, "actorIdentityId");
+        json(response, 200, { folder: await service.updateWorkspaceFolder(
+          workspaceFolderMatch[1]!, workspaceFolderMatch[2]!, input as unknown as UpdateConversationFolderInput,
+        ) });
+        return;
+      }
       const workspaceMembersMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/members$/);
       if (workspaceMembersMatch && request.method === "POST") {
         const member = await service.addWorkspaceMember(
@@ -229,7 +262,7 @@ export async function createConversationHttpServer(
       }
       const workspaceConversationsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/conversations$/);
       if (workspaceConversationsMatch && request.method === "POST") {
-        const input = (await readJson(request)) as CreateConversationInput;
+        const input = (await readJsonObject(request)) as CreateConversationInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
           throw new ConversationValidationError("actorIdentityId must match the authenticated browser identity");
         }
@@ -247,7 +280,7 @@ export async function createConversationHttpServer(
       }
 
       if (request.method === "POST" && url.pathname === "/conversations") {
-        const input = (await readJson(request)) as CreateConversationInput;
+        const input = (await readJsonObject(request)) as CreateConversationInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
           throw new ConversationValidationError("actorIdentityId must match the authenticated browser identity");
         }
@@ -331,6 +364,16 @@ export async function createConversationHttpServer(
         const input = await readJson(request) as CreateThreadInput;
         requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
         json(response, 200, { thread: await service.createThread(threadsMatch[1]!, input) });
+        return;
+      }
+
+      const folderAssignmentMatch = url.pathname.match(/^\/conversations\/([^/]+)\/folder$/);
+      if (folderAssignmentMatch && request.method === "PATCH") {
+        const input = await readJsonObject(request);
+        requireActor(input, actor, "actorIdentityId");
+        json(response, 200, { conversation: await service.assignConversationFolder(
+          folderAssignmentMatch[1]!, input as unknown as AssignConversationFolderInput,
+        ) });
         return;
       }
 

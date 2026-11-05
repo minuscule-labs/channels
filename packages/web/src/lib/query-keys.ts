@@ -6,6 +6,7 @@ export const queryKeys = {
   workspace: (workspaceId: string) => ["workspace", workspaceId] as const,
   workspaceMembers: (workspaceId: string) => ["workspace", workspaceId, "members"] as const,
   workspaceConversations: (workspaceId: string) => ["workspace", workspaceId, "conversations"] as const,
+  workspaceFolders: (workspaceId: string) => ["workspace", workspaceId, "folders"] as const,
   workspaceConfiguration: (workspaceId: string) => ["workspace", workspaceId, "configuration"] as const,
   workspaceAgentConfiguration: (workspaceId: string, identityId: string) =>
     ["workspace", workspaceId, "agent", identityId, "configuration"] as const,
