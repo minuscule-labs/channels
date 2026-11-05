@@ -113,6 +113,20 @@
       "when": 1799539200002,
       "tag": "0015_conversation_presets",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1799539200003,
+      "tag": "0016_conversation_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1799539200004,
+      "tag": "0017_creation_folder_preparation",
+      "breakpoints": true
     }
   ]
 }

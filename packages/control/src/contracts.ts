@@ -1,6 +1,12 @@
 import type { DiagnosticDetail, DiagnosticHistory, DeliveryHistory, DeliveryDetail } from "@minu/channels-relay";
-import type { ConversationPreset, ConversationSetup, ConversationCreationSetup } from "@minu/channels-relay";
-export type { ConversationPreset, ConversationSetup, ConversationCreationSetup } from "@minu/channels-relay";
+import type { ConversationPreset, ConversationSetup, ConversationCreationSetup, ConversationSettings } from "@minu/channels-relay";
+export type { ConversationPreset, ConversationSetup, ConversationCreationSetup, ConversationSettings } from "@minu/channels-relay";
+
+export interface LocalConversationSettings {
+  protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
+  settings: ConversationSettings;
+}
+export interface UpdateConversationSettingsInput extends ConversationSetup { expectedRevision: number }
 
 export interface LocalConversationPresets {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
@@ -16,6 +22,7 @@ export interface CreateLocalConversationInput extends ConversationSetup {
   /** Retain across retries so a lost response cannot create a duplicate. */
   id: string;
   name: string;
+  workingFolder?: { path: string } | { relativePath: string };
 }
 
 export interface LocalConversationCreationSetup {
@@ -32,7 +39,7 @@ export const CONVERSATION_PRESET_STARTERS: Array<ConversationSetup & { id: strin
     guidance: "Reproduce the issue, gather evidence, and test hypotheses. Check in with the cause, proposed fix, and verification results. Ask before disruptive mitigation." },
 ];
 
-export const LOCAL_CONTROL_PROTOCOL_VERSION = 24 as const;
+export const LOCAL_CONTROL_PROTOCOL_VERSION = 25 as const;
 
 export type LocalReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -121,6 +128,7 @@ export interface LocalWorkspaceConfigurationSummary {
   notesFolderConfigured: boolean;
   /** Absent means automatic managed-agent sleep is off. */
   idleSleepTimeoutMs?: number;
+  turnTimeoutMs?: number;
   agents: LocalWorkspaceAgentConfigurationSummary[];
 }
 
@@ -153,6 +161,7 @@ export interface UpdateLocalWorkspaceConfigurationInput {
   notesFolderId?: string | null;
   /** Null explicitly turns automatic sleep off. */
   idleSleepTimeoutMs?: number | null;
+  turnTimeoutMs?: number | null;
 }
 
 /** Presentation-safe private Conversation scope; absolute Workspace paths never leave local control. */

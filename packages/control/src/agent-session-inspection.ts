@@ -11,7 +11,7 @@ export interface SessionProfilePort {
   inspectSessionProfile?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   inspectSessionEvents?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
-type Store = Pick<RelayBindingStore, "getSessionInspectionRecords" | "getWorkspaceAgentConfig" | "getConversationCreationSetup">;
+type Store = Pick<RelayBindingStore, "getSessionInspectionRecords" | "getWorkspaceAgentConfig" | "getConversationCreationSetup" | "getConversationSettings">;
 const unavailable = () => new LocalConfigurationRequestError("Not found", 404, "unavailable");
 const id = (value: unknown, max = 256): value is string => typeof value === "string" && value.length <= max && /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]*$/.test(value) && !value.includes("..") && !value.includes("://") && !/^[a-zA-Z]:\//.test(value);
 const time = (value: unknown): value is string => typeof value === "string" && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;

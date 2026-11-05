@@ -227,10 +227,10 @@ const localControl = await createLocalControlHttpServer({
       },
       async listConversationTurnFailures(conversationId) {
         if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 24, conversationId, notices: [], diagnostics: [] };
+          return { protocolVersion: 25, conversationId, notices: [], diagnostics: [] };
         }
         return {
-          protocolVersion: 24,
+          protocolVersion: 25,
           conversationId,
           notices: [{
             participant: { identityId: agent.id, displayLabel: "Builder Agent" },
