@@ -256,6 +256,9 @@ test("compact folder row menus preselect filing and restore keyboard focus on mo
   await page.keyboard.press("Escape");
   await expect(actions).toBeFocused();
   await actions.press("Enter");
+  await expect(page.getByRole("button", { name: `Toggle folder ${folder.name}`, exact: true })).toHaveCSS("font-size", "14px");
+  await expect(page.getByRole("button", { name: "Create Conversation", exact: true })).toHaveCSS("font-size", "14px");
+  await expect(page.getByRole("button", { name: "Rename", exact: true })).toHaveCSS("font-size", "14px");
   await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
   const create = page.getByRole("dialog", { name: `Create a Conversation in ${f.workspace.name}`, exact: true });
   await expect(create.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue(folder.id);
@@ -420,6 +423,7 @@ test("ordinary members can group navigation but cannot create, rename or move fo
   await expect(group(page, folder.name)).toBeVisible();
   await expect(page.getByRole("button", { name: /^Rename folder / })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Folder actions for / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: `Quick create Conversation in ${f.workspace.name}`, exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Conversation actions for / })).toHaveCount(0);
   await page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true }).click();
   await expect(page.getByRole("button", { name: "Create folder", exact: true })).toHaveCount(0);

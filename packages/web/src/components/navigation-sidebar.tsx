@@ -2,7 +2,7 @@ import type { ConversationFolder, ConversationLifecycleState, ConversationMetada
 import { Link } from "@tanstack/react-router";
 import * as Popover from "@radix-ui/react-popover";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Archive, Bot, ChevronDown, ChevronRight, Clock3, EllipsisVertical, Folder as FolderIcon, Hash, MessageSquare, Pencil, Settings, X } from "lucide-react";
+import { Archive, Bot, ChevronDown, ChevronRight, Clock3, EllipsisVertical, Folder as FolderIcon, Hash, MessageSquare, Pencil, Settings, SquarePen, X } from "lucide-react";
 import { folderCollapseKey, folderUnread, groupConversationFolders, readFolderCollapsed, type ConversationFolderGroup } from "../lib/conversation-folders";
 import { ConversationFolderDialog, MoveConversationFolderDialog } from "./conversation-folder-dialog";
 import type { NotificationSound } from "../lib/conversation-notifications";
@@ -260,10 +260,16 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, on
   const [createOpen, setCreateOpen] = useState(false);
   const [focusName, setFocusName] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const createFromMenuRef = useRef(false);
 
   return (
     <>
-      <CreateConversationDialog workspace={workspace} open={createOpen} onOpenChange={setCreateOpen} trigger={null} onNavigate={onNavigate} onCloseAutoFocus={event => { event.preventDefault(); menuTriggerRef.current?.focus(); }} />
+      <CreateConversationDialog workspace={workspace} open={createOpen} onOpenChange={setCreateOpen} trigger={actorIdentityId ? (
+        <button ref={createTriggerRef} className="icon-button inline-flex min-h-8 min-w-8" type="button" aria-label={`Quick create Conversation in ${workspace.name}`} title="Create Conversation" onClick={() => { createFromMenuRef.current = false; }}>
+          <SquarePen className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      ) : null} onNavigate={onNavigate} onCloseAutoFocus={event => { event.preventDefault(); (createFromMenuRef.current ? menuTriggerRef : createTriggerRef).current?.focus(); }} />
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
         <Popover.Trigger asChild>
           <button
@@ -278,7 +284,7 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, on
         </Popover.Trigger>
         <Popover.Portal>
           <Popover.Content side="bottom" align="end" sideOffset={4} collisionPadding={12} className="z-[60] w-48 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
-            {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" aria-label={`Create Conversation in ${workspace.name}`} onClick={() => { setMenuOpen(false); setCreateOpen(true); }}><MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />Create Conversation</button> : null}
+            {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" aria-label={`Create Conversation in ${workspace.name}`} onClick={() => { createFromMenuRef.current = true; setMenuOpen(false); setCreateOpen(true); }}><MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />Create Conversation</button> : null}
             {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" onClick={() => { setMenuOpen(false); setFocusName(true); setSettingsOpen(true); }}><Pencil className="h-3.5 w-3.5" aria-hidden="true" />Rename</button> : null}
             {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" onClick={() => { setMenuOpen(false); setFolderOpen(true); }}><FolderIcon className="h-3.5 w-3.5" aria-hidden="true" />Create folder</button> : null}
             <button
@@ -298,7 +304,7 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, on
                 params={{ workspaceId: workspace.id }}
                 preload="intent"
                 onClick={onNavigate}
-                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs ${activeAgents ? "bg-[var(--selected)] text-[var(--text)]" : "text-[var(--text)] hover:bg-[var(--hover)]"}`}
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm ${activeAgents ? "bg-[var(--selected)] text-[var(--text)]" : "text-[var(--text)] hover:bg-[var(--hover)]"}`}
                 aria-current={activeAgents ? "page" : undefined}
               >
                 <Bot className="h-3.5 w-3.5" aria-hidden="true" /> Agents

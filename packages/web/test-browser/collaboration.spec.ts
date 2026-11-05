@@ -1044,7 +1044,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   expect(sourceStatus).toBe(200);
 
   await page.getByRole("button", { name: `Workspace actions for ${workspace.name}`, exact: true }).click();
-  const createConversation = page.getByRole("button", { name: `Create Conversation in ${workspace.name}` });
+  const createConversation = page.getByRole("button", { name: `Create Conversation in ${workspace.name}`, exact: true });
   await expect(createConversation.locator("svg")).toHaveClass(/lucide-message-square/);
   await createConversation.click();
   const createDialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
@@ -1285,7 +1285,7 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
   const name = `lifecycle-${Date.now()}`;
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: `Workspace actions for ${workspace.name}`, exact: true }).click();
-  await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
+  await page.getByRole("button", { name: `Create Conversation in ${workspace.name}`, exact: true }).click();
   const dialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
   await dialog.getByLabel("Conversation name").fill(name);
   await dialog.getByRole("button", { name: "Create Conversation" }).click();

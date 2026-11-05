@@ -14,7 +14,7 @@ async function presetFixture(page: Page, request: APIRequestContext) {
   }, { path, method, body });
   const open = async () => {
     await page.getByRole("button", { name: `Workspace actions for ${workspace.name}`, exact: true }).click();
-    await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
+    await page.getByRole("button", { name: `Create Conversation in ${workspace.name}`, exact: true }).click();
     return page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
   };
   return { workspace, local, open };
