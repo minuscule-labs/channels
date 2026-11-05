@@ -5,6 +5,9 @@ export interface ConversationSetup {
   model?: { provider: string; id: string };
   reasoningLevel?: WorkspaceAgentConfig["reasoningLevel"];
   guidance?: string;
+  turnTimeoutMs?: number;
+  /** Undefined inherits the Workspace policy; null explicitly disables idle sleep. */
+  idleSleepTimeoutMs?: number | null;
 }
 
 export interface ConversationPreset extends ConversationSetup {
@@ -16,10 +19,19 @@ export interface ConversationPreset extends ConversationSetup {
   updatedAt: string;
 }
 
+export interface ConversationSettings extends ConversationSetup {
+  workspaceId: string;
+  conversationId: string;
+  revision: number;
+}
+
 /** Immutable creation snapshot, independent of subsequent preset edits or deletion. */
 export interface ConversationCreationSetup extends ConversationSetup {
   workspaceId: string;
   conversationId: string;
+  workingFolder?: { relativePath: string };
+  /** Identifies the original folder request without persisting its absolute path. */
+  workingFolderRequestHash?: string;
   actorIdentityId: string;
   name: string;
 }
@@ -44,14 +56,22 @@ export function applyConversationSetup(
 }
 
 export async function conversationAgentConfiguration(
-  store: Pick<RelayBindingStore, "getWorkspaceAgentConfig" | "getConversationCreationSetup">,
+  store: Pick<RelayBindingStore, "getWorkspaceAgentConfig" | "getConversationCreationSetup" | "getConversationSettings">,
   workspaceId: string,
   conversationId: string,
   identityId: string,
 ): Promise<WorkspaceAgentConfig | undefined> {
   const [config, setup] = await Promise.all([
     store.getWorkspaceAgentConfig(workspaceId, identityId),
-    store.getConversationCreationSetup(workspaceId, conversationId),
+    effectiveConversationSetup(store, workspaceId, conversationId),
   ]);
   return config ? applyConversationSetup(config, setup) : undefined;
+}
+
+export async function effectiveConversationSetup(
+  store: Pick<RelayBindingStore, "getConversationSettings" | "getConversationCreationSetup">,
+  workspaceId: string, conversationId: string,
+): Promise<ConversationSetup | undefined> {
+  return await store.getConversationSettings(workspaceId, conversationId)
+    ?? await store.getConversationCreationSetup(workspaceId, conversationId);
 }

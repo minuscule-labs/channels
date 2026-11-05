@@ -1,128 +1,8 @@
-import type {
-  ConversationMetadata,
-  Identity,
-  Workspace,
-  WorkspaceMember,
-} from "@minu/channels-core/types";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import type { ConversationMetadata, Workspace } from "@minu/channels-core/types";
+import { useNavigate } from "@tanstack/react-router";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Check, LoaderCircle, Plus, SquarePen, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { conversations, localControl } from "../lib/api";
-import { isConversationParticipantChoice } from "../lib/participants";
-import { queryKeys } from "../lib/query-keys";
-import { cacheConversationMetadata } from "../lib/conversation-folders";
-import { ErrorNotice } from "./ui/error-notice";
-import { ConversationWorkingFolders } from "./conversation-working-folders";
-import { ConversationPresetEditor, ConversationCreationSettings } from "./conversation-preset-editor";
-import type { ConversationSetup } from "@minu/channels-control/contracts";
-
-interface WorkspaceParticipant {
-  identity: Identity;
-  member: WorkspaceMember;
-}
-
-function useWorkspaceParticipants(workspaceId: string, open: boolean) {
-  const session = useQuery({
-    queryKey: queryKeys.localCurrentSession(),
-    queryFn: () => localControl.currentSession(),
-    enabled: open,
-    retry: false,
-  });
-  const members = useQuery({
-    queryKey: queryKeys.workspaceMembers(workspaceId),
-    queryFn: () => conversations.listWorkspaceMembers(workspaceId),
-    enabled: open,
-  });
-  const identities = useQuery({
-    queryKey: queryKeys.identities(),
-    queryFn: () => conversations.listIdentities(),
-    enabled: open,
-  });
-  const participants = useMemo<WorkspaceParticipant[]>(() => {
-    const identitiesById = new Map((identities.data ?? []).map((identity) => [identity.id, identity]));
-    return (members.data ?? []).flatMap((member) => {
-      const identity = identitiesById.get(member.identityId);
-      return identity ? [{ identity, member }] : [];
-    });
-  }, [identities.data, members.data]);
-  const currentMembership = session.data
-    ? participants.find(({ member }) => member.identityId === session.data.identityId)?.member
-    : undefined;
-  const canAdminister = currentMembership?.status === "active"
-    && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin");
-  return {
-    session,
-    members,
-    identities,
-    participants,
-    currentMembership,
-    canAdminister,
-    pending: session.isPending || members.isPending || identities.isPending,
-    error: session.error ?? members.error ?? identities.error,
-  };
-}
-
-function ParticipantChoices({
-  participants,
-  selected,
-  currentHumanIdentityId,
-  existingParticipantIds,
-  onToggle,
-}: {
-  participants: WorkspaceParticipant[];
-  selected: Set<string>;
-  currentHumanIdentityId?: string;
-  existingParticipantIds?: ReadonlySet<string>;
-  onToggle(identityId: string): void;
-}) {
-  const choices = participants.filter(({ identity }) =>
-    isConversationParticipantChoice(identity, currentHumanIdentityId, existingParticipantIds));
-  return (
-    <fieldset>
-      <legend className="text-xs font-medium">Participants</legend>
-      <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
-        Choose existing Workspace agents. You are included automatically, and existing participants remain editable.
-      </p>
-      <div className="mt-3 max-h-72 space-y-1 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2">
-        {choices.map(({ identity, member }) => {
-          const available = identity.status === "active" && member.status === "active";
-          const isCurrentHuman = identity.id === currentHumanIdentityId;
-          return (
-            <label
-              key={identity.id}
-              className={`flex items-center gap-3 rounded-md px-2.5 py-2 ${available && !isCurrentHuman ? "cursor-pointer hover:bg-[var(--hover)]" : ""} ${!available ? "opacity-50" : ""}`}
-            >
-              {isCurrentHuman ? (
-                <span className="grid h-4 w-4 place-items-center text-[var(--success)]" aria-hidden="true"><Check className="h-3.5 w-3.5" /></span>
-              ) : (
-                <input
-                  type="checkbox"
-                  checked={selected.has(identity.id)}
-                  disabled={!available}
-                  onChange={() => onToggle(identity.id)}
-                  className="h-4 w-4 accent-[var(--accent)]"
-                />
-              )}
-              <span className="avatar" aria-hidden="true">
-                {(identity.displayName ?? member.mentionHandle).slice(0, 1).toUpperCase()}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">{identity.displayName ?? `@${member.mentionHandle}`}</span>
-                <span className="block truncate font-mono text-[11px] text-[var(--muted)]">
-                  @{member.mentionHandle} · {identity.type}{member.roleLabel ? ` · ${member.roleLabel}` : ""}
-                </span>
-              </span>
-              {isCurrentHuman ? <span className="text-[10px] text-[var(--muted)]">You are included automatically.</span> : null}
-              {!available ? <span className="text-[10px] uppercase text-[var(--muted)]">disabled</span> : null}
-            </label>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
-}
+import { SquarePen, X } from "lucide-react";
+import { cloneElement, useCallback, useEffect, type MouseEvent, type ReactElement, type ReactNode } from "react";
 
 export function AdministrationDialog({
   open,
@@ -163,333 +43,40 @@ export function AdministrationDialog({
   );
 }
 
-function QueryState({
-  pending,
-  error,
-  canAdminister,
-  children,
-}: {
-  pending: boolean;
-  error: Error | null;
-  canAdminister: boolean | undefined;
-  children: ReactNode;
-}) {
-  if (pending) return <div className="empty-state"><p>Loading Workspace members…</p></div>;
-  if (error) return <div className="empty-state"><p>{error.message}</p></div>;
-  if (!canAdminister) {
-    return (
-      <div className="empty-state">
-        <h2 className="text-sm font-semibold text-[var(--text)]">Administration unavailable</h2>
-        <p>An active Workspace owner or admin is required.</p>
-      </div>
-    );
-  }
-  return children;
-}
+type NavigationTrigger = ReactElement<{ onClick?(event: MouseEvent<HTMLButtonElement>): void }>;
 
-export function CreateConversationDialog({
-  workspace,
-  onNavigate,
-  open: controlledOpen,
-  onOpenChange,
-  initialFolderId,
-  trigger,
-  onCloseAutoFocus,
-}: {
-  workspace: Workspace;
-  onNavigate?(): void;
-  open?: boolean;
-  onOpenChange?(open: boolean): void;
-  initialFolderId?: string | null;
-  trigger?: ReactNode;
-  onCloseAutoFocus?(event: Event): void;
+export function CreateConversationDialog({ workspace, onNavigate, open, onOpenChange, initialFolderId, trigger }: {
+  workspace: Workspace; onNavigate?(): void; open?: boolean; onOpenChange?(open: boolean): void;
+  initialFolderId?: string | null; trigger?: ReactNode; onCloseAutoFocus?(event: Event): void;
 }) {
-  const [internalOpen, setInternalOpen] = useState(false);
-  const open = controlledOpen ?? internalOpen;
-  const setOpen = (next: boolean) => {
-    if (controlledOpen === undefined) setInternalOpen(next);
-    onOpenChange?.(next);
-  };
-  const [name, setName] = useState("");
-  const [setup, setSetup] = useState<ConversationSetup>({ participants: [] });
-  const [draftId, setDraftId] = useState("");
-  const [folderId, setFolderId] = useState("");
-  const folders = useQuery({
-    queryKey: queryKeys.workspaceFolders(workspace.id),
-    queryFn: () => conversations.listWorkspaceFolders(workspace.id),
-    enabled: open,
-  });
-  const data = useWorkspaceParticipants(workspace.id, open);
-  const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const selected = new Set([
-    ...(data.session.data ? [data.session.data.identityId] : []),
-    ...setup.participants.flatMap(({ identityId }) => identityId ? [identityId] : []),
-  ]);
-  const ready = Boolean(name.trim() && draftId) && setup.participants.length <= 16 && setup.participants.every(({ identityId, role }) =>
-    role.trim() && data.participants.some(({ identity, member }) => identity.id === identityId
-      && identity.status === "active" && member.status === "active"));
-  const mutation = useMutation({
-    mutationFn: () => localControl.createConversationWithSetup(workspace.id, {
-      ...setup, id: draftId, name: name.trim(), folderId: folderId || null,
-    }),
-    onSuccess: (conversation) => {
-      cacheConversationMetadata(queryClient, conversation);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspace.id), exact: true });
-      setFolderId("");
-      setName("");
-      setSetup({ participants: [] });
-      setOpen(false);
-      onNavigate?.();
-      void navigate({
-        to: "/app/workspaces/$workspaceId/conversations/$conversationId",
-        params: { workspaceId: workspace.id, conversationId: conversation.id },
-      });
-    },
-  });
-  useEffect(() => {
-    if (!open) return;
-    setName("");
-    setSetup({ participants: [] });
-    setFolderId(initialFolderId ?? "");
-    setDraftId(`conversation_${crypto.randomUUID().replaceAll("-", "")}`);
-    mutation.reset();
-  }, [open, workspace.id, initialFolderId, mutation.reset]);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    if (ready && data.session.data && !mutation.isPending) mutation.mutate();
-  };
-
-  return (
-    <AdministrationDialog
-      open={open}
-      onOpenChange={setOpen}
-      onCloseAutoFocus={onCloseAutoFocus}
-      title={`Create a Conversation in ${workspace.name}`}
-      description="Name the conversation and choose its initial agents. You are included automatically."
-      trigger={trigger === undefined ? (
-        <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Conversation in ${workspace.name}`} title="Create Conversation">
-          <SquarePen className="h-3.5 w-3.5" />
-        </button>
-      ) : trigger}
-    >
-      <QueryState pending={data.pending || folders.isPending} error={data.error ?? folders.error} canAdminister={data.canAdminister}>
-        <form className="space-y-5" onSubmit={submit}>
-          <fieldset className="space-y-5" disabled={mutation.isPending}>
-          <label className="block text-xs font-medium">
-            Conversation name
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              maxLength={100}
-              autoFocus
-              placeholder="implementation"
-              className="settings-input mt-1.5"
-            />
-          </label>
-          <label className="block text-xs font-medium">
-            Folder
-            <select className="settings-input mt-1.5" value={folderId} onChange={event => setFolderId(event.target.value)} disabled={mutation.isPending}>
-              <option value="">Unfiled</option>
-              {(folders.data ?? []).map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-            </select>
-          </label>
-          <ParticipantChoices
-            participants={data.participants}
-            selected={selected}
-            currentHumanIdentityId={data.session.data?.identityId}
-            onToggle={(identityId) => setSetup((current) => {
-              if (current.participants.some((participant) => participant.identityId === identityId)) {
-                return { ...current, participants: current.participants.filter((participant) => participant.identityId !== identityId) };
-              }
-              const empty = current.participants.findIndex((participant) => !participant.identityId);
-              if (empty >= 0) return { ...current, participants: current.participants.map((participant, index) => index === empty ? { ...participant, identityId } : participant) };
-              const role = data.participants.find(({ identity }) => identity.id === identityId)?.member.roleLabel ?? "Collaborator";
-              return { ...current, participants: [...current.participants, { identityId, role }] };
-            })}
-          />
-          <ConversationPresetEditor workspaceId={workspace.id} setup={setup} onChange={setSetup} participants={data.participants} />
-          </fieldset>
-          {!ready && setup.participants.some(({ identityId }) => !identityId) ? <p className="text-xs text-[var(--muted)]">Assign an agent to every role, or remove unused roles, before creating.</p> : null}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
-            <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>
-            <button className="button-primary" type="submit" disabled={!ready || mutation.isPending}>
-              {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-              Create Conversation
-            </button>
-          </div>
-        </form>
-      </QueryState>
-    </AdministrationDialog>
-  );
+  const launch = useCallback(() => {
+    onOpenChange?.(false);
+    onNavigate?.();
+    void navigate({ to: "/app/workspaces/$workspaceId/conversations/new", params: { workspaceId: workspace.id },
+      search: { folderId: initialFolderId ?? undefined } });
+  }, [initialFolderId, navigate, onNavigate, onOpenChange, workspace.id]);
+  useEffect(() => { if (open) launch(); }, [open, launch]);
+  if (trigger === null) return null;
+  if (trigger) {
+    const button = trigger as NavigationTrigger;
+    return cloneElement(button, { onClick: (event) => { button.props.onClick?.(event); if (!event.defaultPrevented) launch(); } });
+  }
+  return <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Conversation in ${workspace.name}`} title="Create Conversation" onClick={launch}>
+    <SquarePen className="h-3.5 w-3.5" />
+  </button>;
 }
 
-export function EditConversationParticipantsDialog({
-  conversation,
-  open: controlledOpen,
-  onOpenChange,
-  onCloseAutoFocus,
-  trigger = null,
-}: {
-  conversation: ConversationMetadata;
-  open?: boolean;
-  onOpenChange?(open: boolean): void;
-  onCloseAutoFocus?(event: Event): void;
-  trigger?: ReactNode;
+export function EditConversationParticipantsDialog({ conversation, open, onOpenChange, trigger = null }: {
+  conversation: ConversationMetadata; open?: boolean; onOpenChange?(open: boolean): void;
+  onCloseAutoFocus?(event: Event): void; trigger?: ReactNode;
 }) {
-  const [internalOpen, setInternalOpen] = useState(false);
-  const open = controlledOpen ?? internalOpen;
-  const setOpen = (nextOpen: boolean) => {
-    if (controlledOpen === undefined) setInternalOpen(nextOpen);
-    onOpenChange?.(nextOpen);
-  };
-  const previousOpen = useRef(false);
-  const [name, setName] = useState(conversation.name);
-  const [selected, setSelected] = useState<Set<string>>(new Set(conversation.participants.map(({ id }) => id)));
-  const existingParticipantIds = useMemo(() => new Set(conversation.participants.map(({ id }) => id)), [conversation.participants]);
-  const data = useWorkspaceParticipants(conversation.workspaceId, open);
-  const queryClient = useQueryClient();
-  const renameMutation = useMutation({
-    mutationFn: () => conversations.updateConversation(conversation.id, {
-      actorIdentityId: data.session.data!.identityId,
-      name: name.trim(),
-    }),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
-      queryClient.setQueryData<ConversationMetadata[]>(
-        queryKeys.workspaceConversations(conversation.workspaceId),
-        (current = []) => current.map((candidate) => candidate.id === updated.id ? updated : candidate),
-      );
-      setName(updated.name);
-    },
-  });
-  const mutation = useMutation({
-    mutationFn: () => conversations.updateConversationParticipants(conversation.id, {
-      actorIdentityId: data.session.data!.identityId,
-      participantIds: [...new Set([...selected, data.session.data!.identityId])],
-      expectedRosterRevision: conversation.rosterRevision,
-    }),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
-      queryClient.setQueryData<ConversationMetadata[]>(
-        queryKeys.workspaceConversations(conversation.workspaceId),
-        (current = []) => current.map((candidate) => candidate.id === updated.id ? updated : candidate),
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversation.id) });
-      setOpen(false);
-    },
-  });
-  useEffect(() => {
-    const opening = open && !previousOpen.current;
-    previousOpen.current = open;
-    if (!opening) return;
-    setName(conversation.name);
-    setSelected(new Set([
-      ...conversation.participants.filter(({ status }) => status === "active").map(({ id }) => id),
-      ...(data.session.data ? [data.session.data.identityId] : []),
-    ]));
-    renameMutation.reset();
-    mutation.reset();
-  }, [open, conversation, data.session.data, renameMutation.reset, mutation.reset]);
-
-  return (
-    <AdministrationDialog
-      open={open}
-      onOpenChange={setOpen}
-      onCloseAutoFocus={onCloseAutoFocus}
-      title={`Manage #${conversation.name}`}
-      description={`Choose existing agents for roster revision ${conversation.rosterRevision + 1}. Historical messages retain their author identity.`}
-      trigger={trigger}
-    >
-      <QueryState pending={data.pending} error={data.error} canAdminister={data.canAdminister}>
-        <div className="space-y-5">
-          <form
-            className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (name.trim() && name.trim() !== conversation.name && data.session.data && !renameMutation.isPending) {
-                renameMutation.mutate();
-              }
-            }}
-          >
-            <label className="block text-xs font-medium">
-              Conversation name
-              <input
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                maxLength={100}
-                className="settings-input mt-1.5"
-              />
-            </label>
-            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-              {renameMutation.error ? <ErrorNotice className="mr-auto" onDismiss={renameMutation.reset}>{renameMutation.error.message}</ErrorNotice> : null}
-              {renameMutation.isSuccess && name === conversation.name ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Name saved</span> : null}
-              <button
-                className="button-secondary"
-                type="submit"
-                disabled={!name.trim() || name.trim() === conversation.name || renameMutation.isPending}
-              >
-                {renameMutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                Save name
-              </button>
-            </div>
-          </form>
-          <ParticipantChoices
-            existingParticipantIds={existingParticipantIds}
-            participants={data.participants}
-            selected={selected}
-            currentHumanIdentityId={data.session.data?.identityId}
-            onToggle={(identityId) => setSelected((current) => {
-              const next = new Set(current);
-              if (next.has(identityId)) next.delete(identityId);
-              else next.add(identityId);
-              return next;
-            })}
-          />
-          <ConversationWorkingFolders conversationId={conversation.id} canAdminister={data.canAdminister} />
-          {data.canAdminister ? <ConversationCreationSettings conversationId={conversation.id} /> : null}
-          <p className="text-xs text-[var(--muted)]">
-            Create and configure agents on the {" "}
-            <Link
-              to="/app/workspaces/$workspaceId/agents"
-              params={{ workspaceId: conversation.workspaceId }}
-              onClick={() => setOpen(false)}
-              className="text-[var(--accent)] underline underline-offset-2"
-            >Agents page</Link>.
-          </p>
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {mutation.error ? (
-              <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>
-                {mutation.error.message}
-                {/reload and retry/i.test(mutation.error.message) ? (
-                  <button
-                    className="ml-2 underline"
-                    type="button"
-                    onClick={() => {
-                      setOpen(false);
-                      void queryClient.invalidateQueries({ queryKey: queryKeys.conversation(conversation.id) });
-                    }}
-                  >Reload roster</button>
-                ) : null}
-              </ErrorNotice>
-            ) : null}
-            {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
-            <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>
-            <button
-              className="button-primary"
-              type="button"
-              disabled={selected.size === 0 || mutation.isPending}
-              onClick={() => {
-                if (selected.size > 0 && data.session.data && !mutation.isPending) mutation.mutate();
-              }}
-            >
-              {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-              Save participants
-            </button>
-          </div>
-        </div>
-      </QueryState>
-    </AdministrationDialog>
-  );
+  const navigate = useNavigate();
+  const launch = useCallback(() => {
+    onOpenChange?.(false);
+    void navigate({ to: "/app/workspaces/$workspaceId/conversations/$conversationId/settings",
+      params: { workspaceId: conversation.workspaceId, conversationId: conversation.id } });
+  }, [conversation.id, conversation.workspaceId, navigate, onOpenChange]);
+  useEffect(() => { if (open) launch(); }, [open, launch]);
+  return trigger ? cloneElement(trigger as NavigationTrigger, { onClick: launch }) : null;
 }

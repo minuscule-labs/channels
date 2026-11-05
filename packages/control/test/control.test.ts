@@ -884,7 +884,7 @@ test("serves read-only loopback endpoints with host and Origin enforcement", asy
   context.after(() => server.close());
   const client = new LocalControlClient(server.endpoint);
 
-  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 24 });
+  assert.deepEqual(await client.health(), { status: "ok", protocolVersion: 25 });
   assert.equal((await client.capabilities()).features.currentSession, true);
   assert.equal((await client.capabilities()).features.agentStart, false);
   assert.equal((await client.capabilities()).features.steer, false);
@@ -966,7 +966,7 @@ test("exchanges a one-time launch code for an expiring HttpOnly browser session"
   const currentSession = await fetch(`${server.endpoint}/local/session`, {
     headers: { cookie, origin: sessions.browserOrigin },
   });
-  assert.deepEqual(await currentSession.json(), { protocolVersion: 24, identityId: "human-1" });
+  assert.deepEqual(await currentSession.json(), { protocolVersion: 25, identityId: "human-1" });
 
   assert.equal((await fetch(launchUrl, { redirect: "manual" })).status, 401);
   currentTime = new Date("2026-08-28T00:00:03.000Z");
@@ -1166,7 +1166,7 @@ test("serves bounded, private turn-failure projections without Conversation infe
         }
         limits.push(limit);
         return {
-          protocolVersion: 24,
+          protocolVersion: 25,
           conversationId,
           notices: [{ participant: { identityId: "agent-running", displayLabel: "Builder" }, triggerSequence: 9, failedAt: "2026-08-28T00:00:00.000Z" }],
           diagnostics: [{
@@ -1442,7 +1442,7 @@ test("review app seeds a disposable Workspace and authenticated presentation sta
     };
     const sessionResponse = await fetch(`${app.controlEndpoint}/local/session`, { headers });
     assert.deepEqual(await sessionResponse.json(), {
-      protocolVersion: 24,
+      protocolVersion: 25,
       identityId: app.humanIdentityId,
     });
     const response = await fetch(`${app.controlEndpoint}/local/conversations/${app.conversationId}/agents`, {
@@ -1991,7 +1991,7 @@ test("private configuration keeps lists redacted and returns agent details only 
     }]);
     const detail = await configuration.getWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id);
     assert.deepEqual(detail, {
-      protocolVersion: 24,
+      protocolVersion: 25,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "PRIVATE PERSONA: build and verify carefully" },
@@ -2087,7 +2087,7 @@ test("Conversation working folders are private, canonical, and owner-controlled"
     });
     await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
     assert.deepEqual(await configuration.getConversationWorkingFolders(conversation.id, owner.id), {
-      protocolVersion: 24,
+      protocolVersion: 25,
       workspaceId: workspace.id,
       conversationId: conversation.id,
       inheritedFromWorkspace: true,
@@ -2687,7 +2687,7 @@ test("local startup never replaces an offline binding without owner-scoped resum
   }
 });
 
-test("Workspace policy opts an existing managed binding into sleep and can turn it off", async () => {
+for (const scope of ["Workspace", "Conversation"] as const) test(`${scope} policy opts an existing managed binding into sleep and can turn it off`, async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-workspace-sleep-source-")));
   const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
@@ -2736,17 +2736,29 @@ test("Workspace policy opts an existing managed binding into sleep and can turn 
     assert.equal(offBindingReads, 0, "an Off Workspace must not poll attached binding rows");
     assert.equal((await store.getBinding(binding.id))?.state, "connected", "existing Workspaces stay off by default");
     assert.deepEqual(runtime.suspensions, []);
-    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs: 15 * 60_000 });
+    const setPolicy = async (idleSleepTimeoutMs: number | null, expectedRevision: number) => {
+      if (scope === "Workspace") await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs });
+      else await configuration.updateConversationSettings(conversation.id, owner.id, {
+        participants: [{ identityId: agent.id, role: "Builder" }], idleSleepTimeoutMs, expectedRevision,
+      });
+    };
+    await setPolicy(15 * 60_000, 0);
     await waitUntil(async () => (await store.getBinding(binding.id))?.state === "sleeping"
       && runtime.suspensions.includes(binding.runtimeSessionId), 5_000);
-    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs: null });
+    await setPolicy(null, 1);
+    if (scope === "Conversation") await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs: 15 * 60_000 });
     const trigger = await client.postMessage(conversation.id, {
       participantId: owner.id, body: "@builder wake after policy turned off",
     });
     await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= trigger.sequence, 5_000);
     assert.equal((await store.getBinding(binding.id))?.state, "connected");
+    if (scope === "Conversation") {
+      const current = (await store.getBinding(binding.id))!;
+      assert.ok(await store.updateBindingState(current.id, current.generation, current.leaseOwner!, "connected", now, now,
+        "connected", { lastActiveAt: new Date(Date.now() - 16 * 60_000).toISOString() }));
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal((await store.getBinding(binding.id))?.state, "connected", "turning policy off prevents a new sleep");
+    assert.equal((await store.getBinding(binding.id))?.state, "connected", "turning policy off prevents a new sleep, including an explicit Conversation override");
   } finally {
     await host?.close().catch(() => undefined);
     await Promise.all([
@@ -4777,7 +4789,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     assert.equal(agentConfigurationResponse.status, 200);
     assert.equal(agentConfigurationResponse.headers.get("cache-control"), "no-store");
     assert.deepEqual(await agentConfigurationResponse.json(), {
-      protocolVersion: 24,
+      protocolVersion: 25,
       workspaceId: workspace.id,
       identityId: agent.id,
       instructions: { source: "inline", text: "DAEMON PRIVATE PERSONA" },
@@ -4795,7 +4807,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     );
     assert.equal(workspaceRuntimeOptionsResponse.status, 200);
     assert.deepEqual(await workspaceRuntimeOptionsResponse.json(), {
-      protocolVersion: 24,
+      protocolVersion: 25,
       workspaceId: workspace.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],
       reasoningLevels: ["off", "medium", "high"],
@@ -4810,7 +4822,7 @@ test("daemon composes public Conversations, private Relay storage, Runtime statu
     );
     assert.equal(runtimeOptionsResponse.status, 200);
     assert.deepEqual(await runtimeOptionsResponse.json(), {
-      protocolVersion: 24,
+      protocolVersion: 25,
       workspaceId: workspace.id,
       identityId: agent.id,
       models: [{ provider: "openai", id: "gpt-private", name: "Private GPT", reasoning: true, enabled: true }],

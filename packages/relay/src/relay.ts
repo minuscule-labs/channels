@@ -160,6 +160,8 @@ export interface ConversationRuntimeRelayOptions {
   cursorStore?: RelayCursorStore;
   turnPollIntervalMs?: number;
   turnTimeoutMs?: number;
+  /** Resolved once for each turn; edits never shorten a turn already in progress. */
+  resolveTurnTimeoutMs?(): Promise<number | undefined>;
   runtimeRequestTimeoutMs?: number;
   turnRetryBudgetMs?: number;
   terminalOutcomeTimeoutMs?: number;
@@ -334,6 +336,7 @@ interface BindingState {
   phase?: RelayAgentActivityPhase;
   retryAttempt?: number;
   retryDeadline?: number;
+  turnTimeoutMs?: number;
   queuedTurns: number;
   /** Retained for the legacy interrupt-and-replace operation. */
   interruptedTriggerId?: string;
@@ -1542,13 +1545,23 @@ export class ConversationRuntimeRelay {
 
   private async handleWithRetry(state: BindingState, message: ConversationMessage): Promise<void> {
     let attempts = 0;
-    const deadline = this.monotonicNow()
-      + (this.options.turnRetryBudgetMs ?? DEFAULT_TURN_RETRY_BUDGET_MS);
+    const started = this.monotonicNow();
+    let deadline = started + (this.options.turnRetryBudgetMs ?? DEFAULT_TURN_RETRY_BUDGET_MS);
     state.retryDeadline = deadline;
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
       attempts += 1;
       if (attempts > 1) state.delivery?.event("retrying", { attempt: attempts });
       try {
+        if (state.turnTimeoutMs === undefined) {
+          const configured = this.options.resolveTurnTimeoutMs
+            ? await this.awaitRuntime(this.options.resolveTurnTimeoutMs(), "read turn timeout", undefined, deadline) : undefined;
+          validatePositiveMilliseconds("turnTimeoutMs", configured);
+          state.turnTimeoutMs = configured ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+          if (configured !== undefined && this.options.turnRetryBudgetMs === undefined) {
+            deadline = Math.min(deadline, started + configured);
+            state.retryDeadline = deadline;
+          }
+        }
         await this.handle(state, message, deadline);
         return;
       } catch (error) {
@@ -1730,6 +1743,7 @@ export class ConversationRuntimeRelay {
     state.phase = undefined;
     state.retryAttempt = undefined;
     state.retryDeadline = undefined;
+    state.turnTimeoutMs = undefined;
     state.interruptedTriggerId = undefined;
     state.cancelActorId = undefined;
     state.runtimeTurnAccepted = undefined;
@@ -1938,7 +1952,7 @@ export class ConversationRuntimeRelay {
         await this.awaitRuntime(
           binding.runtime.send(binding.sessionId, prompt, images),
           `send to ${binding.participantId}`,
-          this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+          state.turnTimeoutMs ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
           deadline,
         );
       } catch (error) {
@@ -2234,6 +2248,11 @@ export class ConversationRuntimeRelay {
     state.lastProcessedSequence = Math.max(state.lastProcessedSequence, sequence);
   }
 
+  private turnTimeoutFor(binding: AgentConversationBinding): number {
+    return this.states.find((state) => state.binding === binding)?.turnTimeoutMs
+      ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  }
+
   private async waitForTurn(
     binding: AgentConversationBinding,
     turnId: string,
@@ -2241,7 +2260,7 @@ export class ConversationRuntimeRelay {
     retryDeadline: number,
   ): Promise<RuntimePortTurn> {
     let turn = initial;
-    const turnDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+    const turnDeadline = this.monotonicNow() + this.turnTimeoutFor(binding);
     const deadline = Math.min(retryDeadline, turnDeadline);
     try {
       while (this.monotonicNow() < deadline) {
@@ -2269,7 +2288,7 @@ export class ConversationRuntimeRelay {
   }
 
   private async waitUntilIdle(binding: AgentConversationBinding, retryDeadline: number): Promise<void> {
-    const idleDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+    const idleDeadline = this.monotonicNow() + this.turnTimeoutFor(binding);
     const deadline = Math.min(retryDeadline, idleDeadline);
     try {
       while (this.monotonicNow() < deadline) {

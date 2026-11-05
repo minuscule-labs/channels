@@ -66,7 +66,7 @@ test("folder create/rename/create-in-folder/move/unfile persist, retain failures
 
   await workspaceActions.click();
   await page.getByRole("button", { name: `Create Conversation in ${f.workspace.name}`, exact: true }).click();
-  const conversation = page.getByRole("dialog", { name: `Create a Conversation in ${f.workspace.name}`, exact: true });
+  const conversation = page.getByRole("main", { name: "Create a Conversation", exact: true });
   await conversation.getByLabel("Conversation name").fill("folder-flow-created");
   await conversation.getByRole("combobox", { name: "Folder", exact: true }).selectOption({ label: "Folder delivery" });
   await conversation.getByRole("button", { name: "Create Conversation", exact: true }).click();
@@ -245,7 +245,7 @@ test("delayed background metadata cannot revert a newer assignment or notificati
   }
 });
 
-test("compact folder row menus preselect filing and restore keyboard focus on mobile", async ({ page, request }) => {
+test("compact folder row menus preselect filing and focus Workspace rename on mobile", async ({ page, request }) => {
   const f = await seed(request, "folder-menu-home");
   const folder = await f.folder("Tree menu folder");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -265,10 +265,11 @@ test("compact folder row menus preselect filing and restore keyboard focus on mo
   await expect(page.getByRole("button", { name: "Create Conversation", exact: true })).toHaveCSS("font-size", "14px");
   await expect(page.getByRole("button", { name: "Rename", exact: true })).toHaveCSS("font-size", "14px");
   await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
-  const create = page.getByRole("dialog", { name: `Create a Conversation in ${f.workspace.name}`, exact: true });
+  const create = page.getByRole("main", { name: "Create a Conversation", exact: true });
   await expect(create.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue(folder.id);
-  await create.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(actions).toBeFocused();
+  await create.getByRole("link", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "#folder-menu-home", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await actions.click();
   await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
   await create.getByLabel("Conversation name").fill("folder-menu-created");
@@ -286,16 +287,15 @@ test("compact folder row menus preselect filing and restore keyboard focus on mo
   await expect(page.getByRole("button", { name: "Rename", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
   await expect(create.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue("");
-  await create.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(unfiled).toBeFocused();
+  await create.getByRole("link", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "#folder-menu-created", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   const workspaceActions = page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true });
   await workspaceActions.click();
   await page.getByRole("button", { name: "Rename", exact: true }).click();
-  const settings = page.getByRole("dialog", { name: `${f.workspace.name} configuration`, exact: true });
+  const settings = page.getByRole("main", { name: "Workspace settings", exact: true });
   await expect(settings.getByLabel("Name", { exact: true })).toBeFocused();
   await expect(settings.getByLabel("Name", { exact: true })).toHaveValue(f.workspace.name);
-  await page.keyboard.press("Escape");
-  await expect(workspaceActions).toBeFocused();
 });
 
 test("the mobile drawer shares folder moves, collapse preferences and focus recovery with desktop", async ({ page, request }, info) => {

@@ -84,6 +84,7 @@ import {
   type LocalConversationPresets,
   type ConversationPreset,
   type LocalConversationCreationSetup,
+  type LocalConversationSettings,
 } from "./contracts.ts";
 
 export interface LocalControlConversationDirectory {
@@ -200,6 +201,8 @@ export interface LocalControlConfigurationPort {
   saveConversationPreset?(workspaceId: string, presetId: string, actor: string, input: unknown): Promise<ConversationPreset>;
   deleteConversationPreset?(workspaceId: string, presetId: string, actor: string, input: unknown): Promise<void>;
   createConversationWithSetup?(workspaceId: string, actor: string, input: unknown): Promise<ConversationMetadata>;
+  getConversationSettings?(conversationId: string, actor: string): Promise<LocalConversationSettings>;
+  updateConversationSettings?(conversationId: string, actor: string, input: unknown): Promise<LocalConversationSettings>;
   getConversationCreationSetup?(conversationId: string, actor: string): Promise<LocalConversationCreationSetup>;
   provisionWorkspace?(actorIdentityId: string, input: unknown): Promise<ProvisionLocalWorkspaceResult>;
   getWorkspaceConfiguration(
@@ -500,6 +503,15 @@ export class LocalControlService {
   async createConversationWithSetup(workspaceId: string, actor: string, input: unknown) {
     if (!this.options.configuration?.createConversationWithSetup) throw new LocalConfigurationRequestError("Conversation creation unavailable", 404, "unavailable");
     return this.options.configuration.createConversationWithSetup(workspaceId, actor, input);
+  }
+
+  async getConversationSettings(conversationId: string, actor: string) {
+    if (!this.options.configuration?.getConversationSettings) throw new LocalConfigurationRequestError("Conversation settings unavailable", 404, "unavailable");
+    return this.options.configuration.getConversationSettings(conversationId, actor);
+  }
+  async updateConversationSettings(conversationId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.updateConversationSettings) throw new LocalConfigurationRequestError("Conversation settings unavailable", 404, "unavailable");
+    return this.options.configuration.updateConversationSettings(conversationId, actor, input);
   }
 
   async getConversationCreationSetup(conversationId: string, actor: string) {
@@ -1596,6 +1608,14 @@ export async function createLocalControlHttpServer(
         json(response, 201, { conversation: await options.service.createConversationWithSetup(
           decodeURIComponent(createWithSetupMatch[1]!), browserSession.identityId, await readJson(request),
         ) }, origin);
+        return;
+      }
+      const conversationSettingsMatch = path.match(/^\/local\/conversations\/([^/]+)\/settings$/);
+      if (conversationSettingsMatch && browserSession && (request.method === "GET" || request.method === "PUT")) {
+        const id = decodeURIComponent(conversationSettingsMatch[1]!);
+        json(response, 200, request.method === "GET"
+          ? await options.service.getConversationSettings(id, browserSession.identityId)
+          : await options.service.updateConversationSettings(id, browserSession.identityId, await readJson(request)), origin);
         return;
       }
       const creationSetupMatch = path.match(/^\/local\/conversations\/([^/]+)\/creation-setup$/);
