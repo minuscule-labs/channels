@@ -40,9 +40,9 @@ async function openWorkspaceSettings(page: Page, workspaceName: string): Promise
 
 async function changeNotificationSound(page: Page, workspaceName: string, sound: "off" | "mentions" | "all"): Promise<void> {
   await openWorkspaceSettings(page, workspaceName);
-  const settings = page.getByRole("dialog", { name: `${workspaceName} configuration`, exact: true });
+  const settings = page.getByRole("main", { name: "Workspace settings", exact: true });
   await settings.getByLabel("Notification sound").selectOption(sound);
-  await settings.getByRole("button", { name: "Close Workspace configuration" }).click();
+  await page.goBack();
 }
 
 async function openWorkspaceAgents(page: Page, workspaceName: string): Promise<void> {
@@ -545,7 +545,7 @@ test("hides identity-scoped notification preferences when session capability is 
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/agents`);
   await expect(page.getByLabel("Selected Workspace").first()).toBeVisible();
   await openWorkspaceSettings(page, workspace.name);
-  await expect(page.getByRole("dialog", { name: `${workspace.name} configuration`, exact: true })).toBeVisible();
+  await expect(page.getByRole("main", { name: "Workspace settings", exact: true })).toBeVisible();
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
@@ -789,9 +789,9 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   await launchAuthenticated(page, request, "/");
 
   await openWorkspaceSettings(page, workspace.name);
-  const dialog = page.getByRole("dialog", { name: `${workspace.name} configuration` });
+  const dialog = page.getByRole("main", { name: "Workspace settings", exact: true });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText("Signed in as @david · owner");
+  await expect(dialog).toContainText(workspace.name);
 
   const rootValue = "/tmp";
   await dialog.getByLabel("Source location", { exact: true }).fill(rootValue);
@@ -804,6 +804,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect(await rootResponse.text()).not.toContain(rootValue);
   await expect(dialog.getByText("Source: configured", { exact: true })).toBeVisible();
   await expect(dialog.getByLabel("Replace source location", { exact: true })).toHaveValue("");
+  await dialog.getByRole("navigation", { name: "Workspace settings" }).getByRole("link", { name: "Defaults & timeouts" }).click();
   await expect(dialog.getByLabel("Sleep after")).toHaveValue("off");
   await dialog.getByLabel("Sleep after").selectOption("15");
   const sleepResponsePromise = page.waitForResponse((response) =>
@@ -815,7 +816,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect(await sleepResponse.json()).toMatchObject({ idleSleepTimeoutMs: 15 * 60_000 });
   await expect(dialog.getByLabel("Sleep after")).toHaveValue("15");
 
-  await dialog.getByRole("button", { name: "Close Workspace configuration" }).click();
+  await page.goBack();
   await openWorkspaceAgents(page, workspace.name);
   await expect(page.getByRole("heading", { name: `${workspace.name} agents` })).toBeVisible();
   await page.getByRole("link", { name: /Builder Agent/ }).click();
@@ -1019,7 +1020,7 @@ test("creates and renames a Workspace with a private source path", async ({ page
     return Boolean((await response.json() as { rootConfigured?: boolean }).rootConfigured);
   }, createdWorkspaceId)).toBe(true);
   await openWorkspaceSettings(page, "Browser Workspace");
-  const settings = page.getByRole("dialog", { name: "Browser Workspace configuration" });
+  const settings = page.getByRole("main", { name: "Workspace settings" });
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
   await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
   await settings.getByRole("button", { name: "Save name" }).click();
@@ -1046,7 +1047,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   const createConversation = page.getByRole("button", { name: `Create Conversation in ${workspace.name}` });
   await expect(createConversation.locator("svg")).toHaveClass(/lucide-square-pen/);
   await createConversation.click();
-  const createDialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
+  const createDialog = page.getByRole("main", { name: "Create a Conversation" });
   await expect(createDialog).toBeVisible();
   await createDialog.getByLabel("Conversation name").fill("roster-administration");
   await expect(createDialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
@@ -1163,15 +1164,15 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
 
   await page.getByRole("button", { name: "Conversation actions for roster-administration", exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  let rosterDialog = page.getByRole("dialog", { name: "Manage #roster-administration" });
+  let rosterDialog = page.getByRole("main", { name: "Conversation settings" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Builder Agent/ })).toBeChecked();
   await rosterDialog.getByLabel("Conversation name").fill("delivery-room");
   const renameResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH" && response.url().endsWith(`/conversations/${conversation.id}`));
   await rosterDialog.getByRole("button", { name: "Save name" }).click();
   expect((await renameResponsePromise).ok()).toBe(true);
-  await expect(page.getByRole("heading", { name: "#delivery-room" })).toBeVisible();
-  rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
+  await expect(page.getByRole("link", { name: "delivery-room", exact: true }).first()).toBeVisible();
+  rosterDialog = page.getByRole("main", { name: "Conversation settings" });
   await expect(rosterDialog.getByText("Create a participant", { exact: true })).toHaveCount(0);
   await expect(rosterDialog.getByLabel("Participant type")).toHaveCount(0);
   await expect(rosterDialog.getByLabel("Display name")).toHaveCount(0);
@@ -1198,11 +1199,12 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   await page.getByRole("link", { name: "delivery-room", exact: true }).first().click();
   await page.getByRole("button", { name: "Conversation actions for delivery-room", exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
+  rosterDialog = page.getByRole("main", { name: "Conversation settings" });
   await expect(rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ })).not.toBeChecked();
   await rosterDialog.getByRole("checkbox", { name: /Reviewer Agent/ }).check();
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).uncheck();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
+  await rosterDialog.getByRole("link", { name: "Back to Conversation", exact: true }).click();
   await expect(rosterDialog).toBeHidden();
   await expect(page.getByText("Workspace: Browser Test", { exact: true })).toBeVisible();
   await expect(page.getByText(/Conversation ID|roster \d+/)).toHaveCount(0);
@@ -1210,9 +1212,10 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
 
   await page.getByRole("button", { name: "Conversation actions for delivery-room", exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  rosterDialog = page.getByRole("dialog", { name: "Manage #delivery-room" });
+  rosterDialog = page.getByRole("main", { name: "Conversation settings" });
   await rosterDialog.getByRole("checkbox", { name: /Builder Agent/ }).check();
   await rosterDialog.getByRole("button", { name: "Save participants" }).click();
+  await rosterDialog.getByRole("link", { name: "Back to Conversation", exact: true }).click();
   await expect(rosterDialog).toBeHidden();
   await expect(page.getByText("Workspace: Browser Test", { exact: true })).toBeVisible();
   await expect(page.getByText(/Conversation ID|roster \d+/)).toHaveCount(0);
@@ -1284,7 +1287,7 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
   const name = `lifecycle-${Date.now()}`;
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
-  const dialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
+  const dialog = page.getByRole("main", { name: "Create a Conversation" });
   await dialog.getByLabel("Conversation name").fill(name);
   await dialog.getByRole("button", { name: "Create Conversation" }).click();
   await expect(page.getByRole("heading", { name: `#${name}` })).toBeVisible();

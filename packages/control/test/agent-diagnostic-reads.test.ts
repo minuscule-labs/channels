@@ -235,7 +235,7 @@ test("events cannot wake transitional/offline sessions or cross ambiguous/legacy
   for (const source of sources) {
     const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
       getSessionInspectionRecords: async () => source as typeof snapshot,
-      getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
+      getConversationSettings: async () => undefined, getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
       getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
     }, runtimes: { pi: { inspectSessionEvents: async () => { calls++; return f.events(); } } } });
     assert.equal((await inspector.events(f.conversation.id, f.agent.id, f.owner.id)).availability, "unavailable");
@@ -328,7 +328,7 @@ test("event inspection caps total physical metadata work and retains canceled sl
   const targets = Array.from({ length: 17 }, (_, i) => ({ ...f.conversation.participants.find(participant => participant.id === f.agent.id)!, id: `target-${i}` }));
   const inspector = new LocalAgentSessionInspections({ client: { ...f.directoryClient, getConversation: async () => ({ ...f.conversation, participants: [...f.conversation.participants, ...targets] }) }, store: {
     getSessionInspectionRecords: async () => { if (++calls === 16) entered.release(); await pending.promise; return { bindings: [] }; },
-    getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
+    getConversationSettings: async () => undefined, getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
     getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
   }, runtimes: {} });
   const controllers = targets.slice(0, 16).map(() => new AbortController());
@@ -476,7 +476,7 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
   for (const source of cases) {
     const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
       getSessionInspectionRecords: async () => source, getWorkspaceAgentConfig: f.store.getWorkspaceAgentConfig.bind(f.store),
-      getConversationCreationSetup: f.store.getConversationCreationSetup.bind(f.store),
+      getConversationSettings: async () => undefined, getConversationCreationSetup: f.store.getConversationCreationSetup.bind(f.store),
     }, runtimes: { pi: { inspectSessionProfile: async () => { calls++; return f.profile(); } } } });
     const value = await inspector.read(f.conversation.id, f.agent.id, f.owner.id);
     assert.equal(value.running.status, "not_verified");
@@ -487,7 +487,7 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
   await f.member({ accessRole: "member" });
   const denied = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
     getSessionInspectionRecords: async () => { calls++; return snapshot; },
-    getConversationCreationSetup: async () => { calls++; return undefined; },
+    getConversationSettings: async () => undefined, getConversationCreationSetup: async () => { calls++; return undefined; },
     getWorkspaceAgentConfig: async () => { calls++; return undefined; },
   }, runtimes: {} });
   await assert.rejects(denied.read(f.conversation.id, f.agent.id, f.owner.id));
@@ -500,7 +500,7 @@ test("diagnostic GETs require a live browser, active human, owner/admin and Conv
   for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events", "/delivery-trails"]) {
     const response = await f.get(path);
     assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 24);
+    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 25);
     assert.equal((await f.get(path, { method: "POST" })).status, 405);
   }
   await f.member({ accessRole: "member" });

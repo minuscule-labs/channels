@@ -12,6 +12,7 @@ import { playNotificationSound } from "../lib/notification-sound";
 import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
+import { NotificationPreferencesContext } from "./notification-preferences";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
 
 export function AppShell() {
@@ -19,6 +20,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  useEffect(() => { setNavigationOpen(false); }, [pathname]);
   const [readRevision, setReadRevision] = useState(0);
   const [sound, setSound] = useState<NotificationSound>("off");
   const soundedMessages = useRef(new Set<string>());
@@ -83,7 +85,9 @@ export function AppShell() {
     lifecycleAction.reset();
     lifecycleAction.mutate({ conversationId, ...input });
   };
-  const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
+  const routeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
+  const selectedConversationId = routeConversationId === "new" ? undefined : routeConversationId;
+  const activeConversationId = /\/conversations\/[^/]+\/?$/.test(pathname) ? selectedConversationId : undefined;
   const observedConversations = useMemo(() => {
     const byId = new Map(knownConversations.map((conversation) => [conversation.id, conversation]));
     for (const conversation of selectedConversations.data ?? []) byId.set(conversation.id, conversation);
@@ -362,7 +366,7 @@ export function AppShell() {
       <div className="hidden md:block">
         <NavigationSidebar
           items={navigationItems}
-          activeConversationId={activeConversationId}
+          activeConversationId={selectedConversationId}
           activeAgentsWorkspaceId={activeAgentsWorkspaceId}
           workspaces={workspaces.data ?? []}
           selectedWorkspaceId={selectedWorkspaceId}
@@ -393,7 +397,7 @@ export function AppShell() {
         >
           <NavigationSidebar
             items={navigationItems}
-            activeConversationId={activeConversationId}
+            activeConversationId={selectedConversationId}
             activeAgentsWorkspaceId={activeAgentsWorkspaceId}
             workspaces={workspaces.data ?? []}
             selectedWorkspaceId={selectedWorkspaceId}
@@ -407,7 +411,7 @@ export function AppShell() {
             onClose={() => setNavigationOpen(false)}
           />
         </Drawer>
-        <Outlet />
+        <NotificationPreferencesContext.Provider value={currentSession.data ? { sound, onSoundChange: changeSound } : null}><Outlet /></NotificationPreferencesContext.Provider>
       </div>
     </div>
   );

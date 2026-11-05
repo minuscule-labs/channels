@@ -37,7 +37,7 @@ async function launch(page: Page, request: APIRequestContext, data: Fixture, act
 }
 async function mockAgent(page: Page, data: Fixture, view: () => LocalConversationAgent) {
   await page.route(`**/local/conversations/${data.primary.id}/agents`, (route) => route.fulfill({
-    json: { protocolVersion: 24, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
+    json: { protocolVersion: 25, conversationId: data.primary.id, agents: [{ ...view(), runtimeSessionId: "PRIVATE_SESSION_MUST_NOT_RENDER" }] },
   }));
   await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}`, route => route.fulfill({ json: { agent: view() } }));
 }

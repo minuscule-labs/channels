@@ -1,17 +1,39 @@
-# Conversation presets
+# Conversation presets and settings
 
-Presets are reusable creation drafts saved in a Workspace. Open **Create Conversation**, choose a saved preset or an **Exploration**, **Feature delivery**, or **Incident / debug** starting point, and review the settings before creating.
+Create a Conversation using the existing compose button in the sidebar. The content page asks for a name, participants or a saved preset, and a working folder. The current human is included automatically. Leave the folder blank to use the Workspace source, or select a folder inside it. Folder validation and preparation finish before the Conversation is published.
 
-- Assign existing, active Workspace agents to roles. Starting points leave role assignments open. Remove unused roles; an agent can fill one role in a draft. The current human is included automatically.
-- Choose an optional Conversation model and effort, or keep each agent's saved settings. An explicit choice applies to every agent session started in that Conversation. The model must be available and enabled for each selected agent's harness, and the effort must be supported. Selecting a non-reasoning model sets effort to **off**; creation also checks compatibility with inherited agent settings.
-- Add optional collaboration guidance, such as milestone check-ins. Guidance and role assignments are appended to the agents' Workspace instructions when sessions start. Check-ins rely on agent behavior; they are not scheduled reminders.
-- Expand **Save or manage presets** to save a new preset, update a selected saved preset, or delete one. Saving does not create a Conversation. Adjusting a draft does not update its saved preset unless explicitly saved.
+Open **Workspace actions → Settings** for the Workspace settings page. Its horizontal tabs are inside the content area:
 
-Creation copies the reviewed settings into an independent snapshot. Editing or deleting a preset later does not change existing Conversations. Workspace agent configurations and their other Conversations retain their settings. Initial starts and new-session replacements use the Conversation snapshot; thread sessions inherit their parent Conversation's snapshot while retaining separate sessions and frozen public context. Resuming an existing session keeps that session's launch settings. The snapshot is visible under **Settings → Creation settings**. In an agent's **Inspect → Diagnostics** page, **Session & context** reports the effective saved model and effort.
+- **General**: Workspace name, private source location, and your notification preference on this device.
+- **People & permissions**: Workspace members and their access roles. Owners can change human access roles; agent and service access remains Member.
+- **Conversation presets**: a list of saved presets with dedicated create and edit pages.
+- **Defaults & timeouts**: the base turn timeout and idle agent sleep policy.
 
-Conversation roles are responsibilities supplied to agents, separate from Workspace access roles and Workspace-wide roster labels. Presets never create agent identities or change Workspace membership. Unavailable or disabled agents must be replaced or removed before creation. Up to 16 agent roles and 16 KiB of guidance are supported.
+The sidebar's controls and layout are unchanged.
 
-Presets and snapshots live in the private Relay database. Authenticated local-control endpoints require an active human Workspace owner or admin:
+## Presets
+
+Select **Conversation presets → New preset**, give it a name, and choose existing Workspace agents. Optional **Exploration**, **Feature delivery**, and **Incident / debug** starting points supply role and guidance drafts. Assign agents to the roles or remove unused roles; an agent can fill one role. Presets never create identities or change Workspace membership.
+
+The editor also provides optional Conversation model and effort overrides, timeouts, and collaboration guidance. Leaving model and effort unset uses each agent's saved configuration. An explicit model must be enabled for each selected agent's harness, and effort must be supported. A non-reasoning model sets effort to **off**. Agent roles are responsibilities, separate from Workspace access roles and Workspace roster labels. Check-in guidance relies on agent behavior; it does not schedule reminders.
+
+Select a saved preset during Conversation creation to copy its participants and defaults. You can adjust the participants before creating. Up to 16 agent roles and 16 KiB of guidance are supported. Unavailable agents must be replaced or removed before creation.
+
+**Save as new preset** copies the current editor draft into a separate preset. Preset edits and deletion do not change existing Conversations. Saving a preset does not create a Conversation. Failed saves can be retried with the same draft ID, or recovered with **Reload presets**. Revision conflicts require an explicit reload.
+
+## Editing a Conversation
+
+Open **Conversation actions → Settings** to edit its name, roster, working folders, session defaults, timeouts, and collaboration guidance on a separate page. Name and roster forms save independently. **Save Conversation settings** saves roles, model/effort overrides, timeouts, and guidance together with a revision check.
+
+New agent sessions and replacements use the current Conversation settings. Resuming a session retains its launch configuration. Threads inherit their parent's settings while retaining separate sessions and frozen public context. Workspace agent configurations and other Conversations retain their own settings. **Original creation settings** remains an immutable snapshot for reference. In **Inspect → Diagnostics**, **Session & context** reports the effective saved model and effort.
+
+The base turn timeout defaults to 30 minutes. Workspace and Conversation choices are 1, 5, 10, 15, or 30 minutes. A turn snapshots its policy when processing begins; changing a setting does not shorten an in-progress turn. The turn retry budget remains an upper bound.
+
+Idle sleep defaults to **Off**. Conversations can inherit the Workspace policy, select 15 minutes, 30 minutes, 1 hour, 4 hours, or 24 hours, or explicitly select **Off**. A saved idle policy applies to eligible idle sessions immediately; an already in-flight transition may finish. Addressing a sleeping agent wakes the same session.
+
+## Private local-control API
+
+Presets, creation snapshots, and current settings live in the private Relay database. Endpoints require an authenticated, active human Workspace owner or admin:
 
 ```text
 GET    /local/workspaces/:workspaceId/conversation-presets
@@ -19,8 +41,8 @@ PUT    /local/workspaces/:workspaceId/conversation-presets/:presetId
 DELETE /local/workspaces/:workspaceId/conversation-presets/:presetId
 POST   /local/workspaces/:workspaceId/conversations
 GET    /local/conversations/:conversationId/creation-setup
+GET    /local/conversations/:conversationId/settings
+PUT    /local/conversations/:conversationId/settings
 ```
 
-Preset writes use `expectedRevision` (`null` for creation) to reject stale edits and deletes. An exact retry of a committed preset create or update returns the original result without advancing its revision. **Reload presets** can recover a saved preset or copy whose response was lost. Switching presets keeps the new draft separate from earlier save or delete completions.
-
-Conversation creation uses a caller-stable Conversation ID and persists its settings before publishing the Conversation. Exact retries recover after a lost response; a changed request with the same ID is rejected. If a failed creation needs different settings after its snapshot was saved, close the dialog and start a new draft. Public collaboration APIs do not expose private launch defaults or guidance.
+Preset writes use `expectedRevision` (`null` for creation). Conversation settings use `expectedRevision: 0` for the first edit. Exact retries return the committed result without advancing its revision; stale writes and deletes return a conflict. Creation retains its draft ID across retries, including lost responses. Folder preparation is recorded once so overlapping retries cannot overwrite later folder edits. These settings and absolute local paths are not published in Conversation metadata or messages. Folder snapshots contain a Workspace-relative path and a request hash, never the selected absolute path.

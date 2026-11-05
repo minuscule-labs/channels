@@ -73,5 +73,5 @@ export {
   type TurnFailureRemediationCode,
   type WakePolicy,
 } from "./relay.ts";
-export { applyConversationSetup, conversationAgentConfiguration,
-  type ConversationSetup, type ConversationPreset, type ConversationCreationSetup } from "./conversation-presets.ts";
+export { applyConversationSetup, conversationAgentConfiguration, effectiveConversationSetup,
+  type ConversationSetup, type ConversationPreset, type ConversationSettings, type ConversationCreationSetup } from "./conversation-presets.ts";
