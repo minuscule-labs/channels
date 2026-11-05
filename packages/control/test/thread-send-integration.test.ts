@@ -188,10 +188,10 @@ test("empty and broadcast targets start nobody; a later addressed main Send star
   } finally { await f.close(); }
 });
 
-test("multiple explicit recipients recover a partial startup failure without duplicate sessions or generated routing", async () => {
+test("multiple explicit recipients recover a partial startup failure without duplicate sessions", async () => {
   const f = await fixture();
   try {
-    f.setReplyBody("@alpha @beta generated text must not route");
+    f.setReplyBody("`@alpha` and `@beta` are quoted examples, not handoffs");
     f.failNextStart();
     const send = () => f.sendIn(f.parent.id, "Both agents receive this question", "multi", [f.a.id, f.b.id]);
     assert.equal((await send()).status, 409);

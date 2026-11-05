@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.0.31
+
+Release overview: [Reusable Conversation presets](docs/releases/v0.0.31.md).
+
+- Add editable Workspace presets and Exploration, Feature delivery, and Incident/debug starting points. Assign existing agents to roles, review optional Conversation model/effort defaults and guidance, then create explicitly.
+- Save independent creation snapshots so later preset edits or deletion do not change existing Conversations. Apply settings to initial and replacement sessions, including threads, without modifying Workspace agent configuration.
+- Recover exact preset-save and Conversation-create retries, reject stale edits, and isolate late editor responses from the currently selected draft.
+- Add private Relay migration `0015_conversation_presets` for presets and creation snapshots. Keep the public Conversation schema, local-control protocol v24, Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`, and dependencies unchanged from v0.0.30.
+- Retain the documented recovery/context-reconstruction and intermittent native Neon database-abort limitations. Disabled-model readiness for existing agents remains separate lifecycle work.
+
+## 0.0.30
+
+Release overview: [Restore mention-based agent handoffs](docs/releases/v0.0.30.md).
+
+- Restore intentional agent-response mentions as handoffs to eligible existing sessions in the same conversation or thread. No new messaging tool is required.
+- Keep each human's browser-local sticky recipient independent: incoming agent handoffs and replies never change the destination of that human's follow-ups.
+- Preserve recipient wake policies, permissions, archive/retirement fences and explicit Stop. Agent handoffs do not start unbound agents or resume stopped ones; unaddressed agent replies do not wake peers, including under `all_messages`.
+- Keep supplied API `to` authoritative, including `[]`; exclude code, quotations and escaped mentions from implicit routing.
+- Keep Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`, protocol v24, dependencies and database schemas unchanged from v0.0.29. Existing recovery/context-reconstruction and native Neon database-abort limitations remain.
+
 ## 0.0.29
 
 Release overview: [Simpler composer and thread-only message menus](docs/releases/v0.0.29.md).

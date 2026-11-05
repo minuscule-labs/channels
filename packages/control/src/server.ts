@@ -81,6 +81,9 @@ import {
   type ProvisionLocalWorkspaceResult,
   type LocalWorkspaceAgentConfiguration,
   type LocalWorkspaceConfigurationSummary,
+  type LocalConversationPresets,
+  type ConversationPreset,
+  type LocalConversationCreationSetup,
 } from "./contracts.ts";
 
 export interface LocalControlConversationDirectory {
@@ -193,6 +196,11 @@ export interface LocalControlAgentLifecyclePort {
 }
 
 export interface LocalControlConfigurationPort {
+  listConversationPresets?(workspaceId: string, actor: string): Promise<LocalConversationPresets>;
+  saveConversationPreset?(workspaceId: string, presetId: string, actor: string, input: unknown): Promise<ConversationPreset>;
+  deleteConversationPreset?(workspaceId: string, presetId: string, actor: string, input: unknown): Promise<void>;
+  createConversationWithSetup?(workspaceId: string, actor: string, input: unknown): Promise<ConversationMetadata>;
+  getConversationCreationSetup?(conversationId: string, actor: string): Promise<LocalConversationCreationSetup>;
   provisionWorkspace?(actorIdentityId: string, input: unknown): Promise<ProvisionLocalWorkspaceResult>;
   getWorkspaceConfiguration(
     workspaceId: string,
@@ -472,6 +480,31 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Workspace provisioning unavailable", 404, "unavailable");
     }
     return this.options.configuration.provisionWorkspace(actorIdentityId, input);
+  }
+
+  async listConversationPresets(workspaceId: string, actor: string) {
+    if (!this.options.configuration?.listConversationPresets) throw new LocalConfigurationRequestError("Conversation presets unavailable", 404, "unavailable");
+    return this.options.configuration.listConversationPresets(workspaceId, actor);
+  }
+
+  async saveConversationPreset(workspaceId: string, presetId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.saveConversationPreset) throw new LocalConfigurationRequestError("Conversation presets unavailable", 404, "unavailable");
+    return this.options.configuration.saveConversationPreset(workspaceId, presetId, actor, input);
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.deleteConversationPreset) throw new LocalConfigurationRequestError("Conversation presets unavailable", 404, "unavailable");
+    return this.options.configuration.deleteConversationPreset(workspaceId, presetId, actor, input);
+  }
+
+  async createConversationWithSetup(workspaceId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.createConversationWithSetup) throw new LocalConfigurationRequestError("Conversation creation unavailable", 404, "unavailable");
+    return this.options.configuration.createConversationWithSetup(workspaceId, actor, input);
+  }
+
+  async getConversationCreationSetup(conversationId: string, actor: string) {
+    if (!this.options.configuration?.getConversationCreationSetup) throw new LocalConfigurationRequestError("Conversation setup unavailable", 404, "unavailable");
+    return this.options.configuration.getConversationCreationSetup(conversationId, actor);
   }
 
   async getConversationWorkingFolders(
@@ -1358,10 +1391,13 @@ export async function createLocalControlHttpServer(
       || /^\/local\/conversations\/[^/]+\/messages$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
+      || /^\/local\/workspaces\/[^/]+\/conversations$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
     );
-    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost) {
-      response.setHeader("allow", "GET, PATCH, PUT, POST");
+    const isAllowedDelete = request.method === "DELETE"
+      && /^\/local\/workspaces\/[^/]+\/conversation-presets\/[^/]+$/.test(requestPath);
+    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost && !isAllowedDelete) {
+      response.setHeader("allow", "GET, PATCH, PUT, POST, DELETE");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
     }
@@ -1535,6 +1571,36 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
           await readJson(request),
         ), origin);
+        return;
+      }
+      const presetsMatch = path.match(/^\/local\/workspaces\/([^/]+)\/conversation-presets(?:\/([^/]+))?$/);
+      if (presetsMatch && browserSession) {
+        const workspaceId = decodeURIComponent(presetsMatch[1]!);
+        const presetId = presetsMatch[2] && decodeURIComponent(presetsMatch[2]);
+        if (!presetId && request.method === "GET") {
+          json(response, 200, await options.service.listConversationPresets(workspaceId, browserSession.identityId), origin);
+          return;
+        }
+        if (presetId && request.method === "PUT") {
+          json(response, 200, await options.service.saveConversationPreset(workspaceId, presetId, browserSession.identityId, await readJson(request)), origin);
+          return;
+        }
+        if (presetId && request.method === "DELETE") {
+          await options.service.deleteConversationPreset(workspaceId, presetId, browserSession.identityId, await readJson(request));
+          json(response, 200, { deleted: true }, origin);
+          return;
+        }
+      }
+      const createWithSetupMatch = path.match(/^\/local\/workspaces\/([^/]+)\/conversations$/);
+      if (createWithSetupMatch && browserSession && request.method === "POST") {
+        json(response, 201, { conversation: await options.service.createConversationWithSetup(
+          decodeURIComponent(createWithSetupMatch[1]!), browserSession.identityId, await readJson(request),
+        ) }, origin);
+        return;
+      }
+      const creationSetupMatch = path.match(/^\/local\/conversations\/([^/]+)\/creation-setup$/);
+      if (creationSetupMatch && browserSession && request.method === "GET") {
+        json(response, 200, await options.service.getConversationCreationSetup(decodeURIComponent(creationSetupMatch[1]!), browserSession.identityId), origin);
         return;
       }
       const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);

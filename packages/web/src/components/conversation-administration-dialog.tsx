@@ -15,6 +15,8 @@ import { queryKeys } from "../lib/query-keys";
 import { cacheConversationMetadata } from "../lib/conversation-folders";
 import { ErrorNotice } from "./ui/error-notice";
 import { ConversationWorkingFolders } from "./conversation-working-folders";
+import { ConversationPresetEditor, ConversationCreationSettings } from "./conversation-preset-editor";
+import type { ConversationSetup } from "@minu/channels-control/contracts";
 
 interface WorkspaceParticipant {
   identity: Identity;
@@ -194,8 +196,8 @@ export function CreateConversationDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [initializedFor, setInitializedFor] = useState<string>();
+  const [setup, setSetup] = useState<ConversationSetup>({ participants: [] });
+  const [draftId, setDraftId] = useState("");
   const [folderId, setFolderId] = useState("");
   const folders = useQuery({
     queryKey: queryKeys.workspaceFolders(workspace.id),
@@ -205,32 +207,23 @@ export function CreateConversationDialog({
   const data = useWorkspaceParticipants(workspace.id, open);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  useEffect(() => {
-    if (!open) {
-      setInitializedFor(undefined);
-      return;
-    }
-    const identityId = data.session.data?.identityId;
-    if (identityId && initializedFor !== identityId) {
-      const current = data.participants.find(({ identity }) => identity.id === identityId);
-      setSelected(current && current.member.status === "active" ? new Set([identityId]) : new Set());
-      setInitializedFor(identityId);
-    }
-  }, [data.participants, data.session.data?.identityId, initializedFor, open]);
+  const selected = new Set([
+    ...(data.session.data ? [data.session.data.identityId] : []),
+    ...setup.participants.flatMap(({ identityId }) => identityId ? [identityId] : []),
+  ]);
+  const ready = Boolean(name.trim()) && setup.participants.length <= 16 && setup.participants.every(({ identityId, role }) =>
+    role.trim() && data.participants.some(({ identity, member }) => identity.id === identityId
+      && identity.status === "active" && member.status === "active"));
   const mutation = useMutation({
-    mutationFn: () => conversations.createConversation({
-      workspaceId: workspace.id,
-      name: name.trim(),
-      folderId: folderId || null,
-      participantIds: [...new Set([...selected, data.session.data!.identityId])],
-      actorIdentityId: data.session.data!.identityId,
+    mutationFn: () => localControl.createConversationWithSetup(workspace.id, {
+      ...setup, id: draftId, name: name.trim(), folderId: folderId || null,
     }),
     onSuccess: (conversation) => {
       cacheConversationMetadata(queryClient, conversation);
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspace.id), exact: true });
       setFolderId("");
       setName("");
-      setSelected(new Set());
+      setSetup({ participants: [] });
       setOpen(false);
       onNavigate?.();
       void navigate({
@@ -241,13 +234,19 @@ export function CreateConversationDialog({
   });
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (name.trim() && selected.size > 0 && data.session.data && !mutation.isPending) mutation.mutate();
+    if (ready && data.session.data && !mutation.isPending) mutation.mutate();
   };
 
   return (
     <AdministrationDialog
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={(next) => {
+        if (next) {
+          setName(""); setSetup({ participants: [] }); setFolderId(""); mutation.reset();
+          setDraftId(`conversation_${crypto.randomUUID().replaceAll("-", "")}`);
+        }
+        setOpen(next);
+      }}
       title={`Create a Conversation in ${workspace.name}`}
       description="Name the conversation and choose its initial agents. You are included automatically."
       trigger={(
@@ -258,6 +257,7 @@ export function CreateConversationDialog({
     >
       <QueryState pending={data.pending || folders.isPending} error={data.error ?? folders.error} canAdminister={data.canAdminister}>
         <form className="space-y-5" onSubmit={submit}>
+          <fieldset className="space-y-5" disabled={mutation.isPending}>
           <label className="block text-xs font-medium">
             Conversation name
             <input
@@ -280,17 +280,23 @@ export function CreateConversationDialog({
             participants={data.participants}
             selected={selected}
             currentHumanIdentityId={data.session.data?.identityId}
-            onToggle={(identityId) => setSelected((current) => {
-              const next = new Set(current);
-              if (next.has(identityId)) next.delete(identityId);
-              else next.add(identityId);
-              return next;
+            onToggle={(identityId) => setSetup((current) => {
+              if (current.participants.some((participant) => participant.identityId === identityId)) {
+                return { ...current, participants: current.participants.filter((participant) => participant.identityId !== identityId) };
+              }
+              const empty = current.participants.findIndex((participant) => !participant.identityId);
+              if (empty >= 0) return { ...current, participants: current.participants.map((participant, index) => index === empty ? { ...participant, identityId } : participant) };
+              const role = data.participants.find(({ identity }) => identity.id === identityId)?.member.roleLabel ?? "Collaborator";
+              return { ...current, participants: [...current.participants, { identityId, role }] };
             })}
           />
+          <ConversationPresetEditor workspaceId={workspace.id} setup={setup} onChange={setSetup} participants={data.participants} />
+          </fieldset>
+          {!ready && setup.participants.some(({ identityId }) => !identityId) ? <p className="text-xs text-[var(--muted)]">Assign an agent to every role, or remove unused roles, before creating.</p> : null}
           <div className="flex flex-wrap items-center justify-end gap-2">
             {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
             <Dialog.Close asChild><button className="button-secondary" type="button">Cancel</button></Dialog.Close>
-            <button className="button-primary" type="submit" disabled={!name.trim() || selected.size === 0 || mutation.isPending}>
+            <button className="button-primary" type="submit" disabled={!ready || mutation.isPending}>
               {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
               Create Conversation
             </button>
@@ -424,6 +430,7 @@ export function EditConversationParticipantsDialog({
             })}
           />
           <ConversationWorkingFolders conversationId={conversation.id} canAdminister={data.canAdminister} />
+          {data.canAdminister ? <ConversationCreationSettings conversationId={conversation.id} /> : null}
           <p className="text-xs text-[var(--muted)]">
             Create and configure agents on the {" "}
             <Link

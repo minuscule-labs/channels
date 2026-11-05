@@ -1,4 +1,6 @@
-import { ConversationClient } from "@minu/channels-core/client";
+import { ConversationClient, ConversationClientError } from "@minu/channels-core/client";
+import { isResourceId } from "@minu/channels-core";
+import type { ConversationMetadata } from "@minu/channels-core/types";
 import {
   DEFAULT_HANDOFF_SUMMARY_TOKENS,
   DEFAULT_RECENT_CONTEXT_MESSAGES,
@@ -6,6 +8,9 @@ import {
   LocalRelayDirectory,
   type ConversationWorkingFolder,
   type RelayBindingStore,
+  type ConversationSetup,
+  type ConversationPreset,
+  type ConversationCreationSetup,
 } from "@minu/channels-relay";
 import type {
   LocalAgentRuntimeOptions,
@@ -91,6 +96,21 @@ function requiredString(value: unknown, label: string, maxBytes: number): string
     throw new LocalConfigurationRequestError(`${label} is too large`, 400, "invalid");
   }
   return value;
+}
+
+function conversationLabel(value: unknown, label: string): string {
+  const text = requiredString(value, label, 400).trim();
+  if (text.length > 100) throw new LocalConfigurationRequestError(`${label} must be at most 100 characters`, 400, "invalid");
+  return text;
+}
+
+function samePresetContents(left: ConversationSetup & { name: string }, right: ConversationSetup & { name: string }): boolean {
+  return left.name === right.name
+    && JSON.stringify(left.participants) === JSON.stringify(right.participants)
+    && left.model?.provider === right.model?.provider
+    && left.model?.id === right.model?.id
+    && left.reasoningLevel === right.reasoningLevel
+    && left.guidance === right.guidance;
 }
 
 async function canonicalWorkspaceRoot(value: string): Promise<string> {
@@ -194,6 +214,172 @@ function relativePathWithinWorkspace(workspaceRoot: string, selectedPath: string
 }
 
 export class LocalAgentHostConfiguration {
+  async listConversationPresets(workspaceId: string, actorIdentityId: string) {
+    await this.authorize(workspaceId, actorIdentityId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, presets: await this.options.store.listConversationPresets(workspaceId) };
+  }
+
+  private parseConversationSetup(input: Record<string, unknown>, requireAssignments: boolean): ConversationSetup {
+    if (!Array.isArray(input.participants) || input.participants.length > 16) {
+      throw new LocalConfigurationRequestError("Choose at most 16 agent roles", 400, "invalid");
+    }
+    const participants = input.participants.map((value) => {
+      const participant = object(value, "Participant");
+      rejectUnknown(participant, ["identityId", "role"]);
+      const role = conversationLabel(participant.role, "Role");
+      const identityId = participant.identityId === undefined
+        ? undefined : requiredString(participant.identityId, "Agent identity", 100);
+      if (requireAssignments && !identityId) {
+        throw new LocalConfigurationRequestError("Assign a Workspace agent to every role", 400, "invalid");
+      }
+      return { ...(identityId ? { identityId } : {}), role };
+    });
+    const ids = participants.flatMap(({ identityId }) => identityId ? [identityId] : []);
+    if (new Set(ids).size !== ids.length) throw new LocalConfigurationRequestError("Each agent can fill only one role", 400, "invalid");
+    let model: ConversationSetup["model"];
+    if (input.model !== undefined) {
+      const value = object(input.model, "Model");
+      rejectUnknown(value, ["provider", "id"]);
+      model = { provider: requiredString(value.provider, "Model provider", 100), id: requiredString(value.id, "Model id", 300) };
+    }
+    const reasoningLevel = input.reasoningLevel;
+    if (reasoningLevel !== undefined && (typeof reasoningLevel !== "string"
+      || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoningLevel))) {
+      throw new LocalConfigurationRequestError("Reasoning level is invalid", 400, "invalid");
+    }
+    if (input.guidance !== undefined && (typeof input.guidance !== "string" || bytes(input.guidance) > 16 * 1024)) {
+      throw new LocalConfigurationRequestError("Guidance must be text of at most 16 KiB", 400, "invalid");
+    }
+    const guidance = (input.guidance as string | undefined)?.trim();
+    return { participants, ...(model ? { model } : {}),
+      ...(reasoningLevel ? { reasoningLevel: reasoningLevel as ConversationSetup["reasoningLevel"] } : {}),
+      ...(guidance ? { guidance } : {}) };
+  }
+
+  async saveConversationPreset(workspaceId: string, presetId: string, actorIdentityId: string, value: unknown): Promise<ConversationPreset> {
+    await this.authorize(workspaceId, actorIdentityId);
+    if (!/^preset_[0-9a-f]{32}$/.test(presetId)) throw new LocalConfigurationRequestError("Preset id is invalid", 400, "invalid");
+    const input = object(value, "Preset");
+    rejectUnknown(input, ["name", "expectedRevision", "participants", "model", "reasoningLevel", "guidance"]);
+    const expected = input.expectedRevision;
+    if (expected !== null && (!Number.isSafeInteger(expected) || (expected as number) < 1)) {
+      throw new LocalConfigurationRequestError("Expected preset revision is required", 400, "invalid");
+    }
+    const contents = { ...this.parseConversationSetup(input, false), name: conversationLabel(input.name, "Preset name") };
+    const nextRevision = ((expected as number | null) ?? 0) + 1;
+    const currentPreset = async () => (await this.options.store.listConversationPresets(workspaceId)).find(({ id }) => id === presetId);
+    const isExactRetry = (preset: ConversationPreset): boolean =>
+      preset.revision === nextRevision && samePresetContents(preset, contents);
+    const current = await currentPreset();
+    if (current && isExactRetry(current)) return current;
+    const timestamp = this.now().toISOString();
+    const preset: ConversationPreset = { ...contents, id: presetId, workspaceId,
+      revision: nextRevision, createdAt: current?.createdAt ?? timestamp, updatedAt: timestamp };
+    if (!await this.options.store.putConversationPreset(preset, expected as number | null)) {
+      // Another copy of this exact request may have committed during the write.
+      const committed = await currentPreset();
+      if (committed && isExactRetry(committed)) return committed;
+      throw new LocalConfigurationRequestError("Preset changed; reload presets before saving", 409, "unavailable");
+    }
+    return preset;
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, actorIdentityId: string, value: unknown): Promise<void> {
+    await this.authorize(workspaceId, actorIdentityId);
+    const input = object(value, "Preset deletion");
+    rejectUnknown(input, ["expectedRevision"]);
+    if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 1) {
+      throw new LocalConfigurationRequestError("Expected preset revision is required", 400, "invalid");
+    }
+    if (!await this.options.store.deleteConversationPreset(workspaceId, presetId, input.expectedRevision as number)) {
+      throw new LocalConfigurationRequestError("Preset changed; reload presets before deleting", 409, "unavailable");
+    }
+  }
+
+  async getConversationCreationSetup(conversationId: string, actorIdentityId: string) {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    const setup = await this.options.store.getConversationCreationSetup(conversation.workspaceId, conversationId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, setup: setup ?? null };
+  }
+
+  async createConversationWithSetup(workspaceId: string, actorIdentityId: string, value: unknown): Promise<ConversationMetadata> {
+    const members = await this.authorize(workspaceId, actorIdentityId);
+    const input = object(value, "Conversation");
+    rejectUnknown(input, ["id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance"]);
+    if (!isResourceId(input.id, "conversation")) throw new LocalConfigurationRequestError("Conversation id is invalid", 400, "invalid");
+    const folderId = input.folderId ?? null;
+    if (folderId !== null && !isResourceId(folderId, "folder")) {
+      throw new LocalConfigurationRequestError("Folder id is invalid", 400, "invalid");
+    }
+    const setup: ConversationCreationSetup = { ...this.parseConversationSetup(input, true), workspaceId,
+      conversationId: input.id, actorIdentityId, name: conversationLabel(input.name, "Conversation name") };
+    // A retry may find the public Conversation even when the first response was lost.
+    const original = await this.options.store.getConversationCreationSetup(workspaceId, input.id);
+    if (original && JSON.stringify(original) !== JSON.stringify(setup)) {
+      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+    }
+    const existing = await this.options.client.getConversation(input.id).catch((error) => {
+      if (error instanceof ConversationClientError && error.status === 404) return undefined;
+      throw error;
+    });
+    if (existing) {
+      if (original && existing.workspaceId === workspaceId) {
+        if ((existing.folderId ?? null) !== folderId) {
+          throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+        }
+        return existing;
+      }
+      throw new LocalConfigurationRequestError("Conversation id is already in use", 409, "unavailable");
+    }
+    if (folderId !== null && !(await this.options.client.listWorkspaceFolders(workspaceId)).some(folder => folder.id === folderId)) {
+      throw new LocalConfigurationRequestError("Folder is unavailable in this Workspace", 404, "unavailable");
+    }
+    const identities = await this.options.client.listIdentities();
+    for (const participant of setup.participants) {
+      const identity = identities.find(({ id }) => id === participant.identityId);
+      if (!identity || identity.type !== "agent" || identity.status !== "active"
+        || !members.some((member) => member.identityId === identity.id && member.status === "active")) {
+        throw new LocalConfigurationRequestError("A selected Workspace agent is unavailable; review participants", 409, "unavailable");
+      }
+      if (setup.model || setup.reasoningLevel) {
+        const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, identity.id);
+        if (!config?.runtimeAdapter || config.status !== "active") {
+          throw new LocalConfigurationRequestError("Configure each agent before choosing Conversation launch defaults", 409, "unavailable");
+        }
+        const options = await this.resolveRuntimeOptions(workspaceId, config.runtimeAdapter);
+        const modelRef = setup.model ?? (config.modelProvider && config.modelId
+          ? { provider: config.modelProvider, id: config.modelId } : options.defaultModel);
+        const model = options.models.find((candidate) => candidate.enabled
+          && candidate.provider === modelRef?.provider && candidate.id === modelRef?.id);
+        const reasoningLevel = setup.reasoningLevel ?? config.reasoningLevel;
+        if (setup.model && !model) {
+          throw new LocalConfigurationRequestError("Conversation model is unavailable for a selected agent", 409, "unavailable");
+        }
+        if (reasoningLevel && !options.reasoningLevels.includes(reasoningLevel)) {
+          throw new LocalConfigurationRequestError("Conversation reasoning level is unavailable for a selected agent", 409, "unavailable");
+        }
+        if (model && !model.reasoning && reasoningLevel && reasoningLevel !== "off") {
+          throw new LocalConfigurationRequestError("Selected model does not support reasoning; choose off for Conversation effort", 409, "unavailable");
+        }
+      }
+    }
+    // Persist before publication: an agent can never start without its reviewed settings.
+    const saved = await this.options.store.putConversationCreationSetup(setup);
+    if (JSON.stringify(saved) !== JSON.stringify(setup)) {
+      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+    }
+    try {
+      return await this.options.client.createConversation({ id: input.id, workspaceId, name: setup.name, folderId,
+        participantIds: [actorIdentityId, ...setup.participants.map(({ identityId }) => identityId!)], actorIdentityId });
+    } catch (error) {
+      if (error instanceof ConversationClientError && error.status === 409) {
+        const created = await this.options.client.getConversation(input.id);
+        if (created.workspaceId === workspaceId && (created.folderId ?? null) === folderId) return created;
+      }
+      throw error;
+    }
+  }
+
   private readonly directory: LocalRelayDirectory;
   private readonly now: () => Date;
   private readonly runtimeOptions = new Map<string, {

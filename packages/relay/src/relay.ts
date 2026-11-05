@@ -368,9 +368,9 @@ function shouldWake(
 ): boolean {
   if (message.participantId === binding.participantId) return false;
   const sender = participants.find(({ id }) => id === message.participantId);
-  // A generated reply is never a new activation, even under all_messages.
-  // Proactive tool sends can still use explicit recipients on existing sessions.
-  if (sender?.type !== "human" && (message.replyTo || !message.to.includes(binding.participantId))) return false;
+  // Agent handoffs require an explicit recipient. Unaddressed generated replies
+  // remain shared history, even under all_messages, to avoid automatic reply loops.
+  if (sender?.type !== "human" && !isExplicitlyAddressed(message, binding.participantId)) return false;
   const policy = binding.wakePolicy ?? "mentions";
   if (policy === "muted") return false;
   if (message.to.includes(binding.participantId)) return true;
@@ -475,9 +475,11 @@ ${participantRoster(participants, connectedAgents)}
 Use this roster to choose the right collaborator for delegation.
 Perform the requested work using the current project and respond concisely for the Conversation.
 Recipient selection belongs to each human separately in each Conversation or thread.
-Generated replies do not change that selection; mention-like text in your reply does not route or activate other participants.
-Intentional routing through collaboration tools must use their explicit recipient fields.
-An unaddressed message remains shared history unless an agent's configured wake policy explicitly admits it.
+Generated replies do not change that selection.
+To hand work to another participant, mention its exact @handle from the roster in your response.
+Intentional mentions outside code, quotations and escaped text can wake eligible connected agents; mention only when concrete follow-up work is needed.
+Agent handoffs never start unbound agents or resume stopped agents. Collaboration tools with explicit recipient fields must use those fields.
+Unaddressed agent replies remain shared history without waking peers. Human messages follow each agent's configured wake policy.
 
 Conversation context${omitted > 0 ? ` (${omitted} older message(s) omitted; request history if needed)` : ""}:
 ${transcript}` };

@@ -1036,6 +1036,12 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   )).json() as { members: Array<{ identityId: string; mentionHandle: string }> };
   const builder = members.find(({ mentionHandle }) => mentionHandle === "builder")!;
   await launchAuthenticated(page, request, "/");
+  // This flow later creates an agent; keep its source-folder prerequisite local
+  // so the test also runs independently with a title filter.
+  const sourceStatus = await page.evaluate(async (workspaceId) => (await fetch(`/local/workspaces/${workspaceId}/config`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ rootUri: "/tmp" }),
+  })).status, workspace.id);
+  expect(sourceStatus).toBe(200);
 
   const createConversation = page.getByRole("button", { name: `Create Conversation in ${workspace.name}` });
   await expect(createConversation.locator("svg")).toHaveClass(/lucide-square-pen/);
