@@ -54,15 +54,17 @@ test("folder create/rename/create-in-folder/move/unfile persist, retain failures
   await expect(create).toHaveCount(0);
   await expect(workspaceActions).toBeFocused();
   await expect(group(page, "Folder flow")).toBeVisible();
-  const renameTrigger = page.getByRole("button", { name: "Rename folder Folder flow", exact: true });
+  const renameTrigger = page.getByRole("button", { name: "Folder actions for Folder flow", exact: true });
   await renameTrigger.focus();
   await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
   const rename = page.getByRole("dialog", { name: "Rename folder", exact: true });
   await rename.getByLabel("Folder name").fill("Folder delivery");
   await rename.getByRole("button", { name: "Save folder", exact: true }).click();
   await expect(rename).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Rename folder Folder delivery", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Folder actions for Folder delivery", exact: true })).toBeFocused();
 
+  await workspaceActions.click();
   await page.getByRole("button", { name: `Create Conversation in ${f.workspace.name}`, exact: true }).click();
   const conversation = page.getByRole("dialog", { name: `Create a Conversation in ${f.workspace.name}`, exact: true });
   await conversation.getByLabel("Conversation name").fill("folder-flow-created");
@@ -149,7 +151,8 @@ test("active/background moves discover unknown folders, preserve unread activity
   const peer = await context.newPage();
   try {
     await peer.goto(f.destination, { waitUntil: "domcontentloaded" });
-    await peer.getByRole("button", { name: `Rename folder ${activeFolder.name}`, exact: true }).click();
+    await peer.getByRole("button", { name: `Folder actions for ${activeFolder.name}`, exact: true }).click();
+    await peer.getByRole("button", { name: "Rename", exact: true }).click();
     const dialog = peer.getByRole("dialog", { name: "Rename folder", exact: true });
     await dialog.getByLabel("Folder name").fill("Sync renamed on peer");
     await dialog.getByRole("button", { name: "Save folder", exact: true }).click();
@@ -235,6 +238,56 @@ test("delayed background metadata cannot revert a newer assignment or notificati
     releaseOld();
     await page.unrouteAll({ behavior: "wait" });
   }
+});
+
+test("compact folder row menus preselect filing and restore keyboard focus on mobile", async ({ page, request }) => {
+  const f = await seed(request, "folder-menu-home");
+  const folder = await f.folder("Tree menu folder");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await launch(page, request, f.destination);
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await expect(page.getByLabel("Selected Workspace", { exact: true })).toHaveValue(f.workspace.id);
+  await expect(page.getByRole("button", { name: `Create Conversation in ${f.workspace.name}`, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Rename folder / })).toHaveCount(0);
+  const actions = page.getByRole("button", { name: `Folder actions for ${folder.name}`, exact: true });
+  await expect(actions.locator("svg")).toHaveClass(/lucide-ellipsis-vertical/);
+  await actions.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect(actions).toBeFocused();
+  await actions.press("Enter");
+  await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
+  const create = page.getByRole("dialog", { name: `Create a Conversation in ${f.workspace.name}`, exact: true });
+  await expect(create.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue(folder.id);
+  await create.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(actions).toBeFocused();
+  await actions.click();
+  await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
+  await create.getByLabel("Conversation name").fill("folder-menu-created");
+  await create.getByRole("button", { name: "Create Conversation", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "#folder-menu-created", exact: true })).toBeVisible();
+  const id = new URL(page.url()).pathname.split("/").at(-1)!;
+  expect((await (await request.get(`${api}/conversations/${id}`)).json()).conversation.folderId).toBe(folder.id);
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  const child = group(page, folder.name).getByRole("link", { name: "folder-menu-created", exact: true });
+  await expect(child).toBeVisible();
+  const toggle = page.getByRole("button", { name: `Toggle folder ${folder.name}`, exact: true });
+  expect((await child.boundingBox())!.x).toBeGreaterThan((await toggle.boundingBox())!.x);
+  const unfiled = page.getByRole("button", { name: "Folder actions for Unfiled", exact: true });
+  await unfiled.click();
+  await expect(page.getByRole("button", { name: "Rename", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Create Conversation", exact: true }).click();
+  await expect(create.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue("");
+  await create.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(unfiled).toBeFocused();
+  const workspaceActions = page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true });
+  await workspaceActions.click();
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: `${f.workspace.name} configuration`, exact: true });
+  await expect(settings.getByLabel("Name", { exact: true })).toBeFocused();
+  await expect(settings.getByLabel("Name", { exact: true })).toHaveValue(f.workspace.name);
+  await page.keyboard.press("Escape");
+  await expect(workspaceActions).toBeFocused();
 });
 
 test("the mobile drawer shares folder moves, collapse preferences and focus recovery with desktop", async ({ page, request }, info) => {
@@ -366,9 +419,12 @@ test("ordinary members can group navigation but cannot create, rename or move fo
   await launch(page, request, f.destination, "member");
   await expect(group(page, folder.name)).toBeVisible();
   await expect(page.getByRole("button", { name: /^Rename folder / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Folder actions for / })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^Conversation actions for / })).toHaveCount(0);
   await page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true }).click();
   await expect(page.getByRole("button", { name: "Create folder", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Rename", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: `Create Conversation in ${f.workspace.name}`, exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: `Toggle folder ${folder.name}`, exact: true }).click();
   await expect(page.getByRole("button", { name: `Toggle folder ${folder.name}`, exact: true })).toHaveAttribute("aria-expanded", "false");

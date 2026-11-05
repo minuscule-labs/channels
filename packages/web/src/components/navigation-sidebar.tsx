@@ -2,7 +2,7 @@ import type { ConversationFolder, ConversationLifecycleState, ConversationMetada
 import { Link } from "@tanstack/react-router";
 import * as Popover from "@radix-ui/react-popover";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Archive, Bot, ChevronDown, Clock3, EllipsisVertical, Folder as FolderIcon, Hash, MessageSquare, Pencil, Settings, X } from "lucide-react";
+import { Archive, Bot, ChevronDown, ChevronRight, Clock3, EllipsisVertical, Folder as FolderIcon, Hash, MessageSquare, Pencil, Settings, X } from "lucide-react";
 import { folderCollapseKey, folderUnread, groupConversationFolders, readFolderCollapsed, type ConversationFolderGroup } from "../lib/conversation-folders";
 import { ConversationFolderDialog, MoveConversationFolderDialog } from "./conversation-folder-dialog";
 import type { NotificationSound } from "../lib/conversation-notifications";
@@ -96,7 +96,7 @@ function ConversationNavigationLink({
         to="/app/workspaces/$workspaceId/conversations/$conversationId"
         params={{ workspaceId, conversationId: conversation.id }}
         onClick={onNavigate}
-        className={`flex min-h-10 items-center gap-2 rounded-md py-1 pl-2.5 pr-10 text-sm transition-colors ${
+        className={`flex min-h-9 items-center gap-2 rounded-md py-1 pl-2.5 pr-10 text-sm transition-colors ${
           active
             ? "bg-[var(--selected)] text-[var(--text)]"
             : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
@@ -193,40 +193,55 @@ function ConversationNavigationLink({
   );
 }
 
-function FolderConversationGroup({ group, workspaceId, identityId, actorIdentityId, activeConversationId, unread, collapsedFolders, onFolderCollapseChange, children }: {
+function FolderConversationGroup({ group, workspace, identityId, actorIdentityId, activeConversationId, unread, collapsedFolders, onFolderCollapseChange, onNavigate, children }: {
   group: ConversationFolderGroup;
-  workspaceId: string;
+  workspace: Workspace;
   identityId?: string;
   actorIdentityId?: string;
   activeConversationId?: string;
   unread?: ReadonlyMap<string, { count: number; mentionCount: number }>;
   collapsedFolders: Readonly<Record<string, boolean>>;
   onFolderCollapseChange(key: string, collapsed: boolean): void;
+  onNavigate?(): void;
   children: ReactNode;
 }) {
-  const key = identityId ? folderCollapseKey(identityId, workspaceId, group.folder?.id) : undefined;
+  const key = identityId ? folderCollapseKey(identityId, workspace.id, group.folder?.id) : undefined;
   const collapsed = key ? collapsedFolders[key] ?? readFolderCollapsed(typeof window === "undefined" ? undefined : localStorage, key) : false;
   const selected = group.conversations.some(conversation => conversation.id === activeConversationId);
   const listId = useId();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const actionsRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = (event: Event) => { event.preventDefault(); actionsRef.current?.focus(); };
   useEffect(() => {
     if (key && selected) onFolderCollapseChange(key, false);
   }, [key, selected, activeConversationId, onFolderCollapseChange]);
   const name = group.folder?.name ?? "Unfiled";
   const aggregate = folderUnread(group.conversations, unread);
   return (
-    <section aria-label={group.folder ? `Folder ${name}` : "Unfiled Conversations"} className="mt-2">
-      <div className="flex items-center gap-1">
-        <button type="button" className="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-[var(--muted)] hover:bg-[var(--hover)]" aria-label={group.folder ? `Toggle folder ${name}` : "Toggle Unfiled"} aria-expanded={!collapsed} aria-controls={listId} disabled={!key} onClick={() => { if (key) onFolderCollapseChange(key, !collapsed); }}>
-          <FolderIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+    <section aria-label={group.folder ? `Folder ${name}` : "Unfiled Conversations"} className="mt-0.5">
+      <div className={`flex items-center gap-0.5 rounded-md ${selected ? "bg-[var(--selected)]" : "hover:bg-[var(--hover)]"}`}>
+        <button type="button" className="flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-[var(--text)]" aria-label={group.folder ? `Toggle folder ${name}` : "Toggle Unfiled"} aria-expanded={!collapsed} aria-controls={listId} disabled={!key} onClick={() => { if (key) onFolderCollapseChange(key, !collapsed); }}>
+          <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[var(--muted)] transition-transform ${collapsed ? "" : "rotate-90"}`} aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-left">{name}</span>
           {collapsed && aggregate.count > 0 ? <span className={`rounded-full px-1.5 text-[10px] ${aggregate.mentionCount ? "bg-[var(--accent)] text-white" : "bg-[var(--border)] text-[var(--text)]"}`} aria-label={`${aggregate.count} unread messages, ${aggregate.mentionCount} direct mentions`}>{aggregate.count}</span> : null}
-          <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${collapsed ? "" : "rotate-180"}`} aria-hidden="true" />
         </button>
-        {group.folder && actorIdentityId ? <ConversationFolderDialog workspaceId={workspaceId} actorIdentityId={actorIdentityId} folder={group.folder} trigger={(
-          <button className="icon-button inline-flex" type="button" aria-label={`Rename folder ${name}`} title="Rename folder"><Pencil className="h-3 w-3" aria-hidden="true" /></button>
-        )} /> : null}
+        {actorIdentityId ? <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
+          <Popover.Trigger asChild>
+            <button ref={actionsRef} className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]" type="button" aria-label={`Folder actions for ${name}`} title="Folder actions"><EllipsisVertical className="h-4 w-4" aria-hidden="true" /></button>
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Content side="right" align="start" sideOffset={4} collisionPadding={12} className="z-[60] w-44 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
+              <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" onClick={() => { setMenuOpen(false); setCreateOpen(true); }}>Create Conversation</button>
+              {group.folder ? <button className="w-full rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" onClick={() => { setMenuOpen(false); setRenameOpen(true); }}>Rename</button> : null}
+            </Popover.Content>
+          </Popover.Portal>
+        </Popover.Root> : null}
       </div>
-      <ul id={listId} className="space-y-1" hidden={collapsed}>{children}</ul>
+      <ul id={listId} className="ml-5 space-y-0.5" hidden={collapsed}>{children}</ul>
+      {actorIdentityId ? <CreateConversationDialog workspace={workspace} open={createOpen} onOpenChange={setCreateOpen} initialFolderId={group.folder?.id ?? null} trigger={null} onNavigate={onNavigate} onCloseAutoFocus={restoreFocus} /> : null}
+      {group.folder && actorIdentityId ? <ConversationFolderDialog workspaceId={workspace.id} actorIdentityId={actorIdentityId} folder={group.folder} open={renameOpen} onOpenChange={setRenameOpen} onCloseAutoFocus={restoreFocus} /> : null}
     </section>
   );
 }
@@ -242,16 +257,18 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, on
   const [menuOpen, setMenuOpen] = useState(false);
   const [folderOpen, setFolderOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [focusName, setFocusName] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   return (
     <>
-      <CreateConversationDialog workspace={workspace} onNavigate={onNavigate} />
+      <CreateConversationDialog workspace={workspace} open={createOpen} onOpenChange={setCreateOpen} trigger={null} onNavigate={onNavigate} onCloseAutoFocus={event => { event.preventDefault(); menuTriggerRef.current?.focus(); }} />
       <Popover.Root open={menuOpen} onOpenChange={setMenuOpen}>
         <Popover.Trigger asChild>
           <button
             ref={menuTriggerRef}
-            className="icon-button inline-flex min-h-8 min-w-8"
+            className="inline-flex min-h-8 min-w-8 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
             type="button"
             aria-label={`Workspace actions for ${workspace.name}`}
             title="Workspace actions"
@@ -260,13 +277,16 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, on
           </button>
         </Popover.Trigger>
         <Popover.Portal>
-          <Popover.Content side="bottom" align="end" sideOffset={4} collisionPadding={12} className="z-[60] w-36 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
+          <Popover.Content side="bottom" align="end" sideOffset={4} collisionPadding={12} className="z-[60] w-48 rounded-md border border-[var(--border)] bg-[var(--panel)] p-1 shadow-xl outline-none">
+            {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" aria-label={`Create Conversation in ${workspace.name}`} onClick={() => { setMenuOpen(false); setCreateOpen(true); }}><MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />Create Conversation</button> : null}
+            {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" onClick={() => { setMenuOpen(false); setFocusName(true); setSettingsOpen(true); }}><Pencil className="h-3.5 w-3.5" aria-hidden="true" />Rename</button> : null}
             {actorIdentityId ? <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]" type="button" onClick={() => { setMenuOpen(false); setFolderOpen(true); }}><FolderIcon className="h-3.5 w-3.5" aria-hidden="true" />Create folder</button> : null}
             <button
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--hover)]"
               type="button"
               onClick={() => {
                 setMenuOpen(false);
+                setFocusName(false);
                 setSettingsOpen(true);
               }}
             >
@@ -292,6 +312,7 @@ function WorkspaceHeaderActions({ workspace, activeAgents, onNavigate, sound, on
         workspace={workspace}
         sound={sound}
         onSoundChange={onSoundChange}
+        focusName={focusName}
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         trigger={null}
@@ -387,7 +408,6 @@ export function NavigationSidebar({
                 <section key={workspace.id}>
                   <div className="mb-1 flex items-end justify-between gap-2 px-2">
                     <div className="min-w-0">
-                      <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--muted)]">Workspace</p>
                       <h2 className="truncate text-sm font-semibold text-[var(--text)]" title={workspace.name}>
                         {workspace.name}
                       </h2>
@@ -398,7 +418,7 @@ export function NavigationSidebar({
                   </div>
                   {loading ? <p className="px-2 py-2 text-xs text-[var(--muted)]">Loading Conversations…</p> : null}
                   {groups.map(group => (
-                    <FolderConversationGroup key={group.folder?.id ?? "unfiled"} group={group} workspaceId={workspace.id} identityId={identityId} actorIdentityId={actorIdentityId} activeConversationId={activeConversationId} unread={unread} collapsedFolders={collapsedFolders} onFolderCollapseChange={onFolderCollapseChange}>
+                    <FolderConversationGroup key={group.folder?.id ?? "unfiled"} group={group} workspace={workspace} identityId={identityId} actorIdentityId={actorIdentityId} activeConversationId={activeConversationId} unread={unread} collapsedFolders={collapsedFolders} onFolderCollapseChange={onFolderCollapseChange} onNavigate={onNavigate}>
                       {group.conversations.map(conversation => (
                         <ConversationNavigationLink key={conversation.id} conversation={conversation} workspaceId={workspace.id} activeConversationId={activeConversationId} unread={unread} lifecycleState="active" onLifecycleChange={onLifecycleChange} pendingLifecycle={pendingLifecycleConversationId === conversation.id} onNavigate={onNavigate} onMove={actorIdentityId ? setMovingConversation : undefined} />
                       ))}

@@ -14,8 +14,8 @@ A top-level Conversation belongs to zero or one folder in its own Workspace. Fol
 Active human Workspace owners and admins can:
 
 - choose **Create folder** from the Workspace actions menu,
-- rename a folder using its header action,
-- choose an optional **Folder** when creating a Conversation, or
+- choose **Rename** from a folder's vertical action menu,
+- choose **Create Conversation** from Workspace or folder actions, with an optional **Folder** selector, or
 - choose **Move to folder** from Conversation actions, including **Unfiled**.
 
 Ordinary members can navigate and collapse groups but cannot administer folders or assignments. Existing authenticated gateway and core service-credential policies still apply; folders add no new confidentiality guarantee.
@@ -24,6 +24,8 @@ Folder names are trimmed and must contain 1–100 UTF-16 code units, excluding U
 
 ## Navigation and lifecycle
 
+- The existing selector chooses one Workspace at a time. Its folders use compact rows with left expansion chevrons and indented Conversation children; vertical action menus replace inline rename/create controls.
+- Workspace actions include Settings, a Rename shortcut to its name field, Create folder and Create Conversation. Folder actions preselect that folder for creation; Workspace/Unfiled creation defaults to Unfiled. Preset settings do not include folder selection.
 - Folder groups are alphabetical, with a stable folder-ID tie-breaker. Existing Conversation order is preserved within a group.
 - Empty folders and Unfiled stay visible. Active Conversations without a folder appear under Unfiled.
 - Collapse preferences are browser-local, scoped by current human, Workspace, and folder ID. Desktop and mobile drawer use the same preferences. Groups initially expand; direct navigation or a successful move reveals the selected Conversation's destination.

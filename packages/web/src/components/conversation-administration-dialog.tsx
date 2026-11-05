@@ -190,11 +190,26 @@ function QueryState({
 export function CreateConversationDialog({
   workspace,
   onNavigate,
+  open: controlledOpen,
+  onOpenChange,
+  initialFolderId,
+  trigger,
+  onCloseAutoFocus,
 }: {
   workspace: Workspace;
   onNavigate?(): void;
+  open?: boolean;
+  onOpenChange?(open: boolean): void;
+  initialFolderId?: string | null;
+  trigger?: ReactNode;
+  onCloseAutoFocus?(event: Event): void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const [name, setName] = useState("");
   const [setup, setSetup] = useState<ConversationSetup>({ participants: [] });
   const [draftId, setDraftId] = useState("");
@@ -211,7 +226,7 @@ export function CreateConversationDialog({
     ...(data.session.data ? [data.session.data.identityId] : []),
     ...setup.participants.flatMap(({ identityId }) => identityId ? [identityId] : []),
   ]);
-  const ready = Boolean(name.trim()) && setup.participants.length <= 16 && setup.participants.every(({ identityId, role }) =>
+  const ready = Boolean(name.trim() && draftId) && setup.participants.length <= 16 && setup.participants.every(({ identityId, role }) =>
     role.trim() && data.participants.some(({ identity, member }) => identity.id === identityId
       && identity.status === "active" && member.status === "active"));
   const mutation = useMutation({
@@ -232,6 +247,14 @@ export function CreateConversationDialog({
       });
     },
   });
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setSetup({ participants: [] });
+    setFolderId(initialFolderId ?? "");
+    setDraftId(`conversation_${crypto.randomUUID().replaceAll("-", "")}`);
+    mutation.reset();
+  }, [open, workspace.id, initialFolderId, mutation.reset]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (ready && data.session.data && !mutation.isPending) mutation.mutate();
@@ -240,20 +263,15 @@ export function CreateConversationDialog({
   return (
     <AdministrationDialog
       open={open}
-      onOpenChange={(next) => {
-        if (next) {
-          setName(""); setSetup({ participants: [] }); setFolderId(""); mutation.reset();
-          setDraftId(`conversation_${crypto.randomUUID().replaceAll("-", "")}`);
-        }
-        setOpen(next);
-      }}
+      onOpenChange={setOpen}
+      onCloseAutoFocus={onCloseAutoFocus}
       title={`Create a Conversation in ${workspace.name}`}
       description="Name the conversation and choose its initial agents. You are included automatically."
-      trigger={(
+      trigger={trigger === undefined ? (
         <button type="button" className="icon-button inline-flex min-h-8 min-w-8" aria-label={`Create Conversation in ${workspace.name}`} title="Create Conversation">
           <SquarePen className="h-3.5 w-3.5" />
         </button>
-      )}
+      ) : trigger}
     >
       <QueryState pending={data.pending || folders.isPending} error={data.error ?? folders.error} canAdminister={data.canAdminister}>
         <form className="space-y-5" onSubmit={submit}>
