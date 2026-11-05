@@ -27,7 +27,7 @@ test("Workspace idle sleep policy persists without changing private Workspace so
   try {
     const original = {
       workspaceId: "workspace-policy", rootUri: "file:///private/source",
-      notesFolderId: "private-notes", idleSleepTimeoutMs: 15 * 60_000,
+      notesFolderId: "private-notes", idleSleepTimeoutMs: 15 * 60_000, turnTimeoutMs: 10 * 60_000,
       createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
     };
     await store.putWorkspaceConfig(original);
@@ -40,6 +40,7 @@ test("Workspace idle sleep policy persists without changing private Workspace so
     store = await DrizzleLibSqlRelayStorage.open({ url });
     assert.equal((await store.getWorkspaceConfig(original.workspaceId))?.idleSleepTimeoutMs, undefined);
     assert.equal((await store.getWorkspaceConfig(original.workspaceId))?.rootUri, original.rootUri);
+    assert.equal((await store.getWorkspaceConfig(original.workspaceId))?.turnTimeoutMs, original.turnTimeoutMs);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
