@@ -34,7 +34,7 @@ async function launch(page: Page, request: APIRequestContext, destination: strin
 
 async function move(page: Page, name: string, folderId: string) {
   await page.getByRole("button", { name: `Conversation actions for ${name}`, exact: true }).click();
-  await page.getByRole("button", { name: "Move to folder", exact: true }).click();
+  await page.getByRole("button", { name: "Move", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: `Move #${name}`, exact: true });
   await dialog.getByRole("combobox", { name: "Folder", exact: true }).selectOption(folderId);
   return dialog;
@@ -114,7 +114,12 @@ test("folder create/rename/create-in-folder/move/unfile persist, retain failures
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(group(page, target.name).getByRole("link", { name: "folder-flow-created", exact: true })).toBeVisible();
+  const activeLink = group(page, target.name).getByRole("link", { name: "folder-flow-created", exact: true });
+  await expect(activeLink).toBeVisible();
+  await expect(activeLink).toHaveAttribute("aria-current", "page");
+  await expect(activeLink).toHaveClass(/bg-\[var\(--selected\)\]/);
+  await page.mouse.move(0, 0);
+  await expect(toggle.locator("..")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   expect(page.url()).toBe(url);
   await page.screenshot({ path: info.outputPath("folders-desktop.png") });
 });
@@ -339,7 +344,7 @@ test("filed lifecycle transitions and thread navigation retain their parent fold
   await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toHaveCount(0);
   await page.getByRole("button", { name: "Settled", exact: true }).click();
   await actions.click();
-  await expect(page.getByRole("button", { name: "Move to folder", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Move", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
   await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toBeVisible();
 });

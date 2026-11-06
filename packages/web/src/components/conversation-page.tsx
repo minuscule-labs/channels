@@ -490,7 +490,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
             title="Participants"
             description="Public members of this Conversation."
             trigger={(
-              <button className={`icon-button inline-flex ${activeThread || selectedThread ? "" : "lg:hidden"}`} type="button" aria-label="Show participants">
+              <button className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${activeThread || selectedThread ? "" : "lg:hidden"}`} type="button" aria-label="Show participants">
                 <Users className="h-4 w-4" />
               </button>
             )}
@@ -528,7 +528,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
               onDismissBulkResults={() => setBulkResults(undefined)}
             />
           </Drawer>
-          {onCloseThread ? <button type="button" className="icon-button inline-flex shrink-0" aria-label="Close thread" onClick={onCloseThread}><X aria-hidden="true" className="h-4 w-4" /></button> : null}
+          {onCloseThread ? <button type="button" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]" aria-label="Close thread" onClick={onCloseThread}><X aria-hidden="true" className="h-4 w-4" /></button> : null}
         </header>
         {connection === "polling" ? <p role="status" className="border-b border-[var(--border)] px-4 py-2 text-xs text-[var(--muted)]">Live updates are unavailable in this browser. Checking periodically; notification sounds are unavailable in this fallback mode.</p> : null}
         {settled ? (

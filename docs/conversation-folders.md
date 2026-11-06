@@ -16,7 +16,7 @@ Active human Workspace owners and admins can:
 - choose **Create folder** from the Workspace actions menu,
 - choose **Rename** from a folder's vertical action menu,
 - use the Workspace's quick-create Conversation icon or choose **Create Conversation** from Workspace or folder actions, with an optional **Folder** selector, or
-- choose **Move to folder** from Conversation actions, including **Unfiled**.
+- choose **Move** from Conversation actions to file a Conversation or return it to **Unfiled**.
 
 Ordinary members can navigate and collapse groups but cannot administer folders or assignments. Existing authenticated gateway and core service-credential policies still apply; folders add no new confidentiality guarantee.
 
