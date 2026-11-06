@@ -1,10 +1,11 @@
-import { createClient, type Client } from "@libsql/client";
-import { assertConversationLifecycle, ConversationAttachmentUnavailableError, ConversationResponseRetiredError } from "@minu/channels-core";
+import { createClient, LibsqlError, type Client } from "@libsql/client";
+import { assertConversationLifecycle, ConversationAttachmentUnavailableError, ConversationFolderConflictError, ConversationResponseRetiredError, normalizeConversationFolderName } from "@minu/channels-core";
 import { chmod, mkdir } from "node:fs/promises";
 import type {
   Conversation,
   ConversationAttachmentRecord,
   ConversationCursorStore,
+  ConversationFolder,
   ConversationLifecycle,
   ConversationMessage,
   ConversationMetadata,
@@ -23,7 +24,7 @@ import type {
   WorkspaceMember,
   WorkspaceMemberUpdateResult,
 } from "@minu/channels-core";
-import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, DrizzleQueryError, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
@@ -39,6 +40,10 @@ function threadMetadata(row: typeof schema.conversations.$inferSelect): Pick<Con
       context: row.threadContext ?? [],
     },
   } : {};
+}
+
+function conversationFolder(row: typeof schema.conversationFolders.$inferSelect): ConversationFolder {
+  return { id: row.id, workspaceId: row.workspaceId, name: row.name, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 
 export interface DrizzleLibSqlStorageOptions {
@@ -388,12 +393,78 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     }));
   }
 
+  async createConversationFolder(folder: ConversationFolder): Promise<ConversationFolder> {
+    const name = normalizeConversationFolderName(folder.name);
+    const workspace = await this.database.query.workspaces.findFirst({ where: eq(schema.workspaces.id, folder.workspaceId) });
+    if (!workspace) throw new Error("Folder Workspace not found");
+    const [created] = await this.database.insert(schema.conversationFolders)
+      .values({ ...folder, name, nameKey: name.toLowerCase() }).onConflictDoNothing().returning();
+    if (!created) throw new ConversationFolderConflictError("Folder id or name already exists in this Workspace");
+    return conversationFolder(created);
+  }
+
+  async getConversationFolder(folderId: string): Promise<ConversationFolder | undefined> {
+    const row = await this.database.query.conversationFolders.findFirst({ where: eq(schema.conversationFolders.id, folderId) });
+    return row ? conversationFolder(row) : undefined;
+  }
+
+  async listWorkspaceConversationFolders(workspaceId: string): Promise<ConversationFolder[]> {
+    const rows = await this.database.select().from(schema.conversationFolders)
+      .where(eq(schema.conversationFolders.workspaceId, workspaceId));
+    return rows.map(conversationFolder)
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id));
+  }
+
+  async updateConversationFolderName(folderId: string, name: string, updatedAt: string): Promise<ConversationFolder | undefined> {
+    const normalized = normalizeConversationFolderName(name);
+    try {
+      // A single write avoids deferred read-to-write transaction upgrades under contention.
+      // The Workspace/name-key unique index decides competing renames atomically.
+      const [updated] = await this.database.update(schema.conversationFolders)
+        .set({ name: normalized, nameKey: normalized.toLowerCase(), updatedAt })
+        .where(eq(schema.conversationFolders.id, folderId)).returning();
+      return updated ? conversationFolder(updated) : undefined;
+    } catch (error) {
+      const cause = error instanceof DrizzleQueryError ? error.cause : error;
+      // SQLite's extended UNIQUE constraint code (not a busy or other constraint error).
+      if (cause instanceof LibsqlError && cause.rawCode === 2067) {
+        throw new ConversationFolderConflictError("Folder name already exists in this Workspace");
+      }
+      throw error;
+    }
+  }
+
+  async assignConversationFolder(conversationId: string, folderId: string | null): Promise<ConversationMetadata | undefined> {
+    // Migration 0011's trigger validates folder existence and Workspace scope in
+    // this same write. Excluding threads also rejects independent unfiling.
+    const [updated] = await this.database.update(schema.conversations).set({ folderId })
+      .where(and(eq(schema.conversations.id, conversationId), isNull(schema.conversations.parentConversationId)))
+      .returning({ id: schema.conversations.id });
+    if (!updated) {
+      const existing = await this.database.query.conversations.findFirst({
+        columns: { parentConversationId: true }, where: eq(schema.conversations.id, conversationId),
+      });
+      if (existing?.parentConversationId) throw new Error("Threads cannot be independently filed");
+      return undefined;
+    }
+    return await this.getConversationMetadata(conversationId);
+  }
+
   async createConversation(conversation: Conversation): Promise<Conversation> {
+    const folderId = conversation.folderId ?? null;
+    if (conversation.thread && folderId !== null) throw new Error("Threads cannot be independently filed");
     await this.database.transaction(async (transaction) => {
+      if (folderId !== null) {
+        const [folder] = await transaction.select({ id: schema.conversationFolders.id }).from(schema.conversationFolders)
+          .where(and(eq(schema.conversationFolders.id, folderId),
+            eq(schema.conversationFolders.workspaceId, conversation.workspaceId))).limit(1);
+        if (!folder) throw new Error("Folder must belong to the Conversation Workspace");
+      }
       await transaction.insert(schema.conversations).values({
         id: conversation.id,
         workspaceId: conversation.workspaceId,
         name: conversation.name,
+        folderId,
         createdAt: conversation.createdAt,
         nextSequence: 1,
         rosterRevision: conversation.rosterRevision,
@@ -419,6 +490,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     });
     return {
       ...conversation,
+      folderId,
       participants: conversation.participants.map((participant) => ({ ...participant })),
       messages: [],
     };
@@ -448,6 +520,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       ? await this.getConversationMetadata(conversation.parentConversationId) : undefined;
     return {
       ...threadMetadata(conversation),
+      folderId: conversation.folderId,
       id: conversation.id,
       workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
       name: conversation.name,
@@ -551,6 +624,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         id: schema.conversations.id,
         workspaceId: schema.conversations.workspaceId,
         name: schema.conversations.name,
+        folderId: schema.conversations.folderId,
         createdAt: schema.conversations.createdAt,
       }).from(schema.conversations).where(eq(schema.conversations.id, conversationId)).limit(1);
       const previous = await transaction.select({ id: schema.participants.id })
@@ -617,6 +691,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
           id: conversation.id,
           workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
           name: conversation.name,
+          folderId: conversation.folderId,
           createdAt: conversation.createdAt,
           rosterRevision: revisions[0].rosterRevision,
           participants: participants.map((participant) => ({ ...participant })),
@@ -669,6 +744,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       ? await this.getConversationMetadata(conversation.parentConversationId) : undefined;
     return {
       ...threadMetadata(conversation),
+      folderId: conversation.folderId,
       id: conversation.id,
       workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
       name: conversation.name,

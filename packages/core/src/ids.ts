@@ -4,6 +4,7 @@ export const RESOURCE_ID_PREFIXES = [
   "identity",
   "workspace",
   "conversation",
+  "folder",
   "message",
   "attachment",
   "event",

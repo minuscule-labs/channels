@@ -3,7 +3,7 @@ import type { Workspace, WorkspaceMember } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Check, FolderOpen, LoaderCircle, Settings, X } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import type { NotificationSound } from "../lib/conversation-notifications";
@@ -21,9 +21,15 @@ function ConfigurationState({ configured, label }: { configured: boolean; label:
   );
 }
 
-function WorkspaceNameForm({ workspace, actorIdentityId }: { workspace: Workspace; actorIdentityId: string }) {
+function WorkspaceNameForm({ workspace, actorIdentityId, autoFocus = false }: { workspace: Workspace; actorIdentityId: string; autoFocus?: boolean }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(workspace.name);
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!autoFocus) return;
+    const frame = requestAnimationFrame(() => { nameRef.current?.focus(); nameRef.current?.select(); });
+    return () => cancelAnimationFrame(frame);
+  }, [autoFocus]);
   const mutation = useMutation({
     mutationFn: () => conversations.updateWorkspace(workspace.id, { actorIdentityId, name: name.trim() }),
     onSuccess: (updated) => {
@@ -41,7 +47,7 @@ function WorkspaceNameForm({ workspace, actorIdentityId }: { workspace: Workspac
       <h3 className="text-sm font-semibold">Workspace name</h3>
       <p className="mt-1 text-xs leading-5 text-[var(--muted)]">Shown in navigation and Workspace headings.</p>
       <label className="mt-3 block text-xs font-medium">Name
-        <input value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
+        <input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
       </label>
       <div className="mt-3 flex items-center justify-end gap-2">
         {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
@@ -177,6 +183,7 @@ export function WorkspaceSettingsDialog({
   onCloseAutoFocus,
   sound = "off",
   onSoundChange,
+  focusName = false,
 }: {
   workspace: Workspace;
   open?: boolean;
@@ -185,6 +192,7 @@ export function WorkspaceSettingsDialog({
   onCloseAutoFocus?(event: Event): void;
   sound?: NotificationSound;
   onSoundChange?(sound: NotificationSound): void;
+  focusName?: boolean;
 }) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -278,7 +286,7 @@ export function WorkspaceSettingsDialog({
               </div>
             ) : configuration.data && session.data ? (
               <div className="space-y-4">
-                <WorkspaceNameForm workspace={workspace} actorIdentityId={session.data.identityId} />
+                <WorkspaceNameForm workspace={workspace} actorIdentityId={session.data.identityId} autoFocus={focusName} />
                 <WorkspaceRootForm workspaceId={workspace.id} summary={configuration.data} />
                 <WorkspaceIdleSleepForm key={workspace.id} workspaceId={workspace.id} summary={configuration.data} />
               </div>

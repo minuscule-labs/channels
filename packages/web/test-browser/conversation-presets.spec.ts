@@ -13,7 +13,8 @@ async function presetFixture(page: Page, request: APIRequestContext) {
     return { status: response.status, body: await response.json() };
   }, { path, method, body });
   const open = async () => {
-    await page.getByRole("button", { name: `Create Conversation in ${workspace.name}` }).click();
+    await page.getByRole("button", { name: `Workspace actions for ${workspace.name}`, exact: true }).click();
+    await page.getByRole("button", { name: `Create Conversation in ${workspace.name}`, exact: true }).click();
     return page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}` });
   };
   return { workspace, local, open };
@@ -28,7 +29,14 @@ function gate() {
 test("reviews, saves, reuses, edits and deletes a Workspace preset before creating a Conversation", async ({ page, request }) => {
   const { workspace, local, open } = await presetFixture(page, request);
   const { members } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/members`)).json();
-  const agent = (members as Array<{ identityId: string; mentionHandle: string }>).find(({ mentionHandle }) => mentionHandle === "builder")!;
+  const records = members as Array<{ identityId: string; mentionHandle: string }>;
+  const agent = records.find(({ mentionHandle }) => mentionHandle === "builder")!;
+  const owner = records.find(({ mentionHandle }) => mentionHandle === "david")!;
+  const folderResponse = await request.post(`${conversationsBase}/workspaces/${workspace.id}/folders`, {
+    data: { actorIdentityId: owner.identityId, name: "Preset delivery" },
+  });
+  expect(folderResponse.ok()).toBe(true);
+  const { folder } = await folderResponse.json();
   expect((await local(`/local/workspaces/${workspace.id}/config`, "PATCH", { rootUri: "/tmp" })).status).toBe(200);
   expect((await local(`/local/workspaces/${workspace.id}/agents/${agent.identityId}/config`, "PATCH", { runtimeAdapter: "pi", status: "active" })).status).toBe(200);
   const initialCount = (await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json()).conversations.length;
@@ -61,7 +69,11 @@ test("reviews, saves, reuses, edits and deletes a Workspace preset before creati
   expect((await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json()).conversations.length).toBe(initialCount);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   dialog = await open();
+  const filing = dialog.getByRole("combobox", { name: "Folder", exact: true });
+  await expect(filing).toHaveValue("");
+  await filing.selectOption(folder.id);
   await dialog.getByRole("combobox", { name: "Preset", exact: true }).selectOption({ label: "Research team" });
+  await expect(filing).toHaveValue(folder.id);
   await expect(dialog.getByRole("combobox", { name: "Agent for role 1", exact: true })).toHaveValue(agent.identityId);
   await expect(dialog.getByRole("combobox", { name: "Conversation effort", exact: true })).toHaveValue("high");
   await dialog.getByLabel("Conversation name", { exact: true }).fill("reviewed-preset");
@@ -76,15 +88,21 @@ test("reviews, saves, reuses, edits and deletes a Workspace preset before creati
   const response = await creation;
   expect(response.ok()).toBe(true);
   const { conversation } = await response.json();
+  expect(conversation.folderId).toBe(folder.id);
   await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await expect(page.getByRole("region", { name: `Folder ${folder.name}`, exact: true }).getByRole("link", { name: "reviewed-preset", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close navigation", exact: true }).click();
   const setup = (await local(`/local/conversations/${conversation.id}/creation-setup`)).body.setup;
   expect(setup.reasoningLevel).toBe("low");
   expect(setup.guidance).toBe("Check in before implementation.");
   expect(setup.model).toEqual({ provider: "openai", id: "gpt-browser-fast" });
   expect(setup.participants).toEqual([{ identityId: agent.identityId, role: "Research lead" }]);
+  expect(setup).not.toHaveProperty("folderId");
   await page.setViewportSize({ width: 1280, height: 900 });
   dialog = await open();
   await dialog.getByRole("combobox", { name: "Preset", exact: true }).selectOption({ label: "Research team" });
+  await expect(dialog.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue("");
   await expect(dialog.getByRole("combobox", { name: "Conversation effort", exact: true })).toHaveValue("high");
   await expect(dialog.getByLabel("Collaboration guidance (optional)")).toHaveValue("Check in after discovery.");
   await dialog.getByText("Save or manage presets", { exact: true }).click();

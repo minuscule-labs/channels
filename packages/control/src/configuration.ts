@@ -305,8 +305,12 @@ export class LocalAgentHostConfiguration {
   async createConversationWithSetup(workspaceId: string, actorIdentityId: string, value: unknown): Promise<ConversationMetadata> {
     const members = await this.authorize(workspaceId, actorIdentityId);
     const input = object(value, "Conversation");
-    rejectUnknown(input, ["id", "name", "participants", "model", "reasoningLevel", "guidance"]);
+    rejectUnknown(input, ["id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance"]);
     if (!isResourceId(input.id, "conversation")) throw new LocalConfigurationRequestError("Conversation id is invalid", 400, "invalid");
+    const folderId = input.folderId ?? null;
+    if (folderId !== null && !isResourceId(folderId, "folder")) {
+      throw new LocalConfigurationRequestError("Folder id is invalid", 400, "invalid");
+    }
     const setup: ConversationCreationSetup = { ...this.parseConversationSetup(input, true), workspaceId,
       conversationId: input.id, actorIdentityId, name: conversationLabel(input.name, "Conversation name") };
     // A retry may find the public Conversation even when the first response was lost.
@@ -319,8 +323,16 @@ export class LocalAgentHostConfiguration {
       throw error;
     });
     if (existing) {
-      if (original && existing.workspaceId === workspaceId) return existing;
+      if (original && existing.workspaceId === workspaceId) {
+        if ((existing.folderId ?? null) !== folderId) {
+          throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+        }
+        return existing;
+      }
       throw new LocalConfigurationRequestError("Conversation id is already in use", 409, "unavailable");
+    }
+    if (folderId !== null && !(await this.options.client.listWorkspaceFolders(workspaceId)).some(folder => folder.id === folderId)) {
+      throw new LocalConfigurationRequestError("Folder is unavailable in this Workspace", 404, "unavailable");
     }
     const identities = await this.options.client.listIdentities();
     for (const participant of setup.participants) {
@@ -357,12 +369,12 @@ export class LocalAgentHostConfiguration {
       throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
     }
     try {
-      return await this.options.client.createConversation({ id: input.id, workspaceId, name: setup.name,
+      return await this.options.client.createConversation({ id: input.id, workspaceId, name: setup.name, folderId,
         participantIds: [actorIdentityId, ...setup.participants.map(({ identityId }) => identityId!)], actorIdentityId });
     } catch (error) {
       if (error instanceof ConversationClientError && error.status === 409) {
         const created = await this.options.client.getConversation(input.id);
-        if (created.workspaceId === workspaceId) return created;
+        if (created.workspaceId === workspaceId && (created.folderId ?? null) === folderId) return created;
       }
       throw error;
     }

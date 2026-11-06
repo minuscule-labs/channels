@@ -98,6 +98,44 @@ test("preset administration and creation enforce membership, validate roles and 
   assert.doesNotMatch(JSON.stringify(publicConversation), /preset|Check in after diagnosis/);
 });
 
+test("preset creation files atomically and preserves its reviewed setup across a lost-response retry", async (t) => {
+  const f = await fixture(t);
+  const folder = await f.client.createWorkspaceFolder(f.workspace.id, { actorIdentityId: f.owner.id, name: "Delivery" });
+  const other = await f.client.createWorkspaceFolder(f.workspace.id, { actorIdentityId: f.owner.id, name: "Other" });
+  const input = { ...f.input, folderId: folder.id };
+  const create = f.client.createConversation.bind(f.client);
+  f.client.createConversation = async (value) => { await create(value); throw new Error("Lost filed response"); };
+  await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input), /Lost filed response/);
+  f.client.createConversation = create;
+  const created = await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input);
+  assert.equal(created.id, input.id);
+  assert.equal(created.folderId, folder.id);
+  assert.equal((await f.client.listWorkspaceConversations(f.workspace.id)).length, 1);
+  const setup = await f.store.getConversationCreationSetup(f.workspace.id, input.id);
+  assert.equal(setup?.guidance, f.input.guidance);
+  assert.deepEqual(setup?.participants, f.input.participants);
+  assert.ok(!("folderId" in setup!), "Filing is public navigation metadata, not private agent setup");
+  await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, { ...input, folderId: other.id }), { status: 409 });
+  assert.equal((await f.client.getConversation(input.id)).folderId, folder.id);
+  assert.deepEqual(await f.store.getConversationCreationSetup(f.workspace.id, input.id), setup);
+  assert.equal(f.starts.length, 0);
+});
+
+test("preset creation rejects malformed, missing and foreign folders before saving public or private data", async (t) => {
+  const f = await fixture(t);
+  const other = await f.client.createWorkspace({ slug: "other-preset-folder", name: "Other" });
+  await f.client.addWorkspaceMember(other.id, { identityId: f.owner.id, mentionHandle: "owner", accessRole: "owner" });
+  const foreign = await f.client.createWorkspaceFolder(other.id, { actorIdentityId: f.owner.id, name: "Foreign" });
+  for (const [folderId, status] of [["bad", 400], [42, 400], [createResourceId("folder"), 404], [foreign.id, 404]] as const) {
+    const input = { ...f.input, id: createResourceId("conversation"), folderId };
+    await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input), { status });
+    assert.equal(await f.store.getConversationCreationSetup(f.workspace.id, input.id), undefined);
+    await assert.rejects(f.client.getConversation(input.id), { status: 404 });
+  }
+  assert.equal((await f.client.listWorkspaceConversations(f.workspace.id)).length, 0);
+  assert.equal(f.starts.length, 0);
+});
+
 test("preset saves recover exact create and update retries while preserving intervening edits", async (t) => {
   const f = await fixture(t);
   const id = `preset_${"c".repeat(32)}`;

@@ -1,4 +1,8 @@
 import type {
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
+  ConversationFolder,
   Conversation,
   ConversationEvent,
   ConversationMessage,
@@ -168,6 +172,32 @@ export class ConversationClient {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
     });
     return (await response.json() as { thread: ConversationThread }).thread;
+  }
+
+  async listWorkspaceFolders(workspaceId: string): Promise<ConversationFolder[]> {
+    const response = await this.request(`/workspaces/${encodeURIComponent(workspaceId)}/folders`);
+    return (await response.json() as { folders: ConversationFolder[] }).folders;
+  }
+
+  async createWorkspaceFolder(workspaceId: string, input: CreateConversationFolderInput): Promise<ConversationFolder> {
+    const response = await this.request(`/workspaces/${encodeURIComponent(workspaceId)}/folders`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+    });
+    return (await response.json() as { folder: ConversationFolder }).folder;
+  }
+
+  async updateWorkspaceFolder(workspaceId: string, folderId: string, input: UpdateConversationFolderInput): Promise<ConversationFolder> {
+    const response = await this.request(`/workspaces/${encodeURIComponent(workspaceId)}/folders/${encodeURIComponent(folderId)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+    });
+    return (await response.json() as { folder: ConversationFolder }).folder;
+  }
+
+  async assignConversationFolder(conversationId: string, input: AssignConversationFolderInput): Promise<ConversationMetadata> {
+    const response = await this.request(`/conversations/${encodeURIComponent(conversationId)}/folder`, {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+    });
+    return (await response.json() as { conversation: ConversationMetadata }).conversation;
   }
 
   async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {

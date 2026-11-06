@@ -16,6 +16,8 @@ export interface CreateLocalConversationInput extends ConversationSetup {
   /** Retain across retries so a lost response cannot create a duplicate. */
   id: string;
   name: string;
+  /** Public navigation metadata, independent of the private creation setup. */
+  folderId?: string | null;
 }
 
 export interface LocalConversationCreationSetup {

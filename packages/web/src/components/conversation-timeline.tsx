@@ -87,7 +87,7 @@ function MessageRow({
             <button
               ref={actionsTriggerRef}
               type="button"
-              className="inline-flex h-9 w-9 shrink-0 items-center justify-center self-start rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center self-start rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
               aria-label={`Open actions for message ${message.sequence}`}
               title="Message actions"
             >

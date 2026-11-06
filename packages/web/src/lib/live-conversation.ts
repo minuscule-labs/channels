@@ -2,6 +2,7 @@ import type { ConversationEvent, ConversationMessage, ConversationMetadata } fro
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { conversations } from "./api";
+import { cacheConversationMetadata } from "./conversation-folders";
 import { conversationCacheAction } from "./conversation-events";
 import { mergeMessages } from "./messages";
 import { queryKeys } from "./query-keys";
@@ -48,7 +49,8 @@ export function useLiveConversation(conversationId: string, identityId: string |
               conversations.listMessages(conversationId, { signal: controller.signal }),
             ]);
             if (controller.signal.aborted) return;
-            queryClient.setQueryData(queryKeys.conversation(conversationId), metadata);
+            cacheConversationMetadata(queryClient, metadata);
+            void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(metadata.workspaceId), exact: true });
             void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
             void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
             queryClient.setQueryData<ConversationMessage[]>(
@@ -94,6 +96,7 @@ export function useLiveConversation(conversationId: string, identityId: string |
             queryKey: queryKeys.workspaceConversations(current.workspaceId),
             exact: true,
           });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(current.workspaceId), exact: true });
         }
       }
     };

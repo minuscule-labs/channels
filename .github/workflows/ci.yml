@@ -126,3 +126,8 @@ jobs:
         env:
           MINU_RUNTIME_MODULE: ${{ github.workspace }}/channels/release/package/dist/bin/runtime-pi.js
         run: node scripts/smoke-image-vision.mjs
+      - name: Verify Conversation folders preserve managed Runtime and private scopes
+        working-directory: channels
+        env:
+          MINU_RUNTIME_MODULE: ${{ github.workspace }}/channels/release/package/dist/bin/runtime-pi.js
+        run: node scripts/smoke-conversation-folders.mjs

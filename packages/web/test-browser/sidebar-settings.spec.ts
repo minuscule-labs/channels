@@ -53,11 +53,53 @@ for (const mobile of [false, true]) {
     if (mobile) await page.getByRole("button", { name: "Open navigation" }).click();
     const workspaceActions = page.getByRole("button", { name: `Workspace actions for ${workspace.name}`, exact: true });
     await expect(workspaceActions.locator("svg")).toHaveClass(/lucide-ellipsis-vertical/);
+    const quickCreate = page.getByRole("button", { name: `Quick create Conversation in ${workspace.name}`, exact: true });
+    const folderActions = page.getByRole("button", { name: "Folder actions for Unfiled", exact: true });
+    const conversationActions = page.getByRole("button", { name: `Conversation actions for ${name}`, exact: true });
+    await page.mouse.move(0, 0);
+    for (const action of [workspaceActions, quickCreate, folderActions, conversationActions, page.getByRole("button", { name: "Add Workspace", exact: true })]) {
+      await expect(action).toHaveCSS("width", "36px");
+      await expect(action).toHaveCSS("height", "36px");
+      await expect(action).toHaveCSS("border-top-width", "0px");
+      await expect(action).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    }
+    const workspaceBox = (await workspaceActions.boundingBox())!;
+    for (const action of [folderActions, conversationActions]) {
+      const box = (await action.boundingBox())!;
+      expect(box.x + box.width).toBeCloseTo(workspaceBox.x + workspaceBox.width, 0);
+    }
+    const headingBox = (await page.getByRole("heading", { name: workspace.name, exact: true }).boundingBox())!;
+    expect(headingBox.y + headingBox.height / 2).toBeCloseTo(workspaceBox.y + workspaceBox.height / 2, 0);
+    const quickBox = (await quickCreate.boundingBox())!;
+    expect(workspaceBox.x - quickBox.x - quickBox.width).toBeCloseTo(4, 0);
+    await expect(page.getByLabel("Selected Workspace").locator("..").locator("svg")).toHaveCount(0);
     await workspaceActions.click();
     const workspaceMenu = page.getByRole("dialog").filter({ has: page.getByRole("link", { name: "Agents", exact: true }) });
     await expect(workspaceMenu.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
     await expect(workspaceMenu.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
+    const navigation = page.getByRole("navigation", { name: "Workspaces and Conversations", exact: true });
+    const primaryLink = navigation.locator(`a[href$="/conversations/${primary.id}"]`);
+    const fontSize = await primaryLink.evaluate(element => getComputedStyle(element).fontSize);
+    expect(fontSize).toBe("14px");
+    await expect(navigation.getByRole("heading", { name: workspace.name, exact: true })).toHaveCSS("font-size", fontSize);
+    await expect(navigation.getByRole("button", { name: "Toggle Unfiled", exact: true })).toHaveCSS("font-size", fontSize);
+    await expect(workspaceMenu.getByRole("link", { name: "Agents", exact: true })).toHaveCSS("font-size", fontSize);
+    for (const action of await workspaceMenu.getByRole("button").all()) await expect(action).toHaveCSS("font-size", fontSize);
     await page.keyboard.press("Escape");
+    await expect(workspaceActions).toBeFocused();
+    await expect(quickCreate.locator("svg")).toHaveClass(/lucide-square-pen/);
+    await quickCreate.focus();
+    await page.keyboard.press("Enter");
+    const createDialog = page.getByRole("dialog", { name: `Create a Conversation in ${workspace.name}`, exact: true });
+    await expect(createDialog.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue("");
+    await createDialog.getByLabel("Conversation name").fill("discard-shortcut-draft");
+    await createDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(quickCreate).toBeFocused();
+    await workspaceActions.click();
+    await workspaceMenu.getByRole("button", { name: `Create Conversation in ${workspace.name}`, exact: true }).click();
+    await expect(createDialog.getByLabel("Conversation name")).toHaveValue("");
+    await expect(createDialog.getByRole("combobox", { name: "Folder", exact: true })).toHaveValue("");
+    await createDialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(workspaceActions).toBeFocused();
     const url = page.url();
     await expect(page.getByRole("button", { name: "Manage Conversation participants", exact: true })).toHaveCount(0);
