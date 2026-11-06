@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.32
+
+Release overview: [Conversation folders and consistent action controls](docs/releases/v0.0.32.md).
+
+- Add flat Workspace folders with create/rename, optional creation-time filing, Move/unfile, empty/Unfiled groups, remembered collapse preferences and collapsed unread/mention totals.
+- Keep folder organization separate from permissions, agent context, private Presets, source/working scopes, lifecycle and thread/session identity. Fence stale background metadata responses without reopening stable subscriptions.
+- Use compact folder navigation, quick-create plus vertical popup actions, matching text sizes and aligned borderless action controls. Highlight the active Conversation rather than its folder; keep the existing Workspace selector.
+- Add public migration `0011_conversation_folders`; existing Conversations become Unfiled without rewriting messages or bindings. Keep the private Relay schema, local-control protocol v24, Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732` and dependencies unchanged from v0.0.31.
+- Retain the known Runtime resume/PID-publication race, recovery/context-reconstruction and intermittent native Neon database-abort limitations. This release does not claim to fix them or introduce shadcn/ui.
+
 ## 0.0.31
 
 Release overview: [Reusable Conversation presets](docs/releases/v0.0.31.md).
