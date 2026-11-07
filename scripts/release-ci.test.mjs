@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { checkReleaseCi, successfulMainCiRun } from "./check-release-ci.mjs";
 
 const expected = { repository: "minuscule-labs/channels", sha: "a".repeat(40) };
@@ -83,4 +84,70 @@ test("release workflow gates before installation/build and keeps packaging, draf
   assert.ok(ci.includes("node --test scripts/release*.test.mjs"));
   assert.match(ci, /run: pnpm test/);
   assert.match(ci, /run: pnpm web:test/);
+});
+
+const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const ciJob = (name) => {
+  const block = ci.split(/\n(?=  [a-z][a-z-]*:\n)/).find((part) => part.startsWith(`  ${name}:\n`));
+  assert.ok(block, `Missing CI job: ${name}`);
+  return block;
+};
+const jobCondition = (name) => {
+  const match = ciJob(name).match(/^    if: \$\{\{ (.+) \}\}$/m);
+  assert.ok(match, `Missing condition for CI job: ${name}`);
+  return match[1];
+};
+const evaluateCondition = (condition, eventName, draft, os = "ubuntu-latest") => runInNewContext(condition, {
+  github: { event_name: eventName, event: eventName === "pull_request" ? { pull_request: { draft } } : {} },
+  matrix: { os },
+  always: () => true,
+});
+
+test("CI responds to PR readiness changes and cancels superseded PR runs", () => {
+  const types = ci.match(/  pull_request:\n    types: \[([^\]]+)\]/)?.[1].split(/,\s*/);
+  assert.deepEqual(types, ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"]);
+  assert.match(ci, /cancel-in-progress: \$\{\{ github.event_name == 'pull_request' \}\}/);
+});
+
+test("all CI jobs skip draft PRs and retain full verification for ready PRs and main", () => {
+  const jobs = [...ci.slice(ci.indexOf("\njobs:\n")).matchAll(/^  ([a-z][a-z-]*):\n/gm)].map((match) => match[1]);
+  assert.deepEqual(jobs, ["verify", "browser-shards", "browser", "release-package"]);
+  assert.match(ciJob("verify"), /- run: pnpm check\n/);
+  assert.match(ciJob("verify"), /- run: pnpm test\n        env:/);
+  for (const [eventName, draft, expected] of [["pull_request", true, false], ["pull_request", false, true], ["push", undefined, true]]) {
+    for (const name of jobs) {
+      const condition = jobCondition(name);
+      assert.equal(evaluateCondition(condition, eventName, draft), expected, `${name}, ${eventName}, draft=${draft}: ${condition}`);
+    }
+  }
+});
+
+test("web type and unit checks run on Linux only during full verification", () => {
+  for (const command of ["web:check", "web:test"]) {
+    const condition = ciJob("verify").match(new RegExp(`- run: pnpm ${command}\\n        if: \\$\\{\\{ (.+) \\}\\}`))?.[1];
+    assert.ok(condition, `Missing platform condition for ${command}`);
+    for (const eventName of ["pull_request", "push"]) {
+      assert.equal(evaluateCondition(condition, eventName, false), true);
+      assert.equal(evaluateCondition(condition, eventName, false, "macos-latest"), false);
+    }
+  }
+});
+
+test("browser aggregation remains fail-closed for full verification", () => {
+  assert.match(jobCondition("browser"), /^always\(\) &&/);
+  assert.match(ciJob("browser"), /needs: browser-shards/);
+  assert.match(ciJob("browser"), /SHARDS_RESULT: \$\{\{ needs\.browser-shards\.result \}\}/);
+  assert.match(ciJob("browser"), /run: test "\$SHARDS_RESULT" = success/);
+});
+
+test("browser image matches locked Playwright and avoids OS/browser installation", () => {
+  const lockfile = readFileSync(new URL("../pnpm-lock.yaml", import.meta.url), "utf8");
+  const version = lockfile.match(/'@playwright\/test':\n\s+specifier: [^\n]+\n\s+version: ([\d.]+)/)?.[1];
+  assert.ok(version, "Missing locked Playwright version");
+  assert.ok(ciJob("browser-shards").includes(`image: mcr.microsoft.com/playwright:v${version}-noble`));
+  assert.match(ciJob("browser-shards"), /options: --ipc=host/);
+  assert.doesNotMatch(ciJob("browser-shards"), /playwright install/);
+  assert.match(ciJob("browser-shards"), /shard: \[1, 2, 3\]/);
+  const config = readFileSync(new URL("../packages/web/playwright.config.ts", import.meta.url), "utf8");
+  assert.match(config, /workers: 1/);
 });

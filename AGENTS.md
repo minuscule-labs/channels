@@ -11,7 +11,7 @@
 
 ## Integration and release
 
-- Use required CI for broad integration verification once the combined change is ready. Reuse applicable same-target CI results rather than automatically repeating them locally.
+- Use required CI for broad integration verification once the combined change is ready. Draft PRs skip all CI runner jobs; use focused local checks while drafting. Mark the PR ready for review to trigger full verification; every `main` push also runs it. Reuse applicable same-target CI results rather than automatically repeating them locally.
 - A focused pass is not a full-suite pass. Report what ran and what remains for CI.
 - Required merge/release gates still apply. Follow `docs/releasing.md`; do not run `release:check`, tag dry-runs, or packaging smoke as routine development checks.
 - Keep browser workers at one per fixture instance. CI shards have separate runners and fixture data; increasing local workers is not a safe shortcut.

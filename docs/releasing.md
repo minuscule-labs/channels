@@ -1,6 +1,6 @@
 # Releasing MinuChannels
 
-Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is required: pushing the tag triggers `.github/workflows/release.yml`, which requires successful main CI for that exact commit, then builds, smoke-tests, checksums, and prepares a draft GitHub Release. Publication as latest is a separate step after exact-artifact acceptance. Pull-request CI runs the same package and smoke path on Ubuntu so release-only failures are caught before tagging.
+Releases use an annotated `v<version>` Git tag. No local GitHub CLI session is required: pushing the tag triggers `.github/workflows/release.yml`, which requires successful main CI for that exact commit, then builds, smoke-tests, checksums, and prepares a draft GitHub Release. Publication as latest is a separate step after exact-artifact acceptance. Non-draft pull-request CI runs the same package and smoke path on Ubuntu so release-only failures are caught before tagging.
 
 ## Prepare
 
@@ -18,7 +18,7 @@ pnpm release:tag:dry-run
 
 This is a lightweight metadata/source check, not a test or packaging run. It refuses a dirty tree, duplicate tag, missing license, missing changelog entry, invalid Runtime source pin, or source that differs from freshly fetched `origin/main`. It does not query GitHub CI locally or require a GitHub CLI login. A successful dry run does not claim tests passed or authorize publication.
 
-Full type, backend, web, browser and pinned Runtime verification remains in required PR/post-merge CI. Do not repeat `release:check` locally just to tag an already CI-verified commit; it remains available for diagnosing packaging or integration problems when needed.
+Full type, backend, web, browser and pinned Runtime verification remains in required ready-for-review PR/post-merge CI. Draft PRs skip all CI runner jobs; marking a PR ready triggers full verification. Do not repeat `release:check` locally just to tag an already CI-verified commit; it remains available for diagnosing packaging or integration problems when needed.
 
 `release:pack` recreates the ignored `release/artifacts/` directory. Archive accepted artifacts and their evidence before running validation.
 
