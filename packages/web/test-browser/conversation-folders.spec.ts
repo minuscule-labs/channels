@@ -120,6 +120,12 @@ test("folder create/rename/create-in-folder/move/unfile persist, retain failures
   await expect(activeLink).toHaveClass(/bg-\[var\(--selected\)\]/);
   await page.mouse.move(0, 0);
   await expect(toggle.locator("..")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  const menuIcons = [workspaceActions, page.getByRole("button", { name: "Folder actions for Folder delivery", exact: true }), actions]
+    .map(button => button.locator("svg"));
+  const iconBoxes = await Promise.all(menuIcons.map(icon => icon.boundingBox()));
+  expect(iconBoxes.every(box => box !== null)).toBe(true);
+  const centers = iconBoxes.map(box => box!.x + box!.width / 2);
+  expect(Math.max(...centers) - Math.min(...centers), "Workspace, folder and conversation menu icons share one column").toBeLessThanOrEqual(1);
   expect(page.url()).toBe(url);
   await page.screenshot({ path: info.outputPath("folders-desktop.png") });
 });
