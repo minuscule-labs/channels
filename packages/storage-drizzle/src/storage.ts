@@ -1,5 +1,5 @@
 import { createClient, LibsqlError, type Client } from "@libsql/client";
-import { assertConversationLifecycle, ConversationAttachmentUnavailableError, ConversationFolderConflictError, ConversationResponseRetiredError, normalizeConversationFolderName } from "@minu/channels-core";
+import { assertConversationLifecycle, ConversationMessageIdConflictError, ConversationAttachmentUnavailableError, ConversationFolderConflictError, ConversationResponseRetiredError, normalizeConversationFolderName } from "@minu/channels-core";
 import { chmod, mkdir } from "node:fs/promises";
 import type {
   Conversation,
@@ -768,6 +768,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         to: [...message.targets],
         body: message.body,
         replyTo: message.replyTo ?? undefined,
+        ...(message.authoredInvocationId !== null ? { authoredInvocationId: message.authoredInvocationId } : {}),
         createdAt: message.createdAt,
         attachments: attachmentsByMessage.get(message.id) ?? [],
       })),
@@ -802,6 +803,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       to: [...message.targets],
       body: message.body,
       replyTo: message.replyTo ?? undefined,
+      ...(message.authoredInvocationId !== null ? { authoredInvocationId: message.authoredInvocationId } : {}),
       createdAt: message.createdAt,
       attachments: attachmentsByMessage.get(message.id) ?? [],
     }));
@@ -899,6 +901,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         targets: message.to,
         body: message.body,
         replyTo: message.replyTo,
+        authoredInvocationId: message.authoredInvocationId,
         createdAt: message.createdAt,
       });
       const attachments: MessageAttachment[] = [];
@@ -1002,7 +1005,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       const existingResult = await transaction.execute({
         sql: `
           SELECT i.request_fingerprint, m.id, m.conversation_id, m.sequence,
-                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at
+                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at, m.authored_invocation_id
           FROM message_idempotency i
           JOIN messages m ON m.id = i.message_id
           WHERE i.conversation_id = ? AND i.participant_id = ? AND i.idempotency_key = ?
@@ -1022,12 +1025,16 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             to: JSON.parse(String(existing.targets_json)) as string[],
             body: String(existing.body),
             replyTo: existing.reply_to === null ? undefined : String(existing.reply_to),
+            ...(existing.authored_invocation_id !== null ? { authoredInvocationId: String(existing.authored_invocation_id) } : {}),
             createdAt: String(existing.created_at),
             attachments: existing.request_fingerprint === requestFingerprint ? [...(message.attachments ?? [])] : [],
           },
         };
         await transaction.commit();
       } else {
+        if ((await transaction.execute({ sql: "SELECT id FROM messages WHERE id = ? LIMIT 1", args: [message.id] })).rows.length) {
+          throw new ConversationMessageIdConflictError("Message ID is already in use");
+        }
         const allocatedResult = await transaction.execute({
           sql: `
             UPDATE conversations SET next_sequence = next_sequence + 1
@@ -1041,8 +1048,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         await transaction.execute({
           sql: `
             INSERT INTO messages
-              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at, authored_invocation_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           args: [
             message.id,
@@ -1053,6 +1060,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             message.body,
             message.replyTo ?? null,
             message.createdAt,
+            message.authoredInvocationId ?? null,
           ],
         });
         for (const [position, attachmentId] of attachmentIds.entries()) {

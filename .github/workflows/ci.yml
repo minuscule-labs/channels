@@ -65,12 +65,18 @@ jobs:
       - run: pnpm web:test:browser --shard=${{ matrix.shard }}/3 --reporter=line,json
         env:
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-results/results.json
+      - name: Verify authored skills with its isolated fixture
+        if: matrix.shard == 1
+        run: pnpm web:test:browser --reporter=line,json
+        env:
+          MINU_TEST_SKILLS_FIXTURE: "1"
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-results/skills-results.json
       - name: Upload browser timings and results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: browser-results-${{ matrix.shard }}
-          path: browser-results/results.json
+          path: browser-results/*.json
           retention-days: 7
           if-no-files-found: ignore
 

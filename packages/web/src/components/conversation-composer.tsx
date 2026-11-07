@@ -1,6 +1,6 @@
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
 import { hasChannelMentionCollision, mentionHandles } from "@minu/channels-core/mentions";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ImagePlus, LoaderCircle, RotateCcw, Send, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { localControl } from "../lib/api";
@@ -19,6 +19,8 @@ import { mergeMessages } from "../lib/messages";
 import { queryKeys } from "../lib/query-keys";
 import { messageRecipients, readRecipient, readRecipientOverride, recipientStorageKey, writeRecipient, writeRecipientOverride } from "../lib/recipient-selection";
 import { ErrorNotice } from "./ui/error-notice";
+import { SkillPicker } from "./skill-picker";
+import { createSkillRequest, inspectSkillRequest, publishSkillRequest, readSkillChoice, readSkillRequest, skillAvailability, skillsCommand, submitSkillRequest, type SkillChoice, type SkillRequest } from "../lib/skills";
 
 interface MentionSuggestion {
   id: string;
@@ -37,6 +39,7 @@ export function ConversationComposer({
   conversationId,
   currentHumanIdentityId,
   identityStatus,
+  agents,
   activity,
   readOnlyReason,
   thread = false,
@@ -47,6 +50,7 @@ export function ConversationComposer({
   conversationId: string;
   currentHumanIdentityId?: string;
   identityStatus: "loading" | "ready" | "unavailable";
+  agents?: ReadonlyArray<{ identityId: string; state: string }>;
   activity?: ReactNode;
   readOnlyReason?: string;
   thread?: boolean;
@@ -65,6 +69,24 @@ export function ConversationComposer({
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [dismissedMention, setDismissedMention] = useState<string>();
   const storageKey = draftStorageKey(workspaceId, conversationId, activeAuthorId);
+  const skillKey = `${storageKey}.skill`;
+  const skillRequestKey = `${storageKey}.skill-request`;
+  const [skill, setSkill] = useState(() => readSkillChoice(localStorage.getItem(skillKey)));
+  const [skillRequest, setSkillRequest] = useState(() => readSkillRequest(localStorage.getItem(skillRequestKey), activeAuthorId));
+  const [pickerOpen, setPickerOpen] = useState(() => Boolean(skillsCommand(body)));
+  const [skillError, setSkillError] = useState<string>();
+  const skillBusy = useRef(false);
+  const currentSkillKey = useRef(skillRequestKey);
+  currentSkillKey.current = skillRequestKey;
+  useEffect(() => {
+    currentSkillKey.current = skillRequestKey;
+    return () => { currentSkillKey.current = ""; };
+  }, [skillRequestKey]);
+  useEffect(() => {
+    setSkill(readSkillChoice(localStorage.getItem(skillKey)));
+    setSkillRequest(readSkillRequest(localStorage.getItem(skillRequestKey), activeAuthorId));
+    setSkillError(undefined);
+  }, [skillKey, skillRequestKey, activeAuthorId]);
   const imageDraft = useImageDraft(`${storageKey}.images`, conversationId, activeAuthorId);
   const [failedSubmission, setFailedSubmission] = useState<MessageSubmission | undefined>(() => {
     try {
@@ -76,15 +98,29 @@ export function ConversationComposer({
           && value.input.attachmentIds.every((id: unknown) => typeof id === "string"))) ? value : undefined;
     } catch { return undefined; }
   });
+
   const recipientKey = recipientStorageKey(workspaceId, conversationId, activeAuthorId);
   const [storedRecipient, setStoredRecipient] = useState(() => readRecipient(recipientKey));
   const initialFailure = failedSubmission?.input.participantId === activeAuthorId && failedSubmission.input.body === body ? failedSubmission : undefined;
   const [manualTargets, setManualTargets] = useState<string[] | undefined>(() => initialFailure?.input.to
-    ?? readRecipientOverride(`${storageKey}.recipients`, body));
+    ?? readRecipientOverride(`${storageKey}.recipients`, body)
+    ?? (skill && skillRequest?.input.arguments === body ? skillRequest.input.to : undefined));
   const [replyTo, setReplyTo] = useState<string | undefined>(() => initialFailure?.input.replyTo);
   const selectedRecipient = storedRecipient ?? defaultRecipientId ?? "";
-  const recipients = messageRecipients(body, participants, selectedRecipient, manualTargets);
+  const skillCommand = skillsCommand(body);
+  const skillMode = Boolean(skill || skillCommand);
+  const recipients = messageRecipients(body, participants, selectedRecipient,
+    skillMode ? manualTargets ?? (selectedRecipient ? [selectedRecipient] : []) : manualTargets);
   const targets = recipients.targets;
+  const skillDraft = useRef({ actor: activeAuthorId, body, skill, targets });
+  skillDraft.current = { actor: activeAuthorId, body, skill, targets };
+  const catalog = useQuery({ queryKey: ["skill-catalog", workspaceId, conversationId, activeAuthorId],
+    queryFn: () => localControl.getConversationAuthoredSkillCatalog(conversationId),
+    enabled: authorReady && (pickerOpen || Boolean(skill)), retry: false, gcTime: 0, refetchInterval: 5_000 });
+  const capabilities = useQuery({ queryKey: queryKeys.localCapabilities(), queryFn: () => localControl.capabilities(), enabled: authorReady, retry: false });
+  const currentCatalog = catalog.isError ? undefined : catalog.data;
+  const skillStatus = skill ? skillAvailability(skill, targets, participants, currentCatalog, agents) : "Unavailable";
+  const publicationEnabled = capabilities.data?.features.authoredSkillPublication === true;
   const recipientInvalid = recipients.invalid.length > 0 || targets.some((id) => id !== "@conversation"
     && !participants.some((participant) => participant.id === id && participant.status !== "disabled"));
   const persistRecipient = (id: string) => {
@@ -92,6 +128,9 @@ export function ConversationComposer({
     writeRecipient(recipientKey, id);
     setStoredRecipient(id);
   };
+  const targetLabel = (id: string) => id === "@conversation"
+    ? hasChannelMentionCollision(participants) ? "@conversation" : "@channel"
+    : `@${participants.find((participant) => participant.id === id)?.handle ?? id}`;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
   useEffect(() => {
@@ -152,7 +191,7 @@ export function ConversationComposer({
   const byteCountTone = bodyTooLarge ? "text-[var(--danger)]"
     : bodyBytes >= MAX_MESSAGE_BYTES * 0.9 ? "text-[var(--warning)]"
       : "text-[var(--muted)]";
-  const mentionQuery = mentionQueryAt(body, cursor);
+  const mentionQuery = skillMode ? undefined : mentionQueryAt(body, cursor);
   const mentionIdentity = mentionQuery ? `${mentionQuery.start}:${mentionQuery.end}:${mentionQuery.value}` : undefined;
   const suggestions = useMemo<MentionSuggestion[]>(() => {
     if (!mentionQuery || dismissedMention === mentionIdentity) return [];
@@ -203,10 +242,67 @@ export function ConversationComposer({
     },
   });
 
-  const canAttach = Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending;
-  const canSubmit = (Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && !recipientInvalid && canAttach;
+  const persistSkillRequest = (request: SkillRequest, key: string) => {
+    localStorage.setItem(key, JSON.stringify(request));
+    if (currentSkillKey.current === key) setSkillRequest(request);
+  };
+  const requestMatchesDraft = (request: SkillRequest) => {
+    const draft = skillDraft.current;
+    return draft.actor === request.actorIdentityId && draft.body === request.input.arguments
+      && draft.skill?.documentId === request.input.documentId && draft.skill.source === request.input.source && draft.skill.revision === request.input.revision
+      && JSON.stringify([...draft.targets].sort()) === JSON.stringify(request.input.to);
+  };
+  const settleSkill = (request: SkillRequest, key: string) => {
+    persistSkillRequest(request, key);
+    if (currentSkillKey.current !== key) return;
+    setSkillError(undefined);
+    if (request.publication?.status === "observed" && requestMatchesDraft(request)) {
+      setBody(""); setCursor(0);
+      writeRecipientOverride(`${storageKey}.recipients`, "", request.input.to);
+      localStorage.removeItem(draftStorageKey(workspaceId, conversationId, request.actorIdentityId));
+    }
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
+  };
+  const skillMutation = useMutation({
+    mutationFn: ({ request, key, publishOnly = false }: { request: SkillRequest; key: string; publishOnly?: boolean }) => {
+      const persist = (value: SkillRequest) => persistSkillRequest(value, key);
+      return publishOnly ? publishSkillRequest(localControl, conversationId, request, persist)
+        : submitSkillRequest(localControl, conversationId, request, persist);
+    },
+    onSuccess: (request, variables) => settleSkill(request, variables.key),
+    onError: (_error, variables) => { if (currentSkillKey.current === variables.key) setSkillError("Submission unconfirmed"); },
+    onSettled: () => { skillBusy.current = false; },
+  });
+  const inspectSkill = useMutation({
+    mutationFn: ({ request }: { request: SkillRequest; key: string }) => inspectSkillRequest(localControl, conversationId, request),
+    onSuccess: (request, variables) => settleSkill(request, variables.key),
+    onError: (_error, variables) => { if (currentSkillKey.current === variables.key) setSkillError("Receipt unavailable"); },
+  });
+  const selectSkill = (choice: SkillChoice) => {
+    const nextBody = skillsCommand(body)?.arguments ?? body;
+    setSkill(choice); localStorage.setItem(skillKey, JSON.stringify(choice));
+    setBody(nextBody); setCursor(nextBody.length);
+    setManualTargets([...targets]); writeRecipientOverride(`${storageKey}.recipients`, nextBody, targets);
+    pendingCursorRef.current = nextBody.length;
+  };
+
+
+  const canAttach = Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending && !skillMutation.isPending && !inspectSkill.isPending;
+  const unresolvedSkill = Boolean(skillRequest && skillRequest.publication?.status !== "observed");
+  const canSubmit = (Boolean(skill) || Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && !recipientInvalid && canAttach
+    && !skillCommand && (!skill || (skillStatus === "Ready" && publicationEnabled && !unresolvedSkill && !imageDraft.ids.length && !replyTo));
+  const canPublishAccepted = canAttach && imageDraft.ready && !bodyTooLarge && !recipientInvalid && !skillCommand
+    && skillStatus === "Ready" && publicationEnabled && !imageDraft.ids.length && !replyTo && skillRequest && requestMatchesDraft(skillRequest);
   const submit = (submission?: MessageSubmission) => {
     if (!canSubmit) return;
+    if (skill) {
+      if (skillBusy.current) return;
+      const request = createSkillRequest(activeAuthorId, skill, body, targets);
+      persistSkillRequest(request, skillRequestKey);
+      skillBusy.current = true; setSkillError(undefined);
+      skillMutation.mutate({ request, key: skillRequestKey });
+      return;
+    }
     // Dismissing feedback must not discard the key of an ambiguously failed send.
     const matchingFailure = failedSubmission && submissionMatchesDraft(failedSubmission, activeAuthorId, body, participants, imageDraft.ids, targets, replyTo)
       ? failedSubmission
@@ -223,11 +319,14 @@ export function ConversationComposer({
     setBody(nextBody);
     setCursor(nextCursor);
     setDismissedMention(undefined);
-    const override = mentionHandles(nextBody).join("\0") === mentionHandles(body).join("\0") ? manualTargets : undefined;
-    if (override !== manualTargets) {
-      setManualTargets(override);
-      writeRecipientOverride(`${storageKey}.recipients`, nextBody, override);
-    }
+    const nextCommand = skillsCommand(nextBody);
+    if (nextCommand) setPickerOpen(true);
+    const enteringSkillMode = !skillMode && Boolean(nextCommand);
+    const leavingSkillCommand = !skill && Boolean(skillCommand) && !nextCommand;
+    const override = leavingSkillCommand ? undefined : enteringSkillMode ? [...targets]
+      : skillMode || mentionHandles(nextBody).join("\0") === mentionHandles(body).join("\0") ? manualTargets : undefined;
+    if (override !== manualTargets) setManualTargets(override);
+    if (override !== manualTargets || skillMode) writeRecipientOverride(`${storageKey}.recipients`, nextBody, override);
     const nextTargets = messageRecipients(nextBody, participants, selectedRecipient, override).targets;
     if (failedSubmission && !submissionMatchesDraft(failedSubmission, activeAuthorId, nextBody, participants, imageDraft.ids, nextTargets, replyTo)) {
       setFailedSubmission(undefined);
@@ -258,6 +357,34 @@ export function ConversationComposer({
   return (
     <div className="bg-[var(--bg)] px-3 pt-3 pb-1 sm:px-6">
       <div className="relative mx-auto max-w-5xl">
+        <SkillPicker open={pickerOpen && authorReady} onOpenChange={setPickerOpen} initialQuery={skillCommand?.query ?? ""}
+          catalog={currentCatalog} loading={catalog.isPending} error={catalog.isError} targets={targets} participants={participants} agents={agents} onSelect={selectSkill} />
+        {skill && authorReady ? <div aria-label="Selected skill" className="mb-2 flex items-center gap-2 text-xs">
+          <span>{skill.name} · {skill.source === "channel" ? "Channel" : "Workspace"} · r{skill.revision}</span>
+          <span role="status">{!publicationEnabled ? "Unavailable" : imageDraft.ids.length || replyTo ? "Unsupported draft" : skillStatus}</span>
+          <button type="button" className="icon-button" aria-label="Remove skill" disabled={!canAttach}
+            onClick={() => {
+              setSkill(undefined); localStorage.removeItem(skillKey);
+              setManualTargets(undefined); writeRecipientOverride(`${storageKey}.recipients`, body);
+            }}><X className="h-3 w-3" /></button>
+        </div> : null}
+        {skillRequest && authorReady ? <div aria-label="Skill receipt" className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <span role="status">{skillRequest.publication?.status === "observed" ? "Published" : skillRequest.publication?.status === "not_observed" ? "Unresolved"
+            : skillRequest.publication?.status === "not_linked" ? "Not linked" : skillRequest.accepted ? "Accepted" : "Unconfirmed"}</span>
+          <button className="button-secondary" type="button" disabled={!canAttach}
+            onClick={() => inspectSkill.mutate({ request: skillRequest, key: skillRequestKey })}>Inspect receipt</button>
+          {skillRequest.accepted && !skillRequest.publicationAttempted ? <button className="button-secondary" type="button"
+            disabled={!canPublishAccepted} onClick={() => {
+              if (!canPublishAccepted || skillBusy.current) return; skillBusy.current = true;
+              skillMutation.mutate({ request: skillRequest, key: skillRequestKey, publishOnly: true });
+            }}>Publish accepted</button> : null}
+          <button className="button-secondary" type="button" disabled={!canAttach || (skillRequest.publicationAttempted && skillRequest.publication?.status !== "observed")}
+            onClick={() => {
+              localStorage.setItem(`${skillRequestKey}.previous`, JSON.stringify(skillRequest));
+              localStorage.removeItem(skillRequestKey); setSkillRequest(undefined); setSkillError(undefined);
+            }}>New request</button>
+        </div> : null}
+        {skillError ? <span role="alert" className="mb-2 block text-xs text-[var(--danger)]">{skillError}</span> : null}
         {suggestions.length ? (
           <div
             id={mentionListId}
@@ -366,16 +493,41 @@ export function ConversationComposer({
                   ? "Relaunch MinuChannels to restore your browser identity."
                   : "You are not an active human participant in this Conversation.")}
             disabled={Boolean(readOnlyReason) || !activeAuthorId || !authorReady}
-            readOnly={mutation.isPending}
-            aria-busy={mutation.isPending}
+            readOnly={mutation.isPending || skillMutation.isPending}
+            aria-busy={mutation.isPending || skillMutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
           <div className="flex flex-wrap items-center justify-between gap-3 px-2.5 py-2">
+            {skillMode && authorReady ? <select
+              aria-label="Skill recipients"
+              className="button-secondary min-w-0 max-w-64"
+              disabled={!canAttach}
+              value={recipients.invalid.length ? "__invalid__" : targets.length > 1 ? "__multiple__" : targets[0] ?? ""}
+              onChange={(event) => {
+                const id = event.target.value;
+                if (id !== "@conversation") persistRecipient(id);
+                setManualTargets(id ? [id] : []);
+                writeRecipientOverride(`${storageKey}.recipients`, body, id ? [id] : []);
+                setReplyTo(undefined);
+                setFailedSubmission(undefined);
+                mutation.reset();
+                textareaRef.current?.focus();
+              }}
+            >
+              <option value="">No recipient</option>
+              <option value="@conversation">{targetLabel("@conversation")}</option>
+              {participants.filter(({ status }) => status !== "disabled").map(({ id }) => <option key={id} value={id}>{targetLabel(id)}</option>)}
+              {targets.length > 1 ? <option value="__multiple__" disabled>{targets.map(targetLabel).join(", ")}</option> : null}
+              {recipients.invalid.length ? <option value="__invalid__" disabled>{recipients.invalid.map((handle) => `@${handle}`).join(", ")}</option> : null}
+              {targets.length === 1 && targets[0] !== "@conversation" && !participants.some(({ id, status }) => id === targets[0] && status !== "disabled")
+                ? <option value={targets[0]} disabled>{targetLabel(targets[0]!)}</option> : null}
+            </select> : null}
             <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images"
               onChange={(event) => { imageDraft.add(Array.from(event.target.files ?? [])); event.target.value = ""; }} disabled={!canAttach} />
             <button type="button" className="button-secondary" aria-label="Attach images" title="Attach images" disabled={!canAttach}
               onClick={() => fileInputRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /></button>
             <div className="flex items-center gap-2">
+              <button type="button" className="button-secondary" disabled={!canAttach} onClick={() => setPickerOpen(true)}>Skills</button>
               {showByteCount ? (
                 <span
                   className={`font-mono text-[10px] ${byteCountTone}`}
@@ -387,8 +539,8 @@ export function ConversationComposer({
               <button
                 className="button-primary composer-send-button"
                 type="button"
-                aria-label={mutation.isPending ? "Sending message" : "Send message"}
-                title={mutation.isPending ? "Sending message" : "Send message"}
+                aria-label={skill ? skillMutation.isPending ? "Submitting skill" : "Send skill" : mutation.isPending ? "Sending message" : "Send message"}
+                title={skill ? "Send skill" : mutation.isPending ? "Sending message" : "Send message"}
                 disabled={!canSubmit}
                 onClick={() => submit()}
               >
@@ -410,7 +562,7 @@ export function ConversationComposer({
             {mutation.error.message}. Your draft was preserved.
           </ErrorNotice>
         ) : null}
-        {retryAvailable ? (
+        {!skillMode && retryAvailable ? (
           <button className="button-secondary mt-2" type="button" onClick={() => submit(failedSubmission)}>
             <RotateCcw className="h-3.5 w-3.5" /> Retry same message
           </button>

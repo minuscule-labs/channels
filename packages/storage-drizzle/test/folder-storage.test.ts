@@ -262,7 +262,8 @@ test("folder storage migration preserves a populated 0010 database and stays usa
     const result: Record<string, unknown> = {};
     for (const { name } of tables) {
       if (name === "conversation_folders") continue;
-      const rows = (await client.execute(`SELECT * FROM "${String(name).replaceAll('"', '""')}" ORDER BY rowid`)).rows;
+      const columns = name === "messages" ? "id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at" : "*";
+      const rows = (await client.execute(`SELECT ${columns} FROM "${String(name).replaceAll('"', '""')}" ORDER BY rowid`)).rows;
       result[String(name)] = rows.map(row => {
         const { folder_id: _folderId, ...original } = row;
         return original;
@@ -302,6 +303,7 @@ test("folder storage migration preserves a populated 0010 database and stays usa
     const after = createClient({ url: legacy.url });
     try {
       assert.deepEqual(await snapshot(after), before);
+      assert.ok((await after.execute("SELECT authored_invocation_id FROM messages")).rows.every(row => row.authored_invocation_id === null));
       const assignment = (await after.execute("PRAGMA table_info(conversations)")).rows.find(row => row.name === "folder_id");
       assert.equal(assignment?.notnull, 0);
       assert.deepEqual((await after.execute("PRAGMA foreign_key_check")).rows, []);

@@ -116,6 +116,95 @@ export interface LocalWorkspaceAgentConfigurationSummary {
   changesApplyToNewSessions: true;
 }
 
+export type LocalAuthoredDocument = import("@minu/channels-relay").AuthoredDocument;
+export type LocalAuthoredDocumentRevision = import("@minu/channels-relay").AuthoredDocumentRevision;
+export type LocalAuthoredDocumentSummary = Omit<LocalAuthoredDocument, "content" | "description">;
+
+export interface LocalAuthoredSkillInvocationInput {
+  documentId: string;
+  source: "workspace" | "channel";
+  revision: number;
+  arguments: string;
+  /** Explicit stable identity IDs, never mention aliases or broadcast. */
+  to: string[];
+}
+
+export interface LocalAuthoredSkillInvocationReceipt extends LocalAuthoredSkillInvocationInput {
+  id: string;
+  requestId: string;
+  workspaceId: string;
+  conversationId: string;
+  actorIdentityId: string;
+  name: string;
+  acceptedAt: string;
+  /** Acceptance acknowledgment only; not a delivery or completion state. */
+  acceptance: "accepted";
+}
+
+/** Explicit selection of one accepted own operation; neither field is normalized or substituted. */
+export interface PublishLocalAuthoredSkillInvocationInput {
+  requestId: string;
+  invocationId: string;
+}
+
+/** Browser-safe observation of publication only, never retry permission or Runtime completion. */
+export type LocalAuthoredSkillInvocationPublicationReceipt =
+  | { requestId: string; invocationId: string; status: "not_linked" }
+  | { requestId: string; invocationId: string; status: "not_observed" | "observed"; messageId: string };
+
+/** Published authored metadata only. Catalog presence is not invocation capability. */
+export interface LocalConversationAuthoredSkillCatalog {
+  workspaceId: string;
+  conversationId: string;
+  channelId: string;
+  availability: "not_checked";
+  /** Session-reference hints only; acceptance and dispatch remain authoritative. */
+  agents?: Array<{
+    identityId: string;
+    state: "ready" | "unavailable";
+    supported: boolean;
+    skills: Array<{ documentId: string; source: "workspace" | "channel"; revision: number; contentHash: string }>;
+    /** Sanitized configured native IDs; not a native invocation grant. */
+    harness: string[];
+  }>;
+  skills: Array<{
+    documentId: string;
+    source: "workspace" | "channel";
+    revision: number;
+    contentHash: string;
+    name: string;
+    description: string;
+  }>;
+}
+
+export interface LocalConversationAuthoredContext {
+  workspaceId: string;
+  conversationId: string;
+  channelId: string;
+  capturedAt: string;
+  published: import("@minu/channels-relay").AuthoredContextSnapshot;
+  instructions?: string;
+  agents: Array<{
+    identityId: string;
+    status: "not_started" | "legacy" | "applied" | "pending" | "unavailable";
+    applied?: import("@minu/channels-relay").AuthoredContextReference[];
+  }>;
+  changesApplyToNewSessions: true;
+}
+
+export interface CreateLocalAuthoredDocumentInput {
+  kind: "instructions" | "skill";
+  conversationId?: string;
+  name?: string;
+  description?: string;
+  content: string;
+}
+
+export type UpdateLocalAuthoredDocumentInput = { expectedVersion: number } & (
+  | { action: "save"; name?: string; description?: string; content: string }
+  | { action: "publish" | "archive" }
+);
+
 export interface LocalWorkspaceConfigurationSummary {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   workspaceId: string;
@@ -211,6 +300,8 @@ export interface LocalControlCapabilities {
     agentCreate: boolean;
     agentRuntimeOptions: boolean;
     agentSkills: boolean;
+    authoredContent?: boolean;
+    authoredSkillPublication?: boolean;
     agentStart: boolean;
     agentReplace: boolean;
     agentStop: boolean;

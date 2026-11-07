@@ -3,6 +3,7 @@ import { ConversationClient, ConversationClientError } from "@minu/channels-core
 import { MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES, validateImageBytes } from "@minu/channels-core/image-validation";
 import { safeDiagnosticObservation, type DiagnosticObservation, type DiagnosticStage, type DiagnosticEvent } from "./diagnostics.ts";
 import { safeDeliveryObservation, type DeliveryObservation } from "./delivery-diagnostics.ts";
+import { AuthoredInvocationLeaseLostError } from "./authored-invocation-delivery.ts";
 export interface RuntimePortImage {
   type: "image";
   data: string;
@@ -146,6 +147,8 @@ export interface AgentConversationBinding {
   diagnosticBinding?: { id: string; generation: number; workspaceId?: string; runtimeAdapter?: string; runtimeOwnerId?: string };
   /** Private fencing check used to suppress work and responses after lease loss. */
   verifyLease?(): Promise<boolean>;
+  /** Server-private, message-linked skill assembly. Undefined means an ordinary message. */
+  prepareAuthoredTurn?(trigger: ConversationMessage): Promise<string | undefined>;
   /** Sleeping is private binding lifecycle state; the next eligible turn must wake first. */
   isSleeping?: boolean;
   ensureAwake?(): Promise<void | "missing">;
@@ -372,6 +375,8 @@ function shouldWake(
   // remain shared history, even under all_messages, to avoid automatic reply loops.
   if (sender?.type !== "human" && !isExplicitlyAddressed(message, binding.participantId)) return false;
   const policy = binding.wakePolicy ?? "mentions";
+  // A skill's explicit recipients override all_messages and never imply broadcast.
+  if (message.authoredInvocationId !== undefined) return policy !== "muted" && message.to.includes(binding.participantId);
   if (policy === "muted") return false;
   if (message.to.includes(binding.participantId)) return true;
   if (message.to.includes("@conversation")) return policy !== "direct_mentions";
@@ -1870,6 +1875,43 @@ export class ConversationRuntimeRelay {
           await this.completeCancellation(state, trigger, deadline);
           return;
         }
+        // Resolve privately only AFTER all waits and image/context work. A prepared
+        // input is not a cached grant; every not-yet-accepted Runtime attempt repeats this.
+        let authoredInput: string | undefined;
+        try {
+          authoredInput = binding.prepareAuthoredTurn ? await this.awaitRuntime(
+            binding.prepareAuthoredTurn(trigger), "prepare private skill turn", undefined, deadline,
+          ) : undefined;
+          if (trigger.authoredInvocationId !== undefined && !authoredInput) throw new Error();
+        } catch (error) {
+          if (error instanceof AuthoredInvocationLeaseLostError) throw new FencedTurnError("Agent binding lease was lost");
+          throw new PermanentTurnError("Skill invocation delivery is unavailable");
+        }
+        if (authoredInput !== undefined) {
+          if (!binding.verifyLease || !await binding.verifyLease()) throw new FencedTurnError("Agent binding lease was lost");
+          // Lease renewal can wait while access or retirement changes. Revalidate
+          // trusted linkage/current policy after that I/O, not just before it.
+          // Keep this the last asynchronous admission step before Runtime start.
+          try {
+            if (!binding.prepareAuthoredTurn) throw new Error();
+            const admittedInput = await this.awaitRuntime(
+              binding.prepareAuthoredTurn(trigger), "admit private skill turn", undefined, deadline,
+            );
+            if (admittedInput === undefined || admittedInput !== authoredInput) throw new Error();
+            authoredInput = admittedInput;
+          } catch (error) {
+            if (error instanceof AuthoredInvocationLeaseLostError) throw new FencedTurnError("Agent binding lease was lost");
+            throw new PermanentTurnError("Skill invocation delivery is unavailable");
+          }
+          prompt += `\n\n${authoredInput}`;
+        }
+        // Stop closes admission before its asynchronous interruptibility checks finish.
+        if (state.stopRequested && !this.isCanceling(state)) throw new FencedTurnError("Agent binding stop requested");
+        if (this.isCanceling(state)) {
+          await this.completeCancellation(state, trigger, deadline);
+          return;
+        }
+        if (!this.isActiveParticipant(binding.participantId)) throw new FencedTurnError("Agent participant was removed");
         this.assertBeforeDeadline(deadline);
         state.delivery?.event("dispatch_requested");
         turn = await this.awaitRuntime(
@@ -1897,6 +1939,14 @@ export class ConversationRuntimeRelay {
       if (turn.status === "completed") state.delivery?.event("runtime_completed");
       response = turn.response;
     } else {
+      // Authored invocations require a caller-stable Runtime turn: never fall back
+      // to an uncertain legacy send, even when the public arguments look ordinary.
+      if (trigger.authoredInvocationId !== undefined) throw new PermanentTurnError("Skill invocation delivery is unavailable");
+      try {
+        if (binding.prepareAuthoredTurn && await this.awaitRuntime(
+          binding.prepareAuthoredTurn(trigger), "check private message linkage", undefined, deadline,
+        ) !== undefined) throw new Error();
+      } catch { throw new PermanentTurnError("Skill invocation delivery is unavailable"); }
       // A legacy Runtime cannot expose a stable turn id. Once cancellation has begun,
       // only reconcile it to idle; never send the original prompt again.
       if (state.phase === "canceling") {

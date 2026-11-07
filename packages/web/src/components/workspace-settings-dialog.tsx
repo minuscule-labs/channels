@@ -8,6 +8,7 @@ import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import type { NotificationSound } from "../lib/conversation-notifications";
 import { ErrorNotice } from "./ui/error-notice";
+import { AuthoredContent } from "./authored-content";
 
 function ConfigurationState({ configured, label }: { configured: boolean; label: string }) {
   return (
@@ -289,6 +290,7 @@ export function WorkspaceSettingsDialog({
                 <WorkspaceNameForm workspace={workspace} actorIdentityId={session.data.identityId} autoFocus={focusName} />
                 <WorkspaceRootForm workspaceId={workspace.id} summary={configuration.data} />
                 <WorkspaceIdleSleepForm key={workspace.id} workspaceId={workspace.id} summary={configuration.data} />
+                <AuthoredContent workspaceId={workspace.id} actorIdentityId={session.data.identityId} canAdminister={currentMembership?.status === "active" && (currentMembership.accessRole === "owner" || currentMembership.accessRole === "admin")} />
               </div>
             ) : null}
           </div>

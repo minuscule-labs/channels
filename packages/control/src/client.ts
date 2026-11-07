@@ -7,6 +7,16 @@ import type {
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
+  CreateLocalAuthoredDocumentInput,
+  LocalAuthoredDocument,
+  LocalAuthoredDocumentRevision,
+  LocalAuthoredDocumentSummary,
+  LocalAuthoredSkillInvocationInput,
+  LocalAuthoredSkillInvocationReceipt,
+  LocalAuthoredSkillInvocationPublicationReceipt,
+  LocalConversationAuthoredContext,
+  LocalConversationAuthoredSkillCatalog,
+  UpdateLocalAuthoredDocumentInput,
   LocalAgentActionInput, LocalAgentActionReceipt,
   LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails,
   LocalBulkAgentLifecycleResponse,
@@ -285,6 +295,60 @@ export class LocalControlClient {
       this.lifecycleTimeoutMs,
     );
     return response.agent;
+  }
+
+  async acceptAuthoredSkillInvocation(conversationId: string, input: LocalAuthoredSkillInvocationInput, options: { idempotencyKey: string }): Promise<LocalAuthoredSkillInvocationReceipt> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocations`, {
+      method: "POST", headers: { "idempotency-key": options.idempotencyKey }, body: JSON.stringify(input),
+    });
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocations/${encodeURIComponent(requestId)}`);
+  }
+
+  /** Publish only the exact accepted receipt identity, not a reinterpreted raw header key. */
+  async publishAuthoredSkillInvocation(conversationId: string, receipt: Pick<LocalAuthoredSkillInvocationReceipt, "id" | "requestId">): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocation-publications`, {
+      method: "POST", body: JSON.stringify({ requestId: receipt.requestId, invocationId: receipt.id }),
+    });
+  }
+
+  async getAuthoredSkillInvocationPublication(conversationId: string, requestId: string): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    const query = new URLSearchParams({ requestId });
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocation-publications?${query}`);
+  }
+
+  async getConversationAuthoredSkillCatalog(conversationId: string): Promise<LocalConversationAuthoredSkillCatalog> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/authored-skill-catalog`);
+  }
+
+  async getConversationAuthoredContext(conversationId: string): Promise<LocalConversationAuthoredContext> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/authored-context`);
+  }
+
+  async listAuthoredDocuments(workspaceId: string): Promise<LocalAuthoredDocumentSummary[]> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents`);
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string): Promise<LocalAuthoredDocument> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents/${encodeURIComponent(documentId)}`);
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<LocalAuthoredDocumentRevision[]> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents/${encodeURIComponent(documentId)}/revisions`);
+  }
+
+  async createAuthoredDocument(workspaceId: string, input: CreateLocalAuthoredDocumentInput): Promise<LocalAuthoredDocument> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents`, {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async updateAuthoredDocument(workspaceId: string, documentId: string, input: UpdateLocalAuthoredDocumentInput): Promise<LocalAuthoredDocument> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents/${encodeURIComponent(documentId)}`, {
+      method: "PATCH", body: JSON.stringify(input),
+    });
   }
 
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {

@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { AuthoredInvocationTarget } from "@minu/channels-relay";
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const conversationPresets = sqliteTable("conversation_presets", {
@@ -13,6 +14,67 @@ export const conversationCreationSetups = sqliteTable("conversation_creation_set
   conversationId: text("conversation_id").notNull(),
   definition: text("definition").notNull(),
 }, (table) => [primaryKey({ columns: [table.workspaceId, table.conversationId] })]);
+export const authoredSkillInvocations = sqliteTable("authored_skill_invocations", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  channelId: text("channel_id").notNull(),
+  actorIdentityId: text("actor_identity_id").notNull(),
+  requestId: text("request_id").notNull(),
+  requestHash: text("request_hash").notNull(),
+  documentId: text("document_id").notNull().references(() => authoredDocuments.id),
+  source: text("source", { enum: ["workspace", "channel"] }).notNull(),
+  revision: integer("revision").notNull(),
+  contentHash: text("content_hash").notNull(),
+  name: text("name").notNull(),
+  arguments: text("arguments").notNull(),
+  targets: text("targets", { mode: "json" }).$type<AuthoredInvocationTarget[]>().notNull(),
+  acceptedAt: text("accepted_at").notNull(),
+}, (table) => [
+  uniqueIndex("authored_skill_invocation_request_unique").on(table.conversationId, table.actorIdentityId, table.requestId),
+]);
+
+export const authoredInvocationMessageLinks = sqliteTable("authored_invocation_message_links", {
+  invocationId: text("invocation_id").primaryKey().references(() => authoredSkillInvocations.id),
+  messageId: text("message_id").notNull().unique(),
+});
+
+export const authoredDocuments = sqliteTable("authored_documents", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  conversationId: text("conversation_id"),
+  kind: text("kind", { enum: ["instructions", "skill"] }).notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  content: text("content").notNull(),
+  version: integer("version").notNull(),
+  publishedRevision: integer("published_revision"),
+  state: text("state", { enum: ["active", "archived"] }).notNull(),
+  createdBy: text("created_by").notNull(),
+  updatedBy: text("updated_by").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  index("authored_documents_scope_idx").on(table.workspaceId, table.conversationId),
+  uniqueIndex("authored_workspace_instructions_unique").on(table.workspaceId)
+    .where(sql`${table.kind} = 'instructions' AND ${table.conversationId} IS NULL`),
+  uniqueIndex("authored_channel_instructions_unique").on(table.workspaceId, table.conversationId)
+    .where(sql`${table.kind} = 'instructions' AND ${table.conversationId} IS NOT NULL`),
+]);
+
+export const authoredDocumentRevisions = sqliteTable("authored_document_revisions", {
+  documentId: text("document_id").notNull().references(() => authoredDocuments.id),
+  workspaceId: text("workspace_id").notNull(),
+  revision: integer("revision").notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  content: text("content").notNull(),
+  contentHash: text("content_hash").notNull(),
+  publishedBy: text("published_by").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.documentId, table.revision] }),
+]);
 
 export const localRuntimeOwners = sqliteTable("local_runtime_owners", {
   id: text("id").primaryKey(),
@@ -169,6 +231,8 @@ export const conversationAgentSessionHistory = sqliteTable("conversation_agent_s
   }).notNull(),
   contextMode: text("context_mode", { enum: ["with_context", "fresh"] })
     .notNull().default("with_context"),
+  // Decode explicitly: SQL NULL is legacy; JSON null/falsy/corrupt values are not.
+  authoredContext: text("authored_context"),
   conversationSequenceAtActivation: integer("conversation_sequence_at_activation"),
   conversationSequenceAtRetirement: integer("conversation_sequence_at_retirement"),
   activatedAt: text("activated_at").notNull(),

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { mkdtemp, realpath, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,6 +126,167 @@ async function fixture(diagnostics?: LifecycleDiagnostics, store: InMemoryRelayB
   };
 }
 
+test("authored launch instructions inherit workspace/channel scope and pin through resume and New session", async () => {
+  const f = await fixture();
+  try {
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store: f.store });
+    const workspaceDoc = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", content: "WORKSPACE_DEFAULT_V1" });
+    await configuration.updateAuthoredDocument(f.workspace.id, workspaceDoc.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    const channelDoc = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", conversationId: f.conversation.id, content: "CHANNEL_DEFAULT" });
+    await configuration.updateAuthoredDocument(f.workspace.id, channelDoc.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    const skill = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "skill", name: "Playbook", description: "Use explicitly", content: "SKILL_BODY_NOT_STANDING" });
+    await configuration.updateAuthoredDocument(f.workspace.id, skill.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "skill", name: "Draft", content: "UNPUBLISHED_DRAFT" });
+    const sibling = await f.client.createConversation({ workspaceId: f.workspace.id, participantIds: [f.owner.id, f.agent.id] });
+    const root = await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "PUBLIC_THREAD_ROOT", to: [] });
+    const thread = await f.client.createThread(f.conversation.id, { actorIdentityId: f.owner.id, rootMessageId: root.id });
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    await f.host.startConversationAgent(sibling.id, f.agent.id, f.owner.id);
+    await f.host.startConversationAgent(thread.id, f.agent.id, f.owner.id, "fresh");
+    const [channel, other, freshThread] = f.runtime.startConfigs;
+    assert.match(channel!.appendSystemPrompt!, /WORKSPACE_DEFAULT_V1/);
+    assert.match(channel!.appendSystemPrompt!, /CHANNEL_DEFAULT/);
+    assert.match(other!.appendSystemPrompt!, /WORKSPACE_DEFAULT_V1/);
+    assert.doesNotMatch(other!.appendSystemPrompt!, /CHANNEL_DEFAULT/);
+    assert.match(freshThread!.appendSystemPrompt!, /WORKSPACE_DEFAULT_V1/);
+    assert.match(freshThread!.appendSystemPrompt!, /CHANNEL_DEFAULT/);
+    assert.doesNotMatch(freshThread!.appendSystemPrompt!, /PUBLIC_THREAD_ROOT/);
+    for (const config of f.runtime.startConfigs) assert.doesNotMatch(config.appendSystemPrompt!, /SKILL_BODY_NOT_STANDING|UNPUBLISHED_DRAFT/);
+    const activation = (await f.store.listSessionHistory(f.conversation.id))[0]!;
+    assert.equal(activation.authoredContext?.documents.length, 3);
+    assert.equal((await f.store.listSessionHistory(thread.id))[0]?.authoredContext?.channelId, f.conversation.id);
+    await configuration.updateAuthoredDocument(f.workspace.id, workspaceDoc.id, f.owner.id, { action: "save", expectedVersion: 2, content: "WORKSPACE_DEFAULT_V2" });
+    await configuration.updateAuthoredDocument(f.workspace.id, workspaceDoc.id, f.owner.id, { action: "publish", expectedVersion: 3 });
+    await f.host.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    assert.equal(f.runtime.starts, 3, "Retained Start resumes instead of adopting newly published content");
+    assert.deepEqual((await f.store.listSessionHistory(f.conversation.id))[0]?.authoredContext, activation.authoredContext);
+    await f.useDiagnostics();
+    await f.host.restore();
+    assert.equal(f.runtime.starts, 3, "Host recovery preserves the same sessions");
+    await f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+    assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /WORKSPACE_DEFAULT_V2/);
+    assert.doesNotMatch(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /WORKSPACE_DEFAULT_V1/);
+    assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /CHANNEL_DEFAULT/);
+    const current = (await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id)).activation!;
+    assert.equal(current.authoredContext?.documents.find(ref => ref.documentId === workspaceDoc.id)?.revision, 2);
+    assert.doesNotMatch(JSON.stringify(await f.client.getConversation(thread.id)), /WORKSPACE_DEFAULT|CHANNEL_DEFAULT|SKILL_BODY/);
+  } finally { await f.close(); }
+});
+
+test("legacy recovery does not silently adopt instructions published after the original session", async () => {
+  const f = await fixture();
+  try {
+    const session = await f.runtime.startManaged({ cwd: f.directory }, "legacy-owner");
+    const now = new Date().toISOString();
+    await f.store.putBinding({ id: "legacy-binding", workspaceAgentConfigId: "fixture-config", workspaceId: f.workspace.id, conversationId: f.conversation.id,
+      agentIdentityId: f.agent.id, runtimeAdapter: "fake", runtimeSessionId: session.id, runtimeOwnerId: "legacy-owner", generation: 1,
+      state: "connected", wakePolicy: "mentions", createdAt: now, updatedAt: now });
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store: f.store });
+    const document = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", content: "NEW_POST_LEGACY_INSTRUCTIONS" });
+    await configuration.updateAuthoredDocument(f.workspace.id, document.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    const inventory = f.runtime.listManagedSessions.bind(f.runtime);
+    f.runtime.getManagedSession = async (id, ownerId) => id === session.id
+      ? { id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }
+      : (await inventory(ownerId)).find(candidate => candidate.id === id);
+    await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+    assert.equal(f.runtime.starts, 2);
+    assert.doesNotMatch(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /NEW_POST_LEGACY_INSTRUCTIONS/);
+    assert.ok((await f.store.listSessionHistory(f.conversation.id)).every(record => record.authoredContext === undefined));
+  } finally { await f.close(); }
+});
+
+test("missing pinned publication fences recovery rather than silently loading latest instructions", async () => {
+  const f = await fixture();
+  try {
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store: f.store });
+    const document = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", content: "PRIVATE_PINNED" });
+    await configuration.updateAuthoredDocument(f.workspace.id, document.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const original = (await f.store.listConversationBindings(f.conversation.id))[0]!;
+    f.runtime.getManagedSession = async (id, ownerId) => ({ id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" });
+    f.store.listAuthoredDocumentRevisions = async () => [];
+    await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true),
+      error => error instanceof LocalConfigurationRequestError && error.message === "Published instruction context is unavailable");
+    assert.equal(f.runtime.starts, 1);
+    assert.equal((await f.store.getBinding(original.id))?.state, "stopping");
+    assert.equal((await f.store.getBinding(original.id))?.runtimeSessionId, original.runtimeSessionId);
+  } finally { await f.close(); }
+});
+
+
+test("corrupt non-NULL persisted manifests fence recovery before any replacement worker", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "channels-corrupt-authored-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const store = await DrizzleLibSqlRelayStorage.open({ url });
+  const { createClient } = createRequire(import.meta.resolve("@minu/channels-relay-storage-drizzle"))("@libsql/client");
+  const raw = createClient({ url });
+  const f = await fixture(undefined, store);
+  let original: Awaited<ReturnType<typeof store.getBinding>>;
+  let snapshot: unknown;
+  try {
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store });
+    const document = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", content: "PINNED_REQUIRED_INSTRUCTION" });
+    await configuration.updateAuthoredDocument(f.workspace.id, document.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    original = (await store.listConversationBindings(f.conversation.id))[0]!;
+    snapshot = (await store.listSessionHistory(f.conversation.id))[0]!.authoredContext;
+    assert.match(f.runtime.startConfigs[0]!.appendSystemPrompt!, /PINNED_REQUIRED_INSTRUCTION/);
+    const inventory = f.runtime.listManagedSessions.bind(f.runtime);
+    f.runtime.getManagedSession = async (id, ownerId) => id === original!.runtimeSessionId
+      ? { id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }
+      : (await inventory(ownerId)).find(candidate => candidate.id === id);
+    const corrupt = ["false", "0", '""', "null", "true", "not-json", "{}", "[]",
+      JSON.stringify({ schemaVersion: 1, workspaceId: f.workspace.id, channelId: f.conversation.id, documents: false }),
+      JSON.stringify({ schemaVersion: 1, workspaceId: "foreign", channelId: f.conversation.id, documents: [] }),
+      JSON.stringify({ schemaVersion: 1, workspaceId: f.workspace.id, channelId: f.conversation.id, documents: [null] })];
+    for (const serialized of corrupt) {
+      await raw.execute({ sql: "UPDATE conversation_agent_session_history SET authored_context = ? WHERE binding_id = ? AND binding_generation = 1",
+        args: [serialized, original.id] });
+      await assert.rejects(configuration.getConversationAuthoredContext(f.conversation.id, f.owner.id), /Published instruction context is unavailable/);
+      await assert.rejects(f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true), /Published instruction context is unavailable/);
+      assert.equal(f.runtime.starts, 1, "Corruption must never launch unpinned replacement work");
+      assert.equal((await store.getBinding(original.id))?.generation, 1);
+    }
+  } finally {
+    if (original) await raw.execute({ sql: "UPDATE conversation_agent_session_history SET authored_context = ? WHERE binding_id = ? AND binding_generation = 1",
+      args: [JSON.stringify(snapshot), original.id] });
+    raw.close();
+    await f.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const legacy of [true, false]) test(`persistent ${legacy ? "SQL NULL legacy" : "known-empty"} manifests retain their distinct recovery semantics`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "channels-empty-authored-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const store = await DrizzleLibSqlRelayStorage.open({ url });
+  const { createClient } = createRequire(import.meta.resolve("@minu/channels-relay-storage-drizzle"))("@libsql/client");
+  const raw = createClient({ url });
+  const f = await fixture(undefined, store);
+  try {
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store });
+    const document = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", content: "POST_MANIFEST_INSTRUCTIONS" });
+    await configuration.updateAuthoredDocument(f.workspace.id, document.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    const original = (await store.listConversationBindings(f.conversation.id))[0]!;
+    const empty = { schemaVersion: 1, workspaceId: f.workspace.id, channelId: f.conversation.id, documents: [] };
+    await raw.execute({ sql: "UPDATE conversation_agent_session_history SET authored_context = ? WHERE binding_id = ? AND binding_generation = 1",
+      args: [legacy ? null : JSON.stringify(empty), original.id] });
+    const before = await configuration.getConversationAuthoredContext(f.conversation.id, f.owner.id);
+    assert.equal(before.agents[0]?.status, legacy ? "legacy" : "pending");
+    const inventory = f.runtime.listManagedSessions.bind(f.runtime);
+    f.runtime.getManagedSession = async (id, ownerId) => id === original.runtimeSessionId
+      ? { id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }
+      : (await inventory(ownerId)).find(candidate => candidate.id === id);
+    await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+    assert.equal(f.runtime.starts, 2);
+    assert.doesNotMatch(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /POST_MANIFEST_INSTRUCTIONS/);
+    const current = (await store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id)).activation!;
+    assert.deepEqual(current.authoredContext, legacy ? undefined : empty);
+  } finally { raw.close(); await f.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 for (const reason of ["session_metadata_unavailable", "session_transcript_invalid", "session_resume_failed"] as const) {
   test(`explicit resume records safe ${reason} evidence without replacing or losing the saved session`, async () => {
     const collector = new LifecycleCollector();
@@ -246,10 +408,15 @@ for (const persistent of [false, true]) {
     const collector = new LifecycleCollector();
     const f = await fixture(collector, store);
     try {
+      const configuration = new LocalAgentHostConfiguration({ client: f.client, store });
+      const instructions = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { kind: "instructions", content: "PINNED_INSTRUCTIONS_V1" });
+      await configuration.updateAuthoredDocument(f.workspace.id, instructions.id, f.owner.id, { action: "publish", expectedVersion: 1 });
       await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "EXCLUDED_BEFORE_FRESH" });
       await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
       const original = (await store.listConversationBindings(f.conversation.id))[0]!;
       await f.useDiagnostics(collector);
+      await configuration.updateAuthoredDocument(f.workspace.id, instructions.id, f.owner.id, { action: "save", expectedVersion: 2, content: "PENDING_INSTRUCTIONS_V2" });
+      await configuration.updateAuthoredDocument(f.workspace.id, instructions.id, f.owner.id, { action: "publish", expectedVersion: 3 });
       await f.client.postMessage(f.conversation.id, { participantId: f.owner.id, body: "RECENT_PUBLIC_DECISION" });
       const before = await f.client.listMessages(f.conversation.id);
       const inventory = f.runtime.listManagedSessions.bind(f.runtime);
@@ -267,6 +434,8 @@ for (const persistent of [false, true]) {
       assert.deepEqual(f.runtime.forceStops, [original.runtimeSessionId, original.runtimeSessionId]);
       assert.deepEqual(f.runtime.destructions, [], "The original transcript is retained");
       assert.match(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /RECENT_PUBLIC_DECISION/);
+      assert.match(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /PINNED_INSTRUCTIONS_V1/);
+      assert.doesNotMatch(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /PENDING_INSTRUCTIONS_V2/);
       assert.doesNotMatch(f.runtime.startConfigs.at(-1)?.appendSystemPrompt ?? "", /EXCLUDED_BEFORE_FRESH/);
       assert.deepEqual(await f.client.listMessages(f.conversation.id), before);
       assert.equal(await store.getCursor(f.conversation.id, f.agent.id), before.at(-1)?.sequence);
@@ -274,6 +443,7 @@ for (const persistent of [false, true]) {
       const history = await store.listSessionHistory(f.conversation.id, f.agent.id);
       assert.equal(history.length, 2);
       assert.ok(history.every(record => record.contextMode === "fresh"));
+      assert.ok(history.every(record => record.authoredContext?.documents[0]?.revision === 1));
       const retired = history.find(record => record.bindingGeneration === original.generation)!;
       assert.equal(retired.state, "retired"); assert.equal(retired.retentionStatus, "retained");
       assert.equal(retired.cleanupStatus, "succeeded");

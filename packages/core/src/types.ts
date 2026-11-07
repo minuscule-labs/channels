@@ -110,6 +110,8 @@ export interface MessageAttachment {
 
 export interface ConversationMessage {
   id: string;
+  /** Public correlation only; private Relay linkage is required for skill delivery. */
+  authoredInvocationId?: string;
   conversationId: string;
   sequence: number;
   participantId: string;
@@ -281,6 +283,10 @@ export interface UpdateConversationParticipantsInput {
 }
 
 export interface CreateMessageInput {
+  /** Caller-stable resource ID; requires an idempotency key. */
+  id?: string;
+  /** Public correlation only, never dispatch authority. */
+  authoredInvocationId?: string;
   participantId: string;
   /** Authoritative recipients, including []. Omit to resolve intentional human mentions. */
   to?: string[];

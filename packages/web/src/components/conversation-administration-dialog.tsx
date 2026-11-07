@@ -17,6 +17,7 @@ import { ErrorNotice } from "./ui/error-notice";
 import { ConversationWorkingFolders } from "./conversation-working-folders";
 import { ConversationPresetEditor, ConversationCreationSettings } from "./conversation-preset-editor";
 import type { ConversationSetup } from "@minu/channels-control/contracts";
+import { AuthoredContent } from "./authored-content";
 
 interface WorkspaceParticipant {
   identity: Identity;
@@ -449,6 +450,8 @@ export function EditConversationParticipantsDialog({
           />
           <ConversationWorkingFolders conversationId={conversation.id} canAdminister={data.canAdminister} />
           {data.canAdminister ? <ConversationCreationSettings conversationId={conversation.id} /> : null}
+          <AuthoredContent workspaceId={conversation.workspaceId} actorIdentityId={data.session.data?.identityId} canAdminister={data.canAdminister}
+            conversationId={conversation.id} channelId={conversation.thread?.parentConversationId ?? conversation.id} participants={conversation.participants} />
           <p className="text-xs text-[var(--muted)]">
             Create and configure agents on the {" "}
             <Link

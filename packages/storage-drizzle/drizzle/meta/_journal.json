@@ -85,6 +85,13 @@
       "when": 1788314400000,
       "tag": "0011_conversation_folders",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788314400001,
+      "tag": "0012_authored_invocation_messages",
+      "breakpoints": true
     }
   ]
 }

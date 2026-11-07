@@ -113,6 +113,34 @@
       "when": 1799539200002,
       "tag": "0015_conversation_presets",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1799539200003,
+      "tag": "0016_authored_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1799539200004,
+      "tag": "0017_authored_session_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1799539200005,
+      "tag": "0018_authored_skill_invocations",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1799539200006,
+      "tag": "0019_authored_invocation_message_links",
+      "breakpoints": true
     }
   ]
 }
