@@ -169,7 +169,7 @@ pnpm web:test agent-actions
 pnpm web:test:browser participant-sidebar.spec.ts --grep "uncertain participants"
 ```
 
-See [development verification guidance](AGENTS.md). Rerun failing/affected checks while iterating; use required CI for broad integration evidence rather than duplicating every CI run locally. Browser CI uses three isolated, single-worker shards and cancels superseded pull-request runs. Its timing reports are uploaded as `browser-results-1`, `browser-results-2`, and `browser-results-3` artifacts.
+See [development verification guidance](AGENTS.md). Rerun failing/affected checks while iterating; use required CI for broad integration evidence rather than duplicating every CI run locally. Draft PRs skip all CI runner jobs; use focused local checks while drafting. Marking a PR ready for review triggers full backend, browser, and package verification; every push to `main` also retains those checks. Web unit tests run on Linux only; backend tests retain Linux/macOS coverage. Browser CI uses three isolated, single-worker shards in a version-matched Playwright image and cancels superseded pull-request runs. Its timing reports are uploaded as `browser-results-1`, `browser-results-2`, and `browser-results-3` artifacts.
 
 The unfiltered commands below remain available for integration checks, not as a per-edit checklist:
 

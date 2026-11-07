@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 permissions:
   contents: read
@@ -14,6 +15,7 @@ concurrency:
 
 jobs:
   verify:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -34,14 +36,22 @@ jobs:
       - run: pnpm test
         env:
           RUST_BACKTRACE: full
+      - run: pnpm web:check
+        if: ${{ matrix.os == 'ubuntu-latest' }}
       - run: pnpm web:test
+        if: ${{ matrix.os == 'ubuntu-latest' }}
 
   browser-shards:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
     runs-on: ubuntu-latest
+    container:
+      # Keep this version aligned with @playwright/test in pnpm-lock.yaml.
+      image: mcr.microsoft.com/playwright:v1.62.1-noble
+      options: --ipc=host
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -52,7 +62,6 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @minu/channels-web exec playwright install --with-deps chromium
       - run: pnpm web:test:browser --shard=${{ matrix.shard }}/3 --reporter=line,json
         env:
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/browser-results/results.json
@@ -67,7 +76,7 @@ jobs:
 
   # Keep the existing check name; it passes only when every isolated shard passes.
   browser:
-    if: ${{ always() }}
+    if: ${{ always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     needs: browser-shards
     runs-on: ubuntu-latest
     steps:
@@ -77,6 +86,7 @@ jobs:
         run: test "$SHARDS_RESULT" = success
 
   release-package:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
