@@ -3187,3 +3187,47 @@ test("all-messages policy admits human work but ignores unaddressed generated re
     assert.ok(messages.filter(({ participantId }) => participantId !== "user").every(({ to }) => to.length === 0));
   } finally { await relay.stop(); await server.close(); }
 });
+
+
+test("relay resolves Conversation timeout policy once and applies it to the turn retry budget", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new RecoverableRuntime();
+  const conversation = await client.createConversation({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  const baseOptions = {
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  };
+  const errors: Error[] = [];
+  let policyReads = 0;
+  const relay = new ConversationRuntimeRelay({
+    ...baseOptions,
+    turnPollIntervalMs: 5,
+    resolveTurnTimeoutMs: async () => { policyReads++; return 30; },
+    onError(_binding, error) {
+      errors.push(error);
+    },
+  });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, {
+      participantId: "user",
+      body: "@agent-a deliberately never complete",
+    });
+    await waitUntil(async () => errors.length > 0);
+    assert.match(errors[0]!.message, /Timed out waiting for agent turn|Agent turn retry deadline expired|Operation deadline expired/);
+    assert.equal(runtime.startCount, 1);
+    assert.equal(policyReads, 1, "resolve once for the active turn, including retries");
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
+    assert.match((await client.listMessages(conversation.id))[1]!.body, /Runtime turn failed/);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});

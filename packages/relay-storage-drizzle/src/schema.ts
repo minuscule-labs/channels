@@ -8,7 +8,16 @@ export const conversationPresets = sqliteTable("conversation_presets", {
   definition: text("definition").notNull(),
 }, (table) => [primaryKey({ columns: [table.workspaceId, table.id] })]);
 
+export const conversationSettings = sqliteTable("conversation_settings", {
+  workspaceId: text("workspace_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  revision: integer("revision").notNull(),
+  definition: text("definition").notNull(),
+}, (table) => [primaryKey({ columns: [table.workspaceId, table.conversationId] })]);
+
 export const conversationCreationSetups = sqliteTable("conversation_creation_setups", {
+  // Operational initialization state; the snapshot definition stays immutable.
+  workingFoldersPrepared: integer("working_folders_prepared").notNull().default(0),
   workspaceId: text("workspace_id").notNull(),
   conversationId: text("conversation_id").notNull(),
   definition: text("definition").notNull(),
@@ -25,6 +34,7 @@ export const localWorkspaceConfigs = sqliteTable("local_workspace_config", {
   rootUri: text("root_uri").notNull(),
   notesFolderId: text("notes_folder_id"),
   idleSleepTimeoutMs: integer("idle_sleep_timeout_ms"),
+  turnTimeoutMs: integer("turn_timeout_ms"),
   runtimeModelPolicies: text("runtime_model_policies"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

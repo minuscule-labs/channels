@@ -2,6 +2,7 @@ import { ConversationClient } from "@minu/channels-core/client";
 import type { ConversationMessage, ConversationMetadata, Participant } from "@minu/channels-core";
 import {
   ConversationRuntimeRelay,
+  effectiveConversationSetup,
   conversationAgentConfiguration,
   LocalRelayDirectory,
   restoreConversationBindings,
@@ -425,15 +426,24 @@ export class LocalAgentHost {
     }
   }
 
-  private async effectiveIdleSleepTimeoutMs(workspaceId: string): Promise<number | undefined> {
+  private async conversationTimeoutPolicy(workspaceId: string, conversationId: string) {
+    return this.withTimeout((async () => {
+      const conversation = await this.options.client.getConversation(conversationId);
+      const sourceId = conversation.thread?.parentConversationId ?? conversationId;
+      const [workspace, setup] = await Promise.all([
+        this.options.store.getWorkspaceConfig(workspaceId),
+        effectiveConversationSetup(this.options.store, workspaceId, sourceId),
+      ]);
+      return { turnTimeoutMs: setup?.turnTimeoutMs ?? workspace?.turnTimeoutMs,
+        idleSleepTimeoutMs: setup?.idleSleepTimeoutMs === null ? undefined
+          : setup?.idleSleepTimeoutMs ?? workspace?.idleSleepTimeoutMs };
+    })(), 2_000, "Conversation timeout policy read timed out");
+  }
+
+  private async effectiveIdleSleepTimeoutMs(workspaceId: string, conversationId: string): Promise<number | undefined> {
     if (this.options.idleSleepTimeoutMs !== undefined) return this.options.idleSleepTimeoutMs;
-    const configured = (await this.withTimeout(
-      this.options.store.getWorkspaceConfig(workspaceId),
-      2_000,
-      "Workspace idle sleep policy read timed out",
-    ))?.idleSleepTimeoutMs;
-    return configured !== undefined && [15, 30, 60, 240, 1440].includes(configured / 60_000)
-      ? configured : undefined;
+    const configured = (await this.conversationTimeoutPolicy(workspaceId, conversationId)).idleSleepTimeoutMs;
+    return configured !== undefined && [15, 30, 60, 240, 1440].includes(configured / 60_000) ? configured : undefined;
   }
 
   private startIdleSleepScheduler(): void {
@@ -453,25 +463,26 @@ export class LocalAgentHost {
     task = (async () => {
       const candidates = new Map<string, {
         runner: ConversationRunner;
+        conversationId: string;
         binding: AgentConversationBinding;
       }>();
-      for (const runner of this.runners.values()) {
+      for (const [conversationId, runner] of this.runners) {
         if (runner.readiness !== "ready") continue;
         for (const restored of runner.restored.values()) {
           for (const binding of restored.bindings) {
             const id = binding.diagnosticBinding?.id;
-            if (id) candidates.set(id, { runner, binding });
+            if (id) candidates.set(id, { runner, conversationId, binding });
           }
         }
       }
-      // One policy lookup per Workspace per pass; an Off Workspace must not poll
-      // every connected binding. Sleeping routes still need reconciliation even
-      // after their Workspace policy is turned off.
+      // Share policy reads across agents in each Conversation. Sleeping routes
+      // still need reconciliation after automatic sleep is turned off.
       const policies = new Map<string, Promise<number | undefined>>();
-      const policyFor = (workspaceId: string): Promise<number | undefined> => {
-        let policy = policies.get(workspaceId);
+      const policyFor = (workspaceId: string, conversationId: string): Promise<number | undefined> => {
+        const key = `${workspaceId}:${conversationId}`;
+        let policy = policies.get(key);
         if (!policy) {
-          policy = this.effectiveIdleSleepTimeoutMs(workspaceId).catch(() => {
+          policy = this.effectiveIdleSleepTimeoutMs(workspaceId, conversationId).catch(() => {
             // Unknown policy fails closed for this Workspace only; another
             // Workspace may still have a sleeping session to reconcile.
             try {
@@ -481,21 +492,21 @@ export class LocalAgentHost {
             }
             return undefined;
           });
-          policies.set(workspaceId, policy);
+          policies.set(key, policy);
         }
         return policy;
       };
-      for (const { runner, binding } of candidates.values()) {
+      for (const { runner, conversationId, binding } of candidates.values()) {
         if (this.closed || this.quiescing) return;
         const bindingId = binding.diagnosticBinding?.id;
         if (!bindingId) continue;
         const workspaceId = binding.diagnosticBinding?.workspaceId;
-        if (!binding.isSleeping && workspaceId && await policyFor(workspaceId) === undefined) continue;
+        if (!binding.isSleeping && workspaceId && await policyFor(workspaceId, conversationId) === undefined) continue;
         const record = await this.options.store.getBinding(bindingId);
         if (!record || (record.state !== "connected" && record.state !== "sleeping")
           || !record.runtimeOwnerId || record.generation !== binding.diagnosticBinding?.generation) continue;
         if (record.state === "connected") {
-          const timeoutMs = await policyFor(record.workspaceId);
+          const timeoutMs = await policyFor(record.workspaceId, record.conversationId);
           if (timeoutMs === undefined) continue;
           const lastActiveAt = Date.parse(record.lastActiveAt ?? record.updatedAt);
           if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) continue;
@@ -529,7 +540,7 @@ export class LocalAgentHost {
       const wasSleeping = current.state === "sleeping" || binding.isSleeping === true;
       let durableSleeping = current.state === "sleeping";
       if (!wasSleeping) {
-        const timeoutMs = await this.effectiveIdleSleepTimeoutMs(current.workspaceId);
+        const timeoutMs = await this.effectiveIdleSleepTimeoutMs(current.workspaceId, current.conversationId);
         if (timeoutMs === undefined) return;
         const lastActiveAt = Date.parse(current.lastActiveAt ?? current.updatedAt);
         if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) return;
@@ -545,7 +556,7 @@ export class LocalAgentHost {
           || latest.runtimeOwnerId !== current.runtimeOwnerId
           || latest.runtimeSessionId !== current.runtimeSessionId) return false;
         if (!wasSleeping) {
-          const currentTimeoutMs = await this.effectiveIdleSleepTimeoutMs(latest.workspaceId);
+          const currentTimeoutMs = await this.effectiveIdleSleepTimeoutMs(latest.workspaceId, latest.conversationId);
           if (currentTimeoutMs === undefined) return false;
           const latestActivity = Date.parse(latest.lastActiveAt ?? latest.updatedAt);
           if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < currentTimeoutMs) return false;
@@ -2728,6 +2739,7 @@ export class LocalAgentHost {
               client: this.options.client,
               conversationId,
               bindings: [binding],
+              resolveTurnTimeoutMs: async () => (await this.conversationTimeoutPolicy(recoveryRecord.workspaceId, conversationId)).turnTimeoutMs,
               cursorStore: this.options.store,
               onTurnDelivery: (attachedBinding, trigger) => {
                 const scope = this.turnDeliveryScope(conversationId, attachedBinding);

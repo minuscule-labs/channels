@@ -1,0 +1,174 @@
+import type { LocalWorkspaceConfigurationSummary } from "@minu/channels-control/contracts";
+import type { Workspace } from "@minu/channels-core/types";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, FolderOpen, LoaderCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { conversations, localControl } from "../lib/api";
+import { queryKeys } from "../lib/query-keys";
+import { ErrorNotice } from "./ui/error-notice";
+
+function ConfigurationState({ configured, label }: { configured: boolean; label: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--muted)]"
+      data-configured={configured}
+    >
+      <span className={`status-dot ${configured ? "" : "opacity-30"}`} />
+      {label}: {configured ? "configured" : "not configured"}
+    </span>
+  );
+}
+
+export function WorkspaceNameForm({ workspace, actorIdentityId, autoFocus = false }: { workspace: Workspace; actorIdentityId: string; autoFocus?: boolean }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(workspace.name);
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!autoFocus) return;
+    const frame = requestAnimationFrame(() => { nameRef.current?.focus(); nameRef.current?.select(); });
+    return () => cancelAnimationFrame(frame);
+  }, [autoFocus]);
+  const mutation = useMutation({
+    mutationFn: () => conversations.updateWorkspace(workspace.id, { actorIdentityId, name: name.trim() }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.workspace(workspace.id), updated);
+      queryClient.setQueryData<Workspace[]>(queryKeys.workspaces(), (current = []) =>
+        current.map((candidate) => candidate.id === updated.id ? updated : candidate));
+    },
+  });
+  const changed = name.trim() !== workspace.name;
+  return (
+    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" onSubmit={(event) => {
+      event.preventDefault();
+      if (changed && name.trim() && !mutation.isPending) mutation.mutate();
+    }}>
+      <h3 className="text-sm font-semibold">Workspace name</h3>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">Shown in navigation and Workspace headings.</p>
+      <label className="mt-3 block text-xs font-medium">Name
+        <input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className="settings-input mt-1.5" />
+      </label>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
+        {mutation.isSuccess && !changed ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
+        <button className="button-primary" type="submit" disabled={!changed || !name.trim() || mutation.isPending}>Save name</button>
+      </div>
+    </form>
+  );
+}
+
+export function WorkspaceRootForm({
+  workspaceId,
+  summary,
+}: {
+  workspaceId: string;
+  summary: LocalWorkspaceConfigurationSummary;
+}) {
+  const queryClient = useQueryClient();
+  const [rootUri, setRootUri] = useState("");
+  const picker = useMutation({
+    mutationFn: () => localControl.selectLocalFolder(),
+    onSuccess: (path) => { if (path) setRootUri(path); },
+  });
+  const mutation = useMutation({
+    mutationFn: () => localControl.updateWorkspaceConfiguration(workspaceId, { rootUri }),
+    onSuccess: (next) => {
+      queryClient.setQueryData(queryKeys.workspaceConfiguration(workspaceId), next);
+      setRootUri("");
+    },
+  });
+
+  return (
+    <form
+      className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (rootUri.trim() && !mutation.isPending) mutation.mutate();
+      }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">Workspace source</h3>
+          <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+            The default source location used when starting new agent sessions.
+          </p>
+        </div>
+        <ConfigurationState configured={summary.rootConfigured} label="Source" />
+      </div>
+      <label className="mt-4 block text-xs font-medium" htmlFor={`workspace-root-${workspaceId}`}>
+        {summary.rootConfigured ? "Replace source location" : "Source location"}
+      </label>
+      <div className="mt-1.5 flex gap-2">
+        <input
+          id={`workspace-root-${workspaceId}`}
+          value={rootUri}
+          onChange={(event) => setRootUri(event.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Absolute local path"
+          className="settings-input font-mono"
+        />
+        <button type="button" className="button-secondary shrink-0" disabled={picker.isPending} onClick={() => picker.mutate()}>
+          {picker.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FolderOpen className="h-3.5 w-3.5" />} Browse
+        </button>
+      </div>
+      <p className="mt-1.5 text-[10px] text-[var(--muted)]">
+        The saved value is never read back. Existing sessions are unchanged.
+      </p>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
+        {picker.error ? <ErrorNotice className="mr-auto" onDismiss={picker.reset}>{picker.error.message}</ErrorNotice> : null}
+        {mutation.isSuccess ? <span className="mr-auto inline-flex items-center gap-1 text-xs text-[var(--success)]"><Check className="h-3 w-3" /> Saved</span> : null}
+        <button className="button-primary" type="submit" disabled={!rootUri.trim() || mutation.isPending}>
+          {mutation.isPending ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+          Save source
+        </button>
+      </div>
+    </form>
+  );
+}
+
+const sleepOptions = [
+  { value: "off", label: "Off (default)" },
+  { value: "15", label: "15 minutes" },
+  { value: "30", label: "30 minutes" },
+  { value: "60", label: "1 hour" },
+  { value: "240", label: "4 hours" },
+  { value: "1440", label: "24 hours" },
+] as const;
+
+export function WorkspaceIdleSleepForm({ workspaceId, summary }: {
+  workspaceId: string;
+  summary: LocalWorkspaceConfigurationSummary;
+}) {
+  const queryClient = useQueryClient();
+  const saved = summary.idleSleepTimeoutMs === undefined ? "off" : String(summary.idleSleepTimeoutMs / 60_000);
+  const [selected, setSelected] = useState(saved);
+  const mutation = useMutation({
+    mutationFn: () => localControl.updateWorkspaceConfiguration(workspaceId, {
+      idleSleepTimeoutMs: selected === "off" ? null : Number(selected) * 60_000,
+    }),
+    onSuccess: (next) => { queryClient.setQueryData(queryKeys.workspaceConfiguration(workspaceId), next); },
+  });
+  return (
+    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" onSubmit={(event) => {
+      event.preventDefault();
+      if (selected !== saved && !mutation.isPending) mutation.mutate();
+    }}>
+      <h3 className="text-sm font-semibold">Idle agent sleep</h3>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+        Opt in to suspending eligible managed agents after they are idle. An addressed message wakes the same session.
+        This saves process resources, not model tokens; busy and uncertain agents are never suspended.
+      </p>
+      <label className="mt-3 block text-xs font-medium" htmlFor={`workspace-sleep-${workspaceId}`}>Sleep after</label>
+      <select id={`workspace-sleep-${workspaceId}`} value={selected} onChange={(event) => setSelected(event.target.value)}
+        className="settings-input mt-1.5">
+        {sleepOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        {mutation.error ? <ErrorNotice className="mr-auto" onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
+        {mutation.isSuccess && selected === saved ? <span className="mr-auto text-xs text-[var(--success)]">Saved</span> : null}
+        <button className="button-primary" type="submit" disabled={selected === saved || mutation.isPending}>Save sleep policy</button>
+      </div>
+    </form>
+  );
+}

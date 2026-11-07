@@ -138,7 +138,27 @@ const legacyConversationRoute = createRoute({
   component: LegacyConversationRedirect,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
+const WorkspaceSettingsPage = lazy(() => import("./components/workspace-settings-page").then((module) => ({ default: module.WorkspaceSettingsPage })));
+const ConversationPresetsPage = lazy(() => import("./components/conversation-presets-page").then((module) => ({ default: module.ConversationPresetsPage })));
+const ConversationPresetPage = lazy(() => import("./components/conversation-presets-page").then((module) => ({ default: module.ConversationPresetPage })));
+const CreateConversationPage = lazy(() => import("./components/conversation-settings-page").then((module) => ({ default: module.CreateConversationPage })));
+const ConversationSettingsPage = lazy(() => import("./components/conversation-settings-page").then((module) => ({ default: module.ConversationSettingsPage })));
+function ContentRoutePending() {
+  return <div role="status" className="grid min-h-0 flex-1 place-items-center p-6 text-sm text-[var(--muted)]">Loading…</div>;
+}
+
+const settingsRoutes = [
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings", validateSearch: (search): { focusName?: boolean } => search.focusName === true ? { focusName: true } : {}, component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/people", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage section="people" /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/defaults", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage section="defaults" /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/presets", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationPresetsPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/presets/new", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationPresetPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/presets/$presetId", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationPresetPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/conversations/new", validateSearch: (search): { folderId?: string } => typeof search.folderId === "string" ? { folderId: search.folderId } : {}, component: () => <Suspense fallback={<ContentRoutePending />}><CreateConversationPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/conversations/$conversationId/settings", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationSettingsPage /></Suspense> }),
+];
+
+const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
 export const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
