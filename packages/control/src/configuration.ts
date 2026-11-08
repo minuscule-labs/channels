@@ -850,7 +850,7 @@ export class LocalAgentHostConfiguration {
       }
       if (input.action === "publish" && current.kind === "skill"
         && (!current.description.trim() || !current.content.trim())) {
-        throw new LocalConfigurationRequestError("A published skill requires a description and procedure", 400, "invalid");
+        throw new LocalConfigurationRequestError("A published skill requires a description and instructions", 400, "invalid");
       }
       if (input.action === "archive" && current.kind === "instructions") {
         throw new LocalConfigurationRequestError("Publish empty instructions to clear this scope", 400, "invalid");

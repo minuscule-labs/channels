@@ -179,7 +179,9 @@ test("HTTP instructions are unique per scope, clear through publication, and acc
     ]) assert.equal((await f.request(f.path, "POST", body)).status, 400);
     const blank = await (await f.request(f.path, "POST", { kind: "skill", name: "Draft", content: "" })).json() as LocalAuthoredDocument;
     const blankPath = `${f.path}/${blank.id}`;
-    assert.equal((await f.request(blankPath, "PATCH", { action: "publish", expectedVersion: 1 })).status, 400);
+    const blankPublication = await f.request(blankPath, "PATCH", { action: "publish", expectedVersion: 1 });
+    assert.equal(blankPublication.status, 400);
+    assert.match(await blankPublication.text(), /A published skill requires a description and instructions/);
     for (const expectedVersion of [undefined, null, 0, 1.5, "1"]) {
       assert.equal((await f.request(blankPath, "PATCH", { action: "archive", expectedVersion })).status, 400);
     }

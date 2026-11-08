@@ -14,18 +14,31 @@ async function open(page: Page, request: APIRequestContext, data: Setup, scope: 
   const destination = `/app/workspaces/${data.workspaceId}/conversations/${scope}`;
   const response = await request.get(`${fixture}/control-launch?actor=${actor}&destination=${encodeURIComponent(destination)}`);
   await page.goto((await response.json()).launchUrl);
-  await expect(page.getByRole("combobox", { name: /^(Conversation message|Thread reply)$/ })).toBeEnabled();
+  await expect(message(page)).toBeEnabled();
 }
 const message = (page: Page) => page.getByRole("combobox", { name: /^(Conversation message|Thread reply)$/ });
-const recipient = (page: Page) => page.getByRole("combobox", { name: "Skill recipients", exact: true });
-async function pick(page: Page, source: "Channel" | "Workspace", slash = true) {
-  if (slash) await message(page).fill("/skills");
-  else await page.getByRole("button", { name: "Skills", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Skills", exact: true });
-  await expect(dialog).toBeVisible();
-  await dialog.getByRole("textbox", { name: "Search skills" }).fill("Decision");
-  await dialog.getByRole("option").filter({ hasText: source }).first().click();
-  await expect(dialog).not.toBeVisible();
+const availability = (page: Page) => page.getByLabel("Skill availability");
+const receipt = (page: Page) => page.getByLabel("Skill receipt").getByRole("status");
+async function published(page: Page) {
+  // Wait on the retained receipt, not on controls that must disappear on success.
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
+    .filter(key => key.endsWith(".skill-request"))
+    .some(key => JSON.parse(localStorage.getItem(key)!).publication?.status === "observed"))).toBe(true);
+  await expect(message(page)).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByLabel("Skill receipt")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Inspect receipt" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "New request" })).toHaveCount(0);
+}
+async function pick(page: Page, source: "Channel" | "Workspace") {
+  await message(page).fill("/Decision");
+  const popup = page.getByRole("listbox", { name: "Skill suggestions", exact: true });
+  await expect(popup).toBeVisible();
+  await popup.getByRole("option").filter({ hasText: source }).first().click();
+  await expect(popup).not.toBeVisible();
+}
+async function removeSkill(page: Page) {
+  await page.getByRole("button", { name: "Skill details for Decision", exact: true }).click();
+  await page.getByRole("button", { name: "Remove skill", exact: true }).click();
 }
 async function metrics(request: APIRequestContext, data: Setup) {
   const { calls, sessions } = await (await request.get(`${fixture}/metrics`)).json();
@@ -35,200 +48,351 @@ async function messages(request: APIRequestContext, scope: string) {
   return (await (await request.get(`${api}/conversations/${scope}/messages`)).json()).messages as Array<{ id: string; participantId: string; authoredInvocationId?: string; replyTo?: string; body: string; to: string[] }>;
 }
 
-test("member discovers duplicate sources and unsupported Harness; explicit submit reaches only the preserved recipient", async ({ page, request }) => {
+test("inline slash popup preserves drafts, supports keyboard selection and metadata-only chips without dropdowns or sending", async ({ page, request }, info) => {
   const data = await setup(page, request);
-  const sessions = (await metrics(request, data)).sessions;
-  await expect(recipient(page)).toHaveCount(0);
-  await message(page).fill("/skills");
-  const dialog = page.getByRole("dialog", { name: "Skills", exact: true });
-  await expect(dialog.getByRole("option").filter({ hasText: "Channel" })).toHaveCount(1);
-  await expect(dialog.getByRole("option").filter({ hasText: "Workspace" })).toHaveCount(1);
-  await expect(dialog.getByRole("option").filter({ hasText: "Harness" }).first()).toBeDisabled();
-  await dialog.getByRole("textbox", { name: "Search skills" }).fill("Channel decision");
-  await expect(dialog.getByRole("option")).toHaveCount(1);
-  await dialog.getByRole("option").click();
-  await recipient(page).selectOption(data.selectedId);
-  await expect(recipient(page)).toHaveValue(data.selectedId);
-  await message(page).fill("Capture this @observer @channel");
-  await expect(recipient(page)).toHaveValue(data.selectedId);
-  await expect(page.getByLabel("Selected skill").getByRole("status")).toHaveText("Ready");
-  await page.getByRole("button", { name: "Send skill", exact: true }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Published");
-  await expect(message(page)).toHaveValue("");
-  await expect.poll(async () => (await metrics(request, data)).calls.filter(call => call.input.includes("PRIVATE_CHANNEL_PROCEDURE_V1")).length).toBe(1);
-  const result = await metrics(request, data);
-  expect(result.calls).toHaveLength(1);
-  expect(result.calls[0]).toMatchObject({ conversationId: data.parentId, identityId: data.selectedId });
-  expect(result.sessions).toBe(sessions);
-  const history = await messages(request, data.parentId);
-  const trigger = history.find(row => row.authoredInvocationId)!;
-  expect(trigger.participantId).toBe(data.memberId);
-  expect(trigger.to).toEqual([data.selectedId]);
-  expect(trigger.body).toBe("Capture this @observer @channel");
-  expect(result.calls[0]!.turnId).toBe(`conversation:${data.parentId}:${data.selectedId}:${trigger.id}`);
-  expect(JSON.stringify(history)).not.toMatch(/PRIVATE_.*PROCEDURE|private-browser/);
-  await page.getByRole("button", { name: "Inspect receipt" }).click();
-  expect((await metrics(request, data)).calls).toHaveLength(1);
+  const input = message(page), popup = page.getByRole("listbox", { name: "Skill suggestions", exact: true });
+  await expect(page.getByRole("button", { name: "Skills", exact: true })).toHaveCount(0);
+  await input.fill("@obs");
+  await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
+  await input.press("Escape");
+  await input.fill("/Decision\nKeep draft");
+  await expect(popup).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Skills", exact: true })).toHaveCount(0);
+  await input.press("Escape");
+  await expect(popup).not.toBeVisible();
+  await expect(input).toHaveValue("/Decision\nKeep draft");
+  await input.fill("/");
+  const authored = popup.getByRole("option").filter({ hasNotText: "Harness" });
+  await expect(authored).toHaveCount(2);
+  await expect(popup.getByRole("option").filter({ hasText: "Harness" }).first()).toBeDisabled();
+  await input.press("ArrowDown");
+  await expect(authored.nth(1)).toHaveAttribute("aria-selected", "true");
+  await input.press("ArrowUp");
+  await expect(authored.nth(0)).toHaveAttribute("aria-selected", "true");
+  await page.screenshot({ path: info.outputPath("inline-skill-popup.png") });
+  await input.fill("/Workspace\nKeep draft");
+  await expect(popup.getByRole("option")).toHaveCount(1);
+  await input.press("Enter");
+  await expect(input).toHaveValue("Keep draft");
+  await expect(input).toBeFocused();
+  const chip = page.locator(".composer").getByLabel("Selected skill");
+  await expect(chip).toHaveText("Decision");
+  await expect(page.locator(".composer select")).toHaveCount(0);
+  await input.fill("/literal arguments @selected");
+  await input.press("Escape");
+  await expect(popup).not.toBeVisible();
+  await expect(availability(page)).toHaveText("Ready");
+  await chip.getByRole("button", { name: "Skill details for Decision" }).click();
+  await expect(page.getByText("Workspace decision", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "View instructions", exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await removeSkill(page);
+  await expect(chip).toHaveCount(0);
+  await expect(input).toHaveValue("/literal arguments @selected");
+  expect((await metrics(request, data)).calls).toHaveLength(0);
 });
 
-test("parent/thread and human drafts, skill choices and recipients remain independent through real thread delivery", async ({ page, request }) => {
+test("inline pill supports Backspace, range editing and mention completion with exact context delivery", async ({ page, request }, info) => {
+  const data = await setup(page, request);
+  await pick(page, "Channel");
+  const input = message(page), chip = page.getByLabel("Selected skill");
+  const layout = await input.evaluate(element => {
+    const chip = document.querySelector('[aria-label="Selected skill"]')!.getBoundingClientRect();
+    return { top: chip.top - element.getBoundingClientRect().top, indent: parseFloat(getComputedStyle(element).textIndent), width: chip.width };
+  });
+  expect(layout.top).toBeCloseTo(10, 0);
+  expect(layout.indent).toBeGreaterThan(layout.width);
+  await input.fill("@sel");
+  await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("skill-mentions.png") });
+  await input.press("Enter");
+  await expect(input).toHaveValue("@selected ");
+  await expect(availability(page)).toHaveText("Ready");
+  await input.press("ControlOrMeta+Enter");
+  await input.pressSequentially("Additional context: café & <details>.");
+  const context = await input.inputValue();
+  await input.press("Backspace");
+  await expect(chip).toHaveText("Decision");
+  await expect(input).toHaveValue(context.slice(0, -1));
+  await input.fill(context);
+  await input.evaluate(element => (element as HTMLTextAreaElement).setSelectionRange(0, 1));
+  await input.press("Backspace");
+  await expect(chip).toHaveText("Decision");
+  await expect(input).toHaveValue(context.slice(1));
+  await input.fill(context);
+  await input.evaluate(element => (element as HTMLTextAreaElement).setSelectionRange(0, 0));
+  await input.press("Backspace");
+  await expect(chip).toHaveCount(0);
+  await expect(input).toHaveValue(context);
+  await expect(input).toBeFocused();
+  await page.reload();
+  await expect(input).toHaveValue(context);
+  await input.fill(`/Channel\n${context}`);
+  await page.getByRole("listbox", { name: "Skill suggestions" }).getByRole("option").click();
+  await expect(availability(page)).toHaveText("Ready");
+  await page.screenshot({ path: info.outputPath("skill-context-no-dropdown.png") });
+  await page.getByRole("button", { name: "Send skill", exact: true }).click();
+  await published(page);
+  const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
+  expect(trigger.body).toBe(context);
+  expect(trigger.to).toEqual([data.selectedId]);
+  await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(1);
+  expect((await metrics(request, data)).calls[0]!.input).toContain(context);
+});
+
+test("skill mentions use ordinary editing rules, ignore quoted/code context, and retain the sticky recipient after send", async ({ page, request }) => {
+  const data = await setup(page, request), sessions = (await metrics(request, data)).sessions;
+  await pick(page, "Channel");
+  await message(page).fill("@selected Initial task");
+  await expect(availability(page)).toHaveText("Ready");
+  await message(page).fill("@owner Human target");
+  await expect(availability(page)).toHaveText("Unavailable");
+  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
+  await message(page).fill("@observer Capture this\n> @owner @channel\n`@selected`\n```\n@owner\n```");
+  await message(page).press("Escape");
+  await expect(availability(page)).toHaveText("Ready");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  await expect(message(page)).toHaveValue("");
+  await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(1);
+  const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
+  expect(trigger.to).toEqual([data.observerId]);
+  expect((await metrics(request, data)).calls[0]!.identityId).toBe(data.observerId);
+  expect((await metrics(request, data)).sessions).toBe(sessions);
+  expect(JSON.stringify(await messages(request, data.parentId))).not.toMatch(/PRIVATE_.*PROCEDURE|private-browser/);
+  await removeSkill(page);
+  await message(page).fill("Sticky ordinary follow-up");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(message(page)).toHaveValue("");
+  expect((await messages(request, data.parentId)).find(row => row.body === "Sticky ordinary follow-up")!.to).toEqual([data.observerId]);
+  await page.reload();
+  await pick(page, "Workspace");
+  await message(page).fill("No mention, same sticky agent");
+  await expect(availability(page)).toHaveText("Ready");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  expect((await messages(request, data.parentId)).find(row => row.body === "No mention, same sticky agent")!.to).toEqual([data.observerId]);
+});
+
+test("multi-recipient skill sends and unsupported broadcasts do not replace the single sticky target", async ({ page, request }) => {
+  const data = await setup(page, request);
+  await pick(page, "Channel");
+  for (const body of ["@selected Set sticky", "@selected @observer Both agents"]) {
+    await message(page).fill(body);
+    await page.getByRole("button", { name: "Send skill" }).click();
+    await published(page);
+    await expect(message(page)).toHaveValue("");
+  }
+  await message(page).fill("@channel Unsupported broadcast");
+  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
+  await message(page).fill("@missing Unknown recipient");
+  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
+  await message(page).fill("Sticky after removing mentions");
+  await expect(availability(page)).toHaveText("Ready");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  const history = await messages(request, data.parentId);
+  expect(history.find(row => row.body === "Sticky after removing mentions")!.to).toEqual([data.selectedId]);
+  expect(history.find(row => row.body === "@selected @observer Both agents")!.to.sort()).toEqual([data.selectedId, data.observerId].sort());
+  expect(history.some(row => row.body.includes("Unsupported broadcast") || row.body.includes("Unknown recipient"))).toBe(false);
+});
+
+test("new active mentions entered with a slash draft replace the prior sticky recipient", async ({ page, request }) => {
+  const data = await setup(page, request);
+  await pick(page, "Channel");
+  await message(page).fill("@observer Establish sticky B");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  await removeSkill(page);
+  const context = "@selected New recipient supplied with slash draft";
+  await message(page).fill(`/Channel\n${context}`);
+  await page.getByRole("listbox", { name: "Skill suggestions" }).getByRole("option").click();
+  await expect(message(page)).toHaveValue(context);
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  const trigger = (await messages(request, data.parentId)).find(row => row.body === context)!;
+  expect(trigger.to).toEqual([data.selectedId]);
+  await expect.poll(async () => (await metrics(request, data)).calls.filter(call => call.turnId.endsWith(`:${trigger.id}`)).map(call => call.identityId)).toEqual([data.selectedId]);
+});
+
+test("observed empty-argument multi-target receipts do not restore targets into a new draft after reload", async ({ page, request }) => {
+  const data = await setup(page, request);
+  await pick(page, "Channel");
+  await message(page).fill("@selected Establish sticky A");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  await message(page).fill("@selected @observer Current recipients");
+  await removeSkill(page);
+  await pick(page, "Channel"); // Query-only entry must preserve A+B even with empty arguments.
+  await expect(message(page)).toHaveValue("");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  const before = (await messages(request, data.parentId)).filter(row => row.authoredInvocationId);
+  expect(before).toHaveLength(2);
+  expect(before.find(row => row.body.startsWith("Use playbook:"))!.to.sort()).toEqual([data.selectedId, data.observerId].sort());
+  await page.reload();
+  await message(page).fill("Fresh mention-free follow-up");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
+  const trigger = (await messages(request, data.parentId)).find(row => row.body === "Fresh mention-free follow-up")!;
+  expect(trigger.to).toEqual([data.selectedId]);
+  await expect.poll(async () => (await metrics(request, data)).calls.filter(call => call.turnId.endsWith(`:${trigger.id}`)).map(call => call.identityId)).toEqual([data.selectedId]);
+});
+
+test("parent/thread and human drafts, skill choices and recipients remain independent through thread delivery", async ({ page, request }) => {
   const data = await setup(page, request);
   await pick(page, "Workspace");
-  await recipient(page).selectOption(data.observerId);
-  await message(page).fill("Parent draft");
+  await message(page).fill("@observer Parent draft");
   await open(page, request, data, data.threadId);
   await expect(page.getByLabel("Selected skill")).toHaveCount(0);
   await expect(message(page)).toHaveValue("");
   await pick(page, "Channel");
-  await recipient(page).selectOption(data.selectedId);
-  await message(page).fill("Thread arguments");
-  await page.getByRole("button", { name: "Send skill", exact: true }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Published");
+  await message(page).fill("@selected Thread arguments");
+  await page.getByRole("button", { name: "Send skill" }).click();
+  await published(page);
   await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(1);
   expect((await metrics(request, data)).calls[0]).toMatchObject({ conversationId: data.threadId, identityId: data.selectedId });
   await open(page, request, data, data.parentId);
-  await expect(message(page)).toHaveValue("Parent draft");
-  await expect(recipient(page)).toHaveValue(data.observerId);
-  await expect(page.getByLabel("Selected skill")).toContainText("Workspace");
+  await expect(message(page)).toHaveValue("@observer Parent draft");
+  await expect(page.getByLabel("Selected skill")).toHaveText("Decision");
   await open(page, request, data, data.parentId, "owner");
   await expect(message(page)).toHaveValue("");
   await expect(page.getByLabel("Selected skill")).toHaveCount(0);
-  await expect(recipient(page)).toHaveCount(0);
   await open(page, request, data, data.parentId);
-  await expect(message(page)).toHaveValue("Parent draft");
-  await expect(recipient(page)).toHaveValue(data.observerId);
+  await expect(message(page)).toHaveValue("@observer Parent draft");
 });
 
-test("recipient changes, new pending revision and retirement block rather than substitute or restart", async ({ page, request }) => {
-  const data = await setup(page, request);
-  const sessions = (await metrics(request, data)).sessions;
+test("new pending revisions and retirement block rather than substitute or restart", async ({ page, request }) => {
+  const data = await setup(page, request), sessions = (await metrics(request, data)).sessions;
   await pick(page, "Channel");
-  await recipient(page).selectOption(data.selectedId);
-  await message(page).fill("Preserved arguments");
-  await recipient(page).selectOption(data.ownerId);
-  await expect(page.getByLabel("Selected skill").getByRole("status")).toHaveText("Unavailable");
-  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
-  await recipient(page).selectOption(data.selectedId);
-  await expect(page.getByLabel("Selected skill").getByRole("status")).toHaveText("Ready");
+  await message(page).fill("@selected Preserved arguments");
   await request.post(`${fixture}/change?workspace=${data.workspaceId}&document=${data.channelSkill}&action=publish`);
-  await page.getByRole("button", { name: "Skills", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Skills", exact: true });
-  await expect(dialog.getByRole("option").filter({ hasText: "Channel" })).toContainText("r2 · Pending", { timeout: 10_000 });
-  await dialog.getByRole("option").filter({ hasText: "Channel" }).click();
-  await expect(page.getByLabel("Selected skill").getByRole("status")).toHaveText("Pending");
+  await removeSkill(page);
+  await message(page).fill("/Channel\n@selected Preserved arguments");
+  const popup = page.getByRole("listbox", { name: "Skill suggestions" });
+  await expect(popup.getByRole("option")).toContainText("r2 · Pending", { timeout: 10_000 });
+  await popup.getByRole("option").click();
+  await expect(availability(page)).toHaveText("Pending");
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await request.post(`${fixture}/change?workspace=${data.workspaceId}&document=${data.channelSkill}&action=archive`);
-  await expect(page.getByLabel("Selected skill").getByRole("status")).toHaveText("Unavailable", { timeout: 10_000 });
-  await expect(message(page)).toHaveValue("Preserved arguments");
+  await expect(availability(page)).toHaveText("Unavailable", { timeout: 10_000 });
+  await expect(message(page)).toHaveValue("@selected Preserved arguments");
   expect((await metrics(request, data)).calls).toHaveLength(0);
   expect((await metrics(request, data)).sessions).toBe(sessions);
 });
 
-test("lost acceptance acknowledgment preserves changed draft recipients across reload before original publication", async ({ page, request }, testInfo) => {
+test("successful skill sends hide recovery controls in flight, after completion and after reload", async ({ page, request }) => {
+  const data = await setup(page, request);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let accepting = false;
+  await page.route(`**/local/conversations/${data.parentId}/skill-invocations`, async route => {
+    if (route.request().method() !== "POST") return route.continue();
+    accepting = true;
+    await held;
+    await route.continue();
+  });
+  try {
+    await pick(page, "Channel");
+    await message(page).fill("@selected First successful task");
+    await page.getByRole("button", { name: "Send skill" }).click();
+    await expect.poll(() => accepting).toBe(true);
+    await expect(page.getByRole("button", { name: "Submitting skill" })).toBeDisabled();
+    await expect(page.getByLabel("Skill receipt")).toHaveCount(0);
+    release();
+    await published(page);
+    await expect(message(page)).toHaveValue("");
+    await page.reload();
+    await published(page);
+    await message(page).fill("Second successful task");
+    await page.getByRole("button", { name: "Send skill" }).click();
+    await published(page);
+    await expect(message(page)).toHaveValue("");
+    await expect.poll(async () => (await messages(request, data.parentId)).filter(row => row.authoredInvocationId).length).toBe(2);
+  } finally { release(); }
+});
+
+test("lost acceptance acknowledgment preserves edited mention recipients across reload before original publication", async ({ page, request }, info) => {
   const data = await setup(page, request);
   let accepts = 0, publishes = 0;
   await page.route(`**/local/conversations/${data.parentId}/skill-invocations`, async route => {
-    if (route.request().method() === "POST") {
-      accepts += 1;
-      const target = new URL(route.request().url()); target.hostname = "127.0.0.1";
-      const committed = await route.fetch({ url: target.href, headers: { ...route.request().headers(), host: target.host } });
-      expect(committed.status()).toBe(202);
-      await route.abort("failed");
-    }
-    else await route.continue();
+    if (route.request().method() !== "POST") return route.continue();
+    accepts += 1;
+    const target = new URL(route.request().url()); target.hostname = "127.0.0.1";
+    const response = await route.fetch({ url: target.href, headers: { ...route.request().headers(), host: target.host } });
+    expect(response.status()).toBe(202);
+    await route.abort("failed");
   });
   page.on("request", event => { if (event.method() === "POST" && event.url().endsWith("/skill-invocation-publications")) publishes += 1; });
-  await pick(page, "Channel"); await recipient(page).selectOption(data.selectedId); await message(page).fill("Uncertain acceptance");
+  await pick(page, "Channel");
+  await message(page).fill("@selected Uncertain acceptance");
   await page.getByRole("button", { name: "Send skill" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Submission unconfirmed" })).toBeVisible();
-  await expect(message(page)).toHaveValue("Uncertain acceptance");
-  expect(publishes).toBe(0);
   await page.getByRole("button", { name: "Inspect receipt" }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Not linked");
-  expect(accepts).toBe(1); expect(publishes).toBe(0);
-  await recipient(page).selectOption(data.observerId);
+  await expect(receipt(page)).toHaveText("Not linked");
+  await message(page).fill("@observer Uncertain acceptance");
   await expect(page.getByRole("button", { name: "Publish accepted" })).toBeDisabled();
   await page.reload();
-  await expect(message(page)).toHaveValue("Uncertain acceptance");
-  await expect(recipient(page)).toHaveValue(data.observerId);
+  await expect(message(page)).toHaveValue("@observer Uncertain acceptance");
   await page.getByRole("button", { name: "Inspect receipt" }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Not linked");
-  await expect(page.getByRole("button", { name: "Inspect receipt" })).toBeEnabled();
-  await expect(recipient(page)).toHaveValue(data.observerId);
+  await expect(receipt(page)).toHaveText("Not linked");
+  await expect(message(page)).toHaveValue("@observer Uncertain acceptance");
   await expect(page.getByRole("button", { name: "Publish accepted" })).toBeDisabled();
   expect(accepts).toBe(1); expect(publishes).toBe(0);
   expect((await metrics(request, data)).calls).toHaveLength(0);
-  const screenshot = testInfo.outputPath("changed-recipient-original-publication-blocked.png");
-  await page.screenshot({ path: screenshot });
-  await testInfo.attach("changed-recipient-original-publication-blocked", { path: screenshot, contentType: "image/png" });
-  await recipient(page).selectOption(data.selectedId);
-  await message(page).fill("A different task");
+  await page.screenshot({ path: info.outputPath("changed-mention-original-publication-blocked.png") });
+  await message(page).fill("@selected Different task");
   await expect(page.getByRole("button", { name: "Publish accepted" })).toBeDisabled();
-  expect((await metrics(request, data)).calls).toHaveLength(0);
-  await message(page).fill("Uncertain acceptance");
+  await message(page).fill("@selected Uncertain acceptance");
   await page.getByRole("button", { name: "Publish accepted" }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Published");
+  await published(page);
   expect(accepts).toBe(1); expect(publishes).toBe(1);
   await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(1);
-  expect((await metrics(request, data)).calls[0]!.identityId).toBe(data.selectedId);
-  const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
-  expect(trigger.to).toEqual([data.selectedId]);
+  expect((await messages(request, data.parentId)).find(row => row.authoredInvocationId)!.to).toEqual([data.selectedId]);
 });
 
 test("committed lost publication acknowledgment survives reload and inspection never resends", async ({ page, request }) => {
   const data = await setup(page, request);
   let publications = 0;
   await page.route(`**/local/conversations/${data.parentId}/skill-invocation-publications`, async route => {
-    if (route.request().method() === "POST") {
-      publications += 1;
-      const target = new URL(route.request().url()); target.hostname = "127.0.0.1";
-      const committed = await route.fetch({ url: target.href, headers: { ...route.request().headers(), host: target.host } });
-      expect(committed.status()).toBe(200);
-      await route.abort("failed");
-    }
-    else await route.continue();
+    if (route.request().method() !== "POST") return route.continue();
+    publications += 1;
+    const target = new URL(route.request().url()); target.hostname = "127.0.0.1";
+    const response = await route.fetch({ url: target.href, headers: { ...route.request().headers(), host: target.host } });
+    expect(response.status()).toBe(200);
+    await route.abort("failed");
   });
-  await pick(page, "Channel"); await recipient(page).selectOption(data.selectedId); await message(page).fill("Uncertain publication");
+  await pick(page, "Channel");
+  await message(page).fill("@selected Uncertain publication");
   await page.getByRole("button", { name: "Send skill" }).click();
   await expect(page.getByRole("alert").filter({ hasText: "Submission unconfirmed" })).toBeVisible();
   await expect(page.getByLabel("Skill receipt").getByRole("button", { name: "New request" })).toBeDisabled();
   await page.reload();
-  await expect(message(page)).toHaveValue("Uncertain publication");
-  await expect(recipient(page)).toHaveValue(data.selectedId);
+  await expect(message(page)).toHaveValue("@selected Uncertain publication");
   await page.getByRole("button", { name: "Inspect receipt" }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Published");
+  await published(page);
   await expect(message(page)).toHaveValue("");
   expect(publications).toBe(1);
   await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(1);
 });
 
-for (const entry of ["button", "slash"] as const) {
-test(`multiple human-chosen agents survive ${entry} skill entry, argument mentions and reload, then both receive exactly one turn`, async ({ page, request }, testInfo) => {
-  const data = await setup(page, request);
-  await message(page).fill("@selected @observer Initial task");
-  await expect(recipient(page)).toHaveCount(0);
-  if (entry === "slash") {
-    await message(page).fill("/skills\n@selected @observer Initial task");
-    await expect(page.getByRole("dialog", { name: "Skills", exact: true })).toBeVisible();
-    await page.getByRole("dialog", { name: "Skills", exact: true }).getByRole("option").filter({ hasText: "Workspace" }).click();
-  } else await pick(page, "Workspace", false);
-  await expect(recipient(page)).toHaveValue("__multiple__");
-  await message(page).fill("Changed arguments @owner @channel");
-  await expect(recipient(page)).toHaveValue("__multiple__");
-  await page.reload();
-  await expect(message(page)).toHaveValue("Changed arguments @owner @channel");
-  await expect(recipient(page)).toHaveValue("__multiple__");
-  await page.getByRole("button", { name: "Send skill" }).click();
-  await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Published");
-  await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(2);
-  expect((await metrics(request, data)).calls.map(call => call.identityId).sort()).toEqual([data.selectedId, data.observerId].sort());
-  const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
-  expect(trigger.to.sort()).toEqual([data.selectedId, data.observerId].sort());
-  await expect.poll(async () => (await messages(request, data.parentId)).filter(row => row.replyTo === trigger.id).length).toBe(2);
-  const screenshot = testInfo.outputPath(`two-recipients-${entry}-published.png`);
-  await page.screenshot({ path: screenshot });
-  await testInfo.attach(`two-recipients-${entry}-published`, { path: screenshot, contentType: "image/png" });
-});
+for (const entry of ["slash", "alias"] as const) {
+  test(`multiple mention recipients survive ${entry} skill attachment, context edits and reload, then each receive one turn`, async ({ page, request }) => {
+    const data = await setup(page, request);
+    await message(page).fill("@selected @observer Initial task");
+    await message(page).fill(`${entry === "slash" ? "/Workspace" : "/skills Workspace"}\n@selected @observer Initial task`);
+    await page.getByRole("listbox", { name: "Skill suggestions" }).getByRole("option").click();
+    await message(page).fill("@selected @observer Changed context\n> @owner @channel\n`@owner`");
+    await page.reload();
+    await expect(availability(page)).toHaveText("Ready");
+    await page.getByRole("button", { name: "Send skill" }).click();
+    await published(page);
+    await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(2);
+    expect((await metrics(request, data)).calls.map(call => call.identityId).sort()).toEqual([data.selectedId, data.observerId].sort());
+    const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
+    expect(trigger.to.sort()).toEqual([data.selectedId, data.observerId].sort());
+    await expect.poll(async () => (await messages(request, data.parentId)).filter(row => row.replyTo === trigger.id).length).toBe(2);
+  });
 }
 
 test("inspection preserves a newer draft and never republishes the original", async ({ page, request }) => {
@@ -243,49 +407,47 @@ test("inspection preserves a newer draft and never republishes the original", as
     else { inspected = true; await held; await route.fulfill({ response }); }
   });
   try {
-    await pick(page, "Channel"); await recipient(page).selectOption(data.selectedId); await message(page).fill("Original arguments");
+    await pick(page, "Channel");
+    await message(page).fill("@selected Original arguments");
     await page.getByRole("button", { name: "Send skill" }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Submission unconfirmed" })).toBeVisible();
     await page.getByRole("button", { name: "Inspect receipt" }).click();
     await expect.poll(() => inspected).toBe(true);
-    await message(page).fill("A newer draft @owner");
+    await message(page).fill("@observer A newer draft");
     release();
-    await expect(page.getByLabel("Skill receipt").getByRole("status")).toHaveText("Published");
-    await expect(message(page)).toHaveValue("A newer draft @owner");
-    await expect(recipient(page)).toHaveValue(data.selectedId);
+    await published(page);
+    await expect(message(page)).toHaveValue("@observer A newer draft");
     expect((await metrics(request, data)).calls).toHaveLength(1);
+    await expect(page.getByRole("button", { name: "Send skill" })).toBeEnabled();
   } finally { release(); }
 });
 
-test("ordinary composer retains main selection rules after leaving skill mode", async ({ page, request }) => {
+test("ordinary composer retains selection rules after canceled picker or removed skill", async ({ page, request }) => {
   const data = await setup(page, request);
   await message(page).fill("@selected Initial draft");
   await message(page).fill("/skills\n@selected Initial draft");
-  await page.getByRole("dialog", { name: "Skills", exact: true }).press("Escape");
+  await message(page).press("Escape");
   await message(page).fill("Ordinary after canceled picker");
-  await expect(recipient(page)).toHaveCount(0);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(message(page)).toHaveValue("");
   await pick(page, "Channel");
-  await recipient(page).selectOption(data.selectedId);
-  await message(page).fill("Ordinary after removed skill");
-  await page.getByRole("button", { name: "Remove skill" }).click();
-  await expect(recipient(page)).toHaveCount(0);
+  await message(page).fill("@selected Ordinary after removed skill");
+  await removeSkill(page);
+  await expect(page.locator(".composer select")).toHaveCount(0);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(message(page)).toHaveValue("");
-  const ordinary = (await messages(request, data.parentId)).filter(row => row.body.startsWith("Ordinary after"));
-  expect(ordinary).toHaveLength(2);
-  expect(ordinary[0]!.to).toEqual([]);
-  expect(ordinary[1]!.to).toEqual([data.selectedId]);
-  for (const row of ordinary) expect(row.authoredInvocationId).toBeUndefined();
+  const history = await messages(request, data.parentId);
+  expect(history.find(row => row.body === "Ordinary after canceled picker")!.to).toEqual([]);
+  expect(history.find(row => row.body === "@selected Ordinary after removed skill")!.to).toEqual([data.selectedId]);
 });
 
-test("publication-off host remains read-only in the picker and never falls back to ordinary send", async ({ page, request }) => {
+test("publication-off host remains read-only and never falls back to ordinary send", async ({ page, request }) => {
   const data = await setup(page, request, false);
-  await pick(page, "Channel"); await recipient(page).selectOption(data.selectedId); await message(page).fill("Disabled invocation");
-  await expect(page.getByLabel("Selected skill").getByRole("status")).toHaveText("Unavailable");
+  await pick(page, "Channel");
+  await message(page).fill("@selected Disabled invocation");
+  await expect(availability(page)).toHaveText("Unavailable");
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await message(page).press("Enter");
-  expect((await messages(request, data.parentId)).filter(message => message.authoredInvocationId)).toHaveLength(0);
+  expect((await messages(request, data.parentId)).filter(row => row.authoredInvocationId)).toHaveLength(0);
   expect((await metrics(request, data)).calls).toHaveLength(0);
 });

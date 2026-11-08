@@ -2,6 +2,7 @@ import type { ConversationMessage, Participant } from "@minu/channels-core/types
 import { hasChannelMentionCollision, mentionHandles } from "@minu/channels-core/mentions";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ImagePlus, LoaderCircle, RotateCcw, Send, X } from "lucide-react";
+import * as Popover from "@radix-ui/react-popover";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { localControl } from "../lib/api";
 import {
@@ -20,7 +21,7 @@ import { queryKeys } from "../lib/query-keys";
 import { messageRecipients, readRecipient, readRecipientOverride, recipientStorageKey, writeRecipient, writeRecipientOverride } from "../lib/recipient-selection";
 import { ErrorNotice } from "./ui/error-notice";
 import { SkillPicker } from "./skill-picker";
-import { createSkillRequest, inspectSkillRequest, publishSkillRequest, readSkillChoice, readSkillRequest, skillAvailability, skillsCommand, submitSkillRequest, type SkillChoice, type SkillRequest } from "../lib/skills";
+import { createSkillRequest, inspectSkillRequest, publishSkillRequest, readSkillChoice, readSkillRequest, skillAvailability, skillPickerEntries, skillsCommand, submitSkillRequest, type SkillChoice, type SkillRequest } from "../lib/skills";
 
 interface MentionSuggestion {
   id: string;
@@ -58,6 +59,7 @@ export function ConversationComposer({
 }) {
   const queryClient = useQueryClient();
   const mentionListId = `${conversationId}-mention-suggestions`;
+  const skillListId = `${conversationId}-skill-suggestions`;
   const currentHuman = participants.find((participant) =>
     participant.id === currentHumanIdentityId
     && participant.type === "human"
@@ -74,6 +76,7 @@ export function ConversationComposer({
   const [skill, setSkill] = useState(() => readSkillChoice(localStorage.getItem(skillKey)));
   const [skillRequest, setSkillRequest] = useState(() => readSkillRequest(localStorage.getItem(skillRequestKey), activeAuthorId));
   const [pickerOpen, setPickerOpen] = useState(() => Boolean(skillsCommand(body)));
+  const [selectedSkillSuggestion, setSelectedSkillSuggestion] = useState(0);
   const [skillError, setSkillError] = useState<string>();
   const skillBusy = useRef(false);
   const currentSkillKey = useRef(skillRequestKey);
@@ -104,13 +107,12 @@ export function ConversationComposer({
   const initialFailure = failedSubmission?.input.participantId === activeAuthorId && failedSubmission.input.body === body ? failedSubmission : undefined;
   const [manualTargets, setManualTargets] = useState<string[] | undefined>(() => initialFailure?.input.to
     ?? readRecipientOverride(`${storageKey}.recipients`, body)
-    ?? (skill && skillRequest?.input.arguments === body ? skillRequest.input.to : undefined));
+    ?? (skill && skillRequest?.publication?.status !== "observed" && skillRequest?.input.arguments === body ? skillRequest.input.to : undefined));
   const [replyTo, setReplyTo] = useState<string | undefined>(() => initialFailure?.input.replyTo);
   const selectedRecipient = storedRecipient ?? defaultRecipientId ?? "";
-  const skillCommand = skillsCommand(body);
+  const skillCommand = skill ? undefined : skillsCommand(body);
   const skillMode = Boolean(skill || skillCommand);
-  const recipients = messageRecipients(body, participants, selectedRecipient,
-    skillMode ? manualTargets ?? (selectedRecipient ? [selectedRecipient] : []) : manualTargets);
+  const recipients = messageRecipients(body, participants, selectedRecipient, manualTargets);
   const targets = recipients.targets;
   const skillDraft = useRef({ actor: activeAuthorId, body, skill, targets });
   skillDraft.current = { actor: activeAuthorId, body, skill, targets };
@@ -119,6 +121,10 @@ export function ConversationComposer({
     enabled: authorReady && (pickerOpen || Boolean(skill)), retry: false, gcTime: 0, refetchInterval: 5_000 });
   const capabilities = useQuery({ queryKey: queryKeys.localCapabilities(), queryFn: () => localControl.capabilities(), enabled: authorReady, retry: false });
   const currentCatalog = catalog.isError ? undefined : catalog.data;
+  const skillEntries = useMemo(() => skillPickerEntries(currentCatalog, skillCommand?.query ?? ""), [currentCatalog, skillCommand?.query]);
+  const selectableSkills = skillEntries.flatMap(entry => "skill" in entry ? [entry.skill] : []);
+  const activeSkillIndex = Math.min(selectedSkillSuggestion, Math.max(0, selectableSkills.length - 1));
+  useEffect(() => setSelectedSkillSuggestion(0), [skillCommand?.query, selectableSkills.length]);
   const skillStatus = skill ? skillAvailability(skill, targets, participants, currentCatalog, agents) : "Unavailable";
   const publicationEnabled = capabilities.data?.features.authoredSkillPublication === true;
   const recipientInvalid = recipients.invalid.length > 0 || targets.some((id) => id !== "@conversation"
@@ -128,9 +134,6 @@ export function ConversationComposer({
     writeRecipient(recipientKey, id);
     setStoredRecipient(id);
   };
-  const targetLabel = (id: string) => id === "@conversation"
-    ? hasChannelMentionCollision(participants) ? "@conversation" : "@channel"
-    : `@${participants.find((participant) => participant.id === id)?.handle ?? id}`;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
   useEffect(() => {
@@ -138,6 +141,17 @@ export function ConversationComposer({
     else localStorage.removeItem(`${storageKey}.submission`);
   }, [failedSubmission, storageKey]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const skillChipRef = useRef<HTMLDivElement>(null);
+  const [skillChipWidth, setSkillChipWidth] = useState(0);
+  useLayoutEffect(() => {
+    const chip = skillChipRef.current;
+    if (!chip) { setSkillChipWidth(0); return; }
+    const measure = () => setSkillChipWidth(chip.getBoundingClientRect().width);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(chip);
+    return () => observer.disconnect();
+  }, [skill, authorReady]);
   const composingRef = useRef(false);
   const pendingCursorRef = useRef<number | undefined>(undefined);
   const draftRef = useRef({ authorId: activeAuthorId, body });
@@ -191,7 +205,7 @@ export function ConversationComposer({
   const byteCountTone = bodyTooLarge ? "text-[var(--danger)]"
     : bodyBytes >= MAX_MESSAGE_BYTES * 0.9 ? "text-[var(--warning)]"
       : "text-[var(--muted)]";
-  const mentionQuery = skillMode ? undefined : mentionQueryAt(body, cursor);
+  const mentionQuery = skillCommand ? undefined : mentionQueryAt(body, cursor);
   const mentionIdentity = mentionQuery ? `${mentionQuery.start}:${mentionQuery.end}:${mentionQuery.value}` : undefined;
   const suggestions = useMemo<MentionSuggestion[]>(() => {
     if (!mentionQuery || dismissedMention === mentionIdentity) return [];
@@ -258,7 +272,8 @@ export function ConversationComposer({
     setSkillError(undefined);
     if (request.publication?.status === "observed" && requestMatchesDraft(request)) {
       setBody(""); setCursor(0);
-      writeRecipientOverride(`${storageKey}.recipients`, "", request.input.to);
+      setManualTargets(undefined);
+      writeRecipientOverride(`${storageKey}.recipients`, "");
       localStorage.removeItem(draftStorageKey(workspaceId, conversationId, request.actorIdentityId));
     }
     void queryClient.invalidateQueries({ queryKey: queryKeys.conversationMessages(conversationId) });
@@ -279,7 +294,8 @@ export function ConversationComposer({
     onError: (_error, variables) => { if (currentSkillKey.current === variables.key) setSkillError("Receipt unavailable"); },
   });
   const selectSkill = (choice: SkillChoice) => {
-    const nextBody = skillsCommand(body)?.arguments ?? body;
+    const nextBody = skillCommand?.arguments ?? body;
+    setPickerOpen(false);
     setSkill(choice); localStorage.setItem(skillKey, JSON.stringify(choice));
     setBody(nextBody); setCursor(nextBody.length);
     setManualTargets([...targets]); writeRecipientOverride(`${storageKey}.recipients`, nextBody, targets);
@@ -288,6 +304,14 @@ export function ConversationComposer({
 
 
   const canAttach = Boolean(activeAuthorId) && authorReady && !readOnlyReason && !mutation.isPending && !skillMutation.isPending && !inspectSkill.isPending;
+  const removeSkill = () => {
+    if (!canAttach) return;
+    setSkill(undefined); localStorage.removeItem(skillKey);
+    // Removing an attachment must not let argument mentions change delivery targets.
+    setManualTargets([...targets]); writeRecipientOverride(`${storageKey}.recipients`, body, targets);
+    textareaRef.current?.focus();
+  };
+  const showSkillPicker = pickerOpen && Boolean(skillCommand) && authorReady && canAttach;
   const unresolvedSkill = Boolean(skillRequest && skillRequest.publication?.status !== "observed");
   const canSubmit = (Boolean(skill) || Boolean(body.trim()) || imageDraft.ids.length > 0) && imageDraft.ready && !bodyTooLarge && !recipientInvalid && canAttach
     && !skillCommand && (!skill || (skillStatus === "Ready" && publicationEnabled && !unresolvedSkill && !imageDraft.ids.length && !replyTo));
@@ -297,6 +321,7 @@ export function ConversationComposer({
     if (!canSubmit) return;
     if (skill) {
       if (skillBusy.current) return;
+      if (targets.length === 1 && targets[0] !== "@conversation") persistRecipient(targets[0]!);
       const request = createSkillRequest(activeAuthorId, skill, body, targets);
       persistSkillRequest(request, skillRequestKey);
       skillBusy.current = true; setSkillError(undefined);
@@ -319,12 +344,16 @@ export function ConversationComposer({
     setBody(nextBody);
     setCursor(nextCursor);
     setDismissedMention(undefined);
-    const nextCommand = skillsCommand(nextBody);
+    const nextCommand = skill ? undefined : skillsCommand(nextBody);
     if (nextCommand) setPickerOpen(true);
     const enteringSkillMode = !skillMode && Boolean(nextCommand);
     const leavingSkillCommand = !skill && Boolean(skillCommand) && !nextCommand;
-    const override = leavingSkillCommand ? undefined : enteringSkillMode ? [...targets]
-      : skillMode || mentionHandles(nextBody).join("\0") === mentionHandles(body).join("\0") ? manualTargets : undefined;
+    const nextMentions = mentionHandles(nextBody);
+    const sameMentions = nextMentions.join("\0") === mentionHandles(body).join("\0");
+    // A query alone preserves attachment intent; new targeting mentions take precedence.
+    const override = leavingSkillCommand ? undefined
+      : enteringSkillMode && (!nextMentions.length || sameMentions) ? [...targets]
+      : sameMentions ? manualTargets : undefined;
     if (override !== manualTargets) setManualTargets(override);
     if (override !== manualTargets || skillMode) writeRecipientOverride(`${storageKey}.recipients`, nextBody, override);
     const nextTargets = messageRecipients(nextBody, participants, selectedRecipient, override).targets;
@@ -357,19 +386,10 @@ export function ConversationComposer({
   return (
     <div className="bg-[var(--bg)] px-3 pt-3 pb-1 sm:px-6">
       <div className="relative mx-auto max-w-5xl">
-        <SkillPicker open={pickerOpen && authorReady} onOpenChange={setPickerOpen} initialQuery={skillCommand?.query ?? ""}
-          catalog={currentCatalog} loading={catalog.isPending} error={catalog.isError} targets={targets} participants={participants} agents={agents} onSelect={selectSkill} />
-        {skill && authorReady ? <div aria-label="Selected skill" className="mb-2 flex items-center gap-2 text-xs">
-          <span>{skill.name} · {skill.source === "channel" ? "Channel" : "Workspace"} · r{skill.revision}</span>
-          <span role="status">{!publicationEnabled ? "Unavailable" : imageDraft.ids.length || replyTo ? "Unsupported draft" : skillStatus}</span>
-          <button type="button" className="icon-button" aria-label="Remove skill" disabled={!canAttach}
-            onClick={() => {
-              setSkill(undefined); localStorage.removeItem(skillKey);
-              setManualTargets(undefined); writeRecipientOverride(`${storageKey}.recipients`, body);
-            }}><X className="h-3 w-3" /></button>
-        </div> : null}
-        {skillRequest && authorReady ? <div aria-label="Skill receipt" className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-          <span role="status">{skillRequest.publication?.status === "observed" ? "Published" : skillRequest.publication?.status === "not_observed" ? "Unresolved"
+        {showSkillPicker ? <SkillPicker id={skillListId} entries={skillEntries} selectedIndex={activeSkillIndex} onHighlight={setSelectedSkillSuggestion}
+          catalog={currentCatalog} loading={catalog.isPending} error={catalog.isError} targets={targets} participants={participants} agents={agents} onSelect={selectSkill} /> : null}
+        {unresolvedSkill && authorReady && !skillMutation.isPending && skillRequest ? <div aria-label="Skill receipt" className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <span role="status">{skillRequest.publication?.status === "not_observed" ? "Unresolved"
             : skillRequest.publication?.status === "not_linked" ? "Not linked" : skillRequest.accepted ? "Accepted" : "Unconfirmed"}</span>
           <button className="button-secondary" type="button" disabled={!canAttach}
             onClick={() => inspectSkill.mutate({ request: skillRequest, key: skillRequestKey })}>Inspect receipt</button>
@@ -435,8 +455,25 @@ export function ConversationComposer({
                 className="absolute top-0 right-0 rounded bg-[var(--panel)] p-1" onClick={() => imageDraft.remove(image.key)}><X className="h-3 w-3" /></button>
             </li>)}
           </ul> : null}
+          <div className="relative overflow-hidden">
+          {skill && authorReady ? <div ref={skillChipRef} aria-label="Selected skill" className="absolute top-2.5 left-3 z-10 flex h-5 max-w-[50%] items-center rounded border border-[var(--border)] bg-[var(--panel)] px-1.5 text-xs">
+            <Popover.Root>
+              <Popover.Trigger asChild><button type="button" aria-label={`Skill details for ${skill.name}`} className="min-w-0 truncate text-left focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
+                {skill.name}
+              </button></Popover.Trigger>
+              <Popover.Portal><Popover.Content side="top" align="start" sideOffset={8} collisionPadding={12} className="z-30 max-w-sm rounded-md border border-[var(--border)] bg-[var(--panel-elevated)] p-3 text-sm shadow-xl">
+                <div className="font-medium">{skill.name}</div>
+                <p className="mt-1 text-[var(--muted)]">{skill.description}</p>
+                <div className="mt-2 text-xs">{skill.source === "channel" ? "Channel" : "Workspace"} · r{skill.revision}</div>
+                <button type="button" className="button-secondary mt-2" aria-label="Remove skill" disabled={!canAttach} onClick={removeSkill}>Remove skill</button>
+              </Popover.Content></Popover.Portal>
+            </Popover.Root>
+          </div> : null}
           <textarea
             ref={textareaRef}
+            onScroll={(event) => {
+              if (skillChipRef.current) skillChipRef.current.style.top = `${10 - event.currentTarget.scrollTop}px`;
+            }}
             value={body}
             onChange={(event) => updateBody(event.target.value, event.target.selectionStart)}
             onSelect={(event) => {
@@ -450,6 +487,25 @@ export function ConversationComposer({
             }}
             onKeyDown={(event) => {
               if (composingRef.current || event.nativeEvent.isComposing || mutation.isPending) return;
+              if (event.key === "Backspace" && skill && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
+                event.preventDefault();
+                removeSkill();
+                return;
+              }
+              if (showSkillPicker) {
+                if ((event.key === "ArrowDown" || event.key === "ArrowUp") && selectableSkills.length) {
+                  event.preventDefault();
+                  const direction = event.key === "ArrowDown" ? 1 : -1;
+                  setSelectedSkillSuggestion((activeSkillIndex + direction + selectableSkills.length) % selectableSkills.length);
+                  return;
+                }
+                if ((event.key === "Tab" || (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.shiftKey)) && selectableSkills[activeSkillIndex]) {
+                  event.preventDefault();
+                  selectSkill(selectableSkills[activeSkillIndex]!);
+                  return;
+                }
+                if (event.key === "Escape") { event.preventDefault(); setPickerOpen(false); return; }
+              }
               if (suggestions.length && mentionQuery) {
                 if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                   event.preventDefault();
@@ -478,12 +534,13 @@ export function ConversationComposer({
                 submit();
               }
             }}
+            style={{ textIndent: skill && authorReady ? skillChipWidth + 8 : 0 }}
             rows={2}
             aria-label={thread ? "Thread reply" : "Conversation message"}
             aria-autocomplete="list"
-            aria-controls={suggestions.length ? mentionListId : undefined}
-            aria-expanded={suggestions.length > 0}
-            aria-activedescendant={suggestions.length ? `${mentionListId}-${activeSuggestionIndex}` : undefined}
+            aria-controls={showSkillPicker ? skillListId : suggestions.length ? mentionListId : undefined}
+            aria-expanded={showSkillPicker || suggestions.length > 0}
+            aria-activedescendant={showSkillPicker && selectableSkills.length ? `${skillListId}-${activeSkillIndex}` : suggestions.length ? `${mentionListId}-${activeSuggestionIndex}` : undefined}
             role="combobox"
             placeholder={readOnlyReason ?? (authorReady
               ? thread ? "Reply in thread" : "Message #Channel"
@@ -497,37 +554,14 @@ export function ConversationComposer({
             aria-busy={mutation.isPending || skillMutation.isPending}
             className="block w-full resize-none overflow-y-hidden bg-transparent px-3 py-2.5 text-sm leading-5 outline-none placeholder:text-[var(--muted)]"
           />
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-3 px-2.5 py-2">
-            {skillMode && authorReady ? <select
-              aria-label="Skill recipients"
-              className="button-secondary min-w-0 max-w-64"
-              disabled={!canAttach}
-              value={recipients.invalid.length ? "__invalid__" : targets.length > 1 ? "__multiple__" : targets[0] ?? ""}
-              onChange={(event) => {
-                const id = event.target.value;
-                if (id !== "@conversation") persistRecipient(id);
-                setManualTargets(id ? [id] : []);
-                writeRecipientOverride(`${storageKey}.recipients`, body, id ? [id] : []);
-                setReplyTo(undefined);
-                setFailedSubmission(undefined);
-                mutation.reset();
-                textareaRef.current?.focus();
-              }}
-            >
-              <option value="">No recipient</option>
-              <option value="@conversation">{targetLabel("@conversation")}</option>
-              {participants.filter(({ status }) => status !== "disabled").map(({ id }) => <option key={id} value={id}>{targetLabel(id)}</option>)}
-              {targets.length > 1 ? <option value="__multiple__" disabled>{targets.map(targetLabel).join(", ")}</option> : null}
-              {recipients.invalid.length ? <option value="__invalid__" disabled>{recipients.invalid.map((handle) => `@${handle}`).join(", ")}</option> : null}
-              {targets.length === 1 && targets[0] !== "@conversation" && !participants.some(({ id, status }) => id === targets[0] && status !== "disabled")
-                ? <option value={targets[0]} disabled>{targetLabel(targets[0]!)}</option> : null}
-            </select> : null}
             <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden aria-label="Choose images"
               onChange={(event) => { imageDraft.add(Array.from(event.target.files ?? [])); event.target.value = ""; }} disabled={!canAttach} />
             <button type="button" className="button-secondary" aria-label="Attach images" title="Attach images" disabled={!canAttach}
               onClick={() => fileInputRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /></button>
             <div className="flex items-center gap-2">
-              <button type="button" className="button-secondary" disabled={!canAttach} onClick={() => setPickerOpen(true)}>Skills</button>
+              {skill && authorReady ? <span role="status" aria-label="Skill availability" className="text-xs">{!publicationEnabled ? "Unavailable" : imageDraft.ids.length || replyTo ? "Unsupported draft" : skillStatus}</span> : null}
               {showByteCount ? (
                 <span
                   className={`font-mono text-[10px] ${byteCountTone}`}

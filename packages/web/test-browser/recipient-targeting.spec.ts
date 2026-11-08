@@ -61,9 +61,9 @@ test("composer keeps attachment left and Send right without a recipient control 
   const composer = page.locator(".composer").filter({ has: f.main });
   async function checkLayout(box: typeof composer) {
     await expect(box.locator("select")).toHaveCount(0);
-    await expect(box.getByRole("button")).toHaveCount(3);
-    await expect(box.getByRole("button", { name: "Skills", exact: true })).toBeVisible();
-    await expect(box).toHaveText("Skills");
+    await expect(box.getByRole("button")).toHaveCount(2);
+    await expect(box.getByRole("button", { name: "Skills", exact: true })).toHaveCount(0);
+    await expect(box).toHaveText("");
     const bounds = await box.boundingBox();
     const attachment = await box.getByRole("button", { name: "Attach images", exact: true }).boundingBox();
     const send = await box.getByRole("button", { name: "Send message", exact: true }).boundingBox();

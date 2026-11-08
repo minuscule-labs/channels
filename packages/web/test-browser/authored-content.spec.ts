@@ -69,9 +69,9 @@ test("workspace/channel editors publish separate drafts, render inherited defaul
   const skills = channelDialog.getByRole("region", { name: "Authored skills", exact: true });
   await skills.getByRole("button", { name: "New skill", exact: true }).click();
   await expect(skills.getByLabel("Skill scope", { exact: true })).toHaveValue("channel");
-  await skills.getByLabel("Skill name", { exact: true }).fill("Release checklist");
-  await skills.getByLabel("When to use", { exact: true }).fill("Before a release");
-  await skills.getByLabel("Procedure", { exact: true }).fill("Check tests and record the release decision.");
+  await skills.getByLabel("Name", { exact: true }).fill("Release checklist");
+  await skills.getByLabel("Description", { exact: true }).fill("Before a release");
+  await skills.getByLabel("Instructions", { exact: true }).fill("Check tests and record the release decision.");
   await skills.getByRole("button", { name: "Save draft", exact: true }).click();
   await skills.getByRole("button", { name: "Publish", exact: true }).click();
   await expect(skills.getByText("Published r1", { exact: true })).toBeVisible();

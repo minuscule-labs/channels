@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Participant } from "@minu/channels-core/types";
 import type { LocalAuthoredSkillInvocationReceipt, LocalConversationAuthoredSkillCatalog } from "@minu/channels-control/contracts";
-import { createSkillRequest, inspectSkillRequest, publishSkillRequest, readSkillChoice, readSkillRequest, skillAvailability, skillsCommand, submitSkillRequest, type SkillApi, type SkillRequest } from "../src/lib/skills";
+import { createSkillRequest, inspectSkillRequest, publishSkillRequest, readSkillChoice, readSkillRequest, skillAvailability, skillPickerEntries, skillsCommand, submitSkillRequest, type SkillApi, type SkillRequest } from "../src/lib/skills";
 import { draftStorageKey } from "../src/lib/composer";
 
 const choice = { documentId: "channel-doc", source: "channel" as const, revision: 1, contentHash: "a".repeat(64), name: "Decision", description: "Published" };
@@ -29,11 +29,22 @@ function api(q: SkillRequest) {
 }
 
 describe("explicit skill selection", () => {
-  it("reserves only /skills and preserves separate arguments", () => {
+  it("opens skills from a leading slash, retains the /skills alias and preserves separate arguments", () => {
+    expect(skillsCommand("/decision\nArguments\nmore")).toEqual({ query: "decision", arguments: "Arguments\nmore" });
     expect(skillsCommand("/skills decision\nArguments\nmore")).toEqual({ query: "decision", arguments: "Arguments\nmore" });
-    expect(skillsCommand("/skills")).toEqual({ query: "", arguments: "" });
-    expect(skillsCommand("/skills ")).toEqual({ query: "", arguments: "" });
-    for (const body of ["/skill", "/skillsXYZ", "Please /skills", "`/skills`"]) expect(skillsCommand(body)).toBeUndefined();
+    for (const body of ["/", "/skills", "/skills "]) expect(skillsCommand(body)).toEqual({ query: "", arguments: "" });
+    expect(skillsCommand("/skillsXYZ")).toEqual({ query: "skillsXYZ", arguments: "" });
+    for (const body of ["$decision", "Please /skills", "`/skills`", "https://example.com"]) expect(skillsCommand(body)).toBeUndefined();
+  });
+  it("filters published metadata and retains unsupported Harness entries without exposing bodies", () => {
+    const data = catalog();
+    expect(skillPickerEntries(data, "channel")).toEqual([{ skill: choice }]);
+    expect(skillPickerEntries(data, "published")).toEqual([{ skill: choice }]);
+    expect(skillPickerEntries(data, "review")).toEqual([
+      { identityId: "a", commandId: "skill:review" }, { identityId: "b", commandId: "skill:review" },
+    ]);
+    expect(skillPickerEntries(data, "missing")).toEqual([]);
+    expect(skillPickerEntries(undefined, "")).toEqual([]);
   });
   it("keeps immutable IDs, revision and explicit recipients instead of interpreting task mentions", () => {
     const targets = ["b", "a"];

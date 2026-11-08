@@ -13,8 +13,21 @@ export interface SkillRequest {
 }
 export type SkillApi = Pick<LocalControlClient, "acceptAuthoredSkillInvocation" | "publishAuthoredSkillInvocation" | "getAuthoredSkillInvocation" | "getAuthoredSkillInvocationPublication">;
 export function skillsCommand(body: string): { query: string; arguments: string } | undefined {
-  const match = /^\/skills(?:[ \t]+([^\n]*))?(?:\n([\s\S]*))?$/.exec(body);
-  return match ? { query: match[1]?.trim() ?? "", arguments: match[2] ?? "" } : undefined;
+  const match = /^\/([^\n]*)(?:\n([\s\S]*))?$/.exec(body);
+  if (!match) return undefined;
+  // Retain /skills as an alias; / and /query open the same skill-only popup.
+  const query = match[1]!.replace(/^skills(?:[ \t]+|$)/, "").trim();
+  return { query, arguments: match[2] ?? "" };
+}
+export type SkillPickerEntry = { skill: SkillChoice } | { identityId: string; commandId: string };
+export function skillPickerEntries(catalog: LocalConversationAuthoredSkillCatalog | undefined, query: string): SkillPickerEntry[] {
+  const search = query.trim().toLowerCase();
+  return [
+    ...(catalog?.skills.filter(skill => `${skill.name} ${skill.description} ${skill.source}`.toLowerCase().includes(search))
+      .map(skill => ({ skill })) ?? []),
+    ...(catalog?.agents?.flatMap(agent => agent.harness.map(commandId => ({ identityId: agent.identityId, commandId })))
+      .filter(skill => `harness ${skill.commandId}`.toLowerCase().includes(search)) ?? []),
+  ];
 }
 export function readSkillChoice(value: string | null): SkillChoice | undefined {
   try {

@@ -73,11 +73,11 @@ function DocumentEditor({ scope, document, kind, conversationId, onSaved }: {
       {base?.state === "archived" ? <span>Archived</span> : null}
     </div>
     {kind === "skill" ? <>
-      <label className="block text-xs font-medium">Skill name<input className="settings-input mt-1" value={name} onChange={event => setName(event.target.value)} disabled={!editable || mutation.isPending} /></label>
-      <label className="block text-xs font-medium">When to use<input className="settings-input mt-1" value={description} onChange={event => setDescription(event.target.value)} disabled={!editable || mutation.isPending} /></label>
+      <label className="block text-xs font-medium">Name<input className="settings-input mt-1" value={name} onChange={event => setName(event.target.value)} disabled={!editable || mutation.isPending} /></label>
+      <label className="block text-xs font-medium">Description<input className="settings-input mt-1" value={description} onChange={event => setDescription(event.target.value)} disabled={!editable || mutation.isPending} /></label>
     </> : null}
-    <label className="block text-xs font-medium">{kind === "instructions" ? "Instructions" : "Procedure"}
-      <textarea aria-label={kind === "instructions" ? "Instructions" : "Procedure"} className="settings-input mt-1 min-h-36 font-mono" value={content} onChange={event => setContent(event.target.value)} disabled={!editable || mutation.isPending} />
+    <label className="block text-xs font-medium">Instructions
+      <textarea aria-label="Instructions" className="settings-input mt-1 min-h-36 font-mono" value={content} onChange={event => setContent(event.target.value)} disabled={!editable || mutation.isPending} />
     </label>
     <details className="text-xs"><summary className="cursor-pointer">Preview</summary><div className="message-markdown mt-2"><MessageMarkdown body={content} /></div></details>
     {mutation.error ? <ErrorNotice onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
