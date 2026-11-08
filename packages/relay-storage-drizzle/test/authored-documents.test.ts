@@ -143,7 +143,7 @@ test("SQLite publication rollback and reopen preserve head/history consistency",
   }
 });
 
-test("authored-content migration preserves existing private Workspace, agent configuration and conversation presets", async () => {
+test("authored-content migration preserves existing private Workspace, agent configuration, presets and conversation settings", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-authored-migration-"));
   const migrationsFolder = join(directory, "old-migrations");
   const url = localRelayLibSqlUrl(join(directory, "relay.db"));
@@ -152,7 +152,7 @@ test("authored-content migration preserves existing private Workspace, agent con
     await cp(defaultRelayMigrationsFolder(), migrationsFolder, { recursive: true });
     const journalPath = join(migrationsFolder, "meta", "_journal.json");
     const journal = JSON.parse(await readFile(journalPath, "utf8")) as { entries: Array<{ idx: number }> };
-    journal.entries = journal.entries.filter((entry) => entry.idx <= 15);
+    journal.entries = journal.entries.filter((entry) => entry.idx <= 17);
     await writeFile(journalPath, JSON.stringify(journal));
     store = await DrizzleLibSqlRelayStorage.open({ url, migrationsFolder });
     await store.putWorkspaceConfig({ workspaceId: "workspace-1", rootUri: "file:///private/source", notesFolderId: "notes-base", createdAt: timestamp, updatedAt: timestamp });
@@ -161,6 +161,8 @@ test("authored-content migration preserves existing private Workspace, agent con
     const setup = { workspaceId: "workspace-1", conversationId: "channel-1", actorIdentityId: "owner", name: "Existing setup", participants: [] };
     assert.equal(await store.putConversationPreset(preset, null), true);
     await store.putConversationCreationSetup(setup);
+    const settings = { workspaceId: "workspace-1", conversationId: "channel-1", revision: 1, participants: [], guidance: "Existing guidance", turnTimeoutMs: 60_000 };
+    assert.equal(await store.putConversationSettings(settings, 0), true);
     const workspace = await store.getWorkspaceConfig("workspace-1");
     const agent = await store.getAgentConfig("agent-config");
     await store.close();
@@ -169,6 +171,7 @@ test("authored-content migration preserves existing private Workspace, agent con
     assert.deepEqual(await store.getAgentConfig("agent-config"), agent);
     assert.deepEqual(await store.listConversationPresets("workspace-1"), [preset]);
     assert.deepEqual(await store.getConversationCreationSetup("workspace-1", "channel-1"), setup);
+    assert.deepEqual(await store.getConversationSettings("workspace-1", "channel-1"), settings);
     assert.deepEqual(await store.listAuthoredDocuments("workspace-1"), []);
     assert.ok(await store.createAuthoredDocument(draft()));
   } finally {

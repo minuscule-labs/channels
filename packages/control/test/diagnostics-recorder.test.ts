@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Worker } from "node:worker_threads";
+import { createDiagnosticProcess, type DiagnosticWorker } from "../src/diagnostics-process.ts";
 import { DiagnosticJournal } from "@minu/channels-relay-storage-drizzle";
 import type { DiagnosticRecord } from "@minu/channels-relay";
 import { DiagnosticRecorder } from "../src/diagnostics-recorder.ts";
@@ -34,7 +34,7 @@ class FakeWorker extends EventEmitter {
 function fake(options: { startupTimeoutMs?: number; ioTimeoutMs?: number; now?: () => Date; monotonicNow?: () => number } = {}) {
   const worker = new FakeWorker();
   const recorder = new DiagnosticRecorder({ path: "/unused-fixture-path", ...options, workerFactory: (_url, config) => {
-    worker.epoch = config.workerData.epoch; return worker as unknown as Worker;
+    worker.epoch = config.workerData.epoch; return worker as DiagnosticWorker;
   } });
   return { worker, recorder };
 }
@@ -209,7 +209,7 @@ test("real worker has exited before its journal is immediately reopened after cl
   const directory = await mkdtemp(join(tmpdir(), "channels-recorder-exit-"));
   let exited = false;
   const recorder = new DiagnosticRecorder({ path: join(directory, "journal.db"), workerFactory: (url, options) => {
-    const worker = new Worker(url, options);
+    const worker = createDiagnosticProcess(url, options);
     worker.once("exit", () => { exited = true; });
     return worker;
   } });

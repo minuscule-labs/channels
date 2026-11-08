@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, link, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, open, readFile, rm, stat, symlink, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient } from "@libsql/client";
@@ -273,6 +273,74 @@ test("an accidental authoritative database path is rejected without migration or
     await assert.rejects(DiagnosticJournal.open(path, "epoch-b"), /Unsupported diagnostic schema/);
     assert.deepEqual(await readFile(path), before);
   } finally { await f.close(); }
+});
+
+for (const suffix of ["-wal", "-shm", "-journal"]) {
+  for (const race of ["removed", "symlink-replacement", "hardlink-replacement", "unsafe-removed"] as const) {
+    test(`optional diagnostic ${suffix} ${race} between open and descriptor stat`, async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "channels-diagnostic-sidecar-race-"));
+      const path = join(directory, "journal.db");
+      const sidecar = `${path}${suffix}`;
+      const target = join(directory, "untouched.db");
+      await writeFile(target, "preserve authority", { mode: 0o600 });
+      await writeFile(sidecar, "", { mode: 0o600 });
+      if (race === "unsafe-removed") await chmod(sidecar, 0o644);
+      const handle = await open(sidecar, "r");
+      const expected = await handle.stat();
+      const prototype = Object.getPrototypeOf(handle) as FileHandle;
+      const originalStat = prototype.stat;
+      await handle.close();
+      let unlinked = false;
+      t.mock.method(prototype, "stat", async function (this: FileHandle) {
+        const before = await originalStat.call(this);
+        if (!unlinked && before.ino === expected.ino && before.dev === expected.dev) {
+          unlinked = true;
+          await unlink(sidecar);
+          if (race === "symlink-replacement") await symlink(target, sidecar);
+          if (race === "hardlink-replacement") await link(target, sidecar);
+        }
+        return originalStat.call(this);
+      });
+      let journal: DiagnosticJournal | undefined;
+      try {
+        if (race === "removed") journal = await DiagnosticJournal.open(path, "epoch-a", now);
+        else await assert.rejects(DiagnosticJournal.open(path, "epoch-a", now), /Unsafe diagnostic file/);
+        assert.equal(unlinked, true, "must exercise unlink after opening the descriptor");
+        assert.equal(await readFile(target, "utf8"), "preserve authority");
+      } finally {
+        t.mock.restoreAll();
+        await journal?.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("a main diagnostic database unlinked before descriptor stat is still rejected", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "channels-diagnostic-main-race-"));
+  const path = join(directory, "journal.db");
+  await writeFile(path, "", { mode: 0o600 });
+  const handle = await open(path, "r");
+  const expected = await handle.stat();
+  const prototype = Object.getPrototypeOf(handle) as FileHandle;
+  const originalStat = prototype.stat;
+  await handle.close();
+  let unlinked = false;
+  t.mock.method(prototype, "stat", async function (this: FileHandle) {
+    const before = await originalStat.call(this);
+    if (!unlinked && before.ino === expected.ino && before.dev === expected.dev) {
+      unlinked = true;
+      await unlink(path);
+    }
+    return originalStat.call(this);
+  });
+  try {
+    await assert.rejects(DiagnosticJournal.open(path, "epoch-a", now), /Unsafe diagnostic file/);
+    assert.equal(unlinked, true);
+  } finally {
+    t.mock.restoreAll();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("owner-private journal refuses permissive directories, symlinks, hardlinks, corrupt files and unsupported versions", async () => {

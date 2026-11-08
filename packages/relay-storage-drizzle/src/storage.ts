@@ -1,6 +1,7 @@
 import { createClient, type Client, type ResultSet } from "@libsql/client";
 import { randomUUID } from "node:crypto";
 import type {
+  ConversationSettings,
   ConversationPreset,
   ConversationCreationSetup,
   AuthoredDocument,
@@ -68,6 +69,7 @@ function workspaceConfig(row: typeof schema.localWorkspaceConfigs.$inferSelect):
     ...row,
     notesFolderId: row.notesFolderId ?? undefined,
     idleSleepTimeoutMs: row.idleSleepTimeoutMs ?? undefined,
+    turnTimeoutMs: row.turnTimeoutMs ?? undefined,
     runtimeModelPolicies,
   };
 }
@@ -268,6 +270,24 @@ function authoredDocument(row: typeof schema.authoredDocuments.$inferSelect): Au
 }
 
 export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
+  async getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined> {
+    const table = schema.conversationSettings;
+    const rows = await this.database.select().from(table)
+      .where(and(eq(table.workspaceId, workspaceId), eq(table.conversationId, conversationId)));
+    return rows[0] ? JSON.parse(rows[0].definition) as ConversationSettings : undefined;
+  }
+  async putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean> {
+    const table = schema.conversationSettings;
+    const values = { workspaceId: settings.workspaceId, conversationId: settings.conversationId,
+      revision: settings.revision, definition: JSON.stringify(settings) };
+    const rows = expectedRevision === 0
+      ? await this.database.insert(table).values(values).onConflictDoNothing().returning({ id: table.conversationId })
+      : await this.database.update(table).set(values).where(and(eq(table.workspaceId, settings.workspaceId),
+        eq(table.conversationId, settings.conversationId), eq(table.revision, expectedRevision)))
+        .returning({ id: table.conversationId });
+    return rows.length === 1;
+  }
+
   async listConversationPresets(workspaceId: string): Promise<ConversationPreset[]> {
     const rows = await this.database.select().from(schema.conversationPresets)
       .where(eq(schema.conversationPresets.workspaceId, workspaceId));
@@ -469,6 +489,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     await this.database.insert(schema.localWorkspaceConfigs).values({
       ...config,
       idleSleepTimeoutMs: config.idleSleepTimeoutMs ?? null,
+      turnTimeoutMs: config.turnTimeoutMs ?? null,
       runtimeModelPolicies: config.runtimeModelPolicies
         ? JSON.stringify(config.runtimeModelPolicies)
         : null,
@@ -478,6 +499,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         rootUri: config.rootUri,
         notesFolderId: config.notesFolderId ?? null,
         idleSleepTimeoutMs: config.idleSleepTimeoutMs ?? null,
+        turnTimeoutMs: config.turnTimeoutMs ?? null,
         runtimeModelPolicies: config.runtimeModelPolicies
           ? JSON.stringify(config.runtimeModelPolicies)
           : null,
@@ -507,6 +529,22 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return rows.map(conversationWorkingFolder);
   }
 
+  async initializeConversationWorkingFolders(workspaceId: string, conversationId: string, folders: readonly ConversationWorkingFolder[]): Promise<void> {
+    validateConversationWorkingFolders(workspaceId, conversationId, folders);
+    await this.database.transaction(async (transaction) => {
+      const table = schema.conversationCreationSetups;
+      const scope = and(eq(table.workspaceId, workspaceId), eq(table.conversationId, conversationId));
+      const claimed = await transaction.update(table).set({ workingFoldersPrepared: 1 })
+        .where(and(scope, eq(table.workingFoldersPrepared, 0))).returning({ id: table.conversationId });
+      if (claimed.length === 0) {
+        const snapshot = await transaction.select({ id: table.conversationId }).from(table).where(scope);
+        if (!snapshot.length) throw new Error("Creation snapshot is required before preparing folders");
+        return;
+      }
+      await this.writeWorkingFolders(transaction, workspaceId, conversationId, folders, new Date().toISOString());
+    });
+  }
+
   async replaceConversationWorkingFolders(
     workspaceId: string,
     conversationId: string,
@@ -516,32 +554,35 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     const replacement = folders.map((folder) => ({ ...folder }))
       .sort((left, right) => left.position - right.position);
     const timestamp = new Date().toISOString();
-    await this.database.transaction(async (transaction) => {
-      const existing = await transaction.select({
-        relativePath: schema.conversationWorkingFolders.relativePath,
-        createdAt: schema.conversationWorkingFolders.createdAt,
-      }).from(schema.conversationWorkingFolders).where(and(
-        eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, conversationId),
-      ));
-      const createdAtByPath = new Map(existing.map((row) => [row.relativePath, row.createdAt]));
-      await transaction.delete(schema.conversationWorkingFolders).where(and(
-        eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, conversationId),
-      ));
-      if (replacement.length > 0) {
-        await transaction.insert(schema.conversationWorkingFolders).values(replacement.map((folder) => ({
-          workspaceId,
-          conversationId: conversationId,
-          relativePath: folder.relativePath,
-          position: folder.position,
-          isPrimary: folder.primary ? 1 : 0,
-          createdAt: createdAtByPath.get(folder.relativePath) ?? timestamp,
-          updatedAt: timestamp,
-        })));
-      }
-    });
+    await this.database.transaction((transaction) => this.writeWorkingFolders(transaction, workspaceId, conversationId, replacement, timestamp));
     return replacement;
+  }
+
+  private async writeWorkingFolders(transaction: RelayStorageTransaction, workspaceId: string, conversationId: string,
+    replacement: readonly ConversationWorkingFolder[], timestamp: string): Promise<void> {
+    const existing = await transaction.select({
+      relativePath: schema.conversationWorkingFolders.relativePath,
+      createdAt: schema.conversationWorkingFolders.createdAt,
+    }).from(schema.conversationWorkingFolders).where(and(
+      eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
+      eq(schema.conversationWorkingFolders.conversationId, conversationId),
+    ));
+    const createdAtByPath = new Map(existing.map((row) => [row.relativePath, row.createdAt]));
+    await transaction.delete(schema.conversationWorkingFolders).where(and(
+      eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
+      eq(schema.conversationWorkingFolders.conversationId, conversationId),
+    ));
+    if (replacement.length > 0) {
+      await transaction.insert(schema.conversationWorkingFolders).values(replacement.map((folder) => ({
+        workspaceId,
+        conversationId: conversationId,
+        relativePath: folder.relativePath,
+        position: folder.position,
+        isPrimary: folder.primary ? 1 : 0,
+        createdAt: createdAtByPath.get(folder.relativePath) ?? timestamp,
+        updatedAt: timestamp,
+      })));
+    }
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {

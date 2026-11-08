@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { ConversationClient, createConversationHttpServer, createResourceId } from "@minu/channels-core";
-import { InMemoryRelayBindingStore } from "@minu/channels-relay";
+import { conversationAgentConfiguration, InMemoryRelayBindingStore } from "@minu/channels-relay";
 import { LocalAgentHost, type ManagedRuntimeStartConfig } from "../src/agent-host.ts";
 import { LocalAgentHostConfiguration, LocalConfigurationRequestError } from "../src/configuration.ts";
 import { LocalAgentSessionInspections } from "../src/agent-session-inspection.ts";
@@ -229,4 +231,144 @@ test("Conversation launch defaults and roles reach initial and fresh replacement
     await assert.rejects(host.replaceConversationAgent(scope, f.agent.id, f.owner.id, "fresh"), /disabled/);
   }
   assert.equal(f.starts.length, 5);
+  await f.config.updateConversationSettings(created.id, f.owner.id, { expectedRevision: 0,
+    participants: f.input.participants, guidance: "Updated Conversation guidance", turnTimeoutMs: 60_000 });
+  const inherited = await f.config.getConversationSettings(thread.id, f.owner.id);
+  assert.equal(inherited.settings.conversationId, created.id);
+  assert.equal(inherited.settings.guidance, "Updated Conversation guidance");
+  await assert.rejects(f.config.updateConversationSettings(thread.id, f.owner.id, { ...inherited.settings, expectedRevision: 1 }), { status: 409 });
+  for (const scope of [created.id, thread.id]) await host.replaceConversationAgent(scope, f.agent.id, f.owner.id, "fresh");
+  assert.equal(f.starts.length, 7);
+  for (const start of f.starts.slice(5)) {
+    assert.deepEqual(start.model, { provider: "test", id: "saved" });
+    assert.match(start.appendSystemPrompt!, /Updated Conversation guidance/);
+    assert.doesNotMatch(start.appendSystemPrompt!, /Check in after diagnosis/);
+  }
+  assert.equal((await f.store.getConversationCreationSetup(f.workspace.id, created.id))?.guidance, f.input.guidance);
+});
+
+
+test("creation validates and prepares its folder before publication and preserves it on retries", async (t) => {
+  const f = await fixture(t);
+  const root = await mkdtemp(join(tmpdir(), "channels-create-folder-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "project"));
+  await symlink(tmpdir(), join(root, "outside"));
+  await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { rootUri: root });
+  for (const workingFolder of [{ relativePath: "../" }, { path: tmpdir() }, { relativePath: "outside" }, { relativePath: "missing" }]) {
+    await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, { ...f.input, workingFolder }), LocalConfigurationRequestError);
+    assert.equal(await f.store.getConversationCreationSetup(f.workspace.id, f.input.id), undefined);
+  }
+  const create = f.client.createConversation.bind(f.client);
+  f.client.createConversation = async (input) => {
+    assert.deepEqual((await f.store.getConversationWorkingFolders(f.workspace.id, f.input.id)).map(({ relativePath, primary }) => ({ relativePath, primary })), [{ relativePath: "project", primary: true }]);
+    await create(input); throw new Error("Lost folder response");
+  };
+  const input = { ...f.input, workingFolder: { relativePath: "project" } };
+  await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input), /Lost folder response/);
+  f.client.createConversation = create;
+  assert.equal((await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input)).id, f.input.id);
+  await f.config.updateConversationWorkingFolders(f.input.id, f.owner.id, { folders: [] });
+  await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input);
+  assert.deepEqual(await f.store.getConversationWorkingFolders(f.workspace.id, f.input.id), []);
+  await rm(join(root, "project"), { recursive: true });
+  assert.equal((await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input)).id, f.input.id, "recover exact retries even after a folder is removed");
+  await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, { ...input, workingFolder: { relativePath: "." } }), { status: 409 });
+  await mkdir(join(root, "unpublished"));
+  const unfinished = { ...f.input, id: createResourceId("conversation"), workingFolder: { relativePath: "unpublished" } };
+  f.client.createConversation = async () => { throw new Error("Before publication"); };
+  await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, unfinished), /Before publication/);
+  f.client.createConversation = create;
+  await rm(join(root, "unpublished"), { recursive: true });
+  await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, unfinished), { status: 409 });
+  await assert.rejects(f.client.getConversation(unfinished.id), { status: 404 });
+});
+
+test("editable settings use scoped revisions, validate defaults, and leave creation snapshots immutable", async (t) => {
+  const f = await fixture(t);
+  await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, f.input);
+  const original = await f.store.getConversationCreationSetup(f.workspace.id, f.input.id);
+  const settings = await f.config.getConversationSettings(f.input.id, f.owner.id);
+  assert.equal(settings.settings.revision, 0);
+  const update = { participants: f.input.participants, guidance: "New instructions", turnTimeoutMs: 5 * 60_000, idleSleepTimeoutMs: null, expectedRevision: 0 };
+  await assert.rejects(f.config.getConversationSettings(f.input.id, f.member.id), { status: 403 });
+  await assert.rejects(f.config.updateConversationSettings(f.input.id, f.member.id, update), { status: 403 });
+  for (const invalid of [{ turnTimeoutMs: 0 }, { idleSleepTimeoutMs: 1 }, { model: { provider: "test", id: "missing" } }, { participants: [], model: { provider: "test", id: "plain" }, reasoningLevel: "high" }]) {
+    await assert.rejects(f.config.updateConversationSettings(f.input.id, f.owner.id, { ...update, ...invalid }), LocalConfigurationRequestError);
+  }
+  const saved = await f.config.updateConversationSettings(f.input.id, f.owner.id, update);
+  assert.equal(saved.settings.revision, 1);
+  assert.deepEqual(await f.config.updateConversationSettings(f.input.id, f.owner.id, update), saved);
+  await assert.rejects(f.config.updateConversationSettings(f.input.id, f.owner.id, { ...update, guidance: "Stale" }), { status: 409 });
+  const effective = await conversationAgentConfiguration(f.store, f.workspace.id, f.input.id, f.agent.id);
+  assert.equal(effective?.modelId, "saved");
+  assert.match(effective!.personaPrompt!, /New instructions/);
+  assert.doesNotMatch(effective!.personaPrompt!, /Check in after diagnosis/);
+  assert.deepEqual(await f.store.getConversationCreationSetup(f.workspace.id, f.input.id), original);
+  await f.client.updateWorkspaceMember(f.workspace.id, f.agent.id, { actorIdentityId: f.owner.id, status: "disabled" });
+  assert.deepEqual(await f.config.updateConversationSettings(f.input.id, f.owner.id, update), saved, "exact settings retries survive subsequent membership changes");
+  await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { turnTimeoutMs: 10 * 60_000 });
+  assert.equal((await f.config.getWorkspaceConfiguration(f.workspace.id, f.owner.id)).turnTimeoutMs, 10 * 60_000);
+  await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { turnTimeoutMs: null });
+  assert.equal((await f.config.getWorkspaceConfiguration(f.workspace.id, f.owner.id)).turnTimeoutMs, undefined);
+});
+
+test("overlapping creation retries preserve folder edits made after publication", async (t) => {
+  const f = await fixture(t);
+  const root = await mkdtemp(join(tmpdir(), "channels-create-overlap-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await Promise.all([mkdir(join(root, "initial")), mkdir(join(root, "edited"))]);
+  await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { rootUri: root });
+  const input = { ...f.input, workingFolder: { relativePath: "initial" } };
+  let releaseFirst!: () => void, releaseRetry!: () => void, publicationEntered!: () => void, retryEntered!: () => void;
+  const publication = new Promise<void>((resolve) => { publicationEntered = resolve; });
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const retryPreparation = new Promise<void>((resolve) => { retryEntered = resolve; });
+  const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
+  const create = f.client.createConversation.bind(f.client);
+  let publications = 0;
+  f.client.createConversation = async (value) => {
+    if (++publications === 1) { publicationEntered(); await firstGate; }
+    return create(value);
+  };
+  const put = f.store.putConversationCreationSetup.bind(f.store);
+  let preparations = 0;
+  f.store.putConversationCreationSetup = async (value) => {
+    if (++preparations === 2) { retryEntered(); await retryGate; }
+    return put(value);
+  };
+  const first = f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input);
+  await publication;
+  const retry = f.config.createConversationWithSetup(f.workspace.id, f.owner.id, input);
+  try {
+    // An implementation that serializes the retry can keep it queued until the
+    // first publication finishes. Otherwise hold its preparation across the edit.
+    await Promise.race([retryPreparation, new Promise((resolve) => setTimeout(resolve, 100))]);
+    releaseFirst(); await first;
+    await f.config.updateConversationWorkingFolders(f.input.id, f.owner.id, { folders: [{ relativePath: "edited", primary: true }] });
+    releaseRetry(); await retry;
+    assert.deepEqual((await f.store.getConversationWorkingFolders(f.workspace.id, f.input.id)).map(({ relativePath }) => relativePath), ["edited"]);
+  } finally {
+    releaseFirst(); releaseRetry();
+    await Promise.allSettled([first, retry]);
+  }
+});
+
+test("settings reads keep fields and revision coherent during the first concurrent edit", async (t) => {
+  const f = await fixture(t);
+  await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, f.input);
+  const get = f.store.getConversationSettings.bind(f.store);
+  let injected = false;
+  f.store.getConversationSettings = async (workspaceId, conversationId) => {
+    const result = await get(workspaceId, conversationId);
+    if (!injected && !result) {
+      injected = true;
+      await f.store.putConversationSettings({ workspaceId, conversationId, revision: 1, participants: f.input.participants, guidance: "Concurrent guidance" }, 0);
+    }
+    return result;
+  };
+  const before = (await f.config.getConversationSettings(f.input.id, f.owner.id)).settings;
+  assert.deepEqual([before.guidance, before.revision], [f.input.guidance, 0]);
+  const after = (await f.config.getConversationSettings(f.input.id, f.owner.id)).settings;
+  assert.deepEqual([after.guidance, after.revision], ["Concurrent guidance", 1]);
 });

@@ -29,9 +29,10 @@ async function setup(page: Page, request: APIRequestContext, suffix: string) {
   }
   const library = `/local/workspaces/${workspace.id}/authored-documents`;
   async function openChannel() {
+    await page.goto(destination);
     await page.getByRole("button", { name: `Conversation actions for ${conversation.name}`, exact: true }).click();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
-    return page.getByRole("dialog", { name: `Manage #${conversation.name}`, exact: true });
+    return page.getByRole("main", { name: "Conversation settings", exact: true });
   }
   async function seedInstructions() {
     const created = await call(library, "POST", { kind: "instructions", conversationId: conversation.id, content: "ORIGINAL_PUBLISHED_BODY" });
@@ -43,19 +44,38 @@ async function setup(page: Page, request: APIRequestContext, suffix: string) {
   return { workspace, conversation, call, library, openChannel, seedInstructions };
 }
 
-test("workspace/channel editors publish separate drafts, render inherited defaults, and manage playbook history", async ({ page, request }) => {
+test("workspace tabs separate instructions and skills while channel editors preserve inheritance and history", async ({ page, request }, info) => {
   const f = await setup(page, request, "management");
   await page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  const workspaceDialog = page.getByRole("dialog", { name: `${f.workspace.name} configuration`, exact: true });
-  const workspaceInstructions = workspaceDialog.getByRole("region", { name: "Workspace instructions", exact: true });
+  const workspacePage = page.getByRole("main", { name: "Workspace settings", exact: true });
+  await expect(workspacePage.getByRole("region", { name: "Workspace instructions", exact: true })).toHaveCount(0);
+  await workspacePage.getByRole("link", { name: "Instructions", exact: true }).click();
+  await expect(workspacePage.getByRole("link", { name: "Instructions", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(workspacePage.getByRole("region", { name: "Authored skills", exact: true })).toHaveCount(0);
+  const workspaceInstructions = workspacePage.getByRole("region", { name: "Workspace instructions", exact: true });
   await workspaceInstructions.getByLabel("Instructions", { exact: true }).fill("WORKSPACE_NOTE_BASE");
   await expect(workspaceInstructions.getByRole("button", { name: "Publish", exact: true })).toBeDisabled();
   await workspaceInstructions.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(workspaceInstructions.getByText("Unpublished", { exact: true })).toBeVisible();
   await workspaceInstructions.getByRole("button", { name: "Publish", exact: true }).click();
   await expect(workspaceInstructions.getByText("Published r1", { exact: true })).toBeVisible();
-  await workspaceDialog.getByRole("button", { name: "Close Workspace configuration", exact: true }).click();
+  await page.screenshot({ path: info.outputPath("workspace-instructions-tab.png") });
+  await workspacePage.getByRole("link", { name: "Skills", exact: true }).click();
+  await expect(workspacePage.getByRole("region", { name: "Workspace instructions", exact: true })).toHaveCount(0);
+  const workspaceSkills = workspacePage.getByRole("region", { name: "Authored skills", exact: true });
+  await workspaceSkills.getByRole("button", { name: "New skill", exact: true }).click();
+  await workspaceSkills.getByLabel("Name", { exact: true }).fill("Summarize");
+  await workspaceSkills.getByLabel("Description", { exact: true }).fill("Summarize supplied context into concise bullet points.");
+  await workspaceSkills.getByLabel("Instructions", { exact: true }).fill("Summarize the supplied context. Preserve key facts and action items. Do not invent missing information.");
+  await workspaceSkills.getByRole("button", { name: "Save draft", exact: true }).click();
+  await workspaceSkills.getByRole("button", { name: "Publish", exact: true }).click();
+  await expect(workspaceSkills.getByText("Published r1", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("workspace-skills-tab.png") });
+  await page.reload();
+  await expect(workspacePage.getByRole("link", { name: "Skills", exact: true })).toHaveAttribute("aria-current", "page");
+  await workspacePage.getByRole("link", { name: "Instructions", exact: true }).click();
+  await expect(workspaceInstructions.getByLabel("Instructions", { exact: true })).toHaveValue("WORKSPACE_NOTE_BASE");
   const channelDialog = await f.openChannel();
   const channelInstructions = channelDialog.getByRole("region", { name: "Channel instructions", exact: true });
   await channelInstructions.getByLabel("Instructions", { exact: true }).fill("CHANNEL_NOTE_OVERRIDE");
@@ -81,7 +101,8 @@ test("workspace/channel editors publish separate drafts, render inherited defaul
   await expect(skills.getByText("Archived", { exact: true })).toBeVisible();
   const records = (await f.call(f.library)).body as LocalAuthoredDocument[];
   expect(records.filter(document => document.kind === "instructions").map(document => document.conversationId ?? "workspace").sort()).toEqual([f.conversation.id, "workspace"].sort());
-  expect(records.find(document => document.kind === "skill")?.state).toBe("archived");
+  expect(records.find(document => document.name === "Release checklist")?.state).toBe("archived");
+  expect(records.find(document => document.name === "Summarize")?.publishedRevision).toBe(1);
   expect(await page.evaluate(() => Object.values(localStorage).some(value => /WORKSPACE_NOTE_BASE|CHANNEL_NOTE_OVERRIDE|Release checklist/.test(value)))).toBe(false);
 });
 

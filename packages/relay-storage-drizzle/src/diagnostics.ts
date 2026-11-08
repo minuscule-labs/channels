@@ -37,7 +37,14 @@ async function privateFile(path: string, create: boolean) {
   try {
     handle = await open(path, constants.O_RDWR | constants.O_NOFOLLOW | (create ? constants.O_CREAT : 0), 0o600);
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) throw new Error("Unsafe diagnostic file");
+    if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) throw new Error("Unsafe diagnostic file");
+    if (stat.nlink !== 1) {
+      // Deferred SQLite cleanup can unlink a sidecar after open but before fstat.
+      // Accept only a now-absent optional path via the ENOENT handler below;
+      // a replacement path, hardlink, or unlinked main database still fails closed.
+      if (!create && stat.nlink === 0) await lstat(path);
+      throw new Error("Unsafe diagnostic file");
+    }
   } catch (error) {
     if (!create && (error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;

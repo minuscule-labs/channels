@@ -40,6 +40,8 @@ import type {
   UpdateLocalWorkspaceConfigurationInput,
   LocalConversationPresets,
   LocalConversationCreationSetup,
+  LocalConversationSettings,
+  UpdateConversationSettingsInput,
   ConversationPreset,
   SaveConversationPresetInput,
   CreateLocalConversationInput,
@@ -127,6 +129,13 @@ export class LocalControlClient {
     const result = await this.request<{ conversation: ConversationMetadata }>(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
       { method: "POST", body: JSON.stringify(input) });
     return result.conversation;
+  }
+
+  async getConversationSettings(conversationId: string): Promise<LocalConversationSettings> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/settings`);
+  }
+  async updateConversationSettings(conversationId: string, input: UpdateConversationSettingsInput): Promise<LocalConversationSettings> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/settings`, { method: "PUT", body: JSON.stringify(input) });
   }
 
   async getConversationCreationSetup(conversationId: string): Promise<LocalConversationCreationSetup> {

@@ -1,7 +1,7 @@
 import { createResourceId, type ConversationClient } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
 import { getManagedRuntimeSession, resumeManagedRuntimeSession } from "./managed-sessions.ts";
-import type { ConversationPreset, ConversationCreationSetup } from "./conversation-presets.ts";
+import type { ConversationPreset, ConversationCreationSetup, ConversationSettings } from "./conversation-presets.ts";
 import type { AuthoredContextSnapshot } from "./authored-context.ts";
 import { prepareLinkedAuthoredInvocationTurn } from "./authored-invocation-delivery.ts";
 import { invocationDocumentMatches, invocationTargetMatches, type AuthoredInvocationMessageLink, type AuthoredSkillInvocation } from "./authored-invocations.ts";
@@ -51,6 +51,7 @@ export interface LocalWorkspaceConfig {
   notesFolderId?: string;
   /** Undefined means no automatic sleep for this Workspace. */
   idleSleepTimeoutMs?: number;
+  turnTimeoutMs?: number;
   runtimeModelPolicies?: Record<string, RuntimeModelRef[]>;
   createdAt: string;
   updatedAt: string;
@@ -212,6 +213,8 @@ export interface ConversationWorkingFolder {
 }
 
 export interface RelayBindingStore extends RelayCursorStore {
+  getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined>;
+  putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean>;
   listConversationPresets(workspaceId: string): Promise<ConversationPreset[]>;
   putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean>;
   deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean>;
@@ -231,6 +234,8 @@ export interface RelayBindingStore extends RelayCursorStore {
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
   getConversationWorkingFolders(workspaceId: string, conversationId: string): Promise<ConversationWorkingFolder[]>;
+  /** Prepare a creation snapshot's folders once, preserving subsequent edits across retries. */
+  initializeConversationWorkingFolders(workspaceId: string, conversationId: string, folders: readonly ConversationWorkingFolder[]): Promise<void>;
   replaceConversationWorkingFolders(
     workspaceId: string,
     conversationId: string,
@@ -391,6 +396,16 @@ export function validateConversationWorkingFolders(
 }
 
 export class InMemoryRelayBindingStore implements RelayBindingStore {
+  private readonly currentConversationSettings = new Map<string, ConversationSettings>();
+  async getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined> {
+    return structuredClone(this.currentConversationSettings.get(`${workspaceId}:${conversationId}`));
+  }
+  async putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean> {
+    const key = `${settings.workspaceId}:${settings.conversationId}`;
+    if ((this.currentConversationSettings.get(key)?.revision ?? 0) !== expectedRevision) return false;
+    this.currentConversationSettings.set(key, structuredClone(settings));
+    return true;
+  }
   private readonly conversationPresets = new Map<string, ConversationPreset>();
   private readonly conversationSetups = new Map<string, ConversationCreationSetup>();
 
@@ -539,6 +554,23 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   ): Promise<ConversationWorkingFolder[]> {
     return (this.conversationWorkingFolders.get(`${workspaceId}\0${conversationId}`) ?? [])
       .map(copyConversationWorkingFolder);
+  }
+
+  private readonly folderInitializations = new Map<string, Promise<void>>();
+  async initializeConversationWorkingFolders(workspaceId: string, conversationId: string, folders: readonly ConversationWorkingFolder[]): Promise<void> {
+    const key = `${workspaceId}\0${conversationId}`;
+    const current = this.folderInitializations.get(key);
+    if (current) return current;
+    const initialization = (async () => {
+      if (!await this.getConversationCreationSetup(workspaceId, conversationId)) throw new Error("Creation snapshot is required before preparing folders");
+      await this.replaceConversationWorkingFolders(workspaceId, conversationId, folders);
+    })();
+    this.folderInitializations.set(key, initialization);
+    try { await initialization; }
+    catch (error) {
+      if (this.folderInitializations.get(key) === initialization) this.folderInitializations.delete(key);
+      throw error;
+    }
   }
 
   async replaceConversationWorkingFolders(
@@ -1099,6 +1131,7 @@ export class LocalRelayDirectory {
     rootUri: string;
     notesFolderId?: string | null;
     idleSleepTimeoutMs?: number | null;
+    turnTimeoutMs?: number | null;
   }): Promise<LocalWorkspaceConfig> {
     await this.client.getWorkspace(input.workspaceId);
     if (!input.rootUri.trim()) throw new Error("rootUri is required");
@@ -1111,6 +1144,7 @@ export class LocalRelayDirectory {
         ? existing?.notesFolderId
         : input.notesFolderId ?? undefined,
       runtimeModelPolicies: existing?.runtimeModelPolicies,
+      turnTimeoutMs: input.turnTimeoutMs === undefined ? existing?.turnTimeoutMs : input.turnTimeoutMs ?? undefined,
       idleSleepTimeoutMs: input.idleSleepTimeoutMs === undefined
         ? existing?.idleSleepTimeoutMs
         : input.idleSleepTimeoutMs ?? undefined,

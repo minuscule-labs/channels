@@ -135,8 +135,8 @@ function EffectiveContext({ scope, conversationId, participants }: { scope: Scop
   </section>;
 }
 
-function ContentPanel({ scope, conversationId, channelId, participants }: {
-  scope: Scope; conversationId?: string; channelId?: string; participants: readonly Participant[];
+function ContentPanel({ scope, conversationId, channelId, participants, section }: {
+  scope: Scope; conversationId?: string; channelId?: string; participants: readonly Participant[]; section?: "instructions" | "skills";
 }) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string>();
@@ -153,12 +153,12 @@ function ContentPanel({ scope, conversationId, channelId, participants }: {
   const skills = library.data.filter(document => document.kind === "skill" && (document.conversationId === undefined || document.conversationId === channelId));
   const skillLabel = (document: LocalAuthoredDocumentSummary) => `${document.name} · ${document.conversationId ? "Channel" : "Workspace"}${document.state === "archived" ? " · Archived" : ""}`;
   return <div className="space-y-4">
-    <section aria-label={channelId ? "Channel instructions" : "Workspace instructions"} className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+    {section !== "skills" ? <section aria-label={channelId ? "Channel instructions" : "Workspace instructions"} className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
       <h3 className="text-sm font-semibold">{channelId ? "Channel instructions" : "Workspace instructions"}</h3>
       {instructions ? <SavedEditor scope={scope} id={instructions.id} onSaved={refresh} />
         : <DocumentEditor scope={scope} kind="instructions" conversationId={channelId} onSaved={refresh} />}
-    </section>
-    <section aria-label="Authored skills" className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+    </section> : null}
+    {section !== "instructions" ? <section aria-label="Authored skills" className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
       <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Skills</h3>
         <button className="button-secondary" type="button" onClick={() => setSelected("new")}>New skill</button></div>
       <div className="flex flex-col items-start gap-1">{skills.map(document => <button key={document.id} className="text-left text-xs underline underline-offset-2" type="button" onClick={() => setSelected(document.id)}>{skillLabel(document)}</button>)}</div>
@@ -166,13 +166,13 @@ function ContentPanel({ scope, conversationId, channelId, participants }: {
         {channelId ? <label className="block text-xs font-medium">Skill scope<select aria-label="Skill scope" className="settings-input mt-1" value={newScope} onChange={event => setNewScope(event.target.value as "workspace" | "channel")}><option value="channel">Channel</option><option value="workspace">Workspace</option></select></label> : null}
         <DocumentEditor key="new-skill" scope={scope} kind="skill" conversationId={newScope === "channel" ? channelId : undefined} onSaved={refresh} />
       </> : selected ? <SavedEditor key={selected} scope={scope} id={selected} onSaved={refresh} /> : null}
-    </section>
-    {conversationId ? <EffectiveContext scope={scope} conversationId={conversationId} participants={participants} /> : null}
+    </section> : null}
+    {conversationId && section !== "skills" ? <EffectiveContext scope={scope} conversationId={conversationId} participants={participants} /> : null}
   </div>;
 }
 
-export function AuthoredContent({ workspaceId, actorIdentityId, canAdminister, conversationId, channelId = conversationId, participants = [] }: {
-  workspaceId: string; actorIdentityId?: string; canAdminister: boolean;
+export function AuthoredContent({ workspaceId, actorIdentityId, canAdminister, conversationId, channelId = conversationId, participants = [], section }: {
+  workspaceId: string; actorIdentityId?: string; canAdminister: boolean; section?: "instructions" | "skills";
   conversationId?: string; channelId?: string; participants?: readonly Participant[];
 }) {
   const capabilities = useQuery({ queryKey: queryKeys.localCapabilities(), queryFn: () => localControl.capabilities(), enabled: canAdminister, retry: false, staleTime: 60_000 });
@@ -185,5 +185,5 @@ export function AuthoredContent({ workspaceId, actorIdentityId, canAdminister, c
   }, [identityKey, workspaceId, actorIdentityId, queryClient]);
   if (!canAdminister || !actorIdentityId || denied === identityKey || !capabilities.data?.features.authoredContent) return null;
   return <ContentPanel key={`${workspaceId}:${actorIdentityId}:${conversationId ?? "workspace"}`} scope={{ workspaceId, actorIdentityId, onDenied }}
-    conversationId={conversationId} channelId={channelId} participants={participants} />;
+    conversationId={conversationId} channelId={channelId} participants={participants} section={section} />;
 }

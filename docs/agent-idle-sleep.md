@@ -1,6 +1,6 @@
 # Idle agent sleep and wake
 
-**Status:** Phase 2 core is implemented. Workspace owners/admins can opt in through Workspace settings with an Off-by-default timeout; the agent host reads the private Workspace policy on each idle pass. Per-agent overrides, default-on rollout, and orphan cleanup remain deferred. Lifecycle transitions reject pending or uncertain wake work.
+**Status:** Phase 2 core is implemented. Workspace owners/admins can opt in through **Workspace settings → Defaults & timeouts** with an Off-by-default timeout. Conversations can inherit, override, or explicitly disable that policy; the agent host reads the effective private policy on each idle pass. Per-agent overrides, default-on rollout, and orphan cleanup remain deferred. Lifecycle transitions reject pending or uncertain wake work.
 
 ## Decision
 
@@ -57,7 +57,7 @@ Supported policy values:
 - 4 hours
 - 24 hours
 
-A Workspace currently provides the policy for all its managed agents. Per-agent inherit/override/**Never sleep** controls remain a later step. Policy is restricted Workspace configuration, not public Conversation metadata.
+A Workspace provides the default policy for its managed agents. Conversation settings can inherit that policy, override its duration, or explicitly turn sleep off; threads inherit their parent Conversation policy. Per-agent inherit/override/**Never sleep** controls remain a later step. Policy is restricted Workspace configuration, not public Conversation metadata.
 
 ### Eligibility
 

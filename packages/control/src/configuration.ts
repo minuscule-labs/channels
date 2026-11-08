@@ -23,6 +23,7 @@ import {
   type ConversationSetup,
   type ConversationPreset,
   type ConversationCreationSetup,
+  type ConversationSettings,
 } from "@minu/channels-relay";
 import type {
   LocalAgentRuntimeOptions,
@@ -130,7 +131,9 @@ function samePresetContents(left: ConversationSetup & { name: string }, right: C
     && left.model?.provider === right.model?.provider
     && left.model?.id === right.model?.id
     && left.reasoningLevel === right.reasoningLevel
-    && left.guidance === right.guidance;
+    && left.guidance === right.guidance
+    && left.turnTimeoutMs === right.turnTimeoutMs
+    && left.idleSleepTimeoutMs === right.idleSleepTimeoutMs;
 }
 
 async function canonicalWorkspaceRoot(value: string): Promise<string> {
@@ -270,17 +273,28 @@ export class LocalAgentHostConfiguration {
     if (input.guidance !== undefined && (typeof input.guidance !== "string" || bytes(input.guidance) > 16 * 1024)) {
       throw new LocalConfigurationRequestError("Guidance must be text of at most 16 KiB", 400, "invalid");
     }
+    const turnTimeoutMs = input.turnTimeoutMs;
+    if (turnTimeoutMs !== undefined && (typeof turnTimeoutMs !== "number" || ![1, 5, 10, 15, 30].includes(turnTimeoutMs / 60_000))) {
+      throw new LocalConfigurationRequestError("Unsupported turn timeout", 400, "invalid");
+    }
+    const idleSleepTimeoutMs = input.idleSleepTimeoutMs;
+    if (idleSleepTimeoutMs !== undefined && idleSleepTimeoutMs !== null
+      && (typeof idleSleepTimeoutMs !== "number" || ![15, 30, 60, 240, 1440].includes(idleSleepTimeoutMs / 60_000))) {
+      throw new LocalConfigurationRequestError("Unsupported idle sleep timeout", 400, "invalid");
+    }
     const guidance = (input.guidance as string | undefined)?.trim();
     return { participants, ...(model ? { model } : {}),
       ...(reasoningLevel ? { reasoningLevel: reasoningLevel as ConversationSetup["reasoningLevel"] } : {}),
-      ...(guidance ? { guidance } : {}) };
+      ...(guidance ? { guidance } : {}),
+      ...(turnTimeoutMs !== undefined ? { turnTimeoutMs: turnTimeoutMs as number } : {}),
+      ...(idleSleepTimeoutMs !== undefined ? { idleSleepTimeoutMs: idleSleepTimeoutMs as number | null } : {}) };
   }
 
   async saveConversationPreset(workspaceId: string, presetId: string, actorIdentityId: string, value: unknown): Promise<ConversationPreset> {
     await this.authorize(workspaceId, actorIdentityId);
     if (!/^preset_[0-9a-f]{32}$/.test(presetId)) throw new LocalConfigurationRequestError("Preset id is invalid", 400, "invalid");
     const input = object(value, "Preset");
-    rejectUnknown(input, ["name", "expectedRevision", "participants", "model", "reasoningLevel", "guidance"]);
+    rejectUnknown(input, ["name", "expectedRevision", "participants", "model", "reasoningLevel", "guidance", "turnTimeoutMs", "idleSleepTimeoutMs"]);
     const expected = input.expectedRevision;
     if (expected !== null && (!Number.isSafeInteger(expected) || (expected as number) < 1)) {
       throw new LocalConfigurationRequestError("Expected preset revision is required", 400, "invalid");
@@ -325,23 +339,34 @@ export class LocalAgentHostConfiguration {
   async createConversationWithSetup(workspaceId: string, actorIdentityId: string, value: unknown): Promise<ConversationMetadata> {
     const members = await this.authorize(workspaceId, actorIdentityId);
     const input = object(value, "Conversation");
-    rejectUnknown(input, ["id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance"]);
+    rejectUnknown(input, ["workingFolder", "id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance", "turnTimeoutMs", "idleSleepTimeoutMs"]);
     if (!isResourceId(input.id, "conversation")) throw new LocalConfigurationRequestError("Conversation id is invalid", 400, "invalid");
     const folderId = input.folderId ?? null;
     if (folderId !== null && !isResourceId(folderId, "folder")) {
       throw new LocalConfigurationRequestError("Folder id is invalid", 400, "invalid");
     }
-    const setup: ConversationCreationSetup = { ...this.parseConversationSetup(input, true), workspaceId,
-      conversationId: input.id, actorIdentityId, name: conversationLabel(input.name, "Conversation name") };
-    // A retry may find the public Conversation even when the first response was lost.
     const original = await this.options.store.getConversationCreationSetup(workspaceId, input.id);
-    if (original && JSON.stringify(original) !== JSON.stringify(setup)) {
-      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
-    }
     const existing = await this.options.client.getConversation(input.id).catch((error) => {
       if (error instanceof ConversationClientError && error.status === 404) return undefined;
       throw error;
     });
+    let folder: Pick<ConversationCreationSetup, "workingFolder" | "workingFolderRequestHash"> = {};
+    if (input.workingFolder !== undefined) {
+      const candidate = object(input.workingFolder, "Working folder");
+      rejectUnknown(candidate, ["path", "relativePath"]);
+      const selection = localWorkingFolderInput({ ...candidate, primary: true });
+      const workingFolderRequestHash = createHash("sha256").update(JSON.stringify([selection.path ?? null, selection.relativePath ?? null])).digest("hex");
+      // Recover a committed request even if its folder or Workspace source moved
+      // since publication. Absolute folder paths are never saved in the snapshot.
+      folder = { workingFolderRequestHash, workingFolder: existing?.workspaceId === workspaceId && original?.workingFolderRequestHash === workingFolderRequestHash
+        ? original.workingFolder : await this.creationWorkingFolder(workspaceId, input.workingFolder) };
+    }
+    const setup: ConversationCreationSetup = { ...this.parseConversationSetup(input, true), workspaceId,
+      conversationId: input.id, actorIdentityId, name: conversationLabel(input.name, "Conversation name"), ...folder };
+    // A retry may find the public Conversation even when the first response was lost.
+    if (original && JSON.stringify(original) !== JSON.stringify(setup)) {
+      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+    }
     if (existing) {
       if (original && existing.workspaceId === workspaceId) {
         if ((existing.folderId ?? null) !== folderId) {
@@ -354,6 +379,50 @@ export class LocalAgentHostConfiguration {
     if (folderId !== null && !(await this.options.client.listWorkspaceFolders(workspaceId)).some(folder => folder.id === folderId)) {
       throw new LocalConfigurationRequestError("Folder is unavailable in this Workspace", 404, "unavailable");
     }
+    await this.validateConversationAgents(workspaceId, setup, members);
+    // Persist before publication: an agent can never start without its reviewed settings.
+    const saved = await this.options.store.putConversationCreationSetup(setup);
+    if (JSON.stringify(saved) !== JSON.stringify(setup)) {
+      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+    }
+    if (setup.workingFolder) {
+      await this.options.store.initializeConversationWorkingFolders(workspaceId, setup.conversationId,
+        setup.workingFolder.relativePath === "." ? [] : [{ workspaceId, conversationId: setup.conversationId,
+          relativePath: setup.workingFolder.relativePath, position: 0, primary: true }]);
+    }
+    try {
+      return await this.options.client.createConversation({ id: input.id, workspaceId, name: setup.name, folderId,
+        participantIds: [actorIdentityId, ...setup.participants.map(({ identityId }) => identityId!)], actorIdentityId });
+    } catch (error) {
+      if (error instanceof ConversationClientError && error.status === 409) {
+        const created = await this.options.client.getConversation(input.id);
+        if (created.workspaceId === workspaceId && (created.folderId ?? null) === folderId) return created;
+      }
+      throw error;
+    }
+  }
+
+  private async creationWorkingFolder(workspaceId: string, value: unknown): Promise<{ relativePath: string }> {
+    const selection = object(value, "Working folder");
+    rejectUnknown(selection, ["path", "relativePath"]);
+    const input = localWorkingFolderInput({ ...selection, primary: true });
+    const config = await this.options.store.getWorkspaceConfig(workspaceId);
+    if (!config?.rootUri) throw new LocalConfigurationRequestError("Configure the Workspace source folder first", 409, "unavailable");
+    const root = await canonicalDirectory(config.rootUri, "Workspace source folder");
+    const path = input.relativePath;
+    if (path && (isAbsolute(path) || path.includes("\0") || path.split(/[\\/]/).includes(".."))) {
+      throw new LocalConfigurationRequestError("Working folder relativePath is invalid", 400, "invalid");
+    }
+    const selected = await canonicalDirectory(input.path ?? resolve(root, path!), "Working folder");
+    const relativePath = relativePathWithinWorkspace(root, selected);
+    if (selected !== root && relativePath === undefined) {
+      throw new LocalConfigurationRequestError("Working folder must be inside the Workspace source folder", 400, "invalid");
+    }
+    return { relativePath: relativePath ?? "." };
+  }
+
+  private async validateConversationAgents(workspaceId: string, setup: ConversationSetup,
+    members: Awaited<ReturnType<ConversationClient["listWorkspaceMembers"]>>): Promise<void> {
     const identities = await this.options.client.listIdentities();
     for (const participant of setup.participants) {
       const identity = identities.find(({ id }) => id === participant.identityId);
@@ -383,21 +452,55 @@ export class LocalAgentHostConfiguration {
         }
       }
     }
-    // Persist before publication: an agent can never start without its reviewed settings.
-    const saved = await this.options.store.putConversationCreationSetup(setup);
-    if (JSON.stringify(saved) !== JSON.stringify(setup)) {
-      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+  }
+
+  async getConversationSettings(conversationId: string, actorIdentityId: string) {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    const sourceId = conversation.thread?.parentConversationId ?? conversationId;
+    const stored = await this.options.store.getConversationSettings(conversation.workspaceId, sourceId);
+    const setup = stored ?? await this.options.store.getConversationCreationSetup(conversation.workspaceId, sourceId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings: {
+      ...this.parseConversationSetup({ ...setup, participants: setup?.participants ?? [] }, false),
+      workspaceId: conversation.workspaceId, conversationId: sourceId, revision: stored?.revision ?? 0,
+    } };
+  }
+
+  async updateConversationSettings(conversationId: string, actorIdentityId: string, value: unknown) {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation settings", 409, "unavailable");
+    const members = await this.authorize(conversation.workspaceId, actorIdentityId);
+    const input = object(value, "Conversation settings");
+    rejectUnknown(input, ["expectedRevision", "participants", "model", "reasoningLevel", "guidance", "turnTimeoutMs", "idleSleepTimeoutMs"]);
+    if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) {
+      throw new LocalConfigurationRequestError("Expected settings revision is required", 400, "invalid");
     }
-    try {
-      return await this.options.client.createConversation({ id: input.id, workspaceId, name: setup.name, folderId,
-        participantIds: [actorIdentityId, ...setup.participants.map(({ identityId }) => identityId!)], actorIdentityId });
-    } catch (error) {
-      if (error instanceof ConversationClientError && error.status === 409) {
-        const created = await this.options.client.getConversation(input.id);
-        if (created.workspaceId === workspaceId && (created.folderId ?? null) === folderId) return created;
+    const expected = input.expectedRevision as number;
+    const setup = this.parseConversationSetup(input, true);
+    const previous = await this.options.store.getConversationSettings(conversation.workspaceId, conversationId);
+    if (previous?.revision === expected + 1 && samePresetContents({ ...previous, name: "" }, { ...setup, name: "" })) {
+      return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings: previous };
+    }
+    if ((previous?.revision ?? 0) !== expected) {
+      throw new LocalConfigurationRequestError("Settings changed; reload before saving", 409, "unavailable");
+    }
+    if (setup.participants.some(({ identityId }) => !conversation.participants.some((participant) => participant.id === identityId && participant.status === "active"))) {
+      throw new LocalConfigurationRequestError("Participants changed; reload before saving settings", 409, "unavailable");
+    }
+    const identities = await this.options.client.listIdentities();
+    const activeAgents = conversation.participants.filter((participant) => participant.status === "active"
+      && identities.some((identity) => identity.id === participant.id && identity.type === "agent"));
+    await this.validateConversationAgents(conversation.workspaceId, { ...setup,
+      participants: activeAgents.map(({ id }) => ({ identityId: id, role: setup.participants.find(({ identityId }) => identityId === id)?.role ?? "Collaborator" })) }, members);
+    const settings: ConversationSettings = { ...setup, workspaceId: conversation.workspaceId, conversationId, revision: expected + 1 };
+    if (!await this.options.store.putConversationSettings(settings, expected)) {
+      const current = await this.options.store.getConversationSettings(conversation.workspaceId, conversationId);
+      if (!current || current.revision !== expected + 1
+        || !samePresetContents({ ...current, name: "" }, { ...settings, name: "" })) {
+        throw new LocalConfigurationRequestError("Settings changed; reload before saving", 409, "unavailable");
       }
-      throw error;
+      return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings: current };
     }
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings };
   }
 
   private readonly directory: LocalRelayDirectory;
@@ -942,6 +1045,7 @@ export class LocalAgentHostConfiguration {
       workspaceId,
       rootConfigured: Boolean(workspaceConfig?.rootUri),
       notesFolderConfigured: Boolean(workspaceConfig?.notesFolderId),
+      ...(workspaceConfig?.turnTimeoutMs !== undefined ? { turnTimeoutMs: workspaceConfig.turnTimeoutMs } : {}),
       ...(workspaceConfig?.idleSleepTimeoutMs !== undefined
         ? { idleSleepTimeoutMs: workspaceConfig.idleSleepTimeoutMs }
         : {}),
@@ -1200,7 +1304,7 @@ export class LocalAgentHostConfiguration {
     try {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Workspace configuration");
-      rejectUnknown(input, ["rootUri", "notesFolderId", "idleSleepTimeoutMs"]);
+      rejectUnknown(input, ["rootUri", "notesFolderId", "idleSleepTimeoutMs", "turnTimeoutMs"]);
       if (Object.keys(input).length === 0) {
         throw new LocalConfigurationRequestError("Workspace configuration update is empty", 400, "invalid");
       }
@@ -1218,6 +1322,11 @@ export class LocalAgentHostConfiguration {
         && ![15, 30, 60, 240, 1440].includes(idleSleepTimeoutMs / 60_000)) {
         throw new LocalConfigurationRequestError("Unsupported idle sleep timeout", 400, "invalid");
       }
+      const turnTimeoutMs = input.turnTimeoutMs;
+      if (turnTimeoutMs !== undefined && turnTimeoutMs !== null
+        && (typeof turnTimeoutMs !== "number" || ![1, 5, 10, 15, 30].includes(turnTimeoutMs / 60_000))) {
+        throw new LocalConfigurationRequestError("Unsupported turn timeout", 400, "invalid");
+      }
       const notesFolderId = optionalNullableString(
         input.notesFolderId,
         "notesFolderId",
@@ -1228,6 +1337,7 @@ export class LocalAgentHostConfiguration {
         rootUri,
         notesFolderId,
         idleSleepTimeoutMs,
+        turnTimeoutMs: turnTimeoutMs as number | null | undefined,
       });
       for (const key of this.runtimeOptions.keys()) {
         if (key.startsWith(`${workspaceId}\0`)) this.runtimeOptions.delete(key);

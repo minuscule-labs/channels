@@ -1094,7 +1094,7 @@ export class ConversationService {
     return await this.storage.createConversation({
       id: conversationId,
       workspaceId: workspaceId!,
-      name: requestedName ?? `Conversation ${conversationId.slice("conversation_".length, "conversation_".length + 8)}`,
+      name: requestedName ?? `Conversation ${conversationId.slice(-8)}`,
       folderId,
       participants,
       messages: [],

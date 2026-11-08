@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.0.33
+
+Release overview: [Bounded connection cleanup and content-page settings](docs/releases/v0.0.33.md).
+
+- Release production-proxy connections when browser consumers disconnect, propagate premature upstream failure, and dispose of fully parsed but unread responses without breaking normal HTTP completion or socket reuse.
+- Make both SSE routes release subscriptions and heartbeat timers across disconnect, asynchronous setup, response failure, and shutdown. Add real-HTTP regressions, including 100 disconnect cycles per route and backpressure cancellation.
+- Handle deferred libSQL cleanup unlinking an optional diagnostic sidecar between open and descriptor validation. Accept only a genuinely absent private sidecar while retaining file-safety checks and rejecting replacements or an unlinked main database.
+- Isolate optional diagnostic I/O in a child process so forced timeout/shutdown during native libSQL execution cannot abort the Channels host. Preserve bounded shutdown, journal formats, private projections and existing recovery coverage. This contains the reproduced worker-termination abort, not every possible native-library or Runtime failure.
+- Move Workspace and Conversation settings, people/permissions, and preset editing into content pages. Persist current Conversation roles, model/effort overrides, guidance, and timeouts separately from immutable creation snapshots; validate and prepare creation working folders before publication.
+- Generate new typed resource IDs with UUIDv7 while preserving the existing prefixed 32-hex shape and acceptance of existing IDs. Add the core `uuid` dependency; message sequences remain authoritative and UUID timestamps are public.
+- Add private Relay migrations `0016_conversation_settings` and `0017_creation_folder_preparation`; advance local-control protocol to v25. Keep the public database schema and Runtime pin `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732` unchanged from v0.0.32.
+- Skip runner jobs for draft PRs and use bundled Playwright browsers in CI; ready-for-review PRs, main commits, and releases retain their verification gates.
+- Retain the known Runtime resume/PID-publication and recovery/context-reconstruction limitations. Other native Neon abort mechanisms have not been ruled out; historical ENOBUFS causality and the 24–48-hour connection soak remain unverified.
+
 ## 0.0.32
 
 Release overview: [Conversation folders and consistent action controls](docs/releases/v0.0.32.md).

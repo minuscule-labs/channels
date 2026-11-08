@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationMessage, Participant } from "@minu/channels-core/types";
-import { mergeMessages, structuredTargets } from "../src/lib/messages";
+import { mergeMessages, shortId, structuredTargets } from "../src/lib/messages";
 
 const participants: Participant[] = [
   { id: "human-id", handle: "david", type: "human", status: "active" },
@@ -67,6 +67,29 @@ describe("structuredTargets", () => {
 
   it("does not route disabled or unknown handles", () => {
     expect(structuredTargets("@old-agent @missing", participants)).toEqual([]);
+  });
+});
+
+describe("shortId", () => {
+  it("distinguishes UUIDv7 ids that share a timestamp prefix using their suffixes", () => {
+    const first = "identity_01900000000070008000000011111111";
+    const second = "identity_01900000000070008000000022222222";
+    expect(shortId(first)).toBe("identity_…11111111");
+    expect(shortId(second)).toBe("identity_…22222222");
+    expect(shortId(first)).not.toBe(shortId(second));
+  });
+
+  it.each(["identity", "conversation", "channel"])(
+    "preserves the %s prefix when shortening existing UUIDv4 ids",
+    (prefix) => {
+      expect(shortId(`${prefix}_550e8400e29b41d4a716446655440000`)).toBe(`${prefix}_…55440000`);
+    },
+  );
+
+  it("keeps existing behavior for handles and other untyped ids", () => {
+    expect(shortId("builder")).toBe("builder");
+    expect(shortId("abcdefghijklmnop")).toBe("abcdefgh…");
+    expect(shortId("")).toBe("");
   });
 });
 
