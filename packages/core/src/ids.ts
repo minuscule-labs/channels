@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { v7 as uuidv7 } from "uuid";
 
 export const RESOURCE_ID_PREFIXES = [
   "identity",
   "workspace",
   "conversation",
   "folder",
+  "preset",
   "message",
   "attachment",
   "event",
@@ -17,9 +18,9 @@ export type ResourceIdPrefix = typeof RESOURCE_ID_PREFIXES[number];
 /** Existing Channel IDs remain valid opaque Conversation IDs after the terminology migration. */
 const LEGACY_RESOURCE_ID_PREFIXES = ["channel"] as const;
 
-/** Creates a readable resource id backed by 128 bits of UUID-quality randomness. */
+/** Creates a typed UUIDv7 id. Its timestamp is public; message sequences remain authoritative. */
 export function createResourceId(prefix: ResourceIdPrefix): string {
-  return `${prefix}_${randomUUID().replaceAll("-", "")}`;
+  return `${prefix}_${uuidv7().replaceAll("-", "")}`;
 }
 
 export function isResourceId(value: unknown, prefix?: ResourceIdPrefix): value is string {

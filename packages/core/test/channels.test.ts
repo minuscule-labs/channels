@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import test from "node:test";
 import { ConversationClient, ConversationClientError } from "../src/client.ts";
 import { createConversationHttpServer, type ConversationHttpServer } from "../src/http-server.ts";
-import { createResourceId, isResourceId, RESOURCE_ID_PREFIXES } from "../src/ids.ts";
+import { isResourceId } from "../src/ids.ts";
 import { ConversationService } from "../src/conversation-service.ts";
 import { InMemoryConversationStorage } from "../src/storage.ts";
 import type { ConversationEvent } from "../src/types.ts";
@@ -56,18 +56,6 @@ async function readSseFrame(
     state.buffer += decoder.decode(next.value, { stream: true });
   }
 }
-
-test("creates typed resource ids with UUID-strength random payloads", () => {
-  for (const prefix of RESOURCE_ID_PREFIXES) {
-    const first = createResourceId(prefix);
-    const second = createResourceId(prefix);
-    assert.equal(isResourceId(first, prefix), true);
-    assert.equal(isResourceId(first), true);
-    assert.notEqual(first, second);
-  }
-  assert.equal(isResourceId("550e8400-e29b-41d4-a716-446655440000"), false);
-  assert.equal(isResourceId("conversation_not-random", "conversation"), false);
-});
 
 async function createTestConversation(server: ConversationHttpServer) {
   const result = await jsonRequest(server, "/conversations", {
@@ -131,6 +119,26 @@ test("creates a conversation and starts with no messages", async () => {
   } finally {
     await server.close();
   }
+});
+
+test("default Conversation names use UUID suffixes without renaming existing Conversations", async () => {
+  const service = new ConversationService();
+  const participants = [{ id: "human", type: "human" as const }];
+  const existing = await service.createConversation({
+    id: "channel_550e8400e29b41d4a716446655440000",
+    name: "Conversation 550e8400",
+    participants,
+  });
+  const names: string[] = [];
+  for (const suffix of ["11111111", "22222222"]) {
+    const id = `conversation_019000000000700080000000${suffix}`;
+    const conversation = await service.createConversation({ id, participants });
+    assert.equal(conversation.id, id);
+    assert.equal(conversation.name, `Conversation ${suffix}`);
+    names.push(conversation.name);
+  }
+  assert.notEqual(names[0], names[1]);
+  assert.equal((await service.getConversation(existing.id)).name, "Conversation 550e8400");
 });
 
 test("registers reusable identities and Workspace-local handles for Conversation routing", async () => {

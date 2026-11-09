@@ -39,7 +39,11 @@ importers:
         specifier: ^15.0.0
         version: 15.0.0
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      uuid:
+        specifier: ^14.0.2
+        version: 14.0.2
 
   packages/relay:
     dependencies:

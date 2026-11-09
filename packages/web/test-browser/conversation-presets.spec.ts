@@ -60,6 +60,7 @@ test("page-scoped tabs, preset editor, simple creation and later settings editin
   await expect(page).toHaveURL(new RegExp(`${root}/preset_`));
   await expect(page.getByLabel("Preset name", { exact: true })).toHaveValue("Research team");
   const presetId = new URL(page.url()).pathname.split("/").at(-1)!;
+  expect(presetId).toMatch(/^preset_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
   await page.getByRole("link", { name: "← Conversation presets", exact: true }).click();
   await expect(page.getByRole("link", { name: "Research team", exact: true })).toBeVisible();
   await page.screenshot({ path: "test-results/workspace-settings-presets.png" });
@@ -88,6 +89,7 @@ test("page-scoped tabs, preset editor, simple creation and later settings editin
   const response = await responsePromise;
   expect(response.ok()).toBe(true);
   const { conversation } = await response.json();
+  expect(conversation.id).toMatch(/^conversation_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
   expect(conversation.folderId).toBe(filingFolder.id);
   await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
   const original = (await local(`/local/conversations/${conversation.id}/creation-setup`)).body.setup;
@@ -109,6 +111,46 @@ test("page-scoped tabs, preset editor, simple creation and later settings editin
   await page.getByRole("button", { name: "Confirm delete", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`${root}$`));
   expect((await local(`/local/conversations/${conversation.id}/creation-setup`)).body.setup).toEqual(original);
+});
+
+test("Conversation drafts use UUIDv7, retain ids across retries, and reset only for a new draft", async ({ page, request }) => {
+  const { workspace, local } = await presetFixture(page, request);
+  const path = `/local/workspaces/${workspace.id}/conversations`;
+  const before = (await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json()).conversations.length;
+  await page.getByRole("button", { name: `Quick create Conversation in ${workspace.name}` }).click();
+  const creation = page.getByRole("main", { name: "Create a Conversation" });
+  await creation.getByLabel("Conversation name", { exact: true }).fill("uuidv7-draft");
+  const submittedIds: string[] = [];
+  await page.route(`**${path}`, async (route) => {
+    if (route.request().method() !== "POST") { await route.continue(); return; }
+    submittedIds.push((route.request().postDataJSON() as { id: string }).id);
+    if (submittedIds.length <= 2) {
+      await route.fulfill({ status: 503, json: { error: "Temporary creation failure" } });
+    } else await route.continue();
+  });
+  const submit = creation.getByRole("button", { name: "Create Conversation", exact: true });
+  await submit.click();
+  await expect(creation.getByRole("button", { name: "Start a new draft", exact: true })).toBeVisible();
+  expect(submittedIds[0]).toMatch(/^conversation_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
+  await creation.getByLabel("Conversation name", { exact: true }).fill("uuidv7-draft-retry");
+  await submit.click();
+  await expect.poll(() => submittedIds.length).toBe(2);
+  await expect(submit).toBeEnabled();
+  expect(submittedIds[1]).toBe(submittedIds[0]);
+  await creation.getByRole("button", { name: "Start a new draft", exact: true }).click();
+  const created = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(path));
+  await submit.click();
+  const response = await created;
+  expect(response.ok()).toBe(true);
+  const { conversation } = await response.json();
+  expect(submittedIds).toHaveLength(3);
+  expect(submittedIds[2]).toMatch(/^conversation_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
+  expect(submittedIds[2]).not.toBe(submittedIds[0]);
+  expect(conversation.id).toBe(submittedIds[2]);
+  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  expect((await local(`/local/conversations/${conversation.id}/creation-setup`)).status).toBe(200);
+  const after = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json();
+  expect(after.conversations).toHaveLength(before + 1);
 });
 
 test("late preset saves and deletes cannot redirect or replace another editor", async ({ page, request }) => {
@@ -178,6 +220,7 @@ test("lost preset-save responses recover by exact retry or reload with the same 
   expect(presets.find(({ id }) => id === committedIds[1])).toMatchObject({ guidance: "Repaired guidance", revision: 2 });
   expect(presets.find(({ id }) => id === committedIds[0])).toMatchObject({ guidance: "Original guidance", revision: 1 });
   expect(committedIds[1]).not.toBe(committedIds[0]);
+  for (const id of committedIds) expect(id).toMatch(/^preset_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
 });
 
 test("advanced settings reload reconciles roles with the edited roster", async ({ page, request }) => {

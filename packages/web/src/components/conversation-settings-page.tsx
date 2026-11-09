@@ -1,3 +1,4 @@
+import { createResourceId } from "@minu/channels-core/ids";
 import type { ConversationMetadata } from "@minu/channels-core/types";
 import type { ConversationSetup, LocalConversationSettings, UpdateConversationSettingsInput } from "@minu/channels-control/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -35,7 +36,7 @@ function CreateConversationForm({ workspaceId, participants, humanId, initialFol
   const [folder, setFolder] = useState("");
   const [folderId, setFolderId] = useState(initialFolderId ?? "");
   const folders = useQuery({ queryKey: queryKeys.workspaceFolders(workspaceId), queryFn: () => conversations.listWorkspaceFolders(workspaceId), refetchOnMount: "always" });
-  const [id, setId] = useState(() => `conversation_${crypto.randomUUID().replaceAll("-", "")}`);
+  const [id, setId] = useState(() => createResourceId("conversation"));
   const navigate = useNavigate();
   const cache = useConversationCache();
   const queryClient = useQueryClient();
@@ -87,7 +88,7 @@ function CreateConversationForm({ workspaceId, participants, humanId, initialFol
         {picker.error ? <ErrorNotice onDismiss={picker.reset} className="mt-3">{picker.error.message}</ErrorNotice> : null}
       </section>
     </fieldset>
-    {mutation.error ? <ErrorNotice onDismiss={mutation.reset}>{mutation.error.message} <button type="button" className="underline" onClick={() => { setId(`conversation_${crypto.randomUUID().replaceAll("-", "")}`); mutation.reset(); }}>Start a new draft</button></ErrorNotice> : null}
+    {mutation.error ? <ErrorNotice onDismiss={mutation.reset}>{mutation.error.message} <button type="button" className="underline" onClick={() => { setId(createResourceId("conversation")); mutation.reset(); }}>Start a new draft</button></ErrorNotice> : null}
     <div className="flex flex-wrap items-center justify-end gap-3 border-t border-[var(--border)] pt-5">{returnConversation ? <Link to="/app/workspaces/$workspaceId/conversations/$conversationId" params={{ workspaceId, conversationId: returnConversation.id }} className="button-secondary">Cancel</Link> : <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="button-secondary">Cancel</Link>}<button type="submit" className="button-primary" disabled={!ready || busy || folders.isError}><Plus className="h-4 w-4" />{mutation.isPending ? "Creating…" : "Create Conversation"}</button></div>
   </form>;
 }

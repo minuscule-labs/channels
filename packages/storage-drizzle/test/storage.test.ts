@@ -548,14 +548,16 @@ test("Drizzle/libSQL persists Conversation lifecycle state without changing tran
   }
 });
 
-test("Drizzle/libSQL preserves conversations, sequences, messages, and cursors", async () => {
+test("Drizzle/libSQL preserves mixed UUIDv4/UUIDv7 ids, sequences, messages, and cursors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-channels-libsql-"));
   const url = localLibSqlUrl(join(directory, "channels.db"));
-  let conversationId!: string;
+  const conversationId = "channel_f50e8400e29b41d4a716446655440000";
+  const legacyMessageId = "message_f50e8400e29b41d4a716446655440000";
   try {
     const firstStorage = await DrizzleLibSqlConversationStorage.open({ url });
     const first = new ConversationService(firstStorage);
     const conversation = await first.createConversation({
+      id: conversationId,
       participants: [
         { id: "user", type: "human" },
         {
@@ -567,16 +569,22 @@ test("Drizzle/libSQL preserves conversations, sequences, messages, and cursors",
         },
       ],
     });
-    conversationId = conversation.id;
-    assert.equal(
-      (await first.createMessage(conversation.id, { participantId: "user", body: "@agent-a first" }))
-        .sequence,
-      1,
-    );
-    assert.equal(
-      (await first.createMessage(conversation.id, { participantId: "agent-a", body: "done" })).sequence,
-      2,
-    );
+    const legacyMessage = await firstStorage.appendMessage({
+      id: legacyMessageId,
+      conversationId,
+      participantId: "user",
+      body: "@agent-a first",
+      to: ["agent-a"],
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.equal(legacyMessage.sequence, 1);
+    const newMessage = await first.createMessage(conversationId, {
+      participantId: "agent-a", body: "done", replyTo: legacyMessageId,
+    });
+    assert.equal(newMessage.sequence, 2);
+    assert.match(newMessage.id, /^message_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
+    // ID order differs from transcript order when old and new UUID versions mix.
+    assert.ok(newMessage.id < legacyMessageId);
     await firstStorage.setCursor(conversation.id, "agent-a", 1);
     await first.close();
 
@@ -591,8 +599,12 @@ test("Drizzle/libSQL preserves conversations, sequences, messages, and cursors",
       profile: "Builds and tests requested changes.",
       status: "active",
     });
+    assert.equal((await second.getConversation(conversationId)).id, conversationId);
+    const messages = await second.listMessages(conversationId);
+    assert.deepEqual(messages.map(({ id }) => id), [legacyMessageId, newMessage.id]);
+    assert.equal(messages[1]?.replyTo, legacyMessageId);
     assert.deepEqual(
-      (await second.listMessages(conversationId)).map((message) => [message.sequence, message.body]),
+      messages.map((message) => [message.sequence, message.body]),
       [[1, "@agent-a first"], [2, "done"]],
     );
     assert.equal(await secondStorage.getCursor(conversationId, "agent-a"), 1);
