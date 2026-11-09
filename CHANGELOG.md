@@ -8,6 +8,7 @@ Release overview: [Bounded connection cleanup and content-page settings](docs/re
 
 - Release production-proxy connections when browser consumers disconnect, propagate premature upstream failure, and dispose of fully parsed but unread responses without breaking normal HTTP completion or socket reuse.
 - Make both SSE routes release subscriptions and heartbeat timers across disconnect, asynchronous setup, response failure, and shutdown. Add real-HTTP regressions, including 100 disconnect cycles per route and backpressure cancellation.
+- Handle deferred libSQL cleanup unlinking an optional diagnostic sidecar between open and descriptor validation. Accept only a genuinely absent private sidecar while retaining file-safety checks and rejecting replacements or an unlinked main database.
 - Move Workspace and Conversation settings, people/permissions, and preset editing into content pages. Persist current Conversation roles, model/effort overrides, guidance, and timeouts separately from immutable creation snapshots; validate and prepare creation working folders before publication.
 - Generate new typed resource IDs with UUIDv7 while preserving the existing prefixed 32-hex shape and acceptance of existing IDs. Add the core `uuid` dependency; message sequences remain authoritative and UUID timestamps are public.
 - Add private Relay migrations `0016_conversation_settings` and `0017_creation_folder_preparation`; advance local-control protocol to v25. Keep the public database schema and Runtime pin `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732` unchanged from v0.0.32.
