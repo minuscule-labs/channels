@@ -148,6 +148,60 @@ export async function createConversationHttpServer(
   const service = options.service ?? new ConversationService();
   const serviceToken = options.serviceToken ?? randomBytes(32).toString("base64url");
   const streams = new Set<ServerResponse>();
+  let closing = false;
+
+  async function openEventStream(
+    response: ServerResponse,
+    subscribe: (listener: (event: ConversationEvent) => void) => Promise<() => void>,
+    readiness: { conversationId: string } | { conversationIds: string[] },
+  ): Promise<void> {
+    let closed = false;
+    let ready = false;
+    let unsubscribe: (() => void) | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const pending: ConversationEvent[] = [];
+    const cleanup = () => {
+      closed = true;
+      streams.delete(response);
+      clearInterval(heartbeat);
+      heartbeat = undefined;
+      pending.length = 0;
+      const release = unsubscribe;
+      unsubscribe = undefined;
+      release?.();
+    };
+    // Install before awaiting setup: close can precede acquisition of unsubscribe.
+    response.once("close", cleanup);
+    response.once("error", () => { cleanup(); response.destroy(); });
+    try {
+      unsubscribe = await subscribe((event) => {
+        if (closed || closing || response.destroyed) return;
+        if (ready) sendEvent(response, event);
+        else pending.push(event);
+      });
+      if (closed || closing || response.destroyed) {
+        cleanup();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      streams.add(response);
+      response.write(`event: ready\ndata: ${JSON.stringify(readiness)}\n\n`);
+      ready = true;
+      for (const event of pending) sendEvent(response, event);
+      pending.length = 0;
+      heartbeat = setInterval(() => {
+        if (!closed && !closing && !response.destroyed) response.write(": keepalive\n\n");
+      }, heartbeatIntervalMs);
+      heartbeat.unref();
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+  }
 
   const server = createServer(async (request, response) => {
     try {
@@ -294,31 +348,7 @@ export async function createConversationHttpServer(
         if (conversationIds.length === 0 || conversationIds.length > 100 || conversationIds.some((conversationId) => !conversationId)) {
           throw new ConversationValidationError("conversationId must identify between 1 and 100 Conversations");
         }
-        const pending: ConversationEvent[] = [];
-        let ready = false;
-        const unsubscribe = await service.subscribeMany(conversationIds, (event) => {
-          if (ready) sendEvent(response, event);
-          else pending.push(event);
-        });
-        response.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        });
-        streams.add(response);
-        response.write(`event: ready\ndata: ${JSON.stringify({ conversationIds })}\n\n`);
-        ready = true;
-        for (const event of pending) sendEvent(response, event);
-        const heartbeat = setInterval(
-          () => response.write(": keepalive\n\n"),
-          heartbeatIntervalMs,
-        );
-        heartbeat.unref();
-        request.on("close", () => {
-          clearInterval(heartbeat);
-          streams.delete(response);
-          unsubscribe();
-        });
+        await openEventStream(response, (listener) => service.subscribeMany(conversationIds, listener), { conversationIds });
         return;
       }
 
@@ -471,29 +501,13 @@ export async function createConversationHttpServer(
       const eventsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/events$/);
       if (eventsMatch && request.method === "GET") {
         const conversationId = eventsMatch[1]!;
-        const unsubscribe = await service.subscribe(conversationId, (event) => sendEvent(response, event));
-        response.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        });
-        streams.add(response);
-        response.write(`event: ready\ndata: ${JSON.stringify({ conversationId })}\n\n`);
-        const heartbeat = setInterval(
-          () => response.write(": keepalive\n\n"),
-          heartbeatIntervalMs,
-        );
-        heartbeat.unref();
-        request.on("close", () => {
-          clearInterval(heartbeat);
-          streams.delete(response);
-          unsubscribe();
-        });
+        await openEventStream(response, (listener) => service.subscribe(conversationId, listener), { conversationId });
         return;
       }
 
       json(response, 404, { error: "Not found" });
     } catch (error) {
+      if (response.destroyed || response.writableEnded) return;
       if (response.headersSent) {
         response.end();
         return;
@@ -527,6 +541,7 @@ export async function createConversationHttpServer(
     service,
     serviceToken,
     async close() {
+      closing = true;
       for (const stream of streams) stream.end();
       streams.clear();
       try {
