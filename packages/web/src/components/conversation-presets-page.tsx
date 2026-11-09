@@ -1,4 +1,5 @@
 import { CONVERSATION_PRESET_STARTERS, type ConversationPreset, type ConversationSetup, type LocalConversationPresets, type SaveConversationPresetInput } from "@minu/channels-control/contracts";
+import { createResourceId } from "@minu/channels-core/ids";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
@@ -29,11 +30,11 @@ export function ConversationPresetsPage() {
 function PresetForm({ workspaceId, preset, participants }: { workspaceId: string; preset?: ConversationPreset; participants: WorkspaceParticipant[] }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [id] = useState(preset?.id ?? `preset_${crypto.randomUUID().replaceAll("-", "")}`);
+  const [id] = useState(() => preset?.id ?? createResourceId("preset"));
   const [name, setName] = useState(preset?.name ?? "");
   const [setup, setSetup] = useState<ConversationSetup>(preset ? copySetup(preset) : { participants: [] });
   const [revision, setRevision] = useState<number | null>(preset?.revision ?? null);
-  const [copyId] = useState(() => `preset_${crypto.randomUUID().replaceAll("-", "")}`);
+  const [copyId] = useState(() => createResourceId("preset"));
   const pendingTarget = useRef(id);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [starter, setStarter] = useState("");
