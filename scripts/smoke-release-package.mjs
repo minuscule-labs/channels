@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { spawn } from "node:child_process";
-import { Worker } from "node:worker_threads";
+import { fork, spawn } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const artifacts = resolve(root, "release/artifacts");
@@ -144,17 +143,17 @@ async function imageSharingSmoke(portBase, output) {
 
 async function diagnosticWorkerSmoke() {
   const epoch = "release-smoke-epoch";
-  const worker = new Worker(join(installRoot, "node_modules/@minu/channels/dist/bin/diagnostics-worker.js"), {
-    workerData: { path: join(temporary, "diagnostic-smoke.db"), epoch },
+  const worker = fork(join(installRoot, "node_modules/@minu/channels/dist/bin/diagnostics-worker.js"), [], {
+    execArgv: [], serialization: "advanced", stdio: ["ignore", "ignore", "ignore", "ipc"],
   });
   await new Promise((resolveSmoke, reject) => {
     let closed = false;
-    const fail = (error) => { clearTimeout(timeout); void worker.terminate().catch(() => {}); reject(error); };
+    const fail = (error) => { clearTimeout(timeout); worker.kill("SIGKILL"); reject(error); };
     const timeout = setTimeout(() => fail(new Error("Packaged diagnostic worker timed out")), 5_000);
     worker.on("error", fail);
     worker.on("message", (message) => {
       if (message.epoch !== epoch) return fail(new Error("Packaged diagnostic worker epoch mismatch"));
-      if (message.type === "ready") worker.postMessage({ type: "history", epoch, requestId: 1,
+      if (message.type === "ready") worker.send({ type: "history", epoch, requestId: 1,
         scope: { workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent" } });
       else if (message.type === "read") {
         if (message.requestId === 2) {
@@ -163,14 +162,14 @@ async function diagnosticWorkerSmoke() {
             || trails[0].outcome !== "delivered" || /smoke-private|bindingId|sessionId|ownerId|triggerId/.test(JSON.stringify(message.value))) {
             return fail(new Error("Packaged message-delivery journal projection failed"));
           }
-          worker.postMessage({ type: "close", epoch });
+          worker.send({ type: "close", epoch });
           return;
         }
         if (message.requestId !== 1 || message.value?.coverage !== "available" || !Array.isArray(message.value.operations) || message.value.operations.length !== 0) {
           return fail(new Error("Packaged diagnostic journal read failed"));
         }
         const now = new Date().toISOString();
-        worker.postMessage({ type: "put_delivery", epoch, record: {
+        worker.send({ type: "put_delivery", epoch, record: {
           workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent",
           bindingId: "smoke-private-binding", generation: 1, adapter: "pi", sessionId: "smoke-private-session", ownerId: "smoke-private-owner",
           trailId: "trail_smoke", triggerId: "smoke-private-trigger", triggerSequence: 1, epoch, revision: 1, lastSequence: 1,
@@ -179,7 +178,7 @@ async function diagnosticWorkerSmoke() {
         } });
       } else if (message.type === "delivery_written") {
         if (message.id !== "trail_smoke" || message.revision !== 1) return fail(new Error("Packaged message-delivery acknowledgment mismatch"));
-        worker.postMessage({ type: "delivery_history", epoch, requestId: 2, selection: {
+        worker.send({ type: "delivery_history", epoch, requestId: 2, selection: {
           workspaceId: "smoke-workspace", conversationId: "smoke-conversation", participantIdentityId: "smoke-agent",
           bindingId: "smoke-private-binding", generation: 1, adapter: "pi", sessionId: "smoke-private-session", ownerId: "smoke-private-owner",
         } });
@@ -191,6 +190,7 @@ async function diagnosticWorkerSmoke() {
       if (code === 0 && closed) resolveSmoke();
       else reject(new Error("Packaged diagnostic worker did not close cleanly"));
     });
+    worker.send({ type: "initialize", path: join(temporary, "diagnostic-smoke.db"), epoch });
   });
 }
 
