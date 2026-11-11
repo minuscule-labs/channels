@@ -343,7 +343,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 
-  await openWorkspaceAgents(page, workspace.name);
+  await page.getByRole("link", { name: /alternate-collaboration/ }).first().click();
   await request.post(`${fixtureBase}/peer-message?mention=true&body=Unread%20mention`);
   const unread = page.getByLabel(/1 unread message, 1 direct mention/).first();
   await expect(unread).toBeVisible({ timeout: 10_000 });
@@ -361,7 +361,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
   await expect(page).toHaveTitle("MinuChannels");
   await changeNotificationSound(page, workspace.name, "off");
-  await openWorkspaceAgents(page, workspace.name);
+  await page.getByRole("link", { name: /alternate-collaboration/ }).first().click();
   await request.post(`${fixtureBase}/peer-message?body=Muted%20agent%20reply`);
   await expect(page.getByLabel(/1 unread message/).first()).toBeVisible({ timeout: 10_000 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
@@ -369,7 +369,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByText("Muted agent reply", { exact: true })).toBeVisible();
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
 
-  await openWorkspaceAgents(page, workspace.name);
+  await page.getByRole("link", { name: /alternate-collaboration/ }).first().click();
   await request.post(`${fixtureBase}/peer-message?author=human&body=Own%20message`);
   await page.waitForTimeout(5_500);
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
@@ -560,7 +560,7 @@ test("hides identity-scoped notification preferences when session capability is 
     body: JSON.stringify({ error: "Session unavailable" }),
   }));
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/agents`);
-  await expect(page.getByLabel("Selected Workspace").first()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace settings", exact: true })).toBeVisible();
   await openWorkspaceSettings(page, workspace.name);
   await expect(page.getByRole("main", { name: "Workspace Settings", exact: true })).toBeVisible();
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
@@ -1080,6 +1080,8 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
   await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
   await settings.getByRole("button", { name: "Save name" }).click();
+  await expect(settings.getByText("Saved", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await expect(page.getByLabel("Selected Workspace").locator("option:checked")).toHaveText("Renamed Workspace");
 });
 
