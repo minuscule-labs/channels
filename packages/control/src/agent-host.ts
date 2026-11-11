@@ -2,7 +2,6 @@ import { ConversationClient } from "@minu/channels-core/client";
 import type { ConversationMessage, ConversationMetadata, Participant } from "@minu/channels-core";
 import {
   ConversationRuntimeRelay,
-  effectiveConversationSetup,
   conversationAgentConfiguration,
   captureAuthoredContext,
   AuthoredContextUnavailableError,
@@ -431,23 +430,13 @@ export class LocalAgentHost {
     }
   }
 
-  private async conversationTimeoutPolicy(workspaceId: string, conversationId: string) {
-    return this.withTimeout((async () => {
-      const conversation = await this.options.client.getConversation(conversationId);
-      const sourceId = conversation.thread?.parentConversationId ?? conversationId;
-      const [workspace, setup] = await Promise.all([
-        this.options.store.getWorkspaceConfig(workspaceId),
-        effectiveConversationSetup(this.options.store, workspaceId, sourceId),
-      ]);
-      return { turnTimeoutMs: setup?.turnTimeoutMs ?? workspace?.turnTimeoutMs,
-        idleSleepTimeoutMs: setup?.idleSleepTimeoutMs === null ? undefined
-          : setup?.idleSleepTimeoutMs ?? workspace?.idleSleepTimeoutMs };
-    })(), 2_000, "Conversation timeout policy read timed out");
+  private async workspaceTimeoutPolicy(workspaceId: string) {
+    return this.withTimeout(this.options.store.getWorkspaceConfig(workspaceId), 2_000, "Workspace timeout policy read timed out");
   }
 
-  private async effectiveIdleSleepTimeoutMs(workspaceId: string, conversationId: string): Promise<number | undefined> {
+  private async effectiveIdleSleepTimeoutMs(workspaceId: string): Promise<number | undefined> {
     if (this.options.idleSleepTimeoutMs !== undefined) return this.options.idleSleepTimeoutMs;
-    const configured = (await this.conversationTimeoutPolicy(workspaceId, conversationId)).idleSleepTimeoutMs;
+    const configured = (await this.workspaceTimeoutPolicy(workspaceId))?.idleSleepTimeoutMs;
     return configured !== undefined && [15, 30, 60, 240, 1440].includes(configured / 60_000) ? configured : undefined;
   }
 
@@ -487,7 +476,7 @@ export class LocalAgentHost {
         const key = `${workspaceId}:${conversationId}`;
         let policy = policies.get(key);
         if (!policy) {
-          policy = this.effectiveIdleSleepTimeoutMs(workspaceId, conversationId).catch(() => {
+          policy = this.effectiveIdleSleepTimeoutMs(workspaceId).catch(() => {
             // Unknown policy fails closed for this Workspace only; another
             // Workspace may still have a sleeping session to reconcile.
             try {
@@ -545,7 +534,7 @@ export class LocalAgentHost {
       const wasSleeping = current.state === "sleeping" || binding.isSleeping === true;
       let durableSleeping = current.state === "sleeping";
       if (!wasSleeping) {
-        const timeoutMs = await this.effectiveIdleSleepTimeoutMs(current.workspaceId, current.conversationId);
+        const timeoutMs = await this.effectiveIdleSleepTimeoutMs(current.workspaceId);
         if (timeoutMs === undefined) return;
         const lastActiveAt = Date.parse(current.lastActiveAt ?? current.updatedAt);
         if (!Number.isFinite(lastActiveAt) || this.now().getTime() - lastActiveAt < timeoutMs) return;
@@ -561,7 +550,7 @@ export class LocalAgentHost {
           || latest.runtimeOwnerId !== current.runtimeOwnerId
           || latest.runtimeSessionId !== current.runtimeSessionId) return false;
         if (!wasSleeping) {
-          const currentTimeoutMs = await this.effectiveIdleSleepTimeoutMs(latest.workspaceId, latest.conversationId);
+          const currentTimeoutMs = await this.effectiveIdleSleepTimeoutMs(latest.workspaceId);
           if (currentTimeoutMs === undefined) return false;
           const latestActivity = Date.parse(latest.lastActiveAt ?? latest.updatedAt);
           if (!Number.isFinite(latestActivity) || this.now().getTime() - latestActivity < currentTimeoutMs) return false;
@@ -2775,7 +2764,7 @@ export class LocalAgentHost {
               client: this.options.client,
               conversationId,
               bindings: [binding],
-              resolveTurnTimeoutMs: async () => (await this.conversationTimeoutPolicy(recoveryRecord.workspaceId, conversationId)).turnTimeoutMs,
+              resolveTurnTimeoutMs: async () => (await this.workspaceTimeoutPolicy(recoveryRecord.workspaceId))?.turnTimeoutMs,
               cursorStore: this.options.store,
               onTurnDelivery: (attachedBinding, trigger) => {
                 const scope = this.turnDeliveryScope(conversationId, attachedBinding);

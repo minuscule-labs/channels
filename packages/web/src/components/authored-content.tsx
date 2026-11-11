@@ -1,12 +1,14 @@
 import type { LocalAuthoredDocument, LocalAuthoredDocumentSummary } from "@minu/channels-control/contracts";
-import type { Participant } from "@minu/channels-core/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { LocalControlClientError } from "@minu/channels-control/client";
 import { localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
 import { MessageMarkdown } from "./message-markdown";
 import { ErrorNotice } from "./ui/error-notice";
+import { EllipsisVertical } from "lucide-react";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "./ui/dropdown-menu";
 
 type Scope = { workspaceId: string; actorIdentityId: string; onDenied(): void };
 function useAccessBoundary(scope: Scope, errors: readonly unknown[]) {
@@ -17,35 +19,38 @@ function useAccessBoundary(scope: Scope, errors: readonly unknown[]) {
 const keys = {
   library: ({ workspaceId, actorIdentityId }: Scope) => ["local", "authored", workspaceId, actorIdentityId] as const,
   document: (scope: Scope, id: string) => [...keys.library(scope), "document", id] as const,
-  history: (scope: Scope, id: string, version: number) => [...keys.library(scope), "history", id, version] as const,
-  context: (scope: Scope, id: string) => [...keys.library(scope), "context", id] as const,
 };
 
-function DocumentEditor({ scope, document, kind, conversationId, onSaved }: {
+function DocumentEditor({ scope, document, kind, onSaved, onDirtyChange, disabled = false }: {
   scope: Scope;
   document?: LocalAuthoredDocument;
   kind: LocalAuthoredDocument["kind"];
-  conversationId?: string;
   onSaved(document: LocalAuthoredDocument): void;
+  onDirtyChange?(dirty: boolean): void;
+  disabled?: boolean;
 }) {
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [base, setBase] = useState(document);
   const [name, setName] = useState(document?.name ?? "");
   const [description, setDescription] = useState(document?.description ?? "");
   const [content, setContent] = useState(document?.content ?? "");
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [review, setReview] = useState<LocalAuthoredDocument>();
   const queryClient = useQueryClient();
   const dirty = content !== (base?.content ?? "") || (kind === "skill"
     && (name !== (base?.name ?? "") || description !== (base?.description ?? "")));
-  const editable = !base || base.state === "active";
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  const editable = (!base || base.state === "active") && !disabled;
   const saveFields = { ...(kind === "skill" ? { name, description } : {}), content };
   const mutation = useMutation({
     retry: false,
-    mutationFn: (action: "save" | "publish" | "archive") => base
-      ? localControl.updateAuthoredDocument(scope.workspaceId, base.id, action === "save"
+    mutationFn: (action: "commit" | "archive") => base
+      ? localControl.updateAuthoredDocument(scope.workspaceId, base.id, action === "commit"
         ? { action, expectedVersion: base.version, ...saveFields } : { action, expectedVersion: base.version })
-      : localControl.createAuthoredDocument(scope.workspaceId, { kind, ...(conversationId ? { conversationId } : {}), ...saveFields }),
+      : localControl.createAuthoredDocument(scope.workspaceId, { action: "commit", kind, ...saveFields }),
     onSuccess: (next) => {
+      void queryClient.invalidateQueries({ queryKey: keys.library(scope) });
+      if (!mounted.current) return;
       setBase(next); setName(next.name); setDescription(next.description); setContent(next.content); setReview(undefined);
       queryClient.setQueryData(keys.document(scope, next.id), next);
       onSaved(next);
@@ -54,22 +59,16 @@ function DocumentEditor({ scope, document, kind, conversationId, onSaved }: {
   const latest = useMutation({
     retry: false,
     mutationFn: () => localControl.getAuthoredDocument(scope.workspaceId, base!.id),
-    onSuccess: setReview,
+    onSuccess: next => { if (mounted.current) setReview(next); },
   });
-  const history = useQuery({
-    queryKey: keys.history(scope, base?.id ?? "new", base?.version ?? 0),
-    queryFn: () => localControl.listAuthoredDocumentRevisions(scope.workspaceId, base!.id),
-    enabled: historyOpen && Boolean(base), retry: false, gcTime: 0,
-  });
-  useAccessBoundary(scope, [mutation.error, latest.error, history.error]);
+  useAccessBoundary(scope, [mutation.error, latest.error]);
   useEffect(() => {
     if (!document || !base || document.id !== base.id || document.version <= base.version || dirty || mutation.isPending || review) return;
     setBase(document); setName(document.name); setDescription(document.description); setContent(document.content);
   }, [document, base?.id, base?.version, dirty, mutation.isPending, review]);
   return <div className="space-y-3" aria-label={kind === "instructions" ? "Instruction editor" : "Skill editor"}>
     <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
-      <span>{conversationId ? "Channel" : "Workspace"}</span>
-      {base ? <><span>Draft v{base.version}</span><span>{base.publishedRevision ? `Published r${base.publishedRevision}` : "Unpublished"}</span></> : null}
+      <span>Workspace</span>
       {base?.state === "archived" ? <span>Archived</span> : null}
     </div>
     {kind === "skill" ? <>
@@ -82,98 +81,98 @@ function DocumentEditor({ scope, document, kind, conversationId, onSaved }: {
     <details className="text-xs"><summary className="cursor-pointer">Preview</summary><div className="message-markdown mt-2"><MessageMarkdown body={content} /></div></details>
     {mutation.error ? <ErrorNotice onDismiss={mutation.reset}>{mutation.error.message}</ErrorNotice> : null}
     {latest.error ? <ErrorNotice onDismiss={latest.reset}>{latest.error.message}</ErrorNotice> : null}
-    {review ? <section aria-label="Latest saved draft" className="rounded border border-[var(--border)] p-3">
-      <h4 className="text-xs font-semibold">Latest saved draft · v{review.version}</h4>
+    {review ? <section aria-label="Latest saved version" className="rounded border border-[var(--border)] p-3">
+      <h4 className="text-xs font-semibold">Latest saved version</h4>
       {kind === "skill" ? <p className="mt-2 text-xs">{review.name} · {review.description}</p> : null}
       <MessageMarkdown body={review.content} />
-      <button className="button-secondary mt-2" type="button" disabled={review.state !== "active"} onClick={() => { setBase(review); setReview(undefined); mutation.reset(); }}>Keep draft on latest revision</button>
+      <button className="button-secondary mt-2" type="button" disabled={review.state !== "active"} onClick={() => { setBase(review); setReview(undefined); mutation.reset(); }}>Keep my edits</button>
     </section> : null}
     <div className="flex flex-wrap gap-2">
-      <button className="button-secondary" type="button" disabled={!editable || mutation.isPending || (!dirty && Boolean(base)) || (kind === "skill" && !name.trim())} onClick={() => mutation.mutate("save")}>Save draft</button>
-      <button className="button-primary" type="button" disabled={!editable || !base || dirty || mutation.isPending || (kind === "skill" && (!description.trim() || !content.trim()))} onClick={() => mutation.mutate("publish")}>Publish</button>
-      {base ? <button className="button-secondary" type="button" onClick={() => setHistoryOpen(!historyOpen)}>Revision history</button> : null}
+      <button className="button-primary" type="button" disabled={!editable || mutation.isPending || (kind === "skill" && (!name.trim() || !description.trim() || !content.trim()))} onClick={() => mutation.mutate("commit")}>Save</button>
       {base && mutation.error ? <button className="button-secondary" type="button" disabled={latest.isPending} onClick={() => latest.mutate()}>Review latest</button> : null}
       {base && kind === "skill" && editable ? <button className="button-secondary" type="button" disabled={dirty || mutation.isPending} onClick={() => mutation.mutate("archive")}>Archive skill</button> : null}
     </div>
-    {historyOpen ? <section aria-label="Published revisions" className="space-y-2">
-      {history.isPending ? <span className="text-xs">Loading revisions…</span> : null}
-      {history.error ? <p role="alert" className="text-xs text-[var(--danger)]">{history.error.message}</p> : null}
-      {history.data?.length === 0 ? <span className="text-xs">No published revisions</span> : null}
-      {history.data?.map(revision => <details key={revision.revision} className="rounded border border-[var(--border)] p-2 text-xs">
-        <summary className="cursor-pointer">Revision {revision.revision} · {revision.createdAt}</summary>
-        <MessageMarkdown body={revision.content} />
-      </details>)}
-    </section> : null}
+    {mutation.isSuccess && !dirty ? <span role="status" className="text-xs text-[var(--success)]">Saved</span> : null}
   </div>;
 }
 
-function SavedEditor({ scope, id, onSaved }: { scope: Scope; id: string; onSaved(document: LocalAuthoredDocument): void }) {
+function SavedEditor({ scope, id, onSaved, onDirtyChange, disabled, workspaceSkillOnly = false }: { scope: Scope; id: string; onSaved(document: LocalAuthoredDocument): void; onDirtyChange?(dirty: boolean): void; disabled?: boolean; workspaceSkillOnly?: boolean }) {
   const query = useQuery({ queryKey: keys.document(scope, id), queryFn: () => localControl.getAuthoredDocument(scope.workspaceId, id),
     retry: false, gcTime: 0, refetchOnWindowFocus: false });
   useAccessBoundary(scope, [query.error]);
   if (query.error) return <p role="alert" className="text-xs text-[var(--danger)]">{query.error.message}</p>;
-  if (!query.data) return <span className="text-xs">Loading draft…</span>;
-  return <DocumentEditor key={id} scope={scope} document={query.data} kind={query.data.kind} conversationId={query.data.conversationId} onSaved={onSaved} />;
+  if (!query.data) return <span className="text-xs">Loading document…</span>;
+  if (query.data.conversationId || (workspaceSkillOnly && (query.data.kind !== "skill" || query.data.state !== "active"))) return <p role="alert" className="text-sm">Skill is unavailable.</p>;
+  return <DocumentEditor key={id} scope={scope} document={query.data} kind={query.data.kind} onSaved={onSaved} onDirtyChange={onDirtyChange} disabled={disabled} />;
 }
 
-function EffectiveContext({ scope, conversationId, participants }: { scope: Scope; conversationId: string; participants: readonly Participant[] }) {
-  const context = useQuery({ queryKey: keys.context(scope, conversationId), queryFn: () => localControl.getConversationAuthoredContext(conversationId),
-    retry: false, gcTime: 0, refetchInterval: 5_000 });
-  useAccessBoundary(scope, [context.error]);
-  if (context.error) return <p role="alert" className="text-xs text-[var(--danger)]">{context.error.message}</p>;
-  if (!context.data) return <span className="text-xs">Loading published instructions…</span>;
-  const statuses = { applied: "Applied", pending: "Pending", legacy: "Not verified", not_started: "Not started", unavailable: "Unavailable" };
-  return <section aria-label="Effective instructions" className="space-y-2 rounded border border-[var(--border)] p-3">
-    <h4 className="text-xs font-semibold">Published instructions</h4>
-    {context.data.instructions ? <MessageMarkdown body={context.data.instructions} /> : <span className="text-xs">None</span>}
-    <h4 className="text-xs font-semibold">Session instructions</h4>
-    {context.data.agents.map(agent => <div key={agent.identityId} className="text-xs">
-      <span>{participants.find(participant => participant.id === agent.identityId)?.handle ?? agent.identityId}</span>
-      <span className="ml-2" data-context-status={agent.status}>{statuses[agent.status]}</span>
-      {agent.applied?.length ? <details><summary className="cursor-pointer">Applied revisions</summary><ul>{agent.applied.map(ref => <li key={ref.documentId}>{ref.source === "workspace" ? "Workspace" : "Channel"} · {ref.kind} · {ref.documentId} · r{ref.revision}</li>)}</ul></details> : null}
-    </div>)}
-  </section>;
-}
-
-function ContentPanel({ scope, conversationId, channelId, participants, section }: {
-  scope: Scope; conversationId?: string; channelId?: string; participants: readonly Participant[]; section?: "instructions" | "skills";
+function ContentPanel({ scope, section, skillId }: {
+  scope: Scope; section: "instructions" | "skills"; skillId?: string;
 }) {
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<string>();
-  const [newScope, setNewScope] = useState<"workspace" | "channel">(channelId ? "channel" : "workspace");
+  const navigate = useNavigate();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const library = useQuery({ queryKey: keys.library(scope), queryFn: () => localControl.listAuthoredDocuments(scope.workspaceId), retry: false, gcTime: 0 });
   const refresh = (document?: LocalAuthoredDocument) => {
-    if (document?.kind === "skill") setSelected(document.id);
     void queryClient.invalidateQueries({ queryKey: keys.library(scope) });
+    if (!mounted.current) return;
+    if (section === "skills" && skillId && document) {
+      if (document.state === "archived") void navigate({ to: "/app/workspaces/$workspaceId/settings/skills", params: { workspaceId: scope.workspaceId } });
+      else if (skillId === "new") void navigate({ to: "/app/workspaces/$workspaceId/settings/skills/$skillId", params: { workspaceId: scope.workspaceId, skillId: document.id }, replace: true });
+    }
   };
-  useAccessBoundary(scope, [library.error]);
+  const remove = useMutation({
+    retry: false,
+    mutationFn: (document: LocalAuthoredDocumentSummary) => localControl.updateAuthoredDocument(scope.workspaceId, document.id, { action: "archive", expectedVersion: document.version }),
+    onSuccess: next => {
+      void queryClient.invalidateQueries({ queryKey: keys.library(scope) });
+      if (!mounted.current) return;
+      queryClient.setQueryData(keys.document(scope, next.id), next);
+    },
+  });
+  useAccessBoundary(scope, [library.error, remove.error]);
   if (library.error) return <div role="alert" className="text-xs text-[var(--danger)]">{library.error.message}<button className="ml-2 underline" type="button" onClick={() => void library.refetch()}>Reload library</button></div>;
   if (!library.data) return <span className="text-xs">Loading instructions and skills…</span>;
-  const instructions = library.data.find(document => document.kind === "instructions" && document.conversationId === channelId);
-  const skills = library.data.filter(document => document.kind === "skill" && (document.conversationId === undefined || document.conversationId === channelId));
-  const skillLabel = (document: LocalAuthoredDocumentSummary) => `${document.name} · ${document.conversationId ? "Channel" : "Workspace"}${document.state === "archived" ? " · Archived" : ""}`;
+  const instructions = library.data.find(document => document.kind === "instructions" && document.conversationId === undefined);
+  const skills = library.data.filter(document => document.kind === "skill" && document.conversationId === undefined);
+  if (section === "skills" && skillId) {
+    const existing = skills.find(document => document.id === skillId && !document.conversationId && document.state === "active");
+    if (skillId !== "new" && !existing) return <p role="alert" className="text-sm">Skill is unavailable.</p>;
+    return <section aria-label="Authored skills" className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-5">
+      <h2 className="text-sm font-semibold">{skillId === "new" ? "New skill" : "Edit skill"}</h2>
+      {skillId === "new" ? <DocumentEditor scope={scope} kind="skill" onSaved={refresh} /> : <SavedEditor scope={scope} id={skillId} onSaved={refresh} workspaceSkillOnly />}
+    </section>;
+  }
   return <div className="space-y-4">
-    {section !== "skills" ? <section aria-label={channelId ? "Channel instructions" : "Workspace instructions"} className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
-      <h3 className="text-sm font-semibold">{channelId ? "Channel instructions" : "Workspace instructions"}</h3>
+    {section === "instructions" ? <section aria-label="Workspace instructions" className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-5">
+      <h3 className="text-sm font-semibold">Workspace instructions</h3>
       {instructions ? <SavedEditor scope={scope} id={instructions.id} onSaved={refresh} />
-        : <DocumentEditor scope={scope} kind="instructions" conversationId={channelId} onSaved={refresh} />}
+        : <DocumentEditor scope={scope} kind="instructions" onSaved={refresh} />}
     </section> : null}
-    {section !== "instructions" ? <section aria-label="Authored skills" className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
+    {section === "skills" ? <section aria-label="Authored skills" className="space-y-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-5">
       <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-semibold">Skills</h3>
-        <button className="button-secondary" type="button" onClick={() => setSelected("new")}>New skill</button></div>
-      <div className="flex flex-col items-start gap-1">{skills.map(document => <button key={document.id} className="text-left text-xs underline underline-offset-2" type="button" onClick={() => setSelected(document.id)}>{skillLabel(document)}</button>)}</div>
-      {selected === "new" ? <>
-        {channelId ? <label className="block text-xs font-medium">Skill scope<select aria-label="Skill scope" className="settings-input mt-1" value={newScope} onChange={event => setNewScope(event.target.value as "workspace" | "channel")}><option value="channel">Channel</option><option value="workspace">Workspace</option></select></label> : null}
-        <DocumentEditor key="new-skill" scope={scope} kind="skill" conversationId={newScope === "channel" ? channelId : undefined} onSaved={refresh} />
-      </> : selected ? <SavedEditor key={selected} scope={scope} id={selected} onSaved={refresh} /> : null}
+        <Link className="button-secondary" to="/app/workspaces/$workspaceId/settings/skills/new" params={{ workspaceId: scope.workspaceId }}>New skill</Link></div>
+      <div className="overflow-hidden rounded-md border border-[var(--border)]">
+        <table aria-label="Skills" className="w-full table-fixed text-sm">
+          <colgroup><col className="w-1/3" /><col /><col className="w-14" /></colgroup>
+          <thead className="bg-[var(--panel)] text-left text-xs text-[var(--muted)]"><tr><th scope="col" className="px-3 py-2 font-medium">Name</th><th scope="col" className="px-3 py-2 font-medium">Description</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+          <tbody>{skills.filter(document => document.state === "active").map(document => <tr key={document.id} className="border-t border-[var(--border)] align-top">
+            <td className="break-words px-3 py-3 font-medium">{document.name}</td><td className="break-words px-3 py-3 text-[var(--muted)]">{document.description}</td>
+            <td className="px-2 py-2"><DropdownMenu><DropdownMenuTrigger asChild><button type="button" className="icon-button inline-flex" aria-label={`Skill actions for ${document.name}`} disabled={remove.isPending}><EllipsisVertical className="h-4 w-4" aria-hidden="true" /></button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => void navigate({ to: "/app/workspaces/$workspaceId/settings/skills/$skillId", params: { workspaceId: scope.workspaceId, skillId: document.id } })}>Edit</DropdownMenuItem><DropdownMenuItem tone="danger" disabled={remove.isPending} onSelect={() => remove.mutate(document)}>Remove</DropdownMenuItem></DropdownMenuContent>
+            </DropdownMenu></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+      {remove.error ? <ErrorNotice onDismiss={remove.reset}>{remove.error.message} <button type="button" className="underline" onClick={() => { remove.reset(); void library.refetch(); }}>Reload skills</button></ErrorNotice> : null}
+
     </section> : null}
-    {conversationId && section !== "skills" ? <EffectiveContext scope={scope} conversationId={conversationId} participants={participants} /> : null}
   </div>;
 }
 
-export function AuthoredContent({ workspaceId, actorIdentityId, canAdminister, conversationId, channelId = conversationId, participants = [], section }: {
-  workspaceId: string; actorIdentityId?: string; canAdminister: boolean; section?: "instructions" | "skills";
-  conversationId?: string; channelId?: string; participants?: readonly Participant[];
+export function AuthoredContent({ workspaceId, actorIdentityId, canAdminister, section, skillId }: {
+  workspaceId: string; actorIdentityId?: string; canAdminister: boolean; section: "instructions" | "skills"; skillId?: string;
 }) {
   const capabilities = useQuery({ queryKey: queryKeys.localCapabilities(), queryFn: () => localControl.capabilities(), enabled: canAdminister, retry: false, staleTime: 60_000 });
   const queryClient = useQueryClient();
@@ -184,6 +183,6 @@ export function AuthoredContent({ workspaceId, actorIdentityId, canAdminister, c
     queryClient.removeQueries({ queryKey: ["local", "authored", workspaceId, actorIdentityId] });
   }, [identityKey, workspaceId, actorIdentityId, queryClient]);
   if (!canAdminister || !actorIdentityId || denied === identityKey || !capabilities.data?.features.authoredContent) return null;
-  return <ContentPanel key={`${workspaceId}:${actorIdentityId}:${conversationId ?? "workspace"}`} scope={{ workspaceId, actorIdentityId, onDenied }}
-    conversationId={conversationId} channelId={channelId} participants={participants} section={section} />;
+  return <ContentPanel key={`${workspaceId}:${actorIdentityId}:${section}:${skillId ?? "list"}`} scope={{ workspaceId, actorIdentityId, onDenied }}
+    section={section} skillId={skillId} />;
 }

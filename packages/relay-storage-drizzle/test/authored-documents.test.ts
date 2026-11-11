@@ -143,6 +143,58 @@ test("SQLite publication rollback and reopen preserve head/history consistency",
   }
 });
 
+for (const backend of ["memory", "sqlite"] as const) {
+  test(`${backend}: atomic Save creates and updates active snapshots without activating old drafts`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "minu-authored-commit-"));
+    const store: RelayBindingStore = backend === "memory" ? new InMemoryRelayBindingStore()
+      : await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(directory, "relay.db")) });
+    try {
+      const saved = await store.createAuthoredDocument(draft(), true);
+      assert.equal(saved?.version, 1);
+      assert.equal(saved?.publishedRevision, 1);
+      const [original] = await store.listAuthoredDocumentRevisions("workspace-1", "skill-1");
+      const next = await store.mutateAuthoredDocument("workspace-1", "skill-1", {
+        action: "commit", expectedVersion: 1, actorIdentityId: "owner", timestamp,
+        name: "Renamed", description: "Updated", content: "New active body",
+      });
+      assert.equal(next?.version, 2);
+      assert.equal(next?.publishedRevision, 2);
+      const history = await store.listAuthoredDocumentRevisions("workspace-1", "skill-1");
+      assert.deepEqual(history[0], original);
+      assert.equal(history[1]?.content, "New active body");
+      assert.equal(history[1]?.name, "Renamed");
+      assert.equal(await store.mutateAuthoredDocument("workspace-1", "skill-1", {
+        action: "commit", expectedVersion: 1, actorIdentityId: "owner", timestamp,
+        name: "Stale", description: "Stale", content: "Must not replace",
+      }), undefined);
+      assert.deepEqual(await store.getAuthoredDocument("workspace-1", "skill-1"), next);
+      const legacy = draft({ id: "legacy" });
+      await store.createAuthoredDocument(legacy);
+      assert.equal((await store.getAuthoredDocument("workspace-1", "legacy"))?.publishedRevision, undefined);
+      assert.deepEqual(await store.listAuthoredDocumentRevisions("workspace-1", "legacy"), []);
+    } finally { await store.close?.(); await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
+test("SQLite atomic Save rolls back BOTH creation and edits when snapshot insertion fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "minu-save-rollback-"));
+  const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+  const store = await DrizzleLibSqlRelayStorage.open({ url });
+  const raw = createClient({ url });
+  try {
+    const original = await store.createAuthoredDocument(draft(), true);
+    await raw.execute("CREATE TRIGGER reject_save BEFORE INSERT ON authored_document_revisions BEGIN SELECT RAISE(ABORT, 'snapshot-failure'); END");
+    await assert.rejects(store.createAuthoredDocument(draft({ id: "new-failed" }), true));
+    assert.equal(await store.getAuthoredDocument("workspace-1", "new-failed"), undefined);
+    await assert.rejects(store.mutateAuthoredDocument("workspace-1", "skill-1", {
+      action: "commit", expectedVersion: 1, actorIdentityId: "owner", timestamp,
+      name: "Failed", description: "Failed", content: "Must roll back",
+    }));
+    assert.deepEqual(await store.getAuthoredDocument("workspace-1", "skill-1"), original);
+    assert.equal((await store.listAuthoredDocumentRevisions("workspace-1", "skill-1")).length, 1);
+  } finally { raw.close(); await store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("authored-content migration preserves existing private Workspace, agent configuration, presets and conversation settings", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-authored-migration-"));
   const migrationsFolder = join(directory, "old-migrations");
@@ -171,7 +223,9 @@ test("authored-content migration preserves existing private Workspace, agent con
     assert.deepEqual(await store.getAgentConfig("agent-config"), agent);
     assert.deepEqual(await store.listConversationPresets("workspace-1"), [preset]);
     assert.deepEqual(await store.getConversationCreationSetup("workspace-1", "channel-1"), setup);
-    assert.deepEqual(await store.getConversationSettings("workspace-1", "channel-1"), settings);
+    const { turnTimeoutMs: removedTimeout, ...retainedSettings } = settings;
+    assert.equal(removedTimeout, 60_000);
+    assert.deepEqual(await store.getConversationSettings("workspace-1", "channel-1"), { ...retainedSettings, revision: 2 });
     assert.deepEqual(await store.listAuthoredDocuments("workspace-1"), []);
     assert.ok(await store.createAuthoredDocument(draft()));
   } finally {

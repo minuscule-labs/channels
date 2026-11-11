@@ -58,7 +58,7 @@ test("preset administration and creation enforce membership, validate roles and 
     { method, headers: customHeaders, ...(body ? { body: JSON.stringify(body) } : {}) });
   const path = `/local/workspaces/${f.workspace.id}/conversation-presets`;
   const id = `preset_${"a".repeat(32)}`;
-  const presetInput = { name: "Debug", participants: f.input.participants, model: f.input.model, reasoningLevel: f.input.reasoningLevel, guidance: f.input.guidance, expectedRevision: null };
+  const presetInput = { name: "Debug", participants: [{ identityId: f.agent.id }], guidance: f.input.guidance, expectedRevision: null };
   assert.equal((await request(path, "GET", undefined, { ...headers, cookie: "" })).status, 401);
   assert.equal((await request(`${path}/${id}`, "PUT", presetInput, { ...headers, origin: "https://foreign.example" })).status, 403);
   await assert.rejects(f.config.listConversationPresets(f.workspace.id, f.member.id), { status: 403 });
@@ -98,6 +98,35 @@ test("preset administration and creation enforce membership, validate roles and 
   assert.equal(setup.setup.guidance, f.input.guidance);
   const publicConversation = await f.client.getConversation(f.input.id);
   assert.doesNotMatch(JSON.stringify(publicConversation), /preset|Check in after diagnosis/);
+});
+
+test("minimal presets reject removed fields and launch without role or session overrides", async (t) => {
+  const f = await fixture(t);
+  const id = `preset_${"b".repeat(32)}`;
+  const input = { name: "Minimal", participants: [{ identityId: f.agent.id }], guidance: "Keep instructions.", expectedRevision: null };
+  const save = (value: unknown) => f.config.saveConversationPreset(f.workspace.id, id, f.owner.id, value);
+  for (const removed of [{ model: f.input.model }, { reasoningLevel: "high" }, { turnTimeoutMs: 60_000 },
+    { idleSleepTimeoutMs: null }, { startingPoint: "exploration" },
+    { participants: [{ identityId: f.agent.id, role: "Lead" }] },
+    { participants: [{}] }, { participants: [input.participants[0], input.participants[0]] },
+    { participants: Array.from({ length: 17 }, (_, i) => ({ identityId: `agent-${i}` })) },
+    { guidance: "x".repeat(16 * 1024 + 1) }]) {
+    await assert.rejects(save({ ...input, ...removed }), { status: 400 });
+  }
+  assert.deepEqual(await f.store.listConversationPresets(f.workspace.id), []);
+  const preset = await save(input);
+  assert.deepEqual(preset.participants, input.participants);
+  const created = await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, {
+    id: createResourceId("conversation"), name: "Minimal launch", participants: preset.participants, guidance: preset.guidance,
+  });
+  const config = await conversationAgentConfiguration(f.store, f.workspace.id, created.id, f.agent.id);
+  assert.equal(config?.modelId, "saved");
+  assert.equal(config?.reasoningLevel, "low");
+  assert.match(config!.personaPrompt!, /Keep instructions/);
+  assert.doesNotMatch(config!.personaPrompt!, /Your role|role assignments/);
+  const snapshot = await f.store.getConversationCreationSetup(f.workspace.id, created.id);
+  assert.deepEqual(snapshot?.participants, input.participants);
+  for (const field of ["model", "reasoningLevel", "turnTimeoutMs", "idleSleepTimeoutMs"]) assert.ok(!(field in snapshot!));
 });
 
 test("preset creation files atomically and preserves its reviewed setup across a lost-response retry", async (t) => {
@@ -141,7 +170,7 @@ test("preset creation rejects malformed, missing and foreign folders before savi
 test("preset saves recover exact create and update retries while preserving intervening edits", async (t) => {
   const f = await fixture(t);
   const id = `preset_${"c".repeat(32)}`;
-  const input = { name: "Retry", participants: f.input.participants, guidance: "First", expectedRevision: null };
+  const input = { name: "Retry", participants: [{ identityId: f.agent.id }], guidance: "First", expectedRevision: null };
   const save = (value: unknown) => f.config.saveConversationPreset(f.workspace.id, id, f.owner.id, value);
   const [created, duplicate] = await Promise.all([save(input), save(input)]);
   assert.equal(created.revision, 1);
@@ -232,7 +261,7 @@ test("Conversation launch defaults and roles reach initial and fresh replacement
   }
   assert.equal(f.starts.length, 5);
   await f.config.updateConversationSettings(created.id, f.owner.id, { expectedRevision: 0,
-    participants: f.input.participants, guidance: "Updated Conversation guidance", turnTimeoutMs: 60_000 });
+    participants: f.input.participants, guidance: "Updated Conversation guidance" });
   const inherited = await f.config.getConversationSettings(thread.id, f.owner.id);
   assert.equal(inherited.settings.conversationId, created.id);
   assert.equal(inherited.settings.guidance, "Updated Conversation guidance");
@@ -290,10 +319,10 @@ test("editable settings use scoped revisions, validate defaults, and leave creat
   const original = await f.store.getConversationCreationSetup(f.workspace.id, f.input.id);
   const settings = await f.config.getConversationSettings(f.input.id, f.owner.id);
   assert.equal(settings.settings.revision, 0);
-  const update = { participants: f.input.participants, guidance: "New instructions", turnTimeoutMs: 5 * 60_000, idleSleepTimeoutMs: null, expectedRevision: 0 };
+  const update = { participants: f.input.participants, guidance: "New instructions", expectedRevision: 0 };
   await assert.rejects(f.config.getConversationSettings(f.input.id, f.member.id), { status: 403 });
   await assert.rejects(f.config.updateConversationSettings(f.input.id, f.member.id, update), { status: 403 });
-  for (const invalid of [{ turnTimeoutMs: 0 }, { idleSleepTimeoutMs: 1 }, { model: { provider: "test", id: "missing" } }, { participants: [], model: { provider: "test", id: "plain" }, reasoningLevel: "high" }]) {
+  for (const invalid of [{ turnTimeoutMs: 60_000 }, { idleSleepTimeoutMs: 900_000 }, { idleSleepTimeoutMs: null }, { model: { provider: "test", id: "missing" } }, { participants: [], model: { provider: "test", id: "plain" }, reasoningLevel: "high" }]) {
     await assert.rejects(f.config.updateConversationSettings(f.input.id, f.owner.id, { ...update, ...invalid }), LocalConfigurationRequestError);
   }
   const saved = await f.config.updateConversationSettings(f.input.id, f.owner.id, update);
@@ -307,10 +336,30 @@ test("editable settings use scoped revisions, validate defaults, and leave creat
   assert.deepEqual(await f.store.getConversationCreationSetup(f.workspace.id, f.input.id), original);
   await f.client.updateWorkspaceMember(f.workspace.id, f.agent.id, { actorIdentityId: f.owner.id, status: "disabled" });
   assert.deepEqual(await f.config.updateConversationSettings(f.input.id, f.owner.id, update), saved, "exact settings retries survive subsequent membership changes");
-  await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { turnTimeoutMs: 10 * 60_000 });
-  assert.equal((await f.config.getWorkspaceConfiguration(f.workspace.id, f.owner.id)).turnTimeoutMs, 10 * 60_000);
+  for (const turnTimeoutMs of [30, 60, 120].map(minutes => minutes * 60_000)) {
+    await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { turnTimeoutMs });
+    assert.equal((await f.config.getWorkspaceConfiguration(f.workspace.id, f.owner.id)).turnTimeoutMs, turnTimeoutMs);
+  }
+  for (const turnTimeoutMs of [0, 600_000, 3_600_001, 10_800_000]) {
+    await assert.rejects(f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { turnTimeoutMs }), { status: 400 });
+  }
   await f.config.updateWorkspaceConfiguration(f.workspace.id, f.owner.id, { turnTimeoutMs: null });
   assert.equal((await f.config.getWorkspaceConfiguration(f.workspace.id, f.owner.id)).turnTimeoutMs, undefined);
+});
+
+test("Conversation creation rejects timeout overrides and editable reads drop historical snapshot values", async t => {
+  const f = await fixture(t);
+  for (const override of [{ turnTimeoutMs: 1_800_000 }, { idleSleepTimeoutMs: 900_000 }, { idleSleepTimeoutMs: null }]) {
+    await assert.rejects(f.config.createConversationWithSetup(f.workspace.id, f.owner.id, { ...f.input, ...override }), { status: 400 });
+    assert.equal(await f.store.getConversationCreationSetup(f.workspace.id, f.input.id), undefined);
+  }
+  await f.config.createConversationWithSetup(f.workspace.id, f.owner.id, f.input);
+  const original = (await f.store.getConversationCreationSetup(f.workspace.id, f.input.id))!;
+  // Historical immutable snapshots remain readable, but are not editable policy.
+  f.store.getConversationCreationSetup = async () => ({ ...original, turnTimeoutMs: 60_000, idleSleepTimeoutMs: null });
+  const read = await f.config.getConversationSettings(f.input.id, f.owner.id);
+  assert.ok(!("turnTimeoutMs" in read.settings));
+  assert.ok(!("idleSleepTimeoutMs" in read.settings));
 });
 
 test("overlapping creation retries preserve folder edits made after publication", async (t) => {

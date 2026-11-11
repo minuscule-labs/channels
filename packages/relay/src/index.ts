@@ -1,7 +1,7 @@
 export { inspectAuthoredInvocationPublication, type AuthoredInvocationPublicationInspection, publishAuthoredInvocationMessage, prepareLinkedAuthoredInvocationTurn, prepareAuthoredInvocationTurn, AuthoredInvocationDeliveryUnavailableError, type AuthoredInvocationPreparation, type PreparedAuthoredInvocationTurn } from "./authored-invocation-delivery.ts";
 export { invocationDocumentMatches, invocationTargetMatches, type AuthoredSkillInvocation, type AuthoredInvocationMessageLink, type AuthoredInvocationTarget } from "./authored-invocations.ts";
 export { captureAuthoredContext, resolveAuthoredPublication, resolveAuthoredInstructions, validateAuthoredContext, AuthoredContextUnavailableError, type AuthoredContextSnapshot, type AuthoredContextReference } from "./authored-context.ts";
-export { reviseAuthoredDocument, type AuthoredDocument, type AuthoredDocumentMutation, type AuthoredDocumentRevision } from "./authored-documents.ts";
+export { reviseAuthoredDocument, prepareAuthoredDocumentCreation, type AuthoredDocument, type AuthoredDocumentMutation, type AuthoredDocumentRevision } from "./authored-documents.ts";
 export { DELIVERY_STAGES, DELIVERY_OUTCOMES, DELIVERY_KINDS, DELIVERY_REASONS, DELIVERY_LIMITS, deliveryRecord, deliveryDetail, deliverySummary, deliveryScope, deliveryEvent, safeDeliveryObservation,
   type DeliveryScope, type DeliveryEvent, type DeliveryRecord, type DeliverySummary, type DeliveryDetail, type DeliveryHistory, type DeliveryObservation, type DeliveryStage, type DeliveryOutcome } from "./delivery-diagnostics.ts";
 export {

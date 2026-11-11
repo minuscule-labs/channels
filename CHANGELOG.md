@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.0.34
+
+Release overview: [Simpler Settings and Workspace-authored guidance](docs/releases/v0.0.34.md).
+
+- Standardize desktop/mobile Workspace Settings navigation and move Agents, Instructions, Skills and Presets into dedicated content pages. Use compact Agents/Skills tables and separate Skill editors; hide People navigation without changing authorization.
+- Save Instructions and Skills atomically with immutable internal snapshots, Preview, revision-checked conflicts and archive behavior. Recheck owner/admin authority after private reads, before writes and before returning private results.
+- Keep Instructions/Skills authoring in Workspace Settings. Limit Conversation settings to name, normal participants and working folders; preserve legacy channel-authored guidance, saved non-timeout advanced settings and existing session behavior. Preset instructions remain copied at creation, not live-linked.
+- Simplify reusable Presets to name, participants and instructions, with confirmed revision-checked removal. Migration `0022_minimal_presets` removes obsolete model/effort/timeout overrides, participant roles and unassigned role slots from saved presets without rewriting existing Conversation snapshots/settings.
+- Remove per-Conversation timeout overrides through migration `0023_workspace_only_timeouts`, fencing stale edits while preserving immutable snapshots and explicitly saved Workspace policies. Offer Workspace turn limits of 30 minutes, 1 hour and 2 hours, defaulting to 1 hour; keep idle sleep and shorter internal safety waits separate.
+- Add private authored documents, session manifests, pinned invocation/link records and the nullable public invocation correlation field through Relay migrations `0018`–`0021` and Core migration `0012`. Procedure bodies remain private; existing messages and IDs are preserved.
+- Add the explicit `/skills` catalog/picker and guarded invocation infrastructure without enabling production publication. Supported sessions lacking a selected publication report Pending; a new session captures current publications, while reconnect/resume retains existing pins. Unsupported Harness invocation remains disabled.
+- Keep local-control protocol v25, the existing Runtime pin and the single-user, loopback-only deployment model. Retain the known Runtime recovery/native-library caveats; exact-artifact clean-account/reopen/genuine-Pi acceptance and required CI remain release gates.
+
 ## 0.0.33
 
 Release overview: [Bounded connection cleanup and content-page settings](docs/releases/v0.0.33.md).

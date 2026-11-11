@@ -1445,7 +1445,7 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
   }
 });
 
-test("the default turn deadline permits healthy work beyond the short fault budget", async () => {
+for (const minutes of [undefined, 30, 120]) for (const expires of [false, true]) test(`${minutes ?? "default60"}-minute turn ${expires ? "expires at its limit" : "permits healthy work until its limit"}`, async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const timestamp = new Date().toISOString();
@@ -1458,8 +1458,8 @@ test("the default turn deadline permits healthy work beyond the short fault budg
       if (!started) return undefined;
       polls += 1;
       if (polls === 1) {
-        // Cross the previous two-minute default without a Runtime request fault.
-        now = 2 * 60_000 + 1;
+        // Virtual time crosses old defaults without waiting real hours.
+        now = (minutes ?? 60) * 60_000 + (expires ? 1 : -1);
         return { id: turnId, input: "long work", status: "running", createdAt: timestamp, updatedAt: timestamp };
       }
       return {
@@ -1484,13 +1484,14 @@ test("the default turn deadline permits healthy work beyond the short fault budg
     conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     monotonicNow: () => now,
+    ...(minutes === undefined ? {} : { resolveTurnTimeoutMs: async () => minutes * 60_000 }),
     turnPollIntervalMs: 1,
   });
   try {
     await relay.start();
     await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a long work" });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).some(({ body }) => body === "Completed long work"));
-    assert.equal(polls, 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).some(({ body }) => expires ? body.includes("Runtime turn failed") : body === "Completed long work"));
+    assert.equal(polls, expires ? 1 : 2);
   } finally {
     await relay.stop();
     await server.close();
@@ -1525,6 +1526,7 @@ test("an absolute retry budget bounds a stalled Runtime attempt while peer work 
     ],
     cursorStore: recoveryStore,
     turnRetryBudgetMs: 30,
+    resolveTurnTimeoutMs: async () => 120 * 60_000,
     runtimeRequestTimeoutMs: 1_000,
     terminalOutcomeTimeoutMs: 100,
   });

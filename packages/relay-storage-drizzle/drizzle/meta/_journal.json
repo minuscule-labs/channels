@@ -155,6 +155,20 @@
       "when": 1799539200008,
       "tag": "0021_authored_invocation_message_links",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1799539200009,
+      "tag": "0022_minimal_presets",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1799539200010,
+      "tag": "0023_workspace_only_timeouts",
+      "breakpoints": true
     }
   ]
 }

@@ -536,7 +536,7 @@ const CATCH_UP_DIAGNOSTIC_INTERVAL_MS = 30_000;
 const DEFAULT_CATCH_UP_PAGE_SIZE = 100;
 // Pi allows a control turn to run for 30 minutes. Use that same deadline for
 // healthy Relay work; transient Runtime calls remain individually bounded below.
-const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 const DEFAULT_TURN_RETRY_BUDGET_MS = DEFAULT_TURN_TIMEOUT_MS;
 const DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS = 15_000;
@@ -1562,8 +1562,8 @@ export class ConversationRuntimeRelay {
             ? await this.awaitRuntime(this.options.resolveTurnTimeoutMs(), "read turn timeout", undefined, deadline) : undefined;
           validatePositiveMilliseconds("turnTimeoutMs", configured);
           state.turnTimeoutMs = configured ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
-          if (configured !== undefined && this.options.turnRetryBudgetMs === undefined) {
-            deadline = Math.min(deadline, started + configured);
+          if (this.options.turnRetryBudgetMs === undefined) {
+            deadline = started + state.turnTimeoutMs;
             state.retryDeadline = deadline;
           }
         }

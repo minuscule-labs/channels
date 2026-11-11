@@ -299,7 +299,7 @@ test("compact folder row menus preselect filing and focus Workspace rename on mo
   const workspaceActions = page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true });
   await workspaceActions.click();
   await page.getByRole("button", { name: "Rename", exact: true }).click();
-  const settings = page.getByRole("main", { name: "Workspace settings", exact: true });
+  const settings = page.getByRole("main", { name: "Workspace Settings", exact: true });
   await expect(settings.getByLabel("Name", { exact: true })).toBeFocused();
   await expect(settings.getByLabel("Name", { exact: true })).toHaveValue(f.workspace.name);
 });

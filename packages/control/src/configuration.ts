@@ -131,9 +131,7 @@ function samePresetContents(left: ConversationSetup & { name: string }, right: C
     && left.model?.provider === right.model?.provider
     && left.model?.id === right.model?.id
     && left.reasoningLevel === right.reasoningLevel
-    && left.guidance === right.guidance
-    && left.turnTimeoutMs === right.turnTimeoutMs
-    && left.idleSleepTimeoutMs === right.idleSleepTimeoutMs;
+    && left.guidance === right.guidance;
 }
 
 async function canonicalWorkspaceRoot(value: string): Promise<string> {
@@ -249,13 +247,13 @@ export class LocalAgentHostConfiguration {
     const participants = input.participants.map((value) => {
       const participant = object(value, "Participant");
       rejectUnknown(participant, ["identityId", "role"]);
-      const role = conversationLabel(participant.role, "Role");
+      const role = participant.role === undefined ? undefined : conversationLabel(participant.role, "Role");
       const identityId = participant.identityId === undefined
         ? undefined : requiredString(participant.identityId, "Agent identity", 100);
       if (requireAssignments && !identityId) {
         throw new LocalConfigurationRequestError("Assign a Workspace agent to every role", 400, "invalid");
       }
-      return { ...(identityId ? { identityId } : {}), role };
+      return { ...(identityId ? { identityId } : {}), ...(role ? { role } : {}) };
     });
     const ids = participants.flatMap(({ identityId }) => identityId ? [identityId] : []);
     if (new Set(ids).size !== ids.length) throw new LocalConfigurationRequestError("Each agent can fill only one role", 400, "invalid");
@@ -273,33 +271,25 @@ export class LocalAgentHostConfiguration {
     if (input.guidance !== undefined && (typeof input.guidance !== "string" || bytes(input.guidance) > 16 * 1024)) {
       throw new LocalConfigurationRequestError("Guidance must be text of at most 16 KiB", 400, "invalid");
     }
-    const turnTimeoutMs = input.turnTimeoutMs;
-    if (turnTimeoutMs !== undefined && (typeof turnTimeoutMs !== "number" || ![1, 5, 10, 15, 30].includes(turnTimeoutMs / 60_000))) {
-      throw new LocalConfigurationRequestError("Unsupported turn timeout", 400, "invalid");
-    }
-    const idleSleepTimeoutMs = input.idleSleepTimeoutMs;
-    if (idleSleepTimeoutMs !== undefined && idleSleepTimeoutMs !== null
-      && (typeof idleSleepTimeoutMs !== "number" || ![15, 30, 60, 240, 1440].includes(idleSleepTimeoutMs / 60_000))) {
-      throw new LocalConfigurationRequestError("Unsupported idle sleep timeout", 400, "invalid");
-    }
     const guidance = (input.guidance as string | undefined)?.trim();
     return { participants, ...(model ? { model } : {}),
       ...(reasoningLevel ? { reasoningLevel: reasoningLevel as ConversationSetup["reasoningLevel"] } : {}),
-      ...(guidance ? { guidance } : {}),
-      ...(turnTimeoutMs !== undefined ? { turnTimeoutMs: turnTimeoutMs as number } : {}),
-      ...(idleSleepTimeoutMs !== undefined ? { idleSleepTimeoutMs: idleSleepTimeoutMs as number | null } : {}) };
+      ...(guidance ? { guidance } : {}) };
   }
 
   async saveConversationPreset(workspaceId: string, presetId: string, actorIdentityId: string, value: unknown): Promise<ConversationPreset> {
     await this.authorize(workspaceId, actorIdentityId);
     if (!/^preset_[0-9a-f]{32}$/.test(presetId)) throw new LocalConfigurationRequestError("Preset id is invalid", 400, "invalid");
     const input = object(value, "Preset");
-    rejectUnknown(input, ["name", "expectedRevision", "participants", "model", "reasoningLevel", "guidance", "turnTimeoutMs", "idleSleepTimeoutMs"]);
+    rejectUnknown(input, ["name", "expectedRevision", "participants", "guidance"]);
     const expected = input.expectedRevision;
     if (expected !== null && (!Number.isSafeInteger(expected) || (expected as number) < 1)) {
       throw new LocalConfigurationRequestError("Expected preset revision is required", 400, "invalid");
     }
-    const contents = { ...this.parseConversationSetup(input, false), name: conversationLabel(input.name, "Preset name") };
+    const setup = this.parseConversationSetup(input, true);
+    for (const participant of input.participants as unknown[]) rejectUnknown(object(participant, "Participant"), ["identityId"]);
+    const contents = { participants: setup.participants.map(({ identityId }) => ({ identityId: identityId! })),
+      ...(setup.guidance ? { guidance: setup.guidance } : {}), name: conversationLabel(input.name, "Preset name") };
     const nextRevision = ((expected as number | null) ?? 0) + 1;
     const currentPreset = async () => (await this.options.store.listConversationPresets(workspaceId)).find(({ id }) => id === presetId);
     const isExactRetry = (preset: ConversationPreset): boolean =>
@@ -339,7 +329,7 @@ export class LocalAgentHostConfiguration {
   async createConversationWithSetup(workspaceId: string, actorIdentityId: string, value: unknown): Promise<ConversationMetadata> {
     const members = await this.authorize(workspaceId, actorIdentityId);
     const input = object(value, "Conversation");
-    rejectUnknown(input, ["workingFolder", "id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance", "turnTimeoutMs", "idleSleepTimeoutMs"]);
+    rejectUnknown(input, ["workingFolder", "id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance"]);
     if (!isResourceId(input.id, "conversation")) throw new LocalConfigurationRequestError("Conversation id is invalid", 400, "invalid");
     const folderId = input.folderId ?? null;
     if (folderId !== null && !isResourceId(folderId, "folder")) {
@@ -470,7 +460,7 @@ export class LocalAgentHostConfiguration {
     if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation settings", 409, "unavailable");
     const members = await this.authorize(conversation.workspaceId, actorIdentityId);
     const input = object(value, "Conversation settings");
-    rejectUnknown(input, ["expectedRevision", "participants", "model", "reasoningLevel", "guidance", "turnTimeoutMs", "idleSleepTimeoutMs"]);
+    rejectUnknown(input, ["expectedRevision", "participants", "model", "reasoningLevel", "guidance"]);
     if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) {
       throw new LocalConfigurationRequestError("Expected settings revision is required", 400, "invalid");
     }
@@ -813,11 +803,21 @@ export class LocalAgentHostConfiguration {
         const binding = records.bindings[0], activation = records.activation;
         const runtime = binding && this.options.runtimes?.[binding.runtimeAdapter];
         const supported = typeof runtime?.startTurn === "function" && typeof runtime.turn === "function";
+        let sessionReady = false;
         const references: NonNullable<LocalConversationAuthoredSkillCatalog["agents"]>[number]["skills"] = [];
         if (config?.status === "active" && binding?.state === "connected" && binding.wakePolicy !== "muted"
           && records.bindings.length === 1 && activation?.authoredContext) {
           try {
             validateAuthoredContext(activation.authoredContext, conversation.workspaceId, channelId);
+            // Session validity is independent of whether any published skill is pinned.
+            sessionReady = activation.state === "active" && binding.workspaceId === conversation.workspaceId
+              && binding.conversationId === conversationId && binding.agentIdentityId === participant.id
+              && activation.workspaceId === conversation.workspaceId && activation.conversationId === conversationId
+              && activation.agentIdentityId === participant.id && activation.bindingId === binding.id
+              && activation.bindingGeneration === binding.generation && activation.runtimeAdapter === binding.runtimeAdapter
+              && (activation.mapping === "managed"
+                ? activation.managedSessionId === binding.runtimeSessionId && activation.runtimeOwnerId === binding.runtimeOwnerId
+                : activation.legacyRuntimeSessionRef === binding.runtimeSessionId);
             for (const ref of activation.authoredContext.documents.filter(value => value.kind === "skill")) {
               if (!documents.some(document => document.id === ref.documentId)) continue;
               if (invocationTargetMatches({ workspaceId: conversation.workspaceId, conversationId, channelId, ...ref },
@@ -828,7 +828,7 @@ export class LocalAgentHostConfiguration {
           } catch { /* Corrupt/legacy context is unavailable, never a substitute. */ }
         }
         const harness = config?.skillIds?.filter(value => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,199}$/.test(value)) ?? [];
-        agents.push({ identityId: participant.id, state: references.length && supported ? "ready" : "unavailable",
+        agents.push({ identityId: participant.id, state: sessionReady && supported ? "ready" : "unavailable",
           supported, skills: references, harness: [...new Set(harness)] });
       }
       const fresh = await this.authorizeInvocationActor(conversationId, actorIdentityId);
@@ -882,7 +882,9 @@ export class LocalAgentHostConfiguration {
 
   async listAuthoredDocuments(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]> {
     await this.authorize(workspaceId, actorIdentityId);
-    return (await this.options.store.listAuthoredDocuments(workspaceId)).map(({ content, description, ...summary }) => summary);
+    const documents = await this.options.store.listAuthoredDocuments(workspaceId);
+    await this.authorize(workspaceId, actorIdentityId);
+    return documents.map(({ content, ...summary }) => summary);
   }
 
   async getAuthoredDocument(workspaceId: string, documentId: string, actorIdentityId: string): Promise<AuthoredDocument> {
@@ -890,6 +892,7 @@ export class LocalAgentHostConfiguration {
     const document = await this.options.store.getAuthoredDocument(workspaceId, documentId);
     if (!document) throw new LocalConfigurationRequestError("Document is unavailable", 404, "unavailable");
     await this.authorizeAuthoredScope(workspaceId, document.conversationId);
+    await this.authorize(workspaceId, actorIdentityId);
     return document;
   }
 
@@ -899,14 +902,17 @@ export class LocalAgentHostConfiguration {
     actorIdentityId: string,
   ): Promise<AuthoredDocumentRevision[]> {
     await this.getAuthoredDocument(workspaceId, documentId, actorIdentityId);
-    return this.options.store.listAuthoredDocumentRevisions(workspaceId, documentId);
+    const revisions = await this.options.store.listAuthoredDocumentRevisions(workspaceId, documentId);
+    await this.authorize(workspaceId, actorIdentityId);
+    return revisions;
   }
 
   async createAuthoredDocument(workspaceId: string, actorIdentityId: string, value: unknown): Promise<AuthoredDocument> {
     try {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Document");
-      rejectUnknown(input, ["kind", "conversationId", "name", "description", "content"]);
+      rejectUnknown(input, ["action", "kind", "conversationId", "name", "description", "content"]);
+      if (input.action !== undefined && input.action !== "commit") throw new LocalConfigurationRequestError("Document action is invalid", 400, "invalid");
       if (input.kind !== "instructions" && input.kind !== "skill") {
         throw new LocalConfigurationRequestError("Document kind is invalid", 400, "invalid");
       }
@@ -914,14 +920,20 @@ export class LocalAgentHostConfiguration {
         ? undefined : requiredString(input.conversationId, "conversationId", 200);
       await this.authorizeAuthoredScope(workspaceId, conversationId);
       const draft = this.authoredDraft(input, input.kind, conversationId);
+      if (input.action === "commit" && input.kind === "skill" && (!draft.description.trim() || !draft.content.trim())) {
+        throw new LocalConfigurationRequestError("A saved skill requires a description and instructions", 400, "invalid");
+      }
       const timestamp = this.now().toISOString();
+      await this.authorize(workspaceId, actorIdentityId);
       const document = await this.options.store.createAuthoredDocument({
         id: randomUUID(), workspaceId, conversationId, kind: input.kind, ...draft,
         version: 1, state: "active", createdBy: actorIdentityId, updatedBy: actorIdentityId,
         createdAt: timestamp, updatedAt: timestamp,
-      });
+      }, input.action === "commit");
       if (!document) throw new LocalConfigurationRequestError("Instructions already exist for this scope", 409, "unavailable");
       this.audit({ action: "authored-document.created", outcome: "accepted", actorIdentityId, workspaceId, conversationId });
+      // The commit may have succeeded while access changed; withhold its private result.
+      await this.authorize(workspaceId, actorIdentityId);
       return document;
     } catch (error) {
       this.auditFailure("authored-document.created", actorIdentityId, workspaceId, undefined, error);
@@ -939,12 +951,12 @@ export class LocalAgentHostConfiguration {
     try {
       const current = await this.getAuthoredDocument(workspaceId, documentId, actorIdentityId);
       const input = object(value, "Document update");
-      if (input.action !== "save" && input.action !== "publish" && input.action !== "archive") {
+      if (input.action !== "save" && input.action !== "commit" && input.action !== "publish" && input.action !== "archive") {
         throw new LocalConfigurationRequestError("Document action is invalid", 400, "invalid");
       }
-      action = input.action === "publish" ? "authored-document.published"
+      action = input.action === "publish" || input.action === "commit" ? "authored-document.published"
         : input.action === "archive" ? "authored-document.archived" : "authored-document.updated";
-      rejectUnknown(input, input.action === "save"
+      rejectUnknown(input, input.action === "save" || input.action === "commit"
         ? ["action", "expectedVersion", "name", "description", "content"] : ["action", "expectedVersion"]);
       const expectedVersion = optionalNullableInteger(input.expectedVersion, "expectedVersion", 1, Number.MAX_SAFE_INTEGER - 1);
       if (expectedVersion == null) throw new LocalConfigurationRequestError("expectedVersion is required", 400, "invalid");
@@ -956,16 +968,21 @@ export class LocalAgentHostConfiguration {
         throw new LocalConfigurationRequestError("A published skill requires a description and instructions", 400, "invalid");
       }
       if (input.action === "archive" && current.kind === "instructions") {
-        throw new LocalConfigurationRequestError("Publish empty instructions to clear this scope", 400, "invalid");
+        throw new LocalConfigurationRequestError("Save empty instructions to clear this scope", 400, "invalid");
       }
-      const mutation = input.action === "save"
-        ? { action: "save" as const, ...this.authoredDraft(input, current.kind, current.conversationId) }
+      const mutation = input.action === "save" || input.action === "commit"
+        ? { action: input.action, ...this.authoredDraft(input, current.kind, current.conversationId) } as const
         : { action: input.action } as const;
+      if (mutation.action === "commit" && current.kind === "skill" && (!mutation.description.trim() || !mutation.content.trim())) {
+        throw new LocalConfigurationRequestError("A saved skill requires a description and instructions", 400, "invalid");
+      }
+      await this.authorize(workspaceId, actorIdentityId);
       const document = await this.options.store.mutateAuthoredDocument(workspaceId, documentId, {
         ...mutation, expectedVersion, actorIdentityId, timestamp: this.now().toISOString(),
       });
       if (!document) throw new LocalConfigurationRequestError("Document changed; reload before retrying", 409, "unavailable");
       this.audit({ action, outcome: "accepted", actorIdentityId, workspaceId, conversationId: current.conversationId });
+      await this.authorize(workspaceId, actorIdentityId);
       return document;
     } catch (error) {
       this.auditFailure(action, actorIdentityId, workspaceId, undefined, error);
@@ -1324,7 +1341,7 @@ export class LocalAgentHostConfiguration {
       }
       const turnTimeoutMs = input.turnTimeoutMs;
       if (turnTimeoutMs !== undefined && turnTimeoutMs !== null
-        && (typeof turnTimeoutMs !== "number" || ![1, 5, 10, 15, 30].includes(turnTimeoutMs / 60_000))) {
+        && (typeof turnTimeoutMs !== "number" || ![30, 60, 120].includes(turnTimeoutMs / 60_000))) {
         throw new LocalConfigurationRequestError("Unsupported turn timeout", 400, "invalid");
       }
       const notesFolderId = optionalNullableString(

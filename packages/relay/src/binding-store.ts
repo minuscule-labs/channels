@@ -5,7 +5,7 @@ import type { ConversationPreset, ConversationCreationSetup, ConversationSetting
 import type { AuthoredContextSnapshot } from "./authored-context.ts";
 import { prepareLinkedAuthoredInvocationTurn } from "./authored-invocation-delivery.ts";
 import { invocationDocumentMatches, invocationTargetMatches, type AuthoredInvocationMessageLink, type AuthoredSkillInvocation } from "./authored-invocations.ts";
-import { reviseAuthoredDocument, type AuthoredDocument, type AuthoredDocumentMutation, type AuthoredDocumentRevision } from "./authored-documents.ts";
+import { reviseAuthoredDocument, prepareAuthoredDocumentCreation, type AuthoredDocument, type AuthoredDocumentMutation, type AuthoredDocumentRevision } from "./authored-documents.ts";
 import type {
   AgentConversationBinding,
   AgentRuntimePort,
@@ -226,7 +226,7 @@ export interface RelayBindingStore extends RelayCursorStore {
   getAuthoredSkillInvocationForMessage(conversationId: string, messageId: string): Promise<AuthoredSkillInvocation | undefined>;
   getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<AuthoredSkillInvocation | undefined>;
   reserveAuthoredSkillInvocation(invocation: AuthoredSkillInvocation): Promise<AuthoredSkillInvocation | undefined>;
-  createAuthoredDocument(document: AuthoredDocument): Promise<AuthoredDocument | undefined>;
+  createAuthoredDocument(document: AuthoredDocument, commit?: boolean): Promise<AuthoredDocument | undefined>;
   getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined>;
   listAuthoredDocuments(workspaceId: string): Promise<AuthoredDocument[]>;
   mutateAuthoredDocument(workspaceId: string, documentId: string, mutation: AuthoredDocumentMutation): Promise<AuthoredDocument | undefined>;
@@ -496,14 +496,16 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     return structuredClone(invocation);
   }
 
-  async createAuthoredDocument(document: AuthoredDocument): Promise<AuthoredDocument | undefined> {
+  async createAuthoredDocument(document: AuthoredDocument, commit = false): Promise<AuthoredDocument | undefined> {
     if (this.authoredDocuments.has(document.id) || (document.kind === "instructions"
       && [...this.authoredDocuments.values()].some((existing) => existing.kind === "instructions"
         && existing.workspaceId === document.workspaceId && existing.conversationId === document.conversationId))) {
       return undefined;
     }
-    this.authoredDocuments.set(document.id, { ...document });
-    return { ...document };
+    const next = prepareAuthoredDocumentCreation(document, commit);
+    this.authoredDocuments.set(document.id, { ...next.document });
+    if (next.publication) this.authoredRevisions.set(document.id, [next.publication]);
+    return { ...next.document };
   }
 
   async getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined> {

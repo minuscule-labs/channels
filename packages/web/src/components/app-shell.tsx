@@ -15,6 +15,7 @@ import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
 import { NotificationPreferencesContext } from "./notification-preferences";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
+import { WorkspaceSettingsSidebar } from "./workspace-settings-sidebar";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -35,6 +36,7 @@ export function AppShell() {
   }, []);
   const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => conversations.listWorkspaces() });
   const routeWorkspaceId = pathname.match(/\/app\/workspaces\/([^/]+)/)?.[1];
+  const settingsWorkspaceId = pathname.match(/^\/app\/workspaces\/([^/]+)\/(?:settings|agents)(?:\/|$)/)?.[1];
   const selectedWorkspaceId = routeWorkspaceId
     ?? (workspaces.data ?? []).find((workspace) => workspace.id === localStorage.getItem("minu-channels:last-workspace"))?.id
     ?? workspaces.data?.[0]?.id;
@@ -169,7 +171,7 @@ export function AppShell() {
     unread,
   }] : [], [conversationLifecycles, selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, workspaceFolders.data, unread]);
 
-  const selectWorkspace = async (workspaceId: string) => {
+  const selectWorkspace = async (workspaceId: string, returnToWorkspace = false) => {
     const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);
     if (!workspace) return;
     localStorage.setItem("minu-channels:last-workspace", workspaceId);
@@ -179,7 +181,7 @@ export function AppShell() {
     void navigate(conversation ? {
       to: "/app/workspaces/$workspaceId/conversations/$conversationId",
       params: { workspaceId, conversationId: conversation.id },
-    } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
+    } : returnToWorkspace ? { to: "/" } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
   };
 
   const activateAudio = useCallback(() => {
@@ -367,7 +369,8 @@ export function AppShell() {
   }, [activeConversationId, routeWorkspaceId]);
   useEffect(() => {
     if (pathname !== "/" || !selectedWorkspaceId) return;
-    void selectWorkspace(selectedWorkspaceId);
+    void selectWorkspace(selectedWorkspaceId, true);
+  // Empty Workspaces must keep the chooser outside the settings/Agents shell.
   // Redirecting from the index only needs the current loaded Workspace set.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, selectedWorkspaceId]);
@@ -415,7 +418,12 @@ export function AppShell() {
         </div>
       ) : null}
       <div className="hidden md:block">
-        <NavigationSidebar
+        {settingsWorkspaceId ? <WorkspaceSettingsSidebar
+          key={settingsWorkspaceId}
+          workspaceId={settingsWorkspaceId}
+          pathname={pathname}
+          onBack={() => selectWorkspace(settingsWorkspaceId, true)}
+        /> : <NavigationSidebar
           items={navigationItems}
           identityId={currentSession.data?.identityId}
           actorIdentityId={canAdministerFolders ? currentSession.data?.identityId : undefined}
@@ -431,7 +439,7 @@ export function AppShell() {
           onSoundChange={currentSession.isSuccess ? changeSound : undefined}
           onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
           pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
-        />
+        />}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Drawer
@@ -439,7 +447,7 @@ export function AppShell() {
           onOpenChange={setNavigationOpen}
           side="left"
           title="Navigation"
-          description="Choose a Workspace and Conversation."
+          description={settingsWorkspaceId ? "Workspace settings" : "Choose a Workspace and Conversation."}
           trigger={(
             <button
               type="button"
@@ -450,7 +458,14 @@ export function AppShell() {
             </button>
           )}
         >
-          <NavigationSidebar
+          {settingsWorkspaceId ? <WorkspaceSettingsSidebar
+            key={settingsWorkspaceId}
+            workspaceId={settingsWorkspaceId}
+            pathname={pathname}
+            onBack={() => selectWorkspace(settingsWorkspaceId, true)}
+            mobile
+            onNavigate={() => setNavigationOpen(false)}
+          /> : <NavigationSidebar
             items={navigationItems}
             identityId={currentSession.data?.identityId}
             actorIdentityId={canAdministerFolders ? currentSession.data?.identityId : undefined}
@@ -468,7 +483,7 @@ export function AppShell() {
             pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
             onNavigate={() => setNavigationOpen(false)}
             onClose={() => setNavigationOpen(false)}
-          />
+          />}
         </Drawer>
         <NotificationPreferencesContext.Provider value={currentSession.data ? { sound, onSoundChange: changeSound } : null}><Outlet /></NotificationPreferencesContext.Provider>
       </div>

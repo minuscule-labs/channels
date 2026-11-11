@@ -13,7 +13,7 @@ export interface LocalConversationPresets {
   presets: ConversationPreset[];
 }
 
-export interface SaveConversationPresetInput extends ConversationSetup {
+export interface SaveConversationPresetInput extends Pick<ConversationPreset, "participants" | "guidance"> {
   name: string;
   expectedRevision: number | null;
 }
@@ -31,15 +31,6 @@ export interface LocalConversationCreationSetup {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   setup: ConversationCreationSetup | null;
 }
-
-export const CONVERSATION_PRESET_STARTERS: Array<ConversationSetup & { id: string; name: string }> = [
-  { id: "exploration", name: "Exploration", participants: [{ role: "Explorer" }],
-    guidance: "Explore the problem, compare options, and surface assumptions. Check in with findings and open questions before committing to an approach." },
-  { id: "feature-delivery", name: "Feature delivery", participants: [{ role: "Builder" }, { role: "Reviewer" }],
-    guidance: "Agree on the intended behavior and acceptance criteria. Check in at implementation and verification milestones. The reviewer should assess correctness, risks, and test evidence." },
-  { id: "incident-debug", name: "Incident / debug", participants: [{ role: "Investigator" }],
-    guidance: "Reproduce the issue, gather evidence, and test hypotheses. Check in with the cause, proposed fix, and verification results. Ask before disruptive mitigation." },
-];
 
 export const LOCAL_CONTROL_PROTOCOL_VERSION = 25 as const;
 
@@ -125,7 +116,7 @@ export interface LocalWorkspaceAgentConfigurationSummary {
 
 export type LocalAuthoredDocument = import("@minu/channels-relay").AuthoredDocument;
 export type LocalAuthoredDocumentRevision = import("@minu/channels-relay").AuthoredDocumentRevision;
-export type LocalAuthoredDocumentSummary = Omit<LocalAuthoredDocument, "content" | "description">;
+export type LocalAuthoredDocumentSummary = Omit<LocalAuthoredDocument, "content">;
 
 export interface LocalAuthoredSkillInvocationInput {
   documentId: string;
@@ -200,6 +191,8 @@ export interface LocalConversationAuthoredContext {
 }
 
 export interface CreateLocalAuthoredDocumentInput {
+  /** Explicit atomic save + activation; omitted retains legacy draft creation. */
+  action?: "commit";
   kind: "instructions" | "skill";
   conversationId?: string;
   name?: string;
@@ -208,7 +201,7 @@ export interface CreateLocalAuthoredDocumentInput {
 }
 
 export type UpdateLocalAuthoredDocumentInput = { expectedVersion: number } & (
-  | { action: "save"; name?: string; description?: string; content: string }
+  | { action: "save" | "commit"; name?: string; description?: string; content: string }
   | { action: "publish" | "archive" }
 );
 

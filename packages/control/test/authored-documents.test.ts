@@ -57,6 +57,219 @@ async function fixture(options: { publicationEnabled?: boolean } = {}) {
   };
 }
 
+test("authenticated atomic Save activates complete fields once, preserves CAS and old snapshots", async () => {
+  const f = await fixture();
+  try {
+    const input = { action: "commit", kind: "skill", name: "Summarize", description: "Summary", content: "Original saved body" };
+    const member = await f.login(f.member.id);
+    assert.equal((await member.request(f.path, "POST", input)).status, 403);
+    assert.equal((await f.request(f.path, "POST", { ...input, description: "" })).status, 400);
+    assert.deepEqual(await f.store.listAuthoredDocuments(f.workspace.id), []);
+    const created = await f.request(f.path, "POST", input);
+    assert.equal(created.status, 201);
+    const initial = await created.json() as LocalAuthoredDocument;
+    assert.equal(initial.version, 1);
+    assert.equal(initial.publishedRevision, 1);
+    const path = `${f.path}/${initial.id}`;
+    const original = await f.store.listAuthoredDocumentRevisions(f.workspace.id, initial.id);
+    assert.equal(original[0]?.content, input.content);
+    const update = { action: "commit", expectedVersion: 1, name: "Renamed", description: "Updated", content: "Updated saved body" };
+    assert.equal((await member.request(path, "PATCH", update)).status, 403);
+    assert.equal((await f.request(path, "PATCH", { ...update, content: "" })).status, 400);
+    assert.deepEqual(JSON.parse(JSON.stringify(await f.store.getAuthoredDocument(f.workspace.id, initial.id))), initial);
+    const response = await f.request(path, "PATCH", update);
+    assert.equal(response.status, 200);
+    const saved = await response.json() as LocalAuthoredDocument;
+    assert.equal(saved.version, 2);
+    assert.equal(saved.publishedRevision, 2);
+    assert.equal(saved.content, update.content);
+    assert.equal((await f.request(path, "PATCH", update)).status, 409);
+    const snapshots = await f.store.listAuthoredDocumentRevisions(f.workspace.id, initial.id);
+    assert.deepEqual(snapshots[0], original[0]);
+    assert.equal(snapshots.length, 2);
+    assert.equal(snapshots[1]?.content, update.content);
+    const catalog = await f.configuration.getConversationAuthoredSkillCatalog(f.channel.id, f.owner.id);
+    assert.equal(catalog.skills.find(skill => skill.documentId === initial.id)?.revision, 2);
+    assert.equal(catalog.skills.find(skill => skill.documentId === initial.id)?.name, "Renamed");
+
+    const legacy = await (await f.request(f.path, "POST", { kind: "skill", name: "Legacy", description: "", content: "" })).json() as LocalAuthoredDocument;
+    await f.request(f.path);
+    assert.equal((await f.store.getAuthoredDocument(f.workspace.id, legacy.id))?.publishedRevision, undefined);
+    const explicit = await f.request(`${f.path}/${legacy.id}`, "PATCH", { ...update, name: "Legacy activated" });
+    assert.equal(explicit.status, 200);
+    assert.equal(((await explicit.json()) as LocalAuthoredDocument).publishedRevision, 1);
+
+    const instruction = await (await f.request(f.path, "POST", { action: "commit", kind: "instructions", content: "Shared guidance" })).json() as LocalAuthoredDocument;
+    assert.match((await f.configuration.getConversationAuthoredContext(f.channel.id, f.owner.id)).instructions!, /Shared guidance/);
+    const cleared = await f.request(`${f.path}/${instruction.id}`, "PATCH", { action: "commit", expectedVersion: 1, content: "" });
+    assert.equal(cleared.status, 200);
+    assert.equal((await f.configuration.getConversationAuthoredContext(f.channel.id, f.owner.id)).instructions, undefined);
+    assert.equal((await f.store.listAuthoredDocumentRevisions(f.workspace.id, instruction.id))[0]?.content, "Shared guidance");
+  } finally { await f.close(); }
+});
+
+for (const boundary of ["list", "body", "history", "scope"] as const) {
+  test(`HTTP authoring denies admin demotion during awaited ${boundary} reads`, async () => {
+    const f = await fixture();
+    try {
+      const created = await f.request(f.path, "POST", { ...skill, action: "commit", conversationId: f.channel.id });
+      const document = await created.json() as LocalAuthoredDocument;
+      const admin = await f.login(f.admin.id);
+      const before = await f.store.getAuthoredDocument(f.workspace.id, document.id);
+      let demoted = false;
+      const demote = async () => {
+        if (demoted) return;
+        demoted = true;
+        await f.client.updateWorkspaceMember(f.workspace.id, f.admin.id, { actorIdentityId: f.owner.id, accessRole: "member" });
+      };
+      if (boundary === "list") {
+        const read = f.store.listAuthoredDocuments.bind(f.store);
+        f.store.listAuthoredDocuments = async (...args) => { const result = await read(...args); await demote(); return result; };
+      } else if (boundary === "body") {
+        const read = f.store.getAuthoredDocument.bind(f.store);
+        f.store.getAuthoredDocument = async (...args) => { const result = await read(...args); await demote(); return result; };
+      } else if (boundary === "history") {
+        const read = f.store.listAuthoredDocumentRevisions.bind(f.store);
+        f.store.listAuthoredDocumentRevisions = async (...args) => { const result = await read(...args); await demote(); return result; };
+      } else {
+        const read = f.client.getConversation.bind(f.client);
+        f.client.getConversation = async (...args) => { const result = await read(...args); await demote(); return result; };
+      }
+      const path = boundary === "list" ? f.path : `${f.path}/${document.id}${boundary === "history" ? "/revisions" : ""}`;
+      const response = await admin.request(path);
+      assert.equal(demoted, true);
+      assert.equal(response.status, 403);
+      assert.doesNotMatch(await response.text(), /PRIVATE_|Decision note|Capture a decision|contentHash/);
+      assert.equal((await admin.request(path)).status, 403);
+      assert.deepEqual(await f.store.getAuthoredDocument(f.workspace.id, document.id), before);
+    } finally { await f.close(); }
+  });
+}
+
+for (const action of ["save", "commit", "publish", "archive"] as const) {
+  test(`HTTP authoring denies ${action} after admin demotion during document I/O without changing history`, async () => {
+    const f = await fixture();
+    try {
+      const document = await (await f.request(f.path, "POST", { ...skill, action: "commit" })).json() as LocalAuthoredDocument;
+      const admin = await f.login(f.admin.id);
+      const read = f.store.getAuthoredDocument.bind(f.store);
+      const before = await read(f.workspace.id, document.id);
+      const history = await f.store.listAuthoredDocumentRevisions(f.workspace.id, document.id);
+      const mutate = f.store.mutateAuthoredDocument.bind(f.store);
+      let writes = 0;
+      f.store.mutateAuthoredDocument = async (...args) => { writes += 1; return mutate(...args); };
+      let demoted = false;
+      f.store.getAuthoredDocument = async (...args) => {
+        const result = await read(...args);
+        if (!demoted) {
+          demoted = true;
+          await f.client.updateWorkspaceMember(f.workspace.id, f.admin.id, { actorIdentityId: f.owner.id, accessRole: "member" });
+        }
+        return result;
+      };
+      const response = await admin.request(`${f.path}/${document.id}`, "PATCH", { action, expectedVersion: 1,
+        ...(["save", "commit"].includes(action) ? { name: "Forbidden", description: "Forbidden", content: "PRIVATE_FORBIDDEN_CHANGE" } : {}) });
+      assert.equal(response.status, 403);
+      assert.doesNotMatch(await response.text(), /PRIVATE_|Forbidden|contentHash/);
+      assert.equal(writes, 0);
+      assert.deepEqual(await read(f.workspace.id, document.id), before);
+      assert.deepEqual(await f.store.listAuthoredDocumentRevisions(f.workspace.id, document.id), history);
+      assert.equal(f.audit.filter(event => event.actorIdentityId === f.admin.id && event.outcome === "accepted").length, 0);
+    } finally { await f.close(); }
+  });
+}
+
+for (const kind of ["skill", "instructions"] as const) {
+  test(`HTTP authoring denies ${kind} creation after admin demotion during scope I/O`, async () => {
+    const f = await fixture();
+    try {
+      const admin = await f.login(f.admin.id);
+      const read = f.client.getConversation.bind(f.client);
+      const create = f.store.createAuthoredDocument.bind(f.store);
+      let writes = 0;
+      f.store.createAuthoredDocument = async (...args) => { writes += 1; return create(...args); };
+      f.client.getConversation = async (...args) => {
+        const result = await read(...args);
+        await f.client.updateWorkspaceMember(f.workspace.id, f.admin.id, { actorIdentityId: f.owner.id, accessRole: "member" });
+        return result;
+      };
+      const response = await admin.request(f.path, "POST", { action: "commit", kind, conversationId: f.channel.id,
+        content: "PRIVATE_DENIED_CREATE", ...(kind === "skill" ? { name: "Forbidden", description: "Forbidden" } : {}) });
+      assert.equal(response.status, 403);
+      assert.doesNotMatch(await response.text(), /PRIVATE_|Forbidden|contentHash/);
+      assert.equal(writes, 0);
+      assert.deepEqual(await f.store.listAuthoredDocuments(f.workspace.id), []);
+    } finally { await f.close(); }
+  });
+}
+
+for (const operation of ["create", "commit"] as const) {
+  test(`HTTP authoring rechecks admin access immediately before ${operation} dispatch`, async () => {
+    const f = await fixture();
+    try {
+      const document = operation === "commit"
+        ? await (await f.request(f.path, "POST", { ...skill, action: "commit" })).json() as LocalAuthoredDocument : undefined;
+      const admin = await f.login(f.admin.id);
+      const demote = () => f.client.updateWorkspaceMember(f.workspace.id, f.admin.id, { actorIdentityId: f.owner.id, accessRole: "member" });
+      if (operation === "create") {
+        // The first authorization sees the pre-demotion membership snapshot.
+        const read = f.client.listWorkspaceMembers.bind(f.client);
+        let first = true;
+        f.client.listWorkspaceMembers = async (...args) => {
+          const result = await read(...args);
+          if (first) { first = false; await demote(); }
+          return result;
+        };
+      } else {
+        // Demote after the private-read helper's own final authorization.
+        const read = f.configuration.getAuthoredDocument.bind(f.configuration);
+        f.configuration.getAuthoredDocument = async (...args) => { const result = await read(...args); await demote(); return result; };
+      }
+      let writes = 0;
+      const create = f.store.createAuthoredDocument.bind(f.store);
+      const mutate = f.store.mutateAuthoredDocument.bind(f.store);
+      f.store.createAuthoredDocument = async (...args) => { writes += 1; return create(...args); };
+      f.store.mutateAuthoredDocument = async (...args) => { writes += 1; return mutate(...args); };
+      const response = operation === "create"
+        ? await admin.request(f.path, "POST", { ...skill, action: "commit" })
+        : await admin.request(`${f.path}/${document!.id}`, "PATCH", { action: "commit", expectedVersion: 1,
+          name: skill.name, description: skill.description, content: "PRIVATE_DENIED_WRITE" });
+      assert.equal(response.status, 403);
+      assert.equal(writes, 0);
+      assert.deepEqual((await f.store.listAuthoredDocuments(f.workspace.id)).map(doc => doc.publishedRevision), operation === "create" ? [] : [1]);
+    } finally { await f.close(); }
+  });
+}
+
+for (const operation of ["create", "commit"] as const) {
+  test(`HTTP authoring withholds private ${operation} results when admin is demoted during an authorized write`, async () => {
+    const f = await fixture();
+    try {
+      const document = operation === "commit"
+        ? await (await f.request(f.path, "POST", { ...skill, action: "commit" })).json() as LocalAuthoredDocument : undefined;
+      const admin = await f.login(f.admin.id);
+      const demote = () => f.client.updateWorkspaceMember(f.workspace.id, f.admin.id, { actorIdentityId: f.owner.id, accessRole: "member" });
+      if (operation === "create") {
+        const create = f.store.createAuthoredDocument.bind(f.store);
+        f.store.createAuthoredDocument = async (...args) => { const result = await create(...args); await demote(); return result; };
+      } else {
+        const mutate = f.store.mutateAuthoredDocument.bind(f.store);
+        f.store.mutateAuthoredDocument = async (...args) => { const result = await mutate(...args); await demote(); return result; };
+      }
+      const response = operation === "create"
+        ? await admin.request(f.path, "POST", { ...skill, action: "commit" })
+        : await admin.request(`${f.path}/${document!.id}`, "PATCH", { action: "commit", expectedVersion: 1,
+          name: skill.name, description: skill.description, content: "PRIVATE_AUTHORIZED_COMMIT" });
+      assert.equal(response.status, 403);
+      assert.doesNotMatch(await response.text(), /PRIVATE_|Decision note|contentHash/);
+      // Dispatch was authorized: do not pretend a later demotion rolls back that commit.
+      const saved = await f.store.listAuthoredDocuments(f.workspace.id);
+      assert.equal(saved.length, 1);
+      assert.equal(saved[0]?.publishedRevision, operation === "create" ? 1 : 2);
+    } finally { await f.close(); }
+  });
+}
+
 test("ordinary browser posting cannot publish skill markers or activate recipients through copied metadata", async () => {
   const f = await fixture();
   try {
@@ -104,7 +317,8 @@ test("HTTP authoring publishes immutable revisions, preserves stale drafts, and 
     assert.equal((await (await f.request(`${path}/revisions`)).json() as unknown[]).length, 1);
     const summaries = await (await f.request(f.path)).json() as LocalAuthoredDocumentSummary[];
     assert.equal(summaries.length, 1);
-    assert.doesNotMatch(JSON.stringify(summaries), /PRIVATE_|content|description/);
+    assert.equal(summaries[0]?.description, skill.description, "authorized management lists include table descriptions");
+    assert.doesNotMatch(JSON.stringify(summaries), /PRIVATE_|content/);
     assert.doesNotMatch(JSON.stringify(f.audit), /PRIVATE_|PROCEDURE|content|description/);
     assert.deepEqual(f.audit.filter((event) => event.outcome === "accepted").map((event) => event.action), [
       "authored-document.created", "authored-document.published", "authored-document.updated",

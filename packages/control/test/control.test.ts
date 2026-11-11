@@ -2687,7 +2687,7 @@ test("local startup never replaces an offline binding without owner-scoped resum
   }
 });
 
-for (const scope of ["Workspace", "Conversation"] as const) test(`${scope} policy opts an existing managed binding into sleep and can turn it off`, async () => {
+for (const scope of ["Workspace", "Workspace with legacy Conversation values"] as const) test(`${scope} policy opts an existing managed binding into sleep and can turn it off`, async () => {
   const sourceDirectory = await realpath(await mkdtemp(join(tmpdir(), "minu-workspace-sleep-source-")));
   const conversationServer = await createConversationHttpServer({ port: 0 });
   const store = new InMemoryRelayBindingStore();
@@ -2737,28 +2737,30 @@ for (const scope of ["Workspace", "Conversation"] as const) test(`${scope} polic
     assert.equal((await store.getBinding(binding.id))?.state, "connected", "existing Workspaces stay off by default");
     assert.deepEqual(runtime.suspensions, []);
     const setPolicy = async (idleSleepTimeoutMs: number | null, expectedRevision: number) => {
-      if (scope === "Workspace") await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs });
-      else await configuration.updateConversationSettings(conversation.id, owner.id, {
-        participants: [{ identityId: agent.id, role: "Builder" }], idleSleepTimeoutMs, expectedRevision,
-      });
+      if (scope !== "Workspace") {
+        const legacy = { workspaceId: workspace.id, conversationId: conversation.id,
+          participants: [{ identityId: agent.id, role: "Builder" }], turnTimeoutMs: 60_000,
+          idleSleepTimeoutMs: idleSleepTimeoutMs === null ? 900_000 : null, revision: expectedRevision + 1 };
+        assert.ok(await store.putConversationSettings(legacy, expectedRevision));
+      }
+      await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs });
     };
     await setPolicy(15 * 60_000, 0);
     await waitUntil(async () => (await store.getBinding(binding.id))?.state === "sleeping"
       && runtime.suspensions.includes(binding.runtimeSessionId), 5_000);
     await setPolicy(null, 1);
-    if (scope === "Conversation") await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { idleSleepTimeoutMs: 15 * 60_000 });
     const trigger = await client.postMessage(conversation.id, {
       participantId: owner.id, body: "@builder wake after policy turned off",
     });
     await waitUntil(async () => (await store.getCursor(conversation.id, agent.id)) >= trigger.sequence, 5_000);
     assert.equal((await store.getBinding(binding.id))?.state, "connected");
-    if (scope === "Conversation") {
+    if (scope !== "Workspace") {
       const current = (await store.getBinding(binding.id))!;
       assert.ok(await store.updateBindingState(current.id, current.generation, current.leaseOwner!, "connected", now, now,
         "connected", { lastActiveAt: new Date(Date.now() - 16 * 60_000).toISOString() }));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal((await store.getBinding(binding.id))?.state, "connected", "turning policy off prevents a new sleep, including an explicit Conversation override");
+    assert.equal((await store.getBinding(binding.id))?.state, "connected", "Workspace Off prevents a new sleep even with legacy Conversation values");
   } finally {
     await host?.close().catch(() => undefined);
     await Promise.all([

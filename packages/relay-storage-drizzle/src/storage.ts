@@ -29,7 +29,7 @@ import type {
   RuntimeSessionRetirementReason,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { AuthoredContextUnavailableError, validateAuthoredContext, invocationDocumentMatches, invocationTargetMatches, reviseAuthoredDocument, validateConversationWorkingFolders } from "@minu/channels-relay";
+import { AuthoredContextUnavailableError, validateAuthoredContext, invocationDocumentMatches, invocationTargetMatches, reviseAuthoredDocument, prepareAuthoredDocumentCreation, validateConversationWorkingFolders } from "@minu/channels-relay";
 import { and, asc, desc, eq, gt, isNull, lte, lt, ne, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -423,13 +423,18 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     }
   }
 
-  async createAuthoredDocument(document: AuthoredDocument): Promise<AuthoredDocument | undefined> {
-    const rows = await this.database.insert(schema.authoredDocuments).values({
-      ...document,
-      conversationId: document.conversationId ?? null,
-      publishedRevision: document.publishedRevision ?? null,
-    }).onConflictDoNothing().returning();
-    return rows[0] ? authoredDocument(rows[0]) : undefined;
+  async createAuthoredDocument(document: AuthoredDocument, commit = false): Promise<AuthoredDocument | undefined> {
+    const next = prepareAuthoredDocumentCreation(document, commit);
+    return this.database.transaction(async transaction => {
+      const rows = await transaction.insert(schema.authoredDocuments).values({
+        ...next.document,
+        conversationId: next.document.conversationId ?? null,
+        publishedRevision: next.document.publishedRevision ?? null,
+      }).onConflictDoNothing().returning();
+      if (!rows[0]) return undefined;
+      if (next.publication) await transaction.insert(schema.authoredDocumentRevisions).values(next.publication);
+      return authoredDocument(rows[0]);
+    });
   }
 
   async getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined> {

@@ -287,6 +287,53 @@ test("catalog projects skill-only session references and safe configured Harness
   } finally { await f.close(); }
 });
 
+test("known-empty valid sessions remain ready after the first skill Save without changing their snapshot", async () => {
+  const f = await fixture();
+  try {
+    for (const document of await f.store.listAuthoredDocuments(f.workspace.id)) {
+      if (document.state === "active" && document.kind === "skill") await f.configuration.updateAuthoredDocument(f.workspace.id, document.id, f.owner.id,
+        { action: "archive", expectedVersion: document.version });
+    }
+    const now = new Date().toISOString();
+    await f.store.putAgentConfig({ id: "empty-agent", workspaceId: f.workspace.id, agentIdentityId: f.agent.id,
+      runtimeAdapter: "picker", status: "active", createdAt: now, updatedAt: now });
+    const manifest = await captureAuthoredContext(f.store, f.workspace.id, f.parent.id);
+    assert.deepEqual(manifest.documents.filter(ref => ref.kind === "skill"), []);
+    await f.store.putBinding({ id: "empty-binding", workspaceAgentConfigId: "empty-agent", workspaceId: f.workspace.id,
+      conversationId: f.parent.id, agentIdentityId: f.agent.id, runtimeAdapter: "picker", runtimeSessionId: "empty-session",
+      runtimeOwnerId: "owner", generation: 1, state: "connected", wakePolicy: "mentions", createdAt: now, updatedAt: now }, { authoredContext: manifest });
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store: f.store, runtimes: { picker: {
+      async startTurn() { throw new Error("Discovery must not start a turn"); }, async turn() { return undefined; },
+    } } });
+    f.configuration.getConversationAuthoredSkillCatalog = configuration.getConversationAuthoredSkillCatalog.bind(configuration);
+    const before = await f.store.getSessionInspectionRecords(f.workspace.id, f.parent.id, f.agent.id);
+    const document = await f.configuration.createAuthoredDocument(f.workspace.id, f.owner.id,
+      { kind: "skill", action: "commit", name: "First skill", description: "First publication", content: "Private procedure" });
+    const response = await f.request();
+    assert.equal(response.status, 200);
+    const catalog = await response.json() as LocalConversationAuthoredSkillCatalog;
+    assert.equal(catalog.skills[0]?.documentId, document.id);
+    assert.equal(catalog.agents?.[0]?.supported, true);
+    assert.equal(catalog.agents?.[0]?.state, "ready");
+    assert.deepEqual(catalog.agents?.[0]?.skills, []);
+    assert.deepEqual(await f.store.getSessionInspectionRecords(f.workspace.id, f.parent.id, f.agent.id), before);
+
+    const inspect = f.store.getSessionInspectionRecords.bind(f.store);
+    for (const fault of ["generation", "manifest", "state", "muted"] as const) {
+      f.store.getSessionInspectionRecords = async (...args) => {
+        const records = await inspect(...args);
+        if (fault === "generation") records.activation!.bindingGeneration += 1;
+        if (fault === "manifest") records.activation!.authoredContext = undefined;
+        if (fault === "state") records.bindings[0]!.state = "sleeping";
+        if (fault === "muted") records.bindings[0]!.wakePolicy = "muted";
+        return records;
+      };
+      const unavailable = await (await f.request()).json() as LocalConversationAuthoredSkillCatalog;
+      assert.equal(unavailable.agents?.[0]?.state, "unavailable", fault);
+    }
+  } finally { await f.close(); }
+});
+
 test("typed catalog client encodes scope and uses a credentialed GET without mutation", async t => {
   const catalog: LocalConversationAuthoredSkillCatalog = { workspaceId: "workspace", conversationId: "scope /? ü", channelId: "parent", availability: "not_checked", skills: [] };
   const calls: Array<{ url: string; init?: RequestInit }> = [];

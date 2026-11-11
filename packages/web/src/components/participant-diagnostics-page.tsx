@@ -33,6 +33,17 @@ export function ParticipantDiagnosticsPage() {
     && membership?.status === "active" && (membership.accessRole === "owner" || membership.accessRole === "admin") && participant && participant.status !== "disabled";
   const agentKey = [...queryKeys.localConversationAgents(conversationId), participantId, humanIdentityId] as const;
   const agent = useQuery({ queryKey: agentKey, queryFn: () => localControl.conversationAgent(conversationId, participantId), enabled: Boolean(authorized && target && (target.type === "agent" || target.type === "service")), retry: false, refetchInterval: 5_000 });
+  const capabilities = useQuery({ queryKey: queryKeys.localCapabilities(), queryFn: () => localControl.capabilities(), enabled: Boolean(authorized), retry: false, staleTime: 60_000 });
+  const instructionsKey = ["local", "session-instructions", workspaceId, conversationId, participantId, humanIdentityId] as const;
+  const canReadInstructions = Boolean(authorized && (target?.type === "agent" || target?.type === "service") && capabilities.data?.features.authoredContent);
+  const instructions = useQuery({ queryKey: instructionsKey, queryFn: async ({ signal }) => {
+    const context = await localControl.getConversationAuthoredContext(conversationId);
+    signal.throwIfAborted();
+    if (context.workspaceId !== workspaceId || context.conversationId !== conversationId) throw new Error("Instruction scope changed");
+    // Retain only this agent's status, not instruction bodies or other agents' references.
+    return context.agents.find(({ identityId }) => identityId === participantId)?.status ?? "unavailable";
+  }, enabled: canReadInstructions, retry: false, gcTime: 0, refetchInterval: 5_000, refetchOnWindowFocus: false });
+  const instructionLabels = { applied: "Applied", pending: "Pending", legacy: "Not verified", not_started: "Not started", unavailable: "Unavailable" };
   const actionsKey = ["local", "pending-agent-actions", conversationId, humanIdentityId] as const;
   const actions = useQuery({ queryKey: actionsKey, queryFn: ({ signal }) => localControl.pendingAgentActions(conversationId, signal), enabled: Boolean(authorized), retry: false, refetchInterval: (query) => query.state.status === "error" ? 30_000 : query.state.data?.actions.length ? 1_000 : 15_000 });
   const requestPending = !actions.isSuccess || actions.data.actions.some(action => !action.identityId || action.identityId === participantId);
@@ -40,7 +51,7 @@ export function ParticipantDiagnosticsPage() {
   // Diagnostics needs its own complete public snapshot for exact message navigation.
   const messages = useQuery({ queryKey: [...queryKeys.conversationMessages(conversationId), "diagnostics"], queryFn: () => conversations.listMessages(conversationId), enabled: Boolean(authorized), retry: false });
   const failures = useQuery({ queryKey: queryKeys.localConversationTurnFailures(conversationId, humanIdentityId), queryFn: () => localControl.listConversationTurnFailures(conversationId), enabled: Boolean(authorized), retry: false, refetchInterval: 10_000 });
-  const accessDenied = [workspace.error, metadata.error, session.error, members.error, identities.error, agent.error, actions.error, messages.error, failures.error]
+  const accessDenied = [workspace.error, metadata.error, session.error, members.error, identities.error, agent.error, capabilities.error, instructions.error, actions.error, messages.error, failures.error]
     .some(error => (error instanceof LocalControlClientError || error instanceof ConversationClientError) && (error.status === 401 || error.status === 403));
   // Denial from any read revokes the whole surface, even while public metadata
   // is stale. Latch it so query cleanup or late responses cannot restore access.
@@ -49,7 +60,7 @@ export function ParticipantDiagnosticsPage() {
   useLayoutEffect(() => {
     if (!canInspect) return;
     return () => {
-      for (const queryKey of [agentKey, actionsKey, queryKeys.localConversationTurnFailures(conversationId, humanIdentityId)]) {
+      for (const queryKey of [agentKey, instructionsKey, actionsKey, queryKeys.localConversationTurnFailures(conversationId, humanIdentityId)]) {
         void queryClient.cancelQueries({ queryKey, exact: true });
         queryClient.removeQueries({ queryKey, exact: true });
       }
@@ -77,7 +88,7 @@ export function ParticipantDiagnosticsPage() {
       {canInspect && humanIdentityId ? <div className="mx-auto max-w-4xl space-y-6">
         {actions.isSuccess && requestPending ? <p role="status">Participant action pending</p> : null}
         <section aria-label="Participant diagnostics" className="space-y-2">
-          <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Runtime</h2><button type="button" className="button-secondary" disabled={agent.isFetching} onClick={() => { void agent.refetch(); }}>Refresh status</button></div>
+          <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Runtime</h2><button type="button" className="button-secondary" disabled={agent.isFetching} onClick={() => { void agent.refetch(); if (canReadInstructions) void instructions.refetch(); }}>Refresh status</button></div>
           <p>{agent.data ? runtimeStateLabel(agent.data) : "Status unavailable"}</p>
           {agent.isError ? <p role="status" className="text-[var(--warning)]">Status refresh failed</p> : null}
           {agent.data?.diagnostics ? <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[var(--muted)]">
@@ -87,6 +98,12 @@ export function ParticipantDiagnosticsPage() {
             {([["Safe activity", "safeActivityEvents"], ["Interrupt", "interrupt"], ["Reconnect existing", "reconnectExisting"], ["Interactive attach", "interactiveAttach"], ["Open diagnostic", "openDiagnostic"], ["Live skill verification", "liveSkillVerification"]] as const).map(([label, key]) => <div key={key} className="contents"><dt>{label}</dt><dd>{liveCapabilityLabel(agent.data!.diagnostics!.capabilities[key])}</dd></div>)}
           </dl> : null}
         </section>
+        {canReadInstructions ? <section aria-label="Session instructions" className="space-y-2">
+          <h2 className="font-semibold">Session instructions</h2>
+          {instructions.isPending ? <p role="status">Loading…</p> : <p data-context-status={instructions.isError ? "unavailable" : instructions.data}>
+            {instructions.isError ? "Unavailable" : instructionLabels[instructions.data]}
+          </p>}
+        </section> : null}
         {selectedIssue ? <p>Runtime issue · message #{selectedSequence}</p> : null}
         {issues.length ? <TurnFailureDiagnostics diagnostics={issues} loadedSequences={loadedSequences} onViewMessage={viewMessage} /> : null}
         <OperationDiagnostics scope={{ workspaceId, conversationId, participantIdentityId: participantId, humanIdentityId }} loadedSequences={loadedSequences} onViewMessage={viewMessage} requestPending={requestPending} onAccessLost={() => setRevoked(true)} />

@@ -1,16 +1,15 @@
 import type { WorkspaceAgentConfig, RelayBindingStore } from "./binding-store.ts";
 
 export interface ConversationSetup {
-  participants: Array<{ identityId?: string; role: string }>;
+  participants: Array<{ identityId?: string; role?: string }>;
   model?: { provider: string; id: string };
   reasoningLevel?: WorkspaceAgentConfig["reasoningLevel"];
   guidance?: string;
-  turnTimeoutMs?: number;
-  /** Undefined inherits the Workspace policy; null explicitly disables idle sleep. */
-  idleSleepTimeoutMs?: number | null;
 }
 
-export interface ConversationPreset extends ConversationSetup {
+export interface ConversationPreset {
+  participants: Array<{ identityId: string }>;
+  guidance?: string;
   id: string;
   workspaceId: string;
   name: string;
@@ -27,6 +26,9 @@ export interface ConversationSettings extends ConversationSetup {
 
 /** Immutable creation snapshot, independent of subsequent preset edits or deletion. */
 export interface ConversationCreationSetup extends ConversationSetup {
+  /** Historical snapshot values only; never used as active timeout policy. */
+  turnTimeoutMs?: number;
+  idleSleepTimeoutMs?: number | null;
   workspaceId: string;
   conversationId: string;
   workingFolder?: { relativePath: string };
@@ -44,7 +46,7 @@ export function applyConversationSetup(
   const role = setup.participants.find(({ identityId }) => identityId === config.agentIdentityId)?.role;
   const guidance = [
     role ? `Your role in this Conversation: ${role}.` : undefined,
-    setup.participants.length ? `Conversation role assignments (identity id and role):\n${JSON.stringify(setup.participants)}` : undefined,
+    setup.participants.some(({ role }) => role) ? `Conversation role assignments (identity id and role):\n${JSON.stringify(setup.participants.filter(({ role }) => role))}` : undefined,
     setup.guidance,
   ].filter(Boolean).join("\n\n");
   return {

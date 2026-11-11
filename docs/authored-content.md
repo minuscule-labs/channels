@@ -6,11 +6,23 @@ See the [criteria and LEVVS evidence](verification/workspace-instructions-and-sk
 
 ## Scope and authority
 
+Settings authoring is Workspace-only: manage shared Instructions and Skills in Workspace Settings. Conversation settings contains no authored Instructions/Skills editors and does not automatically read their library, bodies or context. Presets supply task-specific instructions copied at creation, independently of the Workspace baseline; changing a preset does not rewrite existing Conversations. Global libraries are not introduced.
+
+Existing channel-scoped documents, snapshots, pinned invocations and active sessions are preserved. Removing their editors does not silently delete, migrate or disable their instructions. The legacy backend contract below remains compatible; this presentation change does not remove explicit skill invocation or selected-agent status in Diagnostics.
+
 Documents are either `instructions` or `skill`, and belong to one workspace with an optional `conversationId` for channel scope. Scope and kind cannot be changed by editing. Workspace-scoped documents omit `conversationId`. A channel must belong to the specified workspace; thread-local authoring is rejected, and thread sessions inherit parent-channel publications.
 
 All management operations, including body/history reads, require an authenticated local browser session whose identity is an active human owner/admin of the workspace. The actor is derived from that session, never from request data. Management-body and authoring access is not expanded by the separate member-use permission. This is an administrative library, not an operational per-session skill-availability catalog.
 
-Bodies and revision history live only in the private Relay database. No collaboration message, public schema, public SSE event, or Runtime session is created merely by authoring/publishing. Workspace document lists omit both procedure content and descriptions. Detail/history reads return bodies only through authenticated local control. Audit events include action/outcome and actor/scope IDs, never bodies or names/descriptions.
+Bodies and revision history live only in the private Relay database. No collaboration message, public schema, public SSE event, or Runtime session is created merely by authoring/publishing. Authorized owner/admin document lists include names and descriptions for the Skills management table but omit procedure content. This does not expand member/public access. Detail/history reads return bodies only through authenticated local control. Audit events include action/outcome and actor/scope IDs, never bodies or names/descriptions.
+
+## Editor Save
+
+Workspace Instructions and Skills use one **Save** action. The editor sends `action: "commit"` in a single create/update request; storage writes the complete head and its immutable active snapshot in one transaction. An insertion failure rolls back both. Skill saves require a name, description and nonblank instructions; empty instructions may be saved to clear standing guidance. Updates retain the existing expected-version conflict guard.
+
+Preview and skill Archive remain. Draft/publish controls, history controls and revision badges are not shown. Internal snapshots remain private because existing sessions and already-accepted invocations retain exact pinned instructions. Saving does not hot-reload running sessions or grant permissions.
+
+Existing unpublished drafts are not migrated or automatically activated. Opening/reloading an editor is read-only; only an explicit Save activates the submitted content. Legacy draft and publish API operations below remain compatible. New editor creates add `"action": "commit"` to POST; updates use `"action": "commit"` with complete fields and `expectedVersion` in PATCH. Creates without this action still create legacy unpublished drafts, and legacy `action: "save"` remains draft-only.
 
 ## API
 
@@ -38,7 +50,7 @@ Create workspace instructions:
 }
 ```
 
-Create a channel playbook:
+Legacy API example for a channel playbook (no longer exposed by the Settings editors):
 
 ```json
 {
@@ -52,7 +64,7 @@ Create a channel playbook:
 
 Creation produces an unpublished draft with `version: 1`. A skill requires a nonblank name; its draft description/procedure may be empty. Instruction names are generated from scope, not user-editable. There is one instructions document per workspace/channel scope, enforced by storage uniqueness, including concurrent creates.
 
-Save a complete replacement of the editable draft fields:
+Legacy API: save a complete replacement of the editable draft fields (the current editor uses `commit` instead):
 
 ```json
 {
@@ -76,7 +88,7 @@ Publish or archive a skill:
 { "action": "archive", "expectedVersion": 3 }
 ```
 
-- Every successful save/publish/archive advances the edit `version`.
+- Every successful save/commit/publish/archive advances the edit `version`; initial atomic creation starts at version 1 with snapshot 1.
 - Publication atomically advances `publishedRevision` and writes an immutable snapshot. Hashing covers name, description, and procedure, not draft metadata.
 - Saving a new draft leaves the old publication unchanged. Publication requires a skill description and nonblank procedure.
 - Skill archival retains history and prevents further draft/publication changes. Restoration/deletion is not implemented in this slice.
@@ -237,7 +249,7 @@ Private migration `0020_authored_skill_invocations` adds immutable accepted-oper
 
 ## Management UI
 
-Workspace Settings and channel Settings provide Markdown editing/preview, separate Save draft and Publish, revision history, explicit skill scope at creation, and skill archive. Channel Settings include inherited published instructions and per-agent Applied/Pending state; existing agent menus still own New session actions.
+Workspace Settings and channel Settings provide Markdown editing/preview, one Save action, explicit skill scope at creation, and skill archive. Revision numbers and history controls stay out of Settings; internal snapshots and conflict checks remain. Channel Settings keep the shared instruction editor without duplicating saved instruction bodies or displaying session state. Each agent's Inspect → Diagnostics view shows only that agent's instruction status; instruction bodies and other agents' references are not retained in its query cache. Existing agent menus still own New session actions.
 
 Stale writes preserve the local draft. Review latest shows current saved content; Keep draft on latest revision explicitly adopts its concurrency token without writing or replacing the local draft. Newer saved responses update only pristine editors, avoiding stale publication badges without overwriting unsaved work. Access-denied reads/writes stop management and remove private editor state. Private document queries are actor-scoped, ephemeral, and not persisted to browser storage.
 

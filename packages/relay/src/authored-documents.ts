@@ -36,7 +36,7 @@ export type AuthoredDocumentMutation = {
   actorIdentityId: string;
   timestamp: string;
 } & (
-  | { action: "save"; name: string; description: string; content: string }
+  | { action: "save" | "commit"; name: string; description: string; content: string }
   | { action: "publish" | "archive" }
 );
 
@@ -52,15 +52,16 @@ export function reviseAuthoredDocument(
     updatedBy: mutation.actorIdentityId,
     updatedAt: mutation.timestamp,
   };
-  if (mutation.action === "save") {
+  if (mutation.action === "save" || mutation.action === "commit") {
     document.name = mutation.name;
     document.description = mutation.description;
     document.content = mutation.content;
   } else if (mutation.action === "archive") {
     document.state = "archived";
-  } else {
+  }
+  if (mutation.action === "publish" || mutation.action === "commit") {
     document.publishedRevision = (current.publishedRevision ?? 0) + 1;
-    const content = { name: current.name, description: current.description, content: current.content };
+    const content = { name: document.name, description: document.description, content: document.content };
     return {
       document,
       publication: {
@@ -75,4 +76,12 @@ export function reviseAuthoredDocument(
     };
   }
   return { document };
+}
+
+/** Prepare initial activation without exposing an intermediate draft to readers. */
+export function prepareAuthoredDocumentCreation(document: AuthoredDocument, commit = false) {
+  return commit ? reviseAuthoredDocument({ ...document, version: document.version - 1 }, {
+    action: "commit", expectedVersion: document.version - 1, actorIdentityId: document.updatedBy,
+    timestamp: document.updatedAt, name: document.name, description: document.description, content: document.content,
+  })! : { document, publication: undefined };
 }
