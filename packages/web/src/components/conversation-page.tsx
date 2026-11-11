@@ -626,6 +626,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
           identityStatus={currentSession.isPending ? "loading" : currentSession.isError ? "unavailable" : "ready"}
           thread={activeThread}
           defaultRecipientId={threadDefaultRecipient(metadata.data)}
+          agents={localAgents.isError ? undefined : localAgents.data?.agents}
           activity={<ConversationActivityStrip agents={localAgents.data?.agents ?? []} participants={participants} />}
           readOnlyReason={settled ? "This Conversation is archived. Reopen it to send a message." : undefined}
         />

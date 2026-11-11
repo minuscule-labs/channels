@@ -67,7 +67,10 @@ async function snapshot(client: ReturnType<typeof createClient>) {
     ["response_deliveries", "conversation_id, participant_id, trigger_message_id"],
     ["agent_cursors", "conversation_id, participant_id"], ["conversation_lifecycles", "conversation_id"],
     ["conversation_attachments", "id"],
-  ]) result[table!] = (await client.execute(`SELECT * FROM ${table} ORDER BY ${order}`)).rows;
+  ]) {
+    const columns = table === "messages" ? "id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at" : "*";
+    result[table!] = (await client.execute(`SELECT ${columns} FROM ${table} ORDER BY ${order}`)).rows;
+  }
   return result;
 }
 
@@ -147,6 +150,7 @@ test("folder migration upgrades a populated pre-folder database without rewritin
   const after = createClient({ url: legacy.url });
   try {
     assert.deepEqual(await snapshot(after), before);
+    assert.ok((await after.execute("SELECT authored_invocation_id FROM messages")).rows.every(row => row.authored_invocation_id === null));
     assert.deepEqual((await after.execute("PRAGMA foreign_key_check")).rows, []);
     const assignmentColumn = (await after.execute("PRAGMA table_info(conversations)")).rows.find(({ name }) => name === "folder_id");
     assert.ok(assignmentColumn, "migration must add the persisted assignment column");

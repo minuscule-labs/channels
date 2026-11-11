@@ -1,5 +1,5 @@
 import { openParticipantSection } from "./participant-menu";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails, LocalConversationAuthoredContext } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { mockActionRequests } from "./agent-action-fixtures";
@@ -580,12 +580,14 @@ test("minimized keyboard inspection restores focus and tabs do not share reports
 test("members never query privileged history; unavailable and missing timelines remain honest", async ({ page, request }) => {
   const data = await fixture(request);
   const counts = await mocks(page, data);
+  let instructionReads = 0;
+  await page.route("**/authored-context", route => { instructionReads++; return route.continue(); });
   await request.post(`${fixtureBase}/member-participant?value=true`);
   try {
     await launch(page, request, data, "member");
     const modal = await open(page, data);
     await expect(modal.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
-    expect(counts.history).toBe(0); expect(counts.events).toBe(0); expect(counts.trails).toBe(0);
+    expect(counts.history).toBe(0); expect(counts.events).toBe(0); expect(counts.trails).toBe(0); expect(instructionReads).toBe(0);
   } finally { await request.post(`${fixtureBase}/member-participant?value=false`); }
   await launch(page, request, data);
   await page.route("**/operations/selected-stop", (route) => route.fulfill({ json: { ...detail(data), detail: undefined } }));
@@ -658,4 +660,113 @@ test("diagnostics opens in a separate tab without losing chat controls or issuin
     await expect(diagnostics.getByRole("button", { name: "Fresh session", exact: true })).toHaveCount(0);
     expect(mutations).toBe(0);
   } finally { await diagnostics.close(); }
+});
+
+function authoredContext(data: Fixture, status: LocalConversationAuthoredContext["agents"][number]["status"], conversationId = data.primary.id): LocalConversationAuthoredContext {
+  return { workspaceId: data.workspaceId, conversationId, channelId: conversationId, capturedAt: "2026-10-01T10:00:00.000Z",
+    published: { schemaVersion: 1, workspaceId: data.workspaceId, channelId: conversationId, documents: [] },
+    instructions: "PRIVATE_INSTRUCTION_BODY", changesApplyToNewSessions: true,
+    agents: [{ identityId: data.agent.id, status }, { identityId: "another-agent", status: "pending" }] };
+}
+
+test("session instructions are agent-scoped, read-only and absent from Conversation settings", async ({ page, request }, info) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let status: LocalConversationAuthoredContext["agents"][number]["status"] = "applied", reads = 0;
+  await page.route(`**/local/conversations/${data.primary.id}/authored-context`, route => {
+    reads++; return route.fulfill({ json: authoredContext(data, status) });
+  });
+  await launch(page, request, data);
+  expect(reads).toBe(0);
+  await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}/settings`);
+  const settings = page.getByRole("main", { name: "Conversation settings", exact: true });
+  await expect(settings.getByLabel("Conversation name", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("region", { name: "Channel instructions", exact: true })).toHaveCount(0);
+  await expect(settings.getByRole("region", { name: "Authored skills", exact: true })).toHaveCount(0);
+  await expect(settings.getByRole("region", { name: "Session instructions", exact: true })).toHaveCount(0);
+  expect(reads).toBe(0);
+  await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}/participants/${data.agent.id}/diagnostics`);
+  const main = page.getByRole("main", { name: "Participant diagnostics", exact: true });
+  const instructions = main.getByRole("region", { name: "Session instructions", exact: true });
+  await expect(instructions.locator('[data-context-status="applied"]')).toHaveText("Applied");
+  await expect(instructions).not.toContainText("Pending");
+  await expect(main).not.toContainText("PRIVATE_INSTRUCTION_BODY");
+  await expect(main).not.toContainText("another-agent");
+  for (const [next, label] of [["pending", "Pending"], ["legacy", "Not verified"], ["not_started", "Not started"], ["unavailable", "Unavailable"]] as const) {
+    status = next;
+    await main.getByRole("button", { name: "Refresh status", exact: true }).click();
+    await expect(instructions.locator(`[data-context-status="${next}"]`)).toHaveText(label);
+  }
+  await page.screenshot({ path: info.outputPath("agent-session-instructions.png") });
+  expect(counts.mutations).toBe(0);
+  expect(await page.evaluate(() => Object.values(localStorage).some(value => /PRIVATE_INSTRUCTION_BODY|another-agent/.test(value)))).toBe(false);
+  await page.clock.install();
+  await main.getByRole("link", { name: "Back to conversation", exact: true }).click();
+  const closedReads = reads;
+  await page.clock.fastForward(15_000);
+  expect(reads).toBe(closedReads);
+});
+
+test("session instructions discard stale status on errors and clear diagnostics on denial", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let result = 200;
+  await page.route(`**/local/conversations/${data.primary.id}/authored-context`, route => result === 200
+    ? route.fulfill({ json: authoredContext(data, "applied") })
+    : route.fulfill({ status: result, json: { error: "PRIVATE_INSTRUCTION_ERROR" } }));
+  await launch(page, request, data);
+  const main = await open(page, data);
+  const instructions = main.getByRole("region", { name: "Session instructions", exact: true });
+  await expect(instructions).toContainText("Applied");
+  result = 503;
+  await main.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(instructions).toContainText("Unavailable");
+  await expect(instructions).not.toContainText("Applied");
+  await expect(main).not.toContainText("PRIVATE_INSTRUCTION_ERROR");
+  result = 403;
+  await main.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(main).toContainText("Diagnostics unavailable");
+  await expect(main.getByRole("region", { name: "Session instructions", exact: true })).toHaveCount(0);
+  await expect(main.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
+  await expect(main).not.toContainText("PRIVATE_INSTRUCTION_ERROR");
+  expect(counts.mutations).toBe(0);
+});
+
+test("session instructions fence a late read after Conversation navigation", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  const entered = gate(), held = gate(), delivered = gate();
+  await page.route(`**/local/conversations/${data.primary.id}/authored-context`, async route => {
+    entered.release(); await held.promise;
+    try { await route.fulfill({ json: authoredContext(data, "applied") }); } catch {} finally { delivered.release(); }
+  });
+  await page.route(`**/local/conversations/${data.alternate.id}/authored-context`, route => route.fulfill({ json: authoredContext(data, "pending", data.alternate.id) }));
+  try {
+    await launch(page, request, data);
+    const main = await open(page, data);
+    await entered.promise;
+    await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.alternate.id}/participants/${data.agent.id}/diagnostics`);
+    const instructions = main.getByRole("region", { name: "Session instructions", exact: true });
+    await expect(instructions).toContainText("Pending");
+    held.release(); await delivered.promise;
+    await expect(instructions).toContainText("Pending");
+    await expect(instructions).not.toContainText("Applied");
+    await expect(main).not.toContainText("PRIVATE_INSTRUCTION_BODY");
+    expect(counts.mutations).toBe(0);
+  } finally { held.release(); }
+});
+
+test("session instructions are not queried when authored content is unsupported", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let reads = 0;
+  await page.route("**/local/capabilities", async route => {
+    const response = await route.fetch({ url: `http://127.0.0.1:${process.env.MINU_TEST_CONTROL_PORT ?? 58411}/local/capabilities` });
+    const body = await response.json();
+    body.features.authoredContent = false;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/authored-context", route => { reads++; return route.fulfill({ json: authoredContext(data, "applied") }); });
+  await launch(page, request, data);
+  const main = await open(page, data);
+  await expect(main.getByRole("region", { name: "Session and context", exact: true })).toBeVisible();
+  await expect(main.getByRole("region", { name: "Session instructions", exact: true })).toHaveCount(0);
+  expect(reads).toBe(0);
+  expect(counts.mutations).toBe(0);
 });

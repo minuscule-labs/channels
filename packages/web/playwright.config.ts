@@ -5,10 +5,12 @@ const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
 const serviceToken = "browser-fixture-service-token";
+const skillsFixture = process.env.MINU_TEST_SKILLS_FIXTURE === "1";
 
 export default defineConfig({
   testDir: "./test-browser",
-  testMatch: "**/*.spec.ts",
+  testMatch: skillsFixture ? "**/skills.spec.ts" : "**/*.spec.ts",
+  testIgnore: skillsFixture ? [] : ["**/skills.spec.ts"],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
@@ -20,7 +22,7 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
-      command: "node test-browser/fixture-server.mjs",
+      command: skillsFixture ? "node test-browser/skills-fixture-server.mjs" : "node test-browser/fixture-server.mjs",
       port: conversationsPort,
       env: {
         MINU_TEST_CHANNELS_PORT: String(conversationsPort),

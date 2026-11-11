@@ -66,6 +66,13 @@ import {
   type LocalAgentActionInput, type LocalAgentActionReceipt,
   type LocalAgentOperationHistory, type LocalAgentOperationDetail, type LocalAgentDiagnosticReport,
   type LocalAgentRuntimeOptions,
+  type LocalAuthoredDocument,
+  type LocalAuthoredDocumentRevision,
+  type LocalAuthoredDocumentSummary,
+  type LocalAuthoredSkillInvocationReceipt,
+  type LocalAuthoredSkillInvocationPublicationReceipt,
+  type LocalConversationAuthoredContext,
+  type LocalConversationAuthoredSkillCatalog,
   type LocalBulkAgentLifecycleResponse,
   type LocalBulkAgentLifecycleResult,
   type LocalConversationAgent,
@@ -204,6 +211,17 @@ export interface LocalControlConfigurationPort {
   getConversationSettings?(conversationId: string, actor: string): Promise<LocalConversationSettings>;
   updateConversationSettings?(conversationId: string, actor: string, input: unknown): Promise<LocalConversationSettings>;
   getConversationCreationSetup?(conversationId: string, actor: string): Promise<LocalConversationCreationSetup>;
+  acceptAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, requestId: string, input: unknown): Promise<LocalAuthoredSkillInvocationReceipt>;
+  getAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt>;
+  getAuthoredSkillInvocationPublication?(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationPublicationReceipt>;
+  publishAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, input: unknown, assertSession?: () => void): Promise<LocalAuthoredSkillInvocationPublicationReceipt>;
+  getConversationAuthoredSkillCatalog?(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredSkillCatalog>;
+  getConversationAuthoredContext?(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredContext>;
+  listAuthoredDocuments?(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]>;
+  getAuthoredDocument?(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocument>;
+  listAuthoredDocumentRevisions?(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentRevision[]>;
+  createAuthoredDocument?(workspaceId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument>;
+  updateAuthoredDocument?(workspaceId: string, documentId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument>;
   provisionWorkspace?(actorIdentityId: string, input: unknown): Promise<ProvisionLocalWorkspaceResult>;
   getWorkspaceConfiguration(
     workspaceId: string,
@@ -264,6 +282,8 @@ export interface LocalControlServiceOptions {
   bindings: LocalControlBindingDirectory;
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
   configuration?: LocalControlConfigurationPort;
+  /** Default-disabled until the explicit publication boundary is independently approved. No UI setting. */
+  authoredSkillPublicationEnabled?: boolean;
   lifecycle?: LocalControlAgentLifecyclePort;
   diagnosticReads?: Pick<LocalAgentDiagnosticReads, "history" | "detail" | "report">;
   sessionInspections?: Pick<LocalAgentSessionInspections, "read" | "events">;
@@ -466,6 +486,8 @@ export class LocalControlService {
         agentCreate: false,
         agentRuntimeOptions: Boolean(this.options.configuration),
         agentSkills: Boolean(this.options.configuration),
+        authoredContent: Boolean(this.options.configuration?.getConversationAuthoredContext && this.options.configuration?.createAuthoredDocument),
+        authoredSkillPublication: this.authoredSkillPublicationEnabled,
         agentStart: Boolean(this.options.lifecycle?.available),
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),
@@ -549,6 +571,98 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Conversation working folders unavailable", 404, "unavailable");
     }
     return this.options.configuration.updateConversationWorkingFolders(conversationId, actorIdentityId, input);
+  }
+
+  async acceptAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string, input: unknown): Promise<LocalAuthoredSkillInvocationReceipt> {
+    if (!this.options.configuration?.acceptAuthoredSkillInvocation) {
+      throw new LocalConfigurationRequestError("Skill invocation acceptance unavailable", 404, "unavailable");
+    }
+    return this.withConversationSendOrder(conversationId, () =>
+      this.options.configuration!.acceptAuthoredSkillInvocation!(conversationId, actorIdentityId, requestId, input));
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt> {
+    if (!this.options.configuration?.getAuthoredSkillInvocation) {
+      throw new LocalConfigurationRequestError("Skill invocation acceptance unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAuthoredSkillInvocation(conversationId, actorIdentityId, requestId);
+  }
+
+  async getAuthoredSkillInvocationPublication(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    if (!this.options.configuration?.getAuthoredSkillInvocationPublication) {
+      throw new LocalConfigurationRequestError("Skill invocation publication is unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAuthoredSkillInvocationPublication(conversationId, actorIdentityId, requestId);
+  }
+
+  get authoredSkillPublicationEnabled(): boolean {
+    return this.options.authoredSkillPublicationEnabled === true && !!this.options.configuration?.publishAuthoredSkillInvocation;
+  }
+
+  async publishAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, input: unknown, assertSession?: () => void): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    if (!this.authoredSkillPublicationEnabled) throw new LocalConfigurationRequestError("Skill invocation publication is unavailable", 404, "unavailable");
+    return this.withConversationSendOrder(conversationId, () => {
+      assertSession?.();
+      return this.options.configuration!.publishAuthoredSkillInvocation!(conversationId, actorIdentityId, input, assertSession);
+    });
+  }
+
+  async getConversationAuthoredSkillCatalog(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredSkillCatalog> {
+    if (!this.options.configuration?.getConversationAuthoredSkillCatalog) {
+      throw new LocalConfigurationRequestError("Skill catalog is unavailable", 404, "unavailable");
+    }
+    const catalog = await this.options.configuration.getConversationAuthoredSkillCatalog(conversationId, actorIdentityId);
+    return { workspaceId: catalog.workspaceId, conversationId: catalog.conversationId, channelId: catalog.channelId,
+      availability: "not_checked", ...(catalog.agents ? { agents: catalog.agents.map(agent => ({
+        identityId: agent.identityId, state: agent.state, supported: agent.supported,
+        skills: agent.skills.map(ref => ({ documentId: ref.documentId, source: ref.source, revision: ref.revision, contentHash: ref.contentHash })),
+        harness: agent.harness.filter(value => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,199}$/.test(value)),
+      })) } : {}), skills: catalog.skills.map(skill => ({
+        documentId: skill.documentId, source: skill.source, revision: skill.revision, contentHash: skill.contentHash,
+        name: skill.name, description: skill.description,
+      })) };
+  }
+
+  async getConversationAuthoredContext(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredContext> {
+    if (!this.options.configuration?.getConversationAuthoredContext) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getConversationAuthoredContext(conversationId, actorIdentityId);
+  }
+
+  async listAuthoredDocuments(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]> {
+    if (!this.options.configuration?.listAuthoredDocuments) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.listAuthoredDocuments(workspaceId, actorIdentityId);
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.getAuthoredDocument) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAuthoredDocument(workspaceId, documentId, actorIdentityId);
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentRevision[]> {
+    if (!this.options.configuration?.listAuthoredDocumentRevisions) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.listAuthoredDocumentRevisions(workspaceId, documentId, actorIdentityId);
+  }
+
+  async createAuthoredDocument(workspaceId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.createAuthoredDocument) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.createAuthoredDocument(workspaceId, actorIdentityId, input);
+  }
+
+  async updateAuthoredDocument(workspaceId: string, documentId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.updateAuthoredDocument) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.updateAuthoredDocument(workspaceId, documentId, actorIdentityId, input);
   }
 
   async getWorkspaceConfiguration(
@@ -684,6 +798,7 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("A message is required", 400, "invalid");
     }
     const input = value as CreateMessageInput;
+    if (input.authoredInvocationId !== undefined) throw new LocalConfigurationRequestError("Skill messages require private publication", 400, "invalid");
     if (input.participantId !== actorIdentityId) throw new LocalConfigurationRequestError("Message author must match the browser session", 403, "forbidden");
     if (typeof input.body !== "string") throw new LocalConfigurationRequestError("Message body must be a string", 400, "invalid");
     const directory = this.options.conversations;
@@ -1396,14 +1511,32 @@ export async function createLocalControlHttpServer(
       return;
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+    const catalogMatch = requestPath.match(/^\/local\/conversations\/([^/]+)\/authored-skill-catalog$/);
+    if (catalogMatch) {
+      response.setHeader("cache-control", "no-store");
+      if (request.method !== "GET") {
+        response.setHeader("allow", "GET");
+        json(response, 405, { error: "Method not allowed" }, origin);
+        return;
+      }
+    }
+    const publicationMatch = requestPath.match(/^\/local\/conversations\/([^/]+)\/skill-invocation-publications$/);
+    if (publicationMatch && request.method !== "GET" && !(request.method === "POST" && options.service.authoredSkillPublicationEnabled)) {
+      response.setHeader("allow", options.service.authoredSkillPublicationEnabled ? "GET, POST" : "GET");
+      json(response, 405, { error: "Method not allowed" }, origin);
+      return;
+    }
     const isAllowedPost = request.method === "POST" && (
       /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agent-actions$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/skill-invocations$/.test(requestPath)
+      || (publicationMatch !== null && options.service.authoredSkillPublicationEnabled)
       || /^\/local\/conversations\/[^/]+\/messages$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
       || /^\/local\/workspaces\/[^/]+\/conversations$/.test(requestPath)
+      || /^\/local\/workspaces\/[^/]+\/authored-documents$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
     );
     const isAllowedDelete = request.method === "DELETE"
@@ -1621,6 +1754,108 @@ export async function createLocalControlHttpServer(
       const creationSetupMatch = path.match(/^\/local\/conversations\/([^/]+)\/creation-setup$/);
       if (creationSetupMatch && browserSession && request.method === "GET") {
         json(response, 200, await options.service.getConversationCreationSetup(decodeURIComponent(creationSetupMatch[1]!), browserSession.identityId), origin);
+        return;
+      }
+      if (publicationMatch && browserSession) {
+        let conversationId: string;
+        try { conversationId = decodeURIComponent(publicationMatch[1]!); }
+        catch { throw new LocalConfigurationRequestError("Invalid Conversation", 400, "invalid"); }
+        const assertSession = () => {
+          const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+          if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+            throw new LocalConfigurationRequestError("Local browser session required", 401, "forbidden");
+          }
+        };
+        let receipt: LocalAuthoredSkillInvocationPublicationReceipt;
+        if (request.method === "POST") {
+          if (url.searchParams.has("requestId")) throw new LocalConfigurationRequestError("Publication selection must be in the request body", 400, "invalid");
+          receipt = await options.service.publishAuthoredSkillInvocation(conversationId, browserSession.identityId, await readJson(request), assertSession);
+        } else {
+          const keys = url.searchParams.getAll("requestId");
+          if (keys.length !== 1) throw new LocalConfigurationRequestError("One requestId is required", 400, "invalid");
+          receipt = await options.service.getAuthoredSkillInvocationPublication(conversationId, browserSession.identityId, keys[0]!);
+        }
+        assertSession();
+        response.setHeader("cache-control", "no-store");
+        json(response, 200, receipt, origin);
+        return;
+      }
+      const invocationMatch = path.match(/^\/local\/conversations\/([^/]+)\/skill-invocations(?:\/([^/]+))?$/);
+      if (invocationMatch && browserSession) {
+        const conversationId = decodeURIComponent(invocationMatch[1]!);
+        const requestId = invocationMatch[2] ? decodeURIComponent(invocationMatch[2]) : undefined;
+        if ((requestId && request.method !== "GET") || (!requestId && request.method !== "POST")) {
+          response.setHeader("allow", requestId ? "GET" : "POST");
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const receipt = requestId
+          ? await options.service.getAuthoredSkillInvocation(conversationId, browserSession.identityId, requestId)
+          : await options.service.acceptAuthoredSkillInvocation(conversationId, browserSession.identityId,
+            typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : "", await readJson(request));
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, requestId ? 200 : 202, receipt, origin);
+        return;
+      }
+      if (catalogMatch && browserSession) {
+        if (url.search) throw new LocalConfigurationRequestError("Skill catalog does not accept query parameters", 400, "invalid");
+        let conversationId: string;
+        try { conversationId = decodeURIComponent(catalogMatch[1]!); }
+        catch { throw new LocalConfigurationRequestError("Invalid Conversation", 400, "invalid"); }
+        const result = await options.service.getConversationAuthoredSkillCatalog(conversationId, browserSession.identityId);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        json(response, 200, result, origin);
+        return;
+      }
+      const authoredContextMatch = path.match(/^\/local\/conversations\/([^/]+)\/authored-context$/);
+      if (authoredContextMatch && browserSession && request.method === "GET") {
+        const result = await options.service.getConversationAuthoredContext(decodeURIComponent(authoredContextMatch[1]!), browserSession.identityId);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, 200, result, origin);
+        return;
+      }
+      const authoredDocumentsMatch = path.match(/^\/local\/workspaces\/([^/]+)\/authored-documents(?:\/([^/]+)(\/revisions)?)?$/);
+      if (authoredDocumentsMatch && browserSession) {
+        const workspaceId = decodeURIComponent(authoredDocumentsMatch[1]!);
+        const documentId = authoredDocumentsMatch[2] ? decodeURIComponent(authoredDocumentsMatch[2]) : undefined;
+        const history = Boolean(authoredDocumentsMatch[3]);
+        const allowed = history ? ["GET"] : documentId ? ["GET", "PATCH"] : ["GET", "POST"];
+        if (!allowed.includes(request.method ?? "")) {
+          response.setHeader("allow", allowed.join(", "));
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const actorIdentityId = browserSession.identityId;
+        const result = documentId
+          ? history
+            ? await options.service.listAuthoredDocumentRevisions(workspaceId, documentId, actorIdentityId)
+            : request.method === "PATCH"
+              ? await options.service.updateAuthoredDocument(workspaceId, documentId, actorIdentityId, await readJson(request))
+              : await options.service.getAuthoredDocument(workspaceId, documentId, actorIdentityId)
+          : request.method === "POST"
+            ? await options.service.createAuthoredDocument(workspaceId, actorIdentityId, await readJson(request))
+            : await options.service.listAuthoredDocuments(workspaceId, actorIdentityId);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== actorIdentityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, request.method === "POST" ? 201 : 200, result, origin);
         return;
       }
       const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);

@@ -120,6 +120,12 @@ test("folder create/rename/create-in-folder/move/unfile persist, retain failures
   await expect(activeLink).toHaveClass(/bg-\[var\(--selected\)\]/);
   await page.mouse.move(0, 0);
   await expect(toggle.locator("..")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  const menuIcons = [workspaceActions, page.getByRole("button", { name: "Folder actions for Folder delivery", exact: true }), actions]
+    .map(button => button.locator("svg"));
+  const iconBoxes = await Promise.all(menuIcons.map(icon => icon.boundingBox()));
+  expect(iconBoxes.every(box => box !== null)).toBe(true);
+  const centers = iconBoxes.map(box => box!.x + box!.width / 2);
+  expect(Math.max(...centers) - Math.min(...centers), "Workspace, folder and conversation menu icons share one column").toBeLessThanOrEqual(1);
   expect(page.url()).toBe(url);
   await page.screenshot({ path: info.outputPath("folders-desktop.png") });
 });
@@ -293,7 +299,7 @@ test("compact folder row menus preselect filing and focus Workspace rename on mo
   const workspaceActions = page.getByRole("button", { name: `Workspace actions for ${f.workspace.name}`, exact: true });
   await workspaceActions.click();
   await page.getByRole("button", { name: "Rename", exact: true }).click();
-  const settings = page.getByRole("main", { name: "Workspace settings", exact: true });
+  const settings = page.getByRole("main", { name: "Workspace Settings", exact: true });
   await expect(settings.getByLabel("Name", { exact: true })).toBeFocused();
   await expect(settings.getByLabel("Name", { exact: true })).toHaveValue(f.workspace.name);
 });

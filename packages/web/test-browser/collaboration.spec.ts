@@ -34,18 +34,35 @@ async function openWorkspaceActions(page: Page, workspaceName: string): Promise<
 }
 
 async function openWorkspaceSettings(page: Page, workspaceName: string): Promise<void> {
+  const settingsNavigation = page.getByRole("navigation", { name: "Workspace settings", exact: true });
+  await expect(settingsNavigation.or(page.getByRole("button", { name: `Workspace actions for ${workspaceName}`, exact: true }))).toBeVisible();
+  if (await settingsNavigation.isVisible()) {
+    await settingsNavigation.getByRole("link", { name: "General", exact: true }).click();
+    return;
+  }
   await openWorkspaceActions(page, workspaceName);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
 }
 
 async function changeNotificationSound(page: Page, workspaceName: string, sound: "off" | "mentions" | "all"): Promise<void> {
   await openWorkspaceSettings(page, workspaceName);
-  const settings = page.getByRole("main", { name: "Workspace settings", exact: true });
+  const settings = page.getByRole("main", { name: "Workspace Settings", exact: true });
   await settings.getByLabel("Notification sound").selectOption(sound);
   await page.goBack();
 }
 
+async function openAgentEditor(page: Page, name: string): Promise<void> {
+  await page.getByRole("button", { name: `Agent actions for ${name}`, exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+}
+
 async function openWorkspaceAgents(page: Page, workspaceName: string): Promise<void> {
+  const settingsNavigation = page.getByRole("navigation", { name: "Workspace settings", exact: true });
+  await expect(settingsNavigation.or(page.getByRole("button", { name: `Workspace actions for ${workspaceName}`, exact: true }))).toBeVisible();
+  if (await settingsNavigation.isVisible()) {
+    await settingsNavigation.getByRole("link", { name: "Agents", exact: true }).click();
+    return;
+  }
   await openWorkspaceActions(page, workspaceName);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
 }
@@ -326,7 +343,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 
-  await openWorkspaceAgents(page, workspace.name);
+  await page.getByRole("link", { name: /alternate-collaboration/ }).first().click();
   await request.post(`${fixtureBase}/peer-message?mention=true&body=Unread%20mention`);
   const unread = page.getByLabel(/1 unread message, 1 direct mention/).first();
   await expect(unread).toBeVisible({ timeout: 10_000 });
@@ -344,7 +361,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
   await expect(page).toHaveTitle("MinuChannels");
   await changeNotificationSound(page, workspace.name, "off");
-  await openWorkspaceAgents(page, workspace.name);
+  await page.getByRole("link", { name: /alternate-collaboration/ }).first().click();
   await request.post(`${fixtureBase}/peer-message?body=Muted%20agent%20reply`);
   await expect(page.getByLabel(/1 unread message/).first()).toBeVisible({ timeout: 10_000 });
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(2);
@@ -352,7 +369,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect(page.getByText("Muted agent reply", { exact: true })).toBeVisible();
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
 
-  await openWorkspaceAgents(page, workspace.name);
+  await page.getByRole("link", { name: /alternate-collaboration/ }).first().click();
   await request.post(`${fixtureBase}/peer-message?author=human&body=Own%20message`);
   await page.waitForTimeout(5_500);
   await expect(page.getByLabel(/unread message/)).toHaveCount(0);
@@ -543,9 +560,9 @@ test("hides identity-scoped notification preferences when session capability is 
     body: JSON.stringify({ error: "Session unavailable" }),
   }));
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/agents`);
-  await expect(page.getByLabel("Selected Workspace").first()).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace settings", exact: true })).toBeVisible();
   await openWorkspaceSettings(page, workspace.name);
-  await expect(page.getByRole("main", { name: "Workspace settings", exact: true })).toBeVisible();
+  await expect(page.getByRole("main", { name: "Workspace Settings", exact: true })).toBeVisible();
   await expect(page.getByLabel("Notification sound")).toHaveCount(0);
 });
 
@@ -789,9 +806,9 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   await launchAuthenticated(page, request, "/");
 
   await openWorkspaceSettings(page, workspace.name);
-  const dialog = page.getByRole("main", { name: "Workspace settings", exact: true });
+  const dialog = page.getByRole("main", { name: "Workspace Settings", exact: true });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText(workspace.name);
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(workspace.name);
 
   const rootValue = "/tmp";
   await dialog.getByLabel("Source location", { exact: true }).fill(rootValue);
@@ -804,7 +821,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect(await rootResponse.text()).not.toContain(rootValue);
   await expect(dialog.getByText("Source: configured", { exact: true })).toBeVisible();
   await expect(dialog.getByLabel("Replace source location", { exact: true })).toHaveValue("");
-  await dialog.getByRole("navigation", { name: "Workspace settings" }).getByRole("link", { name: "Defaults & timeouts" }).click();
+  await page.getByRole("navigation", { name: "Workspace settings" }).getByRole("link", { name: "Defaults & timeouts" }).click();
   await expect(dialog.getByLabel("Sleep after")).toHaveValue("off");
   await dialog.getByLabel("Sleep after").selectOption("15");
   const sleepResponsePromise = page.waitForResponse((response) =>
@@ -816,11 +833,10 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   expect(await sleepResponse.json()).toMatchObject({ idleSleepTimeoutMs: 15 * 60_000 });
   await expect(dialog.getByLabel("Sleep after")).toHaveValue("15");
 
-  await page.goBack();
-  await openWorkspaceAgents(page, workspace.name);
-  await expect(page.getByRole("heading", { name: `${workspace.name} agents` })).toBeVisible();
-  await page.getByRole("link", { name: /Builder Agent/ }).click();
-  await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 1 })).toBeVisible();
+  await page.getByRole("navigation", { name: "Workspace settings" }).getByRole("link", { name: "Agents", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Workspace agents", exact: true })).toBeVisible();
+  await openAgentEditor(page, "Builder Agent");
+  await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 2 })).toBeVisible();
   const agentCard = page.locator("article").filter({ hasText: "Builder Agent" });
   const identityForm = agentCard.locator("form").filter({ hasText: "The name identifies the agent" });
   await expect(identityForm.getByLabel("Name", { exact: true })).toHaveValue("Builder Agent");
@@ -893,16 +909,50 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   await expect(activeAgentForm.getByRole("checkbox", { name: /review Review changes for correctness/ })).toBeChecked();
 });
 
-test("lists agents, opens a detail page, and adds an agent", async ({ page, request }) => {
+test("lists agents, opens a detail page, and adds an agent", async ({ page, request }, info) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
-  const workspace = workspaces[0]!;
+  const workspace = workspaces.find(workspace => workspace.name === "Browser Test")!;
   await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+  // This scenario also runs alone: model discovery requires a configured source folder.
+  expect(await page.evaluate(async workspaceId => (await fetch(`/local/workspaces/${workspaceId}/config`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ rootUri: "/tmp" }),
+  })).status, workspace.id)).toBe(200);
 
-  await expect(page.getByRole("link", { name: /Builder Agent/ })).toBeVisible();
+  const table = page.getByRole("table", { name: "Agents", exact: true });
+  await expect(table.getByRole("columnheader")).toHaveText(["Name", "Description", "Actions"]);
+  await expect(table.getByRole("cell", { name: /^Builder Agent @builder$/ })).toBeVisible();
+  await expect(table.getByRole("cell", { name: "Implements features and verifies changes.", exact: true })).toBeVisible();
+  await expect(table).toHaveCSS("font-size", "14px");
+  const agentsSection = page.getByRole("region", { name: "Workspace agents", exact: true });
+  await expect(agentsSection).toHaveCSS("padding", "0px");
+  await expect(agentsSection).toHaveCSS("border-top-width", "0px");
+  await expect(table.locator("..")).toHaveCSS("border-top-width", "1px");
+  const navigationWrites: string[] = [];
+  page.on("request", request => { if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method())) navigationWrites.push(request.url()); });
+  await page.screenshot({ path: info.outputPath("settings-agents-list.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: info.outputPath("settings-agents-list-mobile.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Agent actions for Builder Agent", exact: true }).click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Edit"]);
+  await page.screenshot({ path: info.outputPath("settings-agents-menu-mobile.png") });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Agent actions for Builder Agent", exact: true })).toBeFocused();
+  await openAgentEditor(page, "Builder Agent");
+  await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 2 })).toBeVisible();
+  const detailUrl = page.url();
+  await page.reload();
+  await expect(page).toHaveURL(detailUrl);
+  await expect(page.getByRole("heading", { name: "Builder Agent", exact: true, level: 2 })).toBeVisible();
+  await page.getByRole("link", { name: "All agents", exact: true }).click();
+  await expect(table).toBeVisible();
+  expect(navigationWrites).toEqual([]);
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole("link", { name: "Add agent" }).click();
   await expect(page.getByRole("heading", { name: "New Workspace agent" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("settings-agent-new.png") });
   await expect(page.getByLabel("Mention handle")).toHaveCount(0);
   await page.getByLabel("Display name").fill("Browser Review Agent");
   await page.getByLabel("Agent instructions").fill("Review proposed plans carefully.");
@@ -915,10 +965,16 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   await page.getByRole("checkbox", { name: /handoff Prepare a concise handoff/ }).uncheck();
   await page.getByRole("button", { name: "Create agent" }).click();
 
-  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workspace Settings", exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workspace agents", exact: true })).toBeVisible();
   await expect(page.getByRole("status")).toContainText("Agent “Browser Review Agent” created");
   await page.getByRole("button", { name: "Edit agent" }).click();
-  await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Browser Review Agent", exact: true, level: 2 })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("settings-agent-edit.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("settings-agent-edit-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 720 });
   await expect(page.getByText("Model: Browser Deep", { exact: true })).toBeVisible();
   await expect(page.getByText("Reasoning: high", { exact: true })).toBeVisible();
   await expect(page.getByText("Skills configured for new sessions (1): configured", { exact: true })).toBeVisible();
@@ -926,9 +982,9 @@ test("lists agents, opens a detail page, and adds an agent", async ({ page, requ
   const createdIdentityForm = page.locator("form").filter({ hasText: "The name identifies the agent" });
   await createdIdentityForm.getByLabel("Name", { exact: true }).fill("Browser Lead Review Agent");
   await createdIdentityForm.getByRole("button", { name: "Save identity" }).click();
-  await expect(page.getByRole("heading", { name: "Browser Lead Review Agent", exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Browser Lead Review Agent", exact: true, level: 2 })).toBeVisible();
   await page.getByRole("link", { name: "All agents" }).click();
-  await expect(page.getByRole("link", { name: /Browser Lead Review Agent/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /^Browser Lead Review Agent @/ })).toBeVisible();
 });
 
 test("repairs a failed initial agent launch profile without creating a duplicate", async ({ page, request }) => {
@@ -979,7 +1035,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
   await page.getByRole("button", { name: "Create agent" }).click();
   await expect(page.getByRole("alert")).toContainText("Agent created, but its launch profile needs attention: Harness unavailable");
   await expect(page.getByRole("status")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Repairable Agent", exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Repairable Agent", exact: true, level: 2 })).toBeVisible();
 
   const launchProfile = page.locator("form").filter({ hasText: "Private launch profile" });
   await launchProfile.getByRole("tab", { name: "General" }).click();
@@ -998,7 +1054,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
   expect((await repairResponse).ok()).toBe(true);
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByRole("link", { name: "All agents" }).click();
-  await expect(page.getByRole("link", { name: /Repairable Agent/ })).toHaveCount(1);
+  await expect(page.getByRole("cell", { name: /^Repairable Agent @/ })).toHaveCount(1);
 });
 
 test("creates and renames a Workspace with a private source path", async ({ page, request }) => {
@@ -1024,6 +1080,8 @@ test("creates and renames a Workspace with a private source path", async ({ page
   await expect(settings.getByText("Source: configured", { exact: true })).toBeVisible();
   await settings.getByLabel("Name", { exact: true }).fill("Renamed Workspace");
   await settings.getByRole("button", { name: "Save name" }).click();
+  await expect(settings.getByText("Saved", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await expect(page.getByLabel("Selected Workspace").locator("option:checked")).toHaveText("Renamed Workspace");
 });
 
@@ -1195,7 +1253,8 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   expect((await identityResponse.json() as { identity: { type: string } }).identity.type).toBe("agent");
   expect((await memberResponsePromise).ok()).toBe(true);
   expect((await configurationResponsePromise).ok()).toBe(true);
-  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workspace agents", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await page.getByRole("link", { name: "delivery-room", exact: true }).first().click();
   await page.getByRole("button", { name: "Conversation actions for delivery-room", exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -1362,7 +1421,7 @@ test("preloads agent pages on intent before navigation", async ({ page, request 
   await expect.poll(() => moduleRequests.length).toBeGreaterThan(0);
   await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
   await agentsLink.click();
-  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workspace agents", exact: true })).toBeVisible();
 });
 
 test("keeps navigation available and retries a failed agent page chunk", async ({ page, request }) => {
@@ -1383,14 +1442,38 @@ test("keeps navigation available and retries a failed agent page chunk", async (
   const errorState = page.getByRole("alert");
   await expect(errorState).toContainText("Agent management couldn’t be loaded");
   await expect(errorState.getByRole("button", { name: "Reload and retry" })).toBeVisible();
-  await openWorkspaceActions(page, workspace.name);
-  await expect(page.getByRole("link", { name: "Agents", exact: true })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspace settings", exact: true }).getByRole("link", { name: "Agents", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Back to workspace", exact: true })).toBeEnabled();
   expect(moduleAttempts).toBeGreaterThan(0);
 
   failModuleRequests = false;
   await errorState.getByRole("button", { name: "Reload and retry" }).click();
-  await expect(page.getByRole("heading", { name: /agents$/, exact: true, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Workspace agents", exact: true })).toBeVisible();
   expect(moduleAttempts).toBeGreaterThan(1);
+});
+
+test("Agent table handles empty Workspaces and retains the member access boundary", async ({ page, request }, info) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json();
+  const primary = workspaces.find((workspace: { name: string }) => workspace.name === "Browser Test");
+  await launchAuthenticated(page, request, `/app/workspaces/${primary.id}/agents`, "member");
+  await expect(page.getByRole("heading", { name: "Unable to open agent management", exact: true })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Agents", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Add agent", exact: true })).toHaveCount(0);
+  const { members } = await (await request.get(`${conversationsBase}/workspaces/${primary.id}/members`)).json();
+  const owner = members.find((member: { mentionHandle: string }) => member.mentionHandle === "david");
+  const response = await request.post(`${conversationsBase}/workspaces`, { data: { slug: "empty-agent-table", name: "Empty Agent Table" } });
+  expect(response.ok()).toBe(true);
+  const { workspace } = await response.json();
+  expect((await request.post(`${conversationsBase}/workspaces/${workspace.id}/members`, { data: { identityId: owner.identityId, mentionHandle: "owner", accessRole: "owner" } })).ok()).toBe(true);
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+  await expect(page.getByRole("table", { name: "Agents", exact: true }).getByRole("columnheader")).toHaveText(["Name", "Description", "Actions"]);
+  await expect(page.getByText("No agents belong to this Workspace yet.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Add agent", exact: true })).toHaveCount(1);
+  await page.screenshot({ path: info.outputPath("agents-table-empty.png") });
+  await page.getByRole("link", { name: "Add agent", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "New Workspace agent", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("table", { name: "Agents", exact: true })).toBeVisible();
 });
 
 test("keeps messaging available when Runtime status is unavailable", async ({ page, request }) => {

@@ -11,6 +11,7 @@ import {
 import { createResourceId, isResourceId } from "./ids.ts";
 import { isReservedMentionHandle, mentionHandles } from "./mentions.ts";
 import {
+  ConversationMessageIdConflictError,
   ConversationAttachmentUnavailableError,
   ConversationFolderConflictError,
   ConversationResponseRetiredError,
@@ -137,6 +138,8 @@ function validateIdempotencyKey(idempotencyKey: string | undefined): string | un
 }
 
 function requestFingerprint(input: {
+  id?: string;
+  authoredInvocationId?: string;
   participantId: string;
   body: string;
   to: string[];
@@ -145,6 +148,8 @@ function requestFingerprint(input: {
 }): string {
   // Preserve the pre-attachment fingerprint format for existing text-only retries.
   const canonicalPayload = JSON.stringify({
+    ...(input.id !== undefined ? { id: input.id } : {}),
+    ...(input.authoredInvocationId !== undefined ? { authoredInvocationId: input.authoredInvocationId } : {}),
     participantId: input.participantId,
     body: input.body,
     to: [...input.to].sort(),
@@ -1260,6 +1265,13 @@ export class ConversationService {
     idempotencyKey?: string,
   ): Promise<ConversationMessage> {
     const validatedKey = validateIdempotencyKey(idempotencyKey);
+    if (input?.id !== undefined && (!isResourceId(input.id, "message") || validatedKey === undefined)) {
+      throw new ConversationValidationError("A caller-stable message ID requires a valid message ID and idempotency key");
+    }
+    if (input?.authoredInvocationId !== undefined && (typeof input.authoredInvocationId !== "string"
+      || !input.authoredInvocationId.trim() || input.authoredInvocationId.length > 128)) {
+      throw new ConversationValidationError("Invalid authored invocation reference");
+    }
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     await this.assertConversationMutable(conversationId);
@@ -1296,7 +1308,8 @@ export class ConversationService {
       throw new ConversationPayloadTooLargeError("Combined image attachments are too large");
     }
     const pendingMessage: NewConversationMessage = {
-      id: createResourceId("message"),
+      id: input.id ?? createResourceId("message"),
+      ...(input.authoredInvocationId !== undefined ? { authoredInvocationId: input.authoredInvocationId } : {}),
       conversationId,
       participantId,
       to,
@@ -1312,10 +1325,13 @@ export class ConversationService {
         : await this.storage.commitMessage(
             pendingMessage,
             validatedKey,
-            requestFingerprint({ participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
+            requestFingerprint({ id: input.id, authoredInvocationId: input.authoredInvocationId, participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
             attachmentIds,
           );
     } catch (error) {
+      if (error instanceof ConversationMessageIdConflictError) {
+        throw new ConversationConflictError("Message ID is already in use");
+      }
       if (error instanceof ConversationAttachmentUnavailableError) {
         throw new ConversationValidationError("One or more attachments are unavailable");
       }

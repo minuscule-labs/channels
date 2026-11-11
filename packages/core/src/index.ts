@@ -22,6 +22,7 @@ export {
   resolveMessageTargets,
 } from "./conversation-service.ts";
 export {
+  ConversationMessageIdConflictError,
   ConversationAttachmentUnavailableError,
   ConversationFolderConflictError,
   ConversationResponseRetiredError,

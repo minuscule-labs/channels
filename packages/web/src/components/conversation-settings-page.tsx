@@ -1,6 +1,6 @@
 import { createResourceId } from "@minu/channels-core/ids";
 import type { ConversationMetadata } from "@minu/channels-core/types";
-import type { ConversationSetup, LocalConversationSettings, UpdateConversationSettingsInput } from "@minu/channels-control/contracts";
+import type { ConversationSetup } from "@minu/channels-control/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { FolderOpen, Plus } from "lucide-react";
@@ -11,7 +11,7 @@ import { queryKeys } from "../lib/query-keys";
 import { SettingsPageLayout } from "./settings-page-layout";
 import { AdministrationState, useWorkspacePageData } from "./workspace-settings-page";
 import { ParticipantChoices, type WorkspaceParticipant } from "./workspace-participants";
-import { ConversationPresetPicker, ConversationSetupFields, ConversationCreationSettings, copySetup } from "./conversation-preset-editor";
+import { ConversationPresetPicker, copySetup } from "./conversation-preset-editor";
 import { ConversationWorkingFolders } from "./conversation-working-folders";
 import { ErrorNotice } from "./ui/error-notice";
 
@@ -50,7 +50,7 @@ function CreateConversationForm({ workspaceId, participants, humanId, initialFol
     void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspaceId), exact: true });
     if (mounted.current) void navigate({ to: "/app/workspaces/$workspaceId/conversations/$conversationId", params: { workspaceId, conversationId: conversation.id } });
   } });
-  const ready = Boolean(name.trim()) && setup.participants.length <= 16 && setup.participants.every(({ identityId, role }) => Boolean(role.trim()) && participants.some(({ identity, member }) => identity.id === identityId && identity.status === "active" && member.status === "active"));
+  const ready = Boolean(name.trim()) && setup.participants.length <= 16 && setup.participants.every(({ identityId, role }) => (role === undefined || Boolean(role.trim())) && participants.some(({ identity, member }) => identity.id === identityId && identity.status === "active" && member.status === "active"));
   const busy = mutation.isPending || picker.isPending || folders.isPending;
   return <form className="max-w-3xl space-y-6" onSubmit={(event) => {
     event.preventDefault();
@@ -114,52 +114,17 @@ function RosterForm({ conversation, participants, humanId }: { conversation: Con
   </form>;
 }
 
-function setupForRoster(setup: ConversationSetup, conversation: ConversationMetadata, participants: WorkspaceParticipant[]): ConversationSetup {
-  return { ...copySetup(setup), participants: participants.filter(({ identity }) => identity.type === "agent"
-    && conversation.participants.some(({ id, status }) => id === identity.id && status === "active"))
-    .map(({ identity, member }) => ({ identityId: identity.id,
-      role: setup.participants.find(({ identityId }) => identityId === identity.id)?.role ?? member.roleLabel ?? "Collaborator" })) };
-}
-
-function AdvancedSettingsForm({ conversation, participants, initial }: { conversation: ConversationMetadata; participants: WorkspaceParticipant[]; initial: LocalConversationSettings }) {
-  const queryClient = useQueryClient();
-  const [revision, setRevision] = useState(initial.settings.revision);
-  const cache = useConversationCache();
-  const [setup, setSetup] = useState<ConversationSetup>(() => setupForRoster(initial.settings, conversation, participants));
-  const save = useMutation({ mutationFn: (input: UpdateConversationSettingsInput) => localControl.updateConversationSettings(conversation.id, input), onSuccess: (result) => { queryClient.setQueryData(queryKeys.conversationSettings(conversation.id), result); setRevision(result.settings.revision); setSetup(setupForRoster(result.settings, conversation, participants)); } });
-  const reload = useMutation({ mutationFn: async () => {
-    const [settings, metadata] = await Promise.all([
-      localControl.getConversationSettings(conversation.id), conversations.getConversation(conversation.id),
-    ]);
-    return { settings, metadata };
-  }, onSuccess: ({ settings, metadata }) => {
-    queryClient.setQueryData(queryKeys.conversationSettings(conversation.id), settings);
-    cache(metadata);
-    setSetup(setupForRoster(settings.settings, metadata, participants));
-    setRevision(settings.settings.revision);
-    save.reset();
-  } });
-  return <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); save.mutate({ ...copySetup(setup), expectedRevision: revision }); }}>
-    <fieldset disabled={save.isPending || reload.isPending}><ConversationSetupFields workspaceId={conversation.workspaceId} setup={setup} onChange={setSetup} participants={participants} editParticipants={false} /></fieldset>
-    {save.error || reload.error ? <ErrorNotice onDismiss={() => { save.reset(); reload.reset(); }}>{(save.error ?? reload.error)!.message} <button className="underline" type="button" disabled={save.isPending || reload.isPending} onClick={() => reload.mutate()}>Reload settings</button></ErrorNotice> : null}
-    <div className="flex items-center justify-end gap-3">{save.isSuccess ? <p role="status" className="mr-auto text-xs text-[var(--success)]">Conversation settings saved</p> : null}<button type="submit" className="button-primary" disabled={save.isPending || reload.isPending || setup.participants.some(({ role }) => !role.trim())}>Save Conversation settings</button></div>
-  </form>;
-}
-
 export function ConversationSettingsPage() {
   const data = useWorkspacePageData();
   const { conversationId = "" } = useParams({ strict: false });
   const conversation = useQuery({ queryKey: queryKeys.conversation(conversationId), queryFn: () => conversations.getConversation(conversationId) });
-  const settings = useQuery({ queryKey: queryKeys.conversationSettings(conversationId), queryFn: () => localControl.getConversationSettings(conversationId), enabled: data.canAdminister === true, retry: false });
   return <SettingsPageLayout title="Conversation settings" description={conversation.data ? `#${conversation.data.name} · ${data.workspace.data?.name ?? "Workspace"}` : undefined} actions={<Link className="button-secondary" to="/app/workspaces/$workspaceId/conversations/$conversationId" params={{ workspaceId: data.workspaceId, conversationId }}>Back to Conversation</Link>}>
-    <AdministrationState pending={data.pending || conversation.isPending || (data.canAdminister === true && settings.isPending)} error={data.error ?? conversation.error ?? settings.error} canAdminister={data.canAdminister}>
-      {conversation.data?.workspaceId !== data.workspaceId ? <p role="alert">Conversation unavailable in this Workspace.</p> : conversation.data && data.session.data && settings.data ? conversation.data.thread ? <p className="text-sm">This thread inherits its settings. <Link className="underline" to="/app/workspaces/$workspaceId/conversations/$conversationId/settings" params={{ workspaceId: data.workspaceId, conversationId: conversation.data.thread.parentConversationId }}>Edit parent Conversation settings</Link></p> : <div className="max-w-4xl space-y-6">
+    <AdministrationState pending={data.pending || conversation.isPending} error={data.error ?? conversation.error} canAdminister={data.canAdminister}>
+      {conversation.data?.workspaceId !== data.workspaceId ? <p role="alert">Conversation unavailable in this Workspace.</p> : conversation.data && data.session.data ? conversation.data.thread ? <p className="text-sm">This thread inherits its settings. <Link className="underline" to="/app/workspaces/$workspaceId/conversations/$conversationId/settings" params={{ workspaceId: data.workspaceId, conversationId: conversation.data.thread.parentConversationId }}>Edit parent Conversation settings</Link></p> : <div className="max-w-4xl space-y-6">
         <ConversationNameForm key={`${conversationId}:name`} conversation={conversation.data} actorIdentityId={data.session.data.identityId} />
         <RosterForm key={`${conversationId}:roster:${conversation.data.rosterRevision}`} conversation={conversation.data} participants={data.participants} humanId={data.session.data.identityId} />
         <p className="text-xs text-[var(--muted)]">Create and configure agents on the <Link className="text-[var(--accent)] underline" to="/app/workspaces/$workspaceId/agents" params={{ workspaceId: data.workspaceId }}>Agents page</Link>.</p>
         <ConversationWorkingFolders conversationId={conversationId} canAdminister={data.canAdminister} />
-        <AdvancedSettingsForm key={`${conversationId}:advanced:${conversation.data.rosterRevision}`} conversation={conversation.data} initial={settings.data} participants={data.participants} />
-        <ConversationCreationSettings conversationId={conversationId} />
       </div> : null}
     </AdministrationState>
   </SettingsPageLayout>;

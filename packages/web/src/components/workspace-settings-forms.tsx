@@ -38,7 +38,7 @@ export function WorkspaceNameForm({ workspace, actorIdentityId, autoFocus = fals
   });
   const changed = name.trim() !== workspace.name;
   return (
-    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" onSubmit={(event) => {
+    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-5" onSubmit={(event) => {
       event.preventDefault();
       if (changed && name.trim() && !mutation.isPending) mutation.mutate();
     }}>
@@ -79,7 +79,7 @@ export function WorkspaceRootForm({
 
   return (
     <form
-      className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4"
+      className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-5"
       onSubmit={(event) => {
         event.preventDefault();
         if (rootUri.trim() && !mutation.isPending) mutation.mutate();
@@ -150,7 +150,7 @@ export function WorkspaceIdleSleepForm({ workspaceId, summary }: {
     onSuccess: (next) => { queryClient.setQueryData(queryKeys.workspaceConfiguration(workspaceId), next); },
   });
   return (
-    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4" onSubmit={(event) => {
+    <form className="rounded-lg border border-[var(--border)] bg-[var(--bg)] p-5" onSubmit={(event) => {
       event.preventDefault();
       if (selected !== saved && !mutation.isPending) mutation.mutate();
     }}>

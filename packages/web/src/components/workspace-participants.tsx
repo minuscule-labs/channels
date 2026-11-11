@@ -59,8 +59,10 @@ export function ParticipantChoices({
   existingParticipantIds,
   onToggle,
   showHeading = true,
+  minimal = false,
 }: {
   showHeading?: boolean;
+  minimal?: boolean;
   participants: WorkspaceParticipant[];
   selected: Set<string>;
   currentHumanIdentityId?: string;
@@ -72,9 +74,9 @@ export function ParticipantChoices({
   return (
     <fieldset>
       <legend className={showHeading ? "text-xs font-medium" : "sr-only"}>Participants</legend>
-      <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
+      {!minimal ? <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">
         Choose existing Workspace agents. You are included automatically, and existing participants remain editable.
-      </p>
+      </p> : null}
       <div className="mt-3 max-h-72 space-y-1 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg)] p-2">
         {choices.map(({ identity, member }) => {
           const available = identity.status === "active" && member.status === "active";
@@ -101,7 +103,7 @@ export function ParticipantChoices({
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{identity.displayName ?? `@${member.mentionHandle}`}</span>
                 <span className="block truncate font-mono text-[11px] text-[var(--muted)]">
-                  @{member.mentionHandle} · {identity.type}{member.roleLabel ? ` · ${member.roleLabel}` : ""}
+                  @{member.mentionHandle} · {identity.type}{!minimal && member.roleLabel ? ` · ${member.roleLabel}` : ""}
                 </span>
                 {isCurrentHuman ? <span className="mt-1 block text-[10px] text-[var(--muted)]">You are included automatically.</span> : null}
               </span>

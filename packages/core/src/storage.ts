@@ -16,6 +16,7 @@ import type {
 
 export type ConversationAttachmentStatus = "staged" | "attached" | "deleting";
 
+export class ConversationMessageIdConflictError extends Error {}
 export class ConversationAttachmentUnavailableError extends Error {}
 export class ConversationResponseRetiredError extends Error {}
 export class ConversationFolderConflictError extends Error {}
@@ -495,6 +496,9 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   async appendMessage(message: NewConversationMessage, attachmentIds: string[] = []): Promise<ConversationMessage> {
     const conversation = this.conversations.get(message.conversationId);
     if (!conversation) throw new Error(`Conversation not found: ${message.conversationId}`);
+    if ([...this.conversations.values()].some(row => row.messages.some(existing => existing.id === message.id))) {
+      throw new ConversationMessageIdConflictError("Message ID is already in use");
+    }
     const records = attachmentIds.map((attachmentId) => this.attachments.get(attachmentId));
     if (records.some((attachment) => !attachment
       || attachment.conversationId !== message.conversationId

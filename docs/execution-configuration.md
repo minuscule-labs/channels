@@ -104,6 +104,10 @@ A native Codex harness should register as its own MinuRuntime adapter and implem
 
 Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Conversations-authored skill options.
 
+## Shared workspace/channel instructions
+
+[Authored content](authored-content.md) adds private published workspace/channel defaults alongside each agent's existing persona. Newly created sessions capture immutable publication references; threads inherit their parent's channel scope. Retained sessions and recovery keep their original manifest, while explicit New session applies current publications. The owner/admin effective-context view distinguishes current publications from the revisions supplied at launch. Drafts and full playbook procedures are not injected into standing instructions; explicit playbook invocation remains unfinished.
+
 ## Current implementation
 
 The current product supports:

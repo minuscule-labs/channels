@@ -6,7 +6,8 @@ import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
 import { isReservedMentionHandle } from "@minu/channels-core/mentions";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { AlertCircle, ArrowLeft, Bot, Check, ChevronRight, LoaderCircle, Plus } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, EllipsisVertical, LoaderCircle, Plus } from "lucide-react";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "./ui/dropdown-menu";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { conversations, localControl } from "../lib/api";
 import {
@@ -18,6 +19,7 @@ import { queryKeys } from "../lib/query-keys";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
 import { useAppToast } from "./ui/toast";
 import { ErrorNotice } from "./ui/error-notice";
+import { WorkspaceSettingsLayout } from "./workspace-settings-page";
 
 function modelKey(model: { provider: string; id: string }): string {
   return JSON.stringify([model.provider, model.id]);
@@ -628,7 +630,7 @@ function AgentPageError({ error }: { error: unknown }) {
 
 function AddAgentLink({ workspaceId }: { workspaceId: string }) {
   return (
-    <Link to="/app/workspaces/$workspaceId/agents/new" params={{ workspaceId }} className="button-primary">
+    <Link to="/app/workspaces/$workspaceId/agents/new" params={{ workspaceId }} className="button-secondary">
       <Plus className="h-3.5 w-3.5" /> Add agent
     </Link>
   );
@@ -636,63 +638,33 @@ function AddAgentLink({ workspaceId }: { workspaceId: string }) {
 
 export function AgentManagementPage() {
   const { workspaceId } = useParams({ from: "/app/workspaces/$workspaceId/agents" });
+  const navigate = useNavigate();
   const data = useAgentManagementData(workspaceId);
   if (data.pending) return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Workspace agents…</div>;
   if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
 
-  return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
-        <Bot className="hidden h-4 w-4 text-[var(--accent)] sm:block" />
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold">{data.workspace.data.name} agents</h1>
-          <p className="truncate text-[11px] text-[var(--muted)]">Reusable agents and harness launch profiles</p>
-        </div>
-      </header>
-      <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
-        <div className="mx-auto max-w-4xl space-y-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">Workspace agents</h2>
-              <p className="mt-1 text-sm leading-6 text-[var(--muted)]">Select an agent to view or edit its instructions and harness configuration.</p>
-            </div>
-            <AddAgentLink workspaceId={workspaceId} />
-          </div>
-          {data.agents.length ? (
-            <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
-              {data.agents.map(({ identity, member, config }, index) => {
-                const assignedConversations = (data.workspaceConversations.data ?? []).filter((conversation) =>
-                  conversation.participants.some((participant) => participant.id === identity.id));
-                return (
-                  <Link
-                    key={identity.id}
-                    to="/app/workspaces/$workspaceId/agents/$agentId"
-                    params={{ workspaceId, agentId: identity.id }}
-                    className={`flex items-center gap-3 p-4 hover:bg-[var(--hover)] focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-[var(--accent)] ${index ? "border-t border-[var(--border)]" : ""}`}
-                  >
-                    <span className="avatar shrink-0">{(identity.displayName ?? member.mentionHandle).slice(0, 1).toUpperCase()}</span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <h3 className="truncate text-sm font-semibold">{identity.displayName ?? `@${member.mentionHandle}`}</h3>
-                        <span className="font-mono text-[10px] text-[var(--muted)]">@{member.mentionHandle}</span>
-                      </div>
-                      <p className="mt-1 truncate text-[11px] text-[var(--muted)]">
-                        {member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type} · Harness: {config.runtimeAdapter ?? "not configured"} · {assignedConversations.length} {assignedConversations.length === 1 ? "Conversation" : "Conversations"} · {config.boundConversationCount} active {config.boundConversationCount === 1 ? "binding" : "bindings"}
-                      </p>
-                    </div>
-                    <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">{config.status}</span>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-[var(--muted)]" />
-                  </Link>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="empty-state"><p>No agents belong to this Workspace yet.</p><AddAgentLink workspaceId={workspaceId} /></div>
-          )}
-        </div>
+  return <WorkspaceSettingsLayout>
+    <section aria-label="Workspace agents" className="space-y-3">
+      <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">Workspace agents</h2><AddAgentLink workspaceId={workspaceId} /></div>
+      <div className="overflow-hidden rounded-md border border-[var(--border)]">
+        <table aria-label="Agents" className="w-full table-fixed text-sm">
+          <colgroup><col className="w-1/3" /><col /><col className="w-14" /></colgroup>
+          <thead className="bg-[var(--panel)] text-left text-xs text-[var(--muted)]"><tr><th scope="col" className="px-3 py-2 font-medium">Name</th><th scope="col" className="px-3 py-2 font-medium">Description</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+          <tbody>{data.agents.map(({ identity, member }) => {
+            const name = identity.displayName ?? `@${member.mentionHandle}`;
+            return <tr key={identity.id} className="border-t border-[var(--border)] align-top">
+              <td className="break-words px-3 py-3 font-medium">{name}<div className="mt-1 break-words font-mono text-xs font-normal text-[var(--muted)]">@{member.mentionHandle}</div></td>
+              <td className="break-words px-3 py-3 text-[var(--muted)]">{member.profileOverride ?? identity.publicProfile ?? member.roleLabel ?? identity.type}</td>
+              <td className="px-2 py-2"><DropdownMenu><DropdownMenuTrigger asChild><button type="button" className="icon-button inline-flex" aria-label={`Agent actions for ${name}`}><EllipsisVertical className="h-4 w-4" aria-hidden="true" /></button></DropdownMenuTrigger>
+                <DropdownMenuContent align="end"><DropdownMenuItem onSelect={() => void navigate({ to: "/app/workspaces/$workspaceId/agents/$agentId", params: { workspaceId, agentId: identity.id } })}>Edit</DropdownMenuItem></DropdownMenuContent>
+              </DropdownMenu></td>
+            </tr>;
+          })}</tbody>
+        </table>
+        {!data.agents.length ? <p className="p-5 text-sm text-[var(--muted)]">No agents belong to this Workspace yet.</p> : null}
       </div>
     </section>
-  );
+  </WorkspaceSettingsLayout>;
 }
 
 export function AgentCreatePage() {
@@ -704,16 +676,8 @@ export function AgentCreatePage() {
   if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
-        <Bot className="hidden h-4 w-4 text-[var(--accent)] sm:block" />
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold">Add agent</h1>
-          <p className="truncate text-[11px] text-[var(--muted)]">{data.workspace.data.name}</p>
-        </div>
-      </header>
-      <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
-        <div className="mx-auto max-w-5xl space-y-5">
+    <WorkspaceSettingsLayout>
+      <div className="space-y-5">
           <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"><ArrowLeft className="h-3.5 w-3.5" /> All agents</Link>
           <article className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 md:p-5">
             <div>
@@ -749,10 +713,10 @@ export function AgentCreatePage() {
                 }}
               />
             </div>
+            <div className="mt-4 flex justify-end"><Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="button-secondary">Cancel</Link></div>
           </article>
-        </div>
       </div>
-    </section>
+    </WorkspaceSettingsLayout>
   );
 }
 
@@ -771,16 +735,8 @@ export function AgentDetailPage() {
     conversation.participants.some((participant) => participant.id === agent.identity.id));
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
-        <Bot className="hidden h-4 w-4 text-[var(--accent)] sm:block" />
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold">{agent.identity.displayName ?? `@${agent.member.mentionHandle}`}</h1>
-          <p className="truncate font-mono text-[11px] text-[var(--muted)]">@{agent.member.mentionHandle} · {data.workspace.data.name}</p>
-        </div>
-      </header>
-      <div className="minu-scroll min-h-0 flex-1 overflow-y-auto bg-[var(--bg)] p-4 md:p-6">
-        <div className="mx-auto max-w-5xl space-y-5">
+    <WorkspaceSettingsLayout>
+      <div className="space-y-5">
           <Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)] hover:text-[var(--text)]"><ArrowLeft className="h-3.5 w-3.5" /> All agents</Link>
           <article className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 md:p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -813,8 +769,7 @@ export function AgentDetailPage() {
               }}
             />
           </article>
-        </div>
       </div>
-    </section>
+    </WorkspaceSettingsLayout>
   );
 }

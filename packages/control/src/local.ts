@@ -68,6 +68,8 @@ export interface LocalProductAppOptions {
   runtimeAdapter: string;
   runtime: LocalManagedRuntimePort;
   personaPrompt?: string;
+  /** Explicit integration opt-in; production/CLI defaults remain disabled. */
+  authoredSkillPublicationEnabled?: boolean;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
 }
@@ -517,6 +519,7 @@ export async function createLocalProductApp(
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { [options.runtimeAdapter]: options.runtime },
       autoResumeOfflineAgents: true,
+      authoredSkillPublicationEnabled: options.authoredSkillPublicationEnabled,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,
     });

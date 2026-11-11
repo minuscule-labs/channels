@@ -4,6 +4,12 @@ import type {
   ConversationSettings,
   ConversationPreset,
   ConversationCreationSetup,
+  AuthoredDocument,
+  AuthoredDocumentMutation,
+  AuthoredDocumentRevision,
+  AuthoredSkillInvocation,
+  AuthoredInvocationMessageLink,
+  AuthoredContextSnapshot,
   ConversationAgentBindingRecord,
   ConversationAgentBindingState,
   ConversationWorkingFolder,
@@ -17,12 +23,13 @@ import type {
   TurnFailureDiagnosticRecord,
   RuntimeSessionCleanupAttempt,
   RuntimeSessionHistoryOrigin,
+  RuntimeSessionActivation,
   RuntimeSessionHistoryRecord,
   RuntimeSessionContextMode,
   RuntimeSessionRetirementReason,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { validateConversationWorkingFolders } from "@minu/channels-relay";
+import { AuthoredContextUnavailableError, validateAuthoredContext, invocationDocumentMatches, invocationTargetMatches, reviseAuthoredDocument, prepareAuthoredDocumentCreation, validateConversationWorkingFolders } from "@minu/channels-relay";
 import { and, asc, desc, eq, gt, isNull, lte, lt, ne, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -111,8 +118,21 @@ function binding(row: typeof schema.conversationAgentBindings.$inferSelect): Con
 function sessionHistory(
   row: typeof schema.conversationAgentSessionHistory.$inferSelect,
 ): RuntimeSessionHistoryRecord {
+  const { authoredContext: serialized, ...fields } = row;
+  let authoredContext: AuthoredContextSnapshot | undefined;
+  if (serialized !== null) {
+    try {
+      const parsed = JSON.parse(serialized) as AuthoredContextSnapshot;
+      if (typeof parsed?.channelId !== "string" || !parsed.channelId.trim()) throw new AuthoredContextUnavailableError();
+      validateAuthoredContext(parsed, row.workspaceId, parsed.channelId);
+      authoredContext = parsed;
+    } catch {
+      throw new AuthoredContextUnavailableError();
+    }
+  }
   return {
-    ...row,
+    ...fields,
+    ...(authoredContext !== undefined ? { authoredContext } : {}),
     managedSessionId: row.managedSessionId ?? undefined,
     runtimeOwnerId: row.runtimeOwnerId ?? undefined,
     legacyRuntimeSessionRef: row.legacyRuntimeSessionRef ?? undefined,
@@ -172,11 +192,7 @@ async function assertManagedSessionReusable(
 async function insertSessionActivation(
   transaction: RelayStorageTransaction,
   record: ConversationAgentBindingRecord,
-  activation?: {
-    origin?: RuntimeSessionHistoryOrigin;
-    conversationSequence?: number;
-    contextMode?: RuntimeSessionContextMode;
-  },
+  activation?: RuntimeSessionActivation,
 ): Promise<void> {
   if (record.runtimeOwnerId !== undefined && !record.runtimeOwnerId.trim()) {
     throw new Error("Runtime owner scope must not be empty");
@@ -199,6 +215,7 @@ async function insertSessionActivation(
     state: "active",
     origin: activation?.origin ?? (managed ? "started" : "migrated"),
     contextMode: activation?.contextMode ?? "with_context",
+    authoredContext: activation?.authoredContext === undefined ? null : JSON.stringify(activation.authoredContext),
     conversationSequenceAtActivation: activation?.conversationSequence ?? null,
     activatedAt: record.updatedAt,
     retirementReason: null,
@@ -246,6 +263,10 @@ function conversationWorkingFolder(
     position: row.position,
     primary: row.isPrimary === 1,
   };
+}
+
+function authoredDocument(row: typeof schema.authoredDocuments.$inferSelect): AuthoredDocument {
+  return { ...row, conversationId: row.conversationId ?? undefined, publishedRevision: row.publishedRevision ?? undefined };
 }
 
 export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
@@ -327,6 +348,146 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       migrationsFolder: options.migrationsFolder ?? defaultRelayMigrationsFolder(),
     });
     return new DrizzleLibSqlRelayStorage(client, database);
+  }
+
+  async getAuthoredInvocationMessageLink(invocationId: string): Promise<AuthoredInvocationMessageLink | undefined> {
+    const [row] = await this.database.select().from(schema.authoredInvocationMessageLinks)
+      .where(eq(schema.authoredInvocationMessageLinks.invocationId, invocationId)).limit(1);
+    return row;
+  }
+
+  async reserveAuthoredInvocationMessageLink(link: AuthoredInvocationMessageLink): Promise<AuthoredInvocationMessageLink | undefined> {
+    const existing = await this.getAuthoredInvocationMessageLink(link.invocationId);
+    if (existing) return existing;
+    const [invocation] = await this.database.select({ id: schema.authoredSkillInvocations.id }).from(schema.authoredSkillInvocations)
+      .where(eq(schema.authoredSkillInvocations.id, link.invocationId)).limit(1);
+    if (!invocation) return undefined;
+    // One insert is the CAS: both invocation and message IDs are independently unique.
+    await this.database.insert(schema.authoredInvocationMessageLinks).values(link).onConflictDoNothing();
+    return this.getAuthoredInvocationMessageLink(link.invocationId);
+  }
+
+  async getAuthoredSkillInvocationForMessage(conversationId: string, messageId: string): Promise<AuthoredSkillInvocation | undefined> {
+    const [row] = await this.database.select({ invocation: schema.authoredSkillInvocations }).from(schema.authoredInvocationMessageLinks)
+      .innerJoin(schema.authoredSkillInvocations, eq(schema.authoredSkillInvocations.id, schema.authoredInvocationMessageLinks.invocationId))
+      .where(and(eq(schema.authoredSkillInvocations.conversationId, conversationId), eq(schema.authoredInvocationMessageLinks.messageId, messageId))).limit(1);
+    return row?.invocation;
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<AuthoredSkillInvocation | undefined> {
+    const [row] = await this.database.select().from(schema.authoredSkillInvocations).where(and(
+      eq(schema.authoredSkillInvocations.conversationId, conversationId), eq(schema.authoredSkillInvocations.actorIdentityId, actorIdentityId),
+      eq(schema.authoredSkillInvocations.requestId, requestId),
+    )).limit(1);
+    return row;
+  }
+
+  async reserveAuthoredSkillInvocation(invocation: AuthoredSkillInvocation): Promise<AuthoredSkillInvocation | undefined> {
+    // Resolving immutable intent needs no write transaction (or write lock).
+    const prior = await this.getAuthoredSkillInvocation(invocation.conversationId, invocation.actorIdentityId, invocation.requestId);
+    if (prior) return prior;
+    try {
+      return await this.database.transaction(async transaction => {
+        const [existing] = await transaction.select().from(schema.authoredSkillInvocations).where(and(
+          eq(schema.authoredSkillInvocations.conversationId, invocation.conversationId),
+          eq(schema.authoredSkillInvocations.actorIdentityId, invocation.actorIdentityId),
+          eq(schema.authoredSkillInvocations.requestId, invocation.requestId),
+        )).limit(1);
+        if (existing) return existing;
+        if (!invocation.targets.length || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length) return undefined;
+        const [document] = await transaction.select().from(schema.authoredDocuments).where(and(
+          eq(schema.authoredDocuments.id, invocation.documentId), eq(schema.authoredDocuments.workspaceId, invocation.workspaceId),
+        )).limit(1);
+        if (!invocationDocumentMatches(invocation, document ? authoredDocument(document) : undefined)) return undefined;
+        const [publication] = await transaction.select().from(schema.authoredDocumentRevisions).where(and(
+          eq(schema.authoredDocumentRevisions.documentId, invocation.documentId), eq(schema.authoredDocumentRevisions.workspaceId, invocation.workspaceId),
+          eq(schema.authoredDocumentRevisions.revision, invocation.revision), eq(schema.authoredDocumentRevisions.contentHash, invocation.contentHash),
+        )).limit(1);
+        if (!publication) return undefined;
+        for (const target of invocation.targets) {
+          const [record] = await transaction.select().from(schema.conversationAgentBindings)
+            .where(eq(schema.conversationAgentBindings.id, target.bindingId)).limit(1);
+          const [activation] = await transaction.select().from(schema.conversationAgentSessionHistory).where(and(
+            eq(schema.conversationAgentSessionHistory.bindingId, target.bindingId),
+            eq(schema.conversationAgentSessionHistory.bindingGeneration, target.generation),
+          )).limit(1);
+          if (!invocationTargetMatches(invocation, target, record ? binding(record) : undefined, activation ? sessionHistory(activation) : undefined)) return undefined;
+        }
+        const [created] = await transaction.insert(schema.authoredSkillInvocations).values(invocation).onConflictDoNothing().returning();
+        return created;
+      });
+    } catch (error) {
+      const failure = error as { code?: string; cause?: { code?: string } };
+      if (failure.code === "SQLITE_BUSY" || failure.cause?.code === "SQLITE_BUSY") return undefined;
+      throw error;
+    }
+  }
+
+  async createAuthoredDocument(document: AuthoredDocument, commit = false): Promise<AuthoredDocument | undefined> {
+    const next = prepareAuthoredDocumentCreation(document, commit);
+    return this.database.transaction(async transaction => {
+      const rows = await transaction.insert(schema.authoredDocuments).values({
+        ...next.document,
+        conversationId: next.document.conversationId ?? null,
+        publishedRevision: next.document.publishedRevision ?? null,
+      }).onConflictDoNothing().returning();
+      if (!rows[0]) return undefined;
+      if (next.publication) await transaction.insert(schema.authoredDocumentRevisions).values(next.publication);
+      return authoredDocument(rows[0]);
+    });
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined> {
+    const [row] = await this.database.select().from(schema.authoredDocuments).where(and(
+      eq(schema.authoredDocuments.workspaceId, workspaceId), eq(schema.authoredDocuments.id, documentId),
+    )).limit(1);
+    return row ? authoredDocument(row) : undefined;
+  }
+
+  async listAuthoredDocuments(workspaceId: string): Promise<AuthoredDocument[]> {
+    const rows = await this.database.select().from(schema.authoredDocuments)
+      .where(eq(schema.authoredDocuments.workspaceId, workspaceId)).orderBy(asc(schema.authoredDocuments.id));
+    return rows.map(authoredDocument);
+  }
+
+  async mutateAuthoredDocument(
+    workspaceId: string,
+    documentId: string,
+    mutation: AuthoredDocumentMutation,
+  ): Promise<AuthoredDocument | undefined> {
+    try {
+      return await this.database.transaction(async (transaction) => {
+        const [row] = await transaction.select().from(schema.authoredDocuments).where(and(
+          eq(schema.authoredDocuments.workspaceId, workspaceId), eq(schema.authoredDocuments.id, documentId),
+        )).limit(1);
+        if (!row) return undefined;
+        const next = reviseAuthoredDocument(authoredDocument(row), mutation);
+        if (!next) return undefined;
+        const updated = await transaction.update(schema.authoredDocuments).set({
+          name: next.document.name, description: next.document.description, content: next.document.content,
+          version: next.document.version, publishedRevision: next.document.publishedRevision ?? null,
+          state: next.document.state, updatedBy: next.document.updatedBy, updatedAt: next.document.updatedAt,
+        }).where(and(
+          eq(schema.authoredDocuments.workspaceId, workspaceId), eq(schema.authoredDocuments.id, documentId),
+          eq(schema.authoredDocuments.version, mutation.expectedVersion), eq(schema.authoredDocuments.state, "active"),
+        )).returning();
+        if (!updated[0]) return undefined;
+        if (next.publication) await transaction.insert(schema.authoredDocumentRevisions).values(next.publication);
+        return authoredDocument(updated[0]);
+      });
+    } catch (error) {
+      const failure = error as { code?: string; cause?: { code?: string } };
+      // A competing SQLite writer is a conflict, never a reason to replay a publication automatically.
+      if (failure.code === "SQLITE_BUSY" || failure.cause?.code === "SQLITE_BUSY") return undefined;
+      throw error;
+    }
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<AuthoredDocumentRevision[]> {
+    return this.database.select().from(schema.authoredDocumentRevisions).where(and(
+      eq(schema.authoredDocumentRevisions.workspaceId, workspaceId),
+      eq(schema.authoredDocumentRevisions.documentId, documentId),
+    )).orderBy(asc(schema.authoredDocumentRevisions.revision));
   }
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
@@ -496,11 +657,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
 
   async putBinding(
     record: ConversationAgentBindingRecord,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
   ): Promise<ConversationAgentBindingRecord> {
     await this.database.transaction(async (transaction) => {
       await transaction.insert(schema.conversationAgentBindings).values({
@@ -729,11 +886,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
     recoveryLeaseOwner?: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     if (recoveryLeaseOwner !== undefined
