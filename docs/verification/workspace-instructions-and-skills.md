@@ -2,6 +2,10 @@
 
 ## Current status
 
+**Owner483 activation follow-up:** normal product/control-daemon startup now enables the existing authored Skill-send path by default; explicit false still disables publication, and the lower-level service alone remains fail-closed. This supersedes the default-off startup status below, not the recorded limits or uncompleted denied-tool/Notes or owner-acceptance criteria. Released v0.0.34 is unchanged; this source change needs its own verification and release. No existing installation restart, external Notes call, new genuine-agent turn or reuse of the exhausted six-turn approval is implied.
+
+### Prior bounded validation record
+
 - **Rebase integration target:** owner message 162 authorizes committing the feature snapshot (`15f889a`) and rebasing onto `origin/main` at `41b7fdc`. Author integration checks cover merged presets/folders/authored migrations, ordinary sticky mention selection without an ordinary dropdown, and a skill-only recipient chooser. Final Git commit/recovery pointers and exact commands are recorded in the rebase handoff outside the worktree. Previous independent verdicts and live observations remain evidence for their original targets, not a new rebase approval. Production stays default-off; the six-turn live envelope remains exhausted.
 - **T1–T6 Done for bounded engineering scopes.** Coherent T6 and I1 startup wiring are independently accepted; F1–F6/G1 remain closed. This is not shipped activation or full T7/human acceptance; the four bounded genuine Notes outcomes are independently verified below.
 - **Last independently reviewed pre-rebase target pair:** code `231dd77135e283d09c2a0c494085a83e95c4ae181fb59d73c9c7c10c1ac813a9` (55 paths including `.mjs`) **plus** `.github/workflows/ci.yml` SHA-256 `dcb03a217291e07527a283ebb7e942768cc1725901df2e0ab5577479c0384198`. Same branch/base/worktree. Only Playwright config and CI workflow differ from accepted I1 `3edad72f…`; all application/test bodies match. YAML is outside the historical code fingerprint.
