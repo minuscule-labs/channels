@@ -68,7 +68,7 @@ export interface LocalProductAppOptions {
   runtimeAdapter: string;
   runtime: LocalManagedRuntimePort;
   personaPrompt?: string;
-  /** Explicit integration opt-in; production/CLI defaults remain disabled. */
+  /** Authored Skill sending is enabled by default; false explicitly disables publication. */
   authoredSkillPublicationEnabled?: boolean;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;

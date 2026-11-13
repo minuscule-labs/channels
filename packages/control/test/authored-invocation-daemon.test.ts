@@ -20,8 +20,102 @@ async function until(check: () => boolean | Promise<boolean>) {
   }
 }
 
+test("normal product startup sends a selected Skill without an opt-in and preserves safeguards after reopen", { timeout: 20_000 }, async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-default-skill-send-")));
+  let app: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
+  let store: DrizzleLibSqlRelayStorage | undefined;
+  const calls: Array<{ sessionId: string; input: string }> = [];
+  const turns = new Map<string, RuntimePortTurn>();
+  const runtime: LocalManagedRuntimePort = {
+    async start() { throw new Error("Unexpected replacement"); },
+    async startManaged() { throw new Error("Unexpected replacement"); },
+    async status() { return "idle"; },
+    async getManagedSession(id, ownerId) { return { id, ownerId, state: "active" }; },
+    async resume(id, ownerId) { return { id, ownerId }; },
+    async messages() { return []; },
+    async send() { throw new Error("Legacy send forbidden"); },
+    async turn(_sessionId, turnId) { return turns.get(turnId); },
+    async startTurn(sessionId, turnId, input) {
+      assert.equal(turns.has(turnId), false);
+      calls.push({ sessionId, input });
+      const now = new Date().toISOString();
+      const turn: RuntimePortTurn = { id: turnId, input, status: "completed", createdAt: now, updatedAt: now,
+        response: { role: "assistant", content: "Default startup Skill result" } };
+      turns.set(turnId, turn); return turn;
+    },
+  };
+  const options = { dataDirectory: directory, workspaceRoot: directory, conversationsPort: 0, controlPort: 0,
+    webUrl: "http://127.0.0.1:5174/", runtimeAdapter: "fixture", runtime };
+  const login = async () => {
+    const bootstrap = await fetch(app!.issueBrowserLaunchUrl(), { redirect: "manual" });
+    assert.equal(bootstrap.status, 303);
+    const headers = { cookie: bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!, origin: "http://127.0.0.1:5174", "content-type": "application/json" };
+    return (path: string, method = "GET", body?: unknown, requestId = "default-product-skill") => fetch(`${app!.controlEndpoint}${path}`, {
+      method, headers: { ...headers, "idempotency-key": requestId },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  };
+  try {
+    app = await createLocalProductApp(options);
+    const client = new ConversationClient(app.conversationsEndpoint, { serviceToken: app.conversationsServiceToken });
+    const workspaceId = app.workspaceId!, conversationId = app.conversationId!;
+    const agent = (await client.getConversation(conversationId)).participants.find(value => value.type === "agent")!;
+    const request = await login();
+    const created = await request(`/local/workspaces/${workspaceId}/authored-documents`, "POST",
+      { action: "commit", kind: "skill", name: "Default startup", description: "Supported send", content: "PRIVATE_DEFAULT_SKILL_PROCEDURE" });
+    assert.equal(created.status, 201);
+    const skill = await created.json() as { id: string };
+    await app.close(); app = undefined;
+    store = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(directory, "relay.db")) });
+    const config = (await store.getWorkspaceAgentConfig(workspaceId, agent.id))!;
+    const manifest = await captureAuthoredContext(store, workspaceId, conversationId);
+    const now = new Date().toISOString();
+    await store.putBinding({ id: "default-product-binding", workspaceAgentConfigId: config.id, workspaceId, conversationId,
+      agentIdentityId: agent.id, runtimeAdapter: "fixture", runtimeSessionId: "default-product-session", runtimeOwnerId: "fixture-owner",
+      generation: 1, state: "connected", wakePolicy: "mentions", createdAt: now, updatedAt: now }, { authoredContext: manifest });
+    await store.close(); store = undefined;
+    app = await createLocalProductApp(options);
+    const activeClient = new ConversationClient(app.conversationsEndpoint, { serviceToken: app.conversationsServiceToken });
+    const current = await login();
+    const capabilities = await (await current("/local/capabilities")).json() as LocalControlCapabilities;
+    assert.equal(capabilities.features.authoredSkillPublication, true);
+    const accepted = await current(`/local/conversations/${conversationId}/skill-invocations`, "POST",
+      { documentId: skill.id, source: "workspace", revision: 1, arguments: "Run the selected Skill", to: [agent.id] });
+    assert.equal(accepted.status, 202);
+    const receipt = await accepted.json() as LocalAuthoredSkillInvocationReceipt;
+    const url = `/local/conversations/${conversationId}/skill-invocation-publications`;
+    const input = { requestId: receipt.requestId, invocationId: receipt.id };
+    const published = await current(url, "POST", input);
+    assert.equal(published.status, 200);
+    const result = await published.json() as { messageId: string };
+    await until(async () => (await activeClient.listMessages(conversationId)).some(message => message.replyTo === result.messageId));
+    assert.deepEqual(calls.map(call => call.sessionId), ["default-product-session"]);
+    assert.match(calls[0]!.input, /PRIVATE_DEFAULT_SKILL_PROCEDURE/);
+    const repeated = await current(url, "POST", input);
+    assert.equal(repeated.status, 200);
+    assert.equal((await repeated.json() as { messageId: string }).messageId, result.messageId);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(JSON.stringify(await activeClient.listMessages(conversationId)), /PRIVATE_DEFAULT_SKILL_PROCEDURE/);
+    assert.equal((await current(`/local/workspaces/${workspaceId}/authored-documents/${skill.id}`, "PATCH",
+      { action: "archive", expectedVersion: 1 })).status, 200);
+    const denied = await fetch(`${app.controlEndpoint}/local/conversations/${conversationId}/skill-invocations`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ documentId: skill.id }) });
+    assert.equal(denied.status, 401);
+    const retired = await current(`/local/conversations/${conversationId}/skill-invocations`, "POST",
+      { documentId: skill.id, source: "workspace", revision: 1, arguments: "Retired selection", to: [agent.id] }, "retired-product-skill");
+    assert.equal(retired.status, 409);
+    assert.equal(calls.length, 1);
+    await app.close(); app = undefined;
+    store = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(directory, "relay.db")) });
+    const inspection = await store.getSessionInspectionRecords(workspaceId, conversationId, agent.id);
+    assert.deepEqual(inspection.activation?.authoredContext, manifest);
+    assert.equal(inspection.bindings[0]?.generation, 1);
+  } finally { await app?.close(); await store?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 for (const enabled of [undefined, false, true]) {
-  test(`daemon authored publication ${String(enabled)} preserves gate and selected-only delivery`, { timeout: 20_000 }, async () => {
+  const publicationEnabled = enabled !== false;
+  test(`daemon authored publication ${String(enabled)} preserves explicit disable and selected-only delivery`, { timeout: 20_000 }, async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-authored-daemon-")));
     const core = await createConversationHttpServer({ port: 0 });
     const client = new ConversationClient(core.endpoint, { serviceToken: core.serviceToken });
@@ -84,7 +178,7 @@ for (const enabled of [undefined, false, true]) {
       assert.equal(bootstrap.status, 303);
       const headers = { cookie: bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!, origin: "http://127.0.0.1:5174", "content-type": "application/json" };
       const capabilities = await (await fetch(`${daemon.endpoint}/local/capabilities`, { headers })).json() as LocalControlCapabilities;
-      assert.equal(capabilities.features.authoredSkillPublication, enabled === true);
+      assert.equal(capabilities.features.authoredSkillPublication, publicationEnabled);
       // Prove the otherwise-unselected all_messages peer is attached and eligible before measuring isolation.
       const control = await client.postMessage(conversation.id, { participantId: human.id, body: "Liveness", to: [peer.id] });
       await until(async () => (await client.listMessages(conversation.id)).some(message => message.replyTo === control.id));
@@ -98,8 +192,8 @@ for (const enabled of [undefined, false, true]) {
       const receipt = await acceptance.json() as LocalAuthoredSkillInvocationReceipt;
       const publicationUrl = `${daemon.endpoint}/local/conversations/${conversation.id}/skill-invocation-publications`;
       const publication = await fetch(publicationUrl, { method: "POST", headers, body: JSON.stringify({ requestId: receipt.requestId, invocationId: receipt.id }) });
-      assert.equal(publication.status, enabled === true ? 200 : 405);
-      if (enabled === true) {
+      assert.equal(publication.status, publicationEnabled ? 200 : 405);
+      if (publicationEnabled) {
         const result = await publication.json() as { status: string; messageId: string };
         assert.equal(result.status, "observed");
         await until(async () => (await client.listMessages(conversation.id)).some(message => message.replyTo === result.messageId));
@@ -118,7 +212,7 @@ for (const enabled of [undefined, false, true]) {
         assert.equal(calls.length, baseline);
       }
       await daemon.close(); daemon = undefined;
-      assert.equal(calls.length, baseline + (enabled === true ? 1 : 0), "No unselected or duplicate turns after host shutdown");
+      assert.equal(calls.length, baseline + (publicationEnabled ? 1 : 0), "No unselected or duplicate turns after host shutdown");
       store = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(databasePath) });
       const after = await store.listWorkspaceBindings(workspace.id);
       assert.deepEqual(after.map(binding => [binding.id, binding.generation, binding.runtimeSessionId]),
@@ -129,7 +223,7 @@ for (const enabled of [undefined, false, true]) {
     }
   });
 
-  test(`product forwards authored publication startup option ${String(enabled)} without enabling defaults`, async () => {
+  test(`product authored publication startup option ${String(enabled)} enables defaults and respects explicit disable`, async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-authored-product-")));
     let app: Awaited<ReturnType<typeof createLocalProductApp>> | undefined;
     try {
@@ -142,7 +236,7 @@ for (const enabled of [undefined, false, true]) {
         headers: { cookie: bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!, origin: "http://127.0.0.1:5174" },
       });
       assert.equal(response.status, 200);
-      assert.equal((await response.json() as LocalControlCapabilities).features.authoredSkillPublication, enabled === true);
+      assert.equal((await response.json() as LocalControlCapabilities).features.authoredSkillPublication, publicationEnabled);
     } finally { await app?.close(); await rm(directory, { recursive: true, force: true }); }
   });
 }

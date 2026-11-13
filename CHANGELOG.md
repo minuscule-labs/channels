@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.35
+
+Release overview: [Enable supported Skill sending](docs/releases/v0.0.35.md).
+
+- Enable the existing authored Skill-send flow by default in normal product/control-daemon startup, retaining explicit disable and all permission, recipient, session-pin and retirement checks. The lower-level service remains fail-closed without host enablement; unsupported Harness invocation stays disabled.
+- Verify normal product reopen and default-enabled publication, selected-only delivery, unchanged session pins, duplicate-publication acknowledgment without an extra turn, and unauthenticated/retired-request denial. No migration, Runtime pin, protocol or frontend behavior change is included.
+
 ## 0.0.34
 
 Release overview: [Simpler Settings and Workspace-authored guidance](docs/releases/v0.0.34.md).
