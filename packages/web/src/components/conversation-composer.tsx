@@ -561,7 +561,6 @@ export function ConversationComposer({
             <button type="button" className="button-secondary" aria-label="Attach images" title="Attach images" disabled={!canAttach}
               onClick={() => fileInputRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /></button>
             <div className="flex items-center gap-2">
-              {skill && authorReady ? <span role="status" aria-label="Skill availability" className="text-xs">{!publicationEnabled ? "Unavailable" : imageDraft.ids.length || replyTo ? "Unsupported draft" : skillStatus}</span> : null}
               {showByteCount ? (
                 <span
                   className={`font-mono text-[10px] ${byteCountTone}`}
