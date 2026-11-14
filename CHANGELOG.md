@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.0.36
+
+Release overview: [Simpler Skill composer](docs/releases/v0.0.36.md).
+
+- Remove the visible Ready/Pending/Unavailable Skill indicator from the composer, without changing the Skill chip, Send eligibility or backend validation.
+- Preserve existing recipient selection, immutable session/revision pins and legacy-session behavior. This UI-only patch does not enable Skills for legacy sessions or add conversation-wide Skill routing.
+
 ## 0.0.35
 
 Release overview: [Enable supported Skill sending](docs/releases/v0.0.35.md).
