@@ -17,7 +17,7 @@ async function open(page: Page, request: APIRequestContext, data: Setup, scope: 
   await expect(message(page)).toBeEnabled();
 }
 const message = (page: Page) => page.getByRole("combobox", { name: /^(Conversation message|Thread reply)$/ });
-const availability = (page: Page) => page.getByLabel("Skill availability");
+const sendSkill = (page: Page) => page.getByRole("button", { name: "Send skill" });
 const receipt = (page: Page) => page.getByLabel("Skill receipt").getByRole("status");
 async function published(page: Page) {
   // Wait on the retained receipt, not on controls that must disappear on success.
@@ -78,10 +78,11 @@ test("inline slash popup preserves drafts, supports keyboard selection and metad
   const chip = page.locator(".composer").getByLabel("Selected skill");
   await expect(chip).toHaveText("Decision");
   await expect(page.locator(".composer select")).toHaveCount(0);
+  await expect(page.getByLabel("Skill availability")).toHaveCount(0);
   await input.fill("/literal arguments @selected");
   await input.press("Escape");
   await expect(popup).not.toBeVisible();
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await chip.getByRole("button", { name: "Skill details for Decision" }).click();
   await expect(page.getByText("Workspace decision", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "View instructions", exact: true })).toHaveCount(0);
@@ -107,7 +108,7 @@ test("inline pill supports Backspace, range editing and mention completion with 
   await page.screenshot({ path: info.outputPath("skill-mentions.png") });
   await input.press("Enter");
   await expect(input).toHaveValue("@selected ");
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await input.press("ControlOrMeta+Enter");
   await input.pressSequentially("Additional context: café & <details>.");
   const context = await input.inputValue();
@@ -129,7 +130,7 @@ test("inline pill supports Backspace, range editing and mention completion with 
   await expect(input).toHaveValue(context);
   await input.fill(`/Channel\n${context}`);
   await page.getByRole("listbox", { name: "Skill suggestions" }).getByRole("option").click();
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await page.screenshot({ path: info.outputPath("skill-context-no-dropdown.png") });
   await page.getByRole("button", { name: "Send skill", exact: true }).click();
   await published(page);
@@ -144,13 +145,13 @@ test("skill mentions use ordinary editing rules, ignore quoted/code context, and
   const data = await setup(page, request), sessions = (await metrics(request, data)).sessions;
   await pick(page, "Channel");
   await message(page).fill("@selected Initial task");
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await message(page).fill("@owner Human target");
-  await expect(availability(page)).toHaveText("Unavailable");
+  await expect(sendSkill(page)).toBeDisabled();
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await message(page).fill("@observer Capture this\n> @owner @channel\n`@selected`\n```\n@owner\n```");
   await message(page).press("Escape");
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await page.getByRole("button", { name: "Send skill" }).click();
   await published(page);
   await expect(message(page)).toHaveValue("");
@@ -168,7 +169,7 @@ test("skill mentions use ordinary editing rules, ignore quoted/code context, and
   await page.reload();
   await pick(page, "Workspace");
   await message(page).fill("No mention, same sticky agent");
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await page.getByRole("button", { name: "Send skill" }).click();
   await published(page);
   expect((await messages(request, data.parentId)).find(row => row.body === "No mention, same sticky agent")!.to).toEqual([data.observerId]);
@@ -188,7 +189,7 @@ test("multi-recipient skill sends and unsupported broadcasts do not replace the 
   await message(page).fill("@missing Unknown recipient");
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await message(page).fill("Sticky after removing mentions");
-  await expect(availability(page)).toHaveText("Ready");
+  await expect(sendSkill(page)).toBeEnabled();
   await page.getByRole("button", { name: "Send skill" }).click();
   await published(page);
   const history = await messages(request, data.parentId);
@@ -272,10 +273,10 @@ test("new pending revisions and retirement block rather than substitute or resta
   const popup = page.getByRole("listbox", { name: "Skill suggestions" });
   await expect(popup.getByRole("option")).toContainText("r2 · Pending", { timeout: 10_000 });
   await popup.getByRole("option").click();
-  await expect(availability(page)).toHaveText("Pending");
+  await expect(sendSkill(page)).toBeDisabled();
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await request.post(`${fixture}/change?workspace=${data.workspaceId}&document=${data.channelSkill}&action=archive`);
-  await expect(availability(page)).toHaveText("Unavailable", { timeout: 10_000 });
+  await expect(sendSkill(page)).toBeDisabled({ timeout: 10_000 });
   await expect(message(page)).toHaveValue("@selected Preserved arguments");
   expect((await metrics(request, data)).calls).toHaveLength(0);
   expect((await metrics(request, data)).sessions).toBe(sessions);
@@ -384,7 +385,7 @@ for (const entry of ["slash", "alias"] as const) {
     await page.getByRole("listbox", { name: "Skill suggestions" }).getByRole("option").click();
     await message(page).fill("@selected @observer Changed context\n> @owner @channel\n`@owner`");
     await page.reload();
-    await expect(availability(page)).toHaveText("Ready");
+    await expect(sendSkill(page)).toBeEnabled();
     await page.getByRole("button", { name: "Send skill" }).click();
     await published(page);
     await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(2);
@@ -445,7 +446,7 @@ test("publication-off host remains read-only and never falls back to ordinary se
   const data = await setup(page, request, false);
   await pick(page, "Channel");
   await message(page).fill("@selected Disabled invocation");
-  await expect(availability(page)).toHaveText("Unavailable");
+  await expect(sendSkill(page)).toBeDisabled();
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await message(page).press("Enter");
   expect((await messages(request, data.parentId)).filter(row => row.authoredInvocationId)).toHaveLength(0);
