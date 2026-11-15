@@ -134,6 +134,7 @@ export interface LocalControlRuntimePort {
   forceStopManaged?(managedSessionId: string, ownerId: string): Promise<void>;
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
   inspectSessionProfile?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  inspectSessionIntegrations?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   sessionCapabilities?(
     sessionId: string,
   ): Promise<LocalControlRuntimeSessionCapabilities>;
@@ -926,9 +927,9 @@ export class LocalControlService {
     return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, limit);
   }
 
-  async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string) {
+  async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string, signal?: AbortSignal) {
     if (!this.options.sessionInspections) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
-    return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId);
+    return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId, { signal });
   }
 
   async agentDeliveryTrails(conversationId: string, identityId: string, actorIdentityId: string, options: { cursor?: string; trailId?: string; signal?: AbortSignal }) {
@@ -1634,6 +1635,7 @@ export async function createLocalControlHttpServer(
         const identityId = decodeURIComponent(diagnosticMatch[2]!);
         const operationId = diagnosticMatch[4] ? decodeURIComponent(diagnosticMatch[4]) : undefined;
         const events = diagnosticMatch[3] === "session-events";
+        const inspection = diagnosticMatch[3] === "session-inspection";
         const trails = diagnosticMatch[3] === "delivery-trails";
         if (trails && [...url.searchParams.keys()].some(key => !["cursor", "trailId"].includes(key) || url.searchParams.getAll(key).length !== 1)) {
           throw new LocalConfigurationRequestError("Invalid trail query", 400, "invalid");
@@ -1641,7 +1643,7 @@ export async function createLocalControlHttpServer(
         if (events && url.search) throw new LocalConfigurationRequestError("Invalid event query", 400, "invalid");
         const controller = new AbortController();
         const disconnected = () => controller.abort();
-        if (events || trails) response.once("close", disconnected);
+        if (events || trails || inspection) response.once("close", disconnected);
         let value;
         try {
           value = trails
@@ -1650,7 +1652,7 @@ export async function createLocalControlHttpServer(
             : events
             ? await options.service.agentSessionEvents(conversationId, identityId, browserSession.identityId, controller.signal)
             : diagnosticMatch[3] === "session-inspection"
-            ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId)
+            ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId, controller.signal)
             : diagnosticMatch[3] === "diagnostic-report"
             ? await options.service.agentDiagnosticReport(conversationId, identityId, browserSession.identityId, url.searchParams.get("operationId") ?? "")
             : operationId

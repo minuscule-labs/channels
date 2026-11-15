@@ -35,6 +35,23 @@ function fixture() {
 }
 
 describe("open-surface diagnostic ownership", () => {
+  it("worker replacement clears evidence retained under an unchanged managed binding", async () => {
+    const { surface, reads } = fixture();
+    const integrations = { version: 1 as const, capturedAt: "now", status: "partial" as const,
+      coverage: { configuration: "unknown" as const, tools: "unknown" as const },
+      operations: { inspect: "supported" as const, reconnect: "unsupported" as const, reloadConfiguration: "unsupported" as const }, integrations: [], tools: [], issues: [] };
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, integrations: { ...integrations, workerId: "worker-one" } });
+    await surface.inspectSession(); await surface.openEvents(); await surface.openTrails(); await surface.select("operation"); await surface.report();
+    expect(surface.state.preview).toBeDefined();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, integrations: { ...integrations, workerId: "worker-two" } });
+    await surface.inspectSession();
+    expect(surface.state.runtimeEvents).toBeUndefined(); expect(surface.state.deliveryTrails).toBeUndefined(); expect(surface.state.preview).toBeUndefined();
+  });
+  it("session inspection rejects a returned foreign participant scope", async () => {
+    const { surface, reads } = fixture();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, participantIdentityId: "other-agent" });
+    await surface.inspectSession(); expect(surface.state.inspection).toBeUndefined(); expect(surface.state.inspectionError).toBeDefined();
+  });
   it("message trails read only on explicit open/refresh and are cleared on close", async () => {
     const { surface, reads } = fixture(); await surface.history(); await surface.inspectSession();
     expect(reads.agentDeliveryTrails).not.toHaveBeenCalled(); await surface.openTrails(); expect(surface.state.deliveryTrails).toEqual(trails);
