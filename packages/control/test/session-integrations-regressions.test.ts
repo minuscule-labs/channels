@@ -39,7 +39,9 @@ test("packaged native registration failures survive cleanup without masking late
 
 test("packaged native truncation and failure attribution survive Runtime and Channels boundaries", { skip: !pinned }, async () => {
   const { readSessionIntegrations } = await import(pathToFileURL(join(root, "dist/index.js")).href);
-  const { projectPiIntegrations } = await import(new URL("../../../../../runtime/packages/pi/dist/src/session-integrations.js", import.meta.url).href);
+  const { projectPiIntegrations } = await import(process.env.MINU_RUNTIME_ROOT
+    ? pathToFileURL(join(process.env.MINU_RUNTIME_ROOT, "packages/pi/dist/src/session-integrations.js")).href
+    : new URL("../../../../../runtime/packages/pi/dist/src/session-integrations.js", import.meta.url).href);
   const notes = { id: "mcp.notes", name: "notes", kind: "mcp", source: "extension", enabled: true, connection: "connected", offeredCount: 1, toolCoverage: "complete" };
   const noteTool = { name: "mcp__notes__read", exposure: "direct", declared: true, callable: true };
   const owner = { name: noteTool.name, integrationId: notes.id };

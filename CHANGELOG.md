@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.37
+
+Release overview: [Current-worker integration discovery](docs/releases/v0.0.37.md).
+
+- Show bounded, current-worker integration and tool observations in existing session diagnostics: configuration source, connection state, attributed safe failure codes, callable/registered tools and exposure. Preserve unknown and unsupported evidence rather than claiming integrations are absent.
+- Add optional, owner-scoped Runtime inspection without waking agents, invoking business tools, changing credentials or reconnecting integrations. Refresh remains read-only; reconnect and configuration reload are not included.
+- Pin Runtime `42be4b7a89bf10f38bb453bb9b29bb5edd6eb6b9`. Supporting Pi workers expose the shared native `get_integrations` reader and agent-facing `inspect_integrations` tool; older workers remain usable and report inspection unsupported. The separately prepared local Pi patch is not bundled or installed by this release; full native discovery requires an explicitly selected supporting worker.
+- Keep existing worker executable resolution, local-control protocol, database schemas and dependencies unchanged. Required CI and exact-artifact acceptance remain release gates.
+
 ## 0.0.36
 
 Release overview: [Simpler Skill composer](docs/releases/v0.0.36.md).

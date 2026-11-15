@@ -3,10 +3,10 @@ import test from "node:test";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { ConversationClient, createConversationHttpServer } from "@minu/channels-core";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import { createLocalControlDaemon, type LocalControlDaemon } from "../src/daemon.ts";
-import { loadLocalRuntimes } from "../src/local-runtimes.ts";
 import type { LocalAgentSessionInspection } from "../src/contracts.ts";
 
 // Real Channels -> managed Runtime worker -> installed pinned artifact. No model/business calls.
@@ -42,7 +42,10 @@ test("Channels diagnostics observe the spawned participant worker through the pi
     await store.putWorkspaceConfig({ workspaceId: workspace.id, rootUri: workspaceRoot, createdAt: now, updatedAt: now });
     await store.putAgentConfig({ id: "fixture-config", workspaceId: workspace.id, agentIdentityId: agent.id, runtimeAdapter: "pi", status: "active", createdAt: now, updatedAt: now });
     await store.replaceConversationWorkingFolders(workspace.id, conversation.id, [{ workspaceId: workspace.id, conversationId: conversation.id, relativePath: "project", position: 0, primary: true }]);
-    const runtimes = await loadLocalRuntimes();
+    const { PiAgentRuntime } = await import(previous.MINU_RUNTIME_ROOT
+      ? pathToFileURL(join(previous.MINU_RUNTIME_ROOT, "packages/pi/dist/src/index.js")).href
+      : new URL("../../../../../runtime/packages/pi/dist/src/index.js", import.meta.url).href);
+    const runtimes = { pi: new PiAgentRuntime() };
     daemon = await createLocalControlDaemon({ relayDatabasePath: relayPath, currentHumanIdentityId: owner.id,
       conversationsEndpoint: core.endpoint, conversationsServiceToken: core.serviceToken, port: 0, webUrl: "http://127.0.0.1:5174/", runtimes });
     const login = await fetch(daemon.issueBrowserLaunchUrl(), { redirect: "manual" });
