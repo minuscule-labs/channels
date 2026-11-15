@@ -62,9 +62,12 @@ test("inline slash popup preserves drafts, supports keyboard selection and metad
   await expect(popup).not.toBeVisible();
   await expect(input).toHaveValue("/Decision\nKeep draft");
   await input.fill("/");
-  const authored = popup.getByRole("option").filter({ hasNotText: "Harness" });
+  const authored = popup.getByRole("option");
   await expect(authored).toHaveCount(2);
-  await expect(popup.getByRole("option").filter({ hasText: "Harness" }).first()).toBeDisabled();
+  await expect(authored.filter({ hasText: "Harness" })).toHaveCount(0);
+  await expect(popup).not.toContainText(/Ready|Pending|Unavailable/);
+  await expect(authored.filter({ hasText: "Channel · r1" })).toHaveCount(1);
+  await expect(authored.filter({ hasText: "Workspace · r1" })).toHaveCount(1);
   await input.press("ArrowDown");
   await expect(authored.nth(1)).toHaveAttribute("aria-selected", "true");
   await input.press("ArrowUp");
@@ -271,7 +274,8 @@ test("new pending revisions and retirement block rather than substitute or resta
   await removeSkill(page);
   await message(page).fill("/Channel\n@selected Preserved arguments");
   const popup = page.getByRole("listbox", { name: "Skill suggestions" });
-  await expect(popup.getByRole("option")).toContainText("r2 · Pending", { timeout: 10_000 });
+  await expect(popup.getByRole("option")).toContainText("r2", { timeout: 10_000 });
+  await expect(popup).not.toContainText(/Ready|Pending|Unavailable/);
   await popup.getByRole("option").click();
   await expect(sendSkill(page)).toBeDisabled();
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();

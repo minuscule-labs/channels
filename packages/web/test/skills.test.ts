@@ -36,13 +36,13 @@ describe("explicit skill selection", () => {
     expect(skillsCommand("/skillsXYZ")).toEqual({ query: "skillsXYZ", arguments: "" });
     for (const body of ["$decision", "Please /skills", "`/skills`", "https://example.com"]) expect(skillsCommand(body)).toBeUndefined();
   });
-  it("filters published metadata and retains unsupported Harness entries without exposing bodies", () => {
+  it("lists only shared playbooks even when the catalog includes native Harness skills", () => {
     const data = catalog();
     expect(skillPickerEntries(data, "channel")).toEqual([{ skill: choice }]);
     expect(skillPickerEntries(data, "published")).toEqual([{ skill: choice }]);
-    expect(skillPickerEntries(data, "review")).toEqual([
-      { identityId: "a", commandId: "skill:review" }, { identityId: "b", commandId: "skill:review" },
-    ]);
+    expect(skillPickerEntries(data, "")).toEqual([{ skill: choice }]);
+    expect(skillPickerEntries(data, "review")).toEqual([]);
+    expect(skillPickerEntries(data, "harness")).toEqual([]);
     expect(skillPickerEntries(data, "missing")).toEqual([]);
     expect(skillPickerEntries(undefined, "")).toEqual([]);
   });

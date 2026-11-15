@@ -19,14 +19,12 @@ export function skillsCommand(body: string): { query: string; arguments: string 
   const query = match[1]!.replace(/^skills(?:[ \t]+|$)/, "").trim();
   return { query, arguments: match[2] ?? "" };
 }
-export type SkillPickerEntry = { skill: SkillChoice } | { identityId: string; commandId: string };
+export type SkillPickerEntry = { skill: SkillChoice };
 export function skillPickerEntries(catalog: LocalConversationAuthoredSkillCatalog | undefined, query: string): SkillPickerEntry[] {
   const search = query.trim().toLowerCase();
   return [
     ...(catalog?.skills.filter(skill => `${skill.name} ${skill.description} ${skill.source}`.toLowerCase().includes(search))
       .map(skill => ({ skill })) ?? []),
-    ...(catalog?.agents?.flatMap(agent => agent.harness.map(commandId => ({ identityId: agent.identityId, commandId })))
-      .filter(skill => `harness ${skill.commandId}`.toLowerCase().includes(search)) ?? []),
   ];
 }
 export function readSkillChoice(value: string | null): SkillChoice | undefined {

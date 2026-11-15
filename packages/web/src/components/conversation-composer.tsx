@@ -122,7 +122,7 @@ export function ConversationComposer({
   const capabilities = useQuery({ queryKey: queryKeys.localCapabilities(), queryFn: () => localControl.capabilities(), enabled: authorReady, retry: false });
   const currentCatalog = catalog.isError ? undefined : catalog.data;
   const skillEntries = useMemo(() => skillPickerEntries(currentCatalog, skillCommand?.query ?? ""), [currentCatalog, skillCommand?.query]);
-  const selectableSkills = skillEntries.flatMap(entry => "skill" in entry ? [entry.skill] : []);
+  const selectableSkills = skillEntries.map(entry => entry.skill);
   const activeSkillIndex = Math.min(selectedSkillSuggestion, Math.max(0, selectableSkills.length - 1));
   useEffect(() => setSelectedSkillSuggestion(0), [skillCommand?.query, selectableSkills.length]);
   const skillStatus = skill ? skillAvailability(skill, targets, participants, currentCatalog, agents) : "Unavailable";
@@ -387,7 +387,7 @@ export function ConversationComposer({
     <div className="bg-[var(--bg)] px-3 pt-3 pb-1 sm:px-6">
       <div className="relative mx-auto max-w-5xl">
         {showSkillPicker ? <SkillPicker id={skillListId} entries={skillEntries} selectedIndex={activeSkillIndex} onHighlight={setSelectedSkillSuggestion}
-          catalog={currentCatalog} loading={catalog.isPending} error={catalog.isError} targets={targets} participants={participants} agents={agents} onSelect={selectSkill} /> : null}
+          loading={catalog.isPending} error={catalog.isError} onSelect={selectSkill} /> : null}
         {unresolvedSkill && authorReady && !skillMutation.isPending && skillRequest ? <div aria-label="Skill receipt" className="mb-2 flex flex-wrap items-center gap-2 text-xs">
           <span role="status">{skillRequest.publication?.status === "not_observed" ? "Unresolved"
             : skillRequest.publication?.status === "not_linked" ? "Not linked" : skillRequest.accepted ? "Accepted" : "Unconfirmed"}</span>
