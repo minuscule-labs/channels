@@ -96,6 +96,34 @@ async function mocks(page: Page, data: Fixture) {
 }
 function gate() { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; }
 
+test("integration observations refresh read-only within existing session diagnostics", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let unsupported = false;
+  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/session-inspection`, route => {
+    counts.inspection++;
+    return route.fulfill({ json: { ...inspection(data), integrations: {
+      version: 1, capturedAt: "2026-10-01T10:00:00.000Z", status: unsupported ? "unsupported" : "partial",
+      coverage: { configuration: unsupported ? "unknown" : "complete", tools: "unknown" },
+      operations: { inspect: unsupported ? "unsupported" : "supported", reconnect: "unsupported", reloadConfiguration: "unsupported" },
+      integrations: unsupported ? [] : [{ id: "mcp.mongodb_fixture", name: "mongodb_fixture", kind: "mcp", source: "user", configured: "enabled", connection: "failed", failureCode: "connection_failed", toolCoverage: "unknown", registeredCount: 0 }],
+      tools: [], issues: [],
+    } } });
+  });
+  await launch(page, request, data);
+  const modal = await open(page, data), region = modal.getByRole("region", { name: "Integrations", exact: true });
+  await expect(region).toContainText("mongodb_fixture");
+  await expect(region).toContainText("failed");
+  await expect(region.getByRole("row").filter({ hasText: "mongodb_fixture" })).toContainText("connection failed");
+  await expect(region.getByRole("cell", { name: "Unknown", exact: true })).toHaveCount(3);
+  expect(await region.getByRole("button").count()).toBe(0);
+  unsupported = true;
+  await modal.getByRole("button", { name: "Refresh session", exact: true }).click();
+  await expect(region).toContainText("unsupported");
+  await expect(region).not.toContainText("mongodb_fixture");
+  await expect(region).not.toContainText("None");
+  expect(counts.inspection).toBe(2); expect(counts.mutations).toBe(0);
+});
+
 test("message delivery is advanced-only, explicit and keyboard accessible", async ({ page, request }) => {
   const data = await fixture(request), counts = await mocks(page, data); await launch(page, request, data);
   await expect(page.getByRole("region", { name: "Message delivery", exact: true })).toHaveCount(0); expect(counts.trails).toBe(0);

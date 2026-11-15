@@ -359,7 +359,28 @@ export interface LocalAgentSessionEvents {
   snapshot?: LocalRuntimeSessionEvents;
 }
 
+export interface LocalRuntimeSessionIntegrations {
+  version: 1;
+  capturedAt: string;
+  status: "available" | "partial" | "unsupported" | "unavailable";
+  workerId?: string;
+  coverage: { configuration: "complete" | "partial" | "unknown"; tools: "complete" | "partial" | "unknown" };
+  operations: { inspect: "supported" | "unsupported" | "unknown"; reconnect: "supported" | "unsupported" | "unknown"; reloadConfiguration: "supported" | "unsupported" | "unknown" };
+  integrations: Array<{
+    id: string; name: string; kind: "mcp" | "native" | "other";
+    source: "user" | "project" | "extension" | "native" | "unknown";
+    configured: "enabled" | "disabled" | "unknown";
+    connection: "disabled" | "connecting" | "connected" | "disconnected" | "authentication_required" | "failed" | "closed" | "not_applicable" | "unknown";
+    toolCoverage: "complete" | "partial" | "unknown";
+    failureCode?: "connection_failed" | "authentication_required" | "discovery_failed" | "registration_failed";
+    offeredCount?: number; registeredCount?: number; callableCount?: number; reachableCount?: number;
+  }>;
+  tools: Array<{ name: string; integrationId?: string; visibility: "declared" | "discoverable" | "hidden" | "unknown"; routes: Array<"model" | "indirect">; reachability: "reachable" | "not_reachable" | "unknown" }>;
+  issues: Array<"configuration_invalid" | "connection_failed" | "authentication_required" | "discovery_failed" | "registration_failed" | "provider_unavailable" | "invalid_observation" | "truncated">;
+}
+
 export interface LocalAgentSessionInspection {
+  integrations?: LocalRuntimeSessionIntegrations;
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   conversationId: string;
   participantIdentityId: string;
