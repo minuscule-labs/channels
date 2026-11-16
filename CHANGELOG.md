@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-## 0.0.37
+## 0.0.38
 
-Release overview: [Current-worker integration discovery](docs/releases/v0.0.37.md).
+Release overview: [Current-worker integration discovery](docs/releases/v0.0.38.md).
 
 - Show bounded, current-worker integration and tool observations in existing session diagnostics: configuration source, connection state, attributed safe failure codes, callable/registered tools and exposure. Preserve unknown and unsupported evidence rather than claiming integrations are absent.
 - Add optional, owner-scoped Runtime inspection without waking agents, invoking business tools, changing credentials or reconnecting integrations. Refresh remains read-only; reconnect and configuration reload are not included.
