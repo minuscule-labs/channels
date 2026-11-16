@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.0.37
+
+Release overview: [Shared-playbook picker](docs/releases/v0.0.37.md).
+
+- Show only Workspace and Channel playbooks in the send picker; hide native Harness skills until explicit invocation is supported. Native skill configuration and agent use remain unchanged.
+- Remove Ready/Pending/Unavailable labels from picker options, retaining source and revision, keyboard selection and existing send safeguards.
+- This UI-only patch does not add legacy-session compatibility, change message routing or implement agent-scoped slash commands.
+
 ## 0.0.36
 
 Release overview: [Simpler Skill composer](docs/releases/v0.0.36.md).
