@@ -160,14 +160,17 @@ export class DiagnosticSurface {
   async inspectSession() {
     if (this.state.eventsBusy) return;
     const previous = JSON.stringify(this.state.inspection?.recorded);
+    const previousWorker = this.state.inspection?.integrations?.workerId;
     const controller = this.begin("inspection");
     if (!controller) return;
     this.update({ inspection: undefined, inspectionBusy: true, inspectionError: undefined });
     try {
       const inspection = await this.reads.agentSessionInspection(this.scope.conversationId, this.scope.participantIdentityId, controller.signal);
       if (!this.current("inspection", controller)) return;
-      if (inspection.availability === "changed" || JSON.stringify(inspection.recorded) !== previous) { this.closeEvents(); this.closeTrails(); }
-      if (inspection.availability === "changed") {
+      if (inspection.conversationId !== this.scope.conversationId || inspection.participantIdentityId !== this.scope.participantIdentityId) throw new Error("Unavailable");
+      const workerChanged = Boolean(previousWorker && inspection.integrations?.workerId !== previousWorker);
+      if (inspection.availability === "changed" || JSON.stringify(inspection.recorded) !== previous || workerChanged) { this.closeEvents(); this.closeTrails(); }
+      if (inspection.availability === "changed" || workerChanged) {
         this.abort("report");
         this.update({ preview: undefined, reportBusy: false, reportMessage: "The session changed during inspection. Request a fresh report to inspect the new snapshot." });
       }

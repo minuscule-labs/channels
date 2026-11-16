@@ -4,12 +4,14 @@ import { conversationAgentConfiguration } from "@minu/channels-relay";
 import { authorizeDiagnosticAccess } from "./agent-diagnostic-reads.ts";
 import { LocalConfigurationRequestError } from "./configuration.ts";
 import { safeSessionEvents } from "./agent-session-events.ts";
+import { safeSessionIntegrations, unsupportedSessionIntegrations } from "./agent-session-integrations.ts";
 import { LOCAL_CONTROL_PROTOCOL_VERSION, type LocalAgentSessionInspection, type LocalAgentSessionEvents, type LocalRuntimeSessionProfile, type LocalReasoningLevel } from "./contracts.ts";
 
 type Directory = Pick<ConversationClient, "getConversation" | "getWorkspace" | "listWorkspaceMembers" | "getIdentity">;
 export interface SessionProfilePort {
   inspectSessionProfile?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   inspectSessionEvents?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  inspectSessionIntegrations?(id: string, owner: string, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 type Store = Pick<RelayBindingStore, "getSessionInspectionRecords" | "getWorkspaceAgentConfig" | "getConversationCreationSetup" | "getConversationSettings">;
 const unavailable = () => new LocalConfigurationRequestError("Not found", 404, "unavailable");
@@ -75,7 +77,7 @@ export class LocalAgentSessionInspections {
     if (!access.canViewDiagnostics || !access.conversation.participants.some(value => value.id === identityId && (value.type === "agent" || value.type === "service"))) throw unavailable();
     return access.conversation;
   }
-  async read(conversationId: string, identityId: string, actor: string): Promise<LocalAgentSessionInspection> {
+  async read(conversationId: string, identityId: string, actor: string, options: { signal?: AbortSignal } = {}): Promise<LocalAgentSessionInspection> {
     const conversation = await this.authorize(conversationId, identityId, actor);
     const base = (): LocalAgentSessionInspection => ({ protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, conversationId, participantIdentityId: identityId,
       capturedAt: this.now(), availability: "unavailable", running: { status: "not_verified" }, saved: { status: "unavailable" }, latestStart: "not_verified", lastStopBoundary: "not_recorded" });
@@ -83,6 +85,9 @@ export class LocalAgentSessionInspections {
     if (this.reading.has(key) || this.reading.size >= 16) { await this.authorize(conversationId, identityId, actor); return base(); }
     this.reading.add(key);
     const controller = new AbortController();
+    const canceled = () => controller.abort();
+    options.signal?.addEventListener("abort", canceled, { once: true });
+    if (options.signal?.aborted) canceled();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const task = (async () => {
       try {
@@ -126,23 +131,40 @@ export class LocalAgentSessionInspections {
               if (profile) result.running = { status: "available", profile };
             } catch { controller.signal.throwIfAborted(); }
           }
+          if (managed && ["connected", "paused"].includes(binding.state)) {
+            if (!runtime?.inspectSessionIntegrations) result.integrations = unsupportedSessionIntegrations(this.now());
+            else try {
+              const raw = await runtime.inspectSessionIntegrations(binding.runtimeSessionId, binding.runtimeOwnerId!, { signal: controller.signal });
+              controller.signal.throwIfAborted();
+              result.integrations = safeSessionIntegrations(raw);
+            } catch { controller.signal.throwIfAborted(); }
+          }
         }
         controller.signal.throwIfAborted();
+        // The final private identity fence follows authorization, with no later await on successful delivery.
+        const fresh = await this.authorize(conversationId, identityId, actor);
+        controller.signal.throwIfAborted();
+        if (fresh.workspaceId !== conversation.workspaceId) return { ...base(), availability: "changed" as const };
         const after = await this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, identityId);
         controller.signal.throwIfAborted();
         if (after.bindings.length !== before.bindings.length || bindingFence(after.bindings[0]) !== bindingFence(binding)
           || activationFence(after.activation) !== activationFence(activation)) return { ...base(), availability: "changed" as const };
+        if (Buffer.byteLength(JSON.stringify(result)) > 128 * 1024) delete result.integrations;
         return { ...result, capturedAt: this.now() };
       } finally { this.reading.delete(key); }
     })();
     let result: LocalAgentSessionInspection;
     try {
       result = await Promise.race([task, new Promise<never>((_, reject) => {
-        timer = setTimeout(() => { controller.abort(); reject(new Error("Session inspection unavailable")); }, 2000);
+        const aborted = () => reject(new Error("Session inspection unavailable"));
+        controller.signal.addEventListener("abort", aborted, { once: true });
+        timer = setTimeout(() => controller.abort(), 2000);
+        if (controller.signal.aborted) aborted();
       })]);
     } catch { result = base(); }
-    finally { clearTimeout(timer); }
-    await this.authorize(conversationId, identityId, actor);
+    finally { clearTimeout(timer); options.signal?.removeEventListener("abort", canceled); }
+    options.signal?.throwIfAborted();
+    if (result.availability !== "available") await this.authorize(conversationId, identityId, actor);
     return result;
   }
 
