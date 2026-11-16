@@ -11,6 +11,14 @@ Release overview: [Current-worker integration discovery](docs/releases/v0.0.38.m
 - Pin Runtime `42be4b7a89bf10f38bb453bb9b29bb5edd6eb6b9`. Supporting Pi workers expose the shared native `get_integrations` reader and agent-facing `inspect_integrations` tool; older workers remain usable and report inspection unsupported. The separately prepared local Pi patch is not bundled or installed by this release; full native discovery requires an explicitly selected supporting worker.
 - Keep existing worker executable resolution, local-control protocol, database schemas and dependencies unchanged. Required CI and exact-artifact acceptance remain release gates.
 
+## 0.0.37
+
+Release overview: [Shared-playbook picker](docs/releases/v0.0.37.md).
+
+- Show only Workspace and Channel playbooks in the send picker; hide native Harness skills until explicit invocation is supported. Native skill configuration and agent use remain unchanged.
+- Remove Ready/Pending/Unavailable labels from picker options, retaining source and revision, keyboard selection and existing send safeguards.
+- This UI-only patch does not add legacy-session compatibility, change message routing or implement agent-scoped slash commands.
+
 ## 0.0.36
 
 Release overview: [Simpler Skill composer](docs/releases/v0.0.36.md).
