@@ -156,6 +156,12 @@ test("reopening in one tab clears another tab's stale suspension for the channel
   } });
   expect(created.ok()).toBe(true);
   const { conversation } = await created.json();
+  const relatedIds = new Set<string>([conversation.id]);
+  const matchingStreams = async () => {
+    const { topics } = await (await request.get(`${fixture}/stream-metrics`)).json() as { topics: string[][] };
+    // Metrics cover the shared fixture, including unrelated clients from other cases.
+    return topics.filter(ids => ids.some(id => relatedIds.has(id)));
+  };
   expect((await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
     participantId: human.id, body: "Cross-tab lifecycle root",
   } })).ok()).toBe(true);
@@ -166,6 +172,8 @@ test("reopening in one tab clears another tab's stale suspension for the channel
   await page.getByRole("button", { name: "Open actions for message 1", exact: true }).click();
   await page.getByRole("menuitem", { name: "Start thread", exact: true }).click();
   await expect(page.getByLabel("Live updates live")).toHaveCount(2);
+  const { threads } = await (await request.get(`${api}/conversations/${conversation.id}/threads`)).json();
+  for (const thread of threads) relatedIds.add(thread.id);
   const other = await context.newPage();
   try {
     await other.goto(`${new URL(page.url()).origin}${destination}`, { waitUntil: "domcontentloaded" });
@@ -178,7 +186,7 @@ test("reopening in one tab clears another tab's stale suspension for the channel
       } })).ok()).toBe(true);
       await expect(page.getByLabel("Live updates paused")).toHaveCount(2);
       await expect(other.getByLabel("Live updates paused")).toHaveCount(2);
-      await expect.poll(() => streamCount(request)).toBe(0);
+      await expect.poll(matchingStreams).toHaveLength(0);
       // No SSE remains to inform the peer of Reopen; it must refresh its cached exclusion.
       if (state === "settled") {
         await page.getByRole("button", { name: "Reopen", exact: true }).click();
@@ -189,7 +197,7 @@ test("reopening in one tab clears another tab's stale suspension for the channel
       }
       await expect(page.getByLabel("Live updates live")).toHaveCount(2, { timeout: 3_000 });
       await expect(other.getByLabel("Live updates live")).toHaveCount(2, { timeout: 3_000 });
-      await expect.poll(() => streamCount(request)).toBe(1);
+      await expect.poll(matchingStreams).toHaveLength(1);
       const body = `Delivered after cross-tab ${state}`;
       expect((await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
         participantId: human.id, body,
