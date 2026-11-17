@@ -378,8 +378,9 @@ function shouldWake(
   // remain shared history, even under all_messages, to avoid automatic reply loops.
   if (sender?.type !== "human" && !isExplicitlyAddressed(message, binding.participantId)) return false;
   const policy = binding.wakePolicy ?? "mentions";
-  // A skill's explicit recipients override all_messages and never imply broadcast.
-  if (message.authoredInvocationId !== undefined) return policy !== "muted" && message.to.includes(binding.participantId);
+  // Historical session-pinned Skills retain their original explicit-only routing.
+  // Message-time shared playbooks use the same wake policy as ordinary messages.
+  if (message.authoredInvocationId !== undefined && !message.authoredSkill) return policy !== "muted" && message.to.includes(binding.participantId);
   if (policy === "muted") return false;
   if (message.to.includes(binding.participantId)) return true;
   if (message.to.includes("@conversation")) return policy !== "direct_mentions";

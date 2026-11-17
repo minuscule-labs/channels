@@ -769,6 +769,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         body: message.body,
         replyTo: message.replyTo ?? undefined,
         ...(message.authoredInvocationId !== null ? { authoredInvocationId: message.authoredInvocationId } : {}),
+        ...(message.authoredSkill !== null ? { authoredSkill: message.authoredSkill } : {}),
         createdAt: message.createdAt,
         attachments: attachmentsByMessage.get(message.id) ?? [],
       })),
@@ -804,6 +805,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       body: message.body,
       replyTo: message.replyTo ?? undefined,
       ...(message.authoredInvocationId !== null ? { authoredInvocationId: message.authoredInvocationId } : {}),
+      ...(message.authoredSkill !== null ? { authoredSkill: message.authoredSkill } : {}),
       createdAt: message.createdAt,
       attachments: attachmentsByMessage.get(message.id) ?? [],
     }));
@@ -902,6 +904,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         body: message.body,
         replyTo: message.replyTo,
         authoredInvocationId: message.authoredInvocationId,
+        authoredSkill: message.authoredSkill,
         createdAt: message.createdAt,
       });
       const attachments: MessageAttachment[] = [];
@@ -1005,7 +1008,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       const existingResult = await transaction.execute({
         sql: `
           SELECT i.request_fingerprint, m.id, m.conversation_id, m.sequence,
-                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at, m.authored_invocation_id
+                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at, m.authored_invocation_id, m.authored_skill_json
           FROM message_idempotency i
           JOIN messages m ON m.id = i.message_id
           WHERE i.conversation_id = ? AND i.participant_id = ? AND i.idempotency_key = ?
@@ -1026,6 +1029,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             body: String(existing.body),
             replyTo: existing.reply_to === null ? undefined : String(existing.reply_to),
             ...(existing.authored_invocation_id !== null ? { authoredInvocationId: String(existing.authored_invocation_id) } : {}),
+            ...(existing.authored_skill_json !== null ? { authoredSkill: JSON.parse(String(existing.authored_skill_json)) } : {}),
             createdAt: String(existing.created_at),
             attachments: existing.request_fingerprint === requestFingerprint ? [...(message.attachments ?? [])] : [],
           },
@@ -1048,8 +1052,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         await transaction.execute({
           sql: `
             INSERT INTO messages
-              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at, authored_invocation_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at, authored_invocation_id, authored_skill_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           args: [
             message.id,
@@ -1061,6 +1065,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             message.replyTo ?? null,
             message.createdAt,
             message.authoredInvocationId ?? null,
+            message.authoredSkill ? JSON.stringify(message.authoredSkill) : null,
           ],
         });
         for (const [position, attachmentId] of attachmentIds.entries()) {

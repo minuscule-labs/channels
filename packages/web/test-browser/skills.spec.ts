@@ -48,6 +48,83 @@ async function messages(request: APIRequestContext, scope: string) {
   return (await (await request.get(`${api}/conversations/${scope}/messages`)).json()).messages as Array<{ id: string; participantId: string; authoredInvocationId?: string; replyTo?: string; body: string; to: string[] }>;
 }
 
+test.use({ video: process.env.MINU_TEST_RECORD_VIDEO === "1" ? "on" : "off" });
+
+test.describe("shared playbook message flow", () => {
+
+  test("Channel-wide and human sends retain name-only Skill badges after reload", async ({ page, request }, info) => {
+    const data = await setup(page, request);
+    await pick(page, "Workspace");
+    await message(page).fill("@channel Summarize the shared decision");
+    await expect(sendSkill(page)).toBeEnabled();
+    await page.screenshot({ path: info.outputPath("channel-wide-skill-draft.png") });
+    await sendSkill(page).click();
+    await published(page);
+    await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(2);
+    const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
+    expect(trigger.to).toEqual(["@conversation"]);
+    const article = page.locator(`article[data-message-sequence="${(trigger as { sequence?: number }).sequence}"]`);
+    await expect(article.getByLabel("Attached skill")).toHaveText("Decision");
+    await expect(article.getByLabel("Attached skill")).not.toContainText("r1");
+    await page.screenshot({ path: info.outputPath("channel-wide-skill-sent.png") });
+
+    await message(page).fill("@owner For your review");
+    await expect(sendSkill(page)).toBeEnabled();
+    await sendSkill(page).click();
+    await published(page);
+    const human = (await messages(request, data.parentId)).find(row => row.body === "@owner For your review")!;
+    expect(human.to).toEqual([data.ownerId]);
+    await page.reload();
+    await expect(page.getByLabel("Attached skill")).toHaveCount(2);
+    await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(2);
+    await page.screenshot({ path: info.outputPath("sent-skill-badges-after-reload.png") });
+  });
+
+  test("create a shared Skill after agents start, then send it without a reset", async ({ page, request }, info) => {
+    const data = await setup(page, request);
+    const before = await metrics(request, data);
+    await open(page, request, data, data.parentId, "owner");
+    await page.goto(`/app/workspaces/${data.workspaceId}/settings/skills/new`);
+    const editor = page.getByRole("region", { name: "Authored skills", exact: true });
+    await editor.getByLabel("Name", { exact: true }).fill("Development Playbook");
+    await editor.getByLabel("Description", { exact: true }).fill("Shared implementation procedure");
+    await editor.getByLabel("Instructions", { exact: true }).fill("PRIVATE_WORKSPACE_PROCEDURE_NEW_AFTER_SESSION");
+    await editor.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+    await open(page, request, data, data.parentId);
+    await message(page).fill("/Development");
+    const popup = page.getByRole("listbox", { name: "Skill suggestions" });
+    await expect(popup.getByRole("option")).toHaveCount(1);
+    await expect(popup).not.toContainText(/Harness|Ready|Pending|Unavailable/);
+    await page.screenshot({ path: info.outputPath("new-skill-existing-session-picker.png") });
+    await message(page).press("Enter");
+    await message(page).fill("@selected Implement the agreed task");
+    await expect(sendSkill(page)).toBeEnabled();
+    await sendSkill(page).click();
+    await published(page);
+    await expect.poll(async () => (await metrics(request, data)).calls.length).toBe(1);
+    await expect(page.getByLabel("Attached skill")).toHaveText("Development Playbook");
+    const after = await metrics(request, data);
+    expect(after.sessions).toBe(before.sessions);
+    expect(after.calls[0]!.input).toContain("PRIVATE_WORKSPACE_PROCEDURE_NEW_AFTER_SESSION");
+    expect((await messages(request, data.parentId)).map(row => row.body).join("\n")).not.toContain("PRIVATE_WORKSPACE_PROCEDURE");
+    await page.screenshot({ path: info.outputPath("new-skill-sent-existing-session.png") });
+  });
+
+  test("unaddressed Skill publication does not silently target all agents", async ({ page, request }, info) => {
+    const data = await setup(page, request);
+    await pick(page, "Workspace");
+    await expect(sendSkill(page)).toBeEnabled();
+    await sendSkill(page).click();
+    await published(page);
+    const trigger = (await messages(request, data.parentId)).find(row => row.authoredInvocationId)!;
+    expect(trigger.to).toEqual([]);
+    await expect(page.getByLabel("Attached skill")).toHaveText("Decision");
+    expect((await metrics(request, data)).calls).toHaveLength(0);
+    await page.screenshot({ path: info.outputPath("unaddressed-skill-normal-routing.png") });
+  });
+});
+
 test("inline slash popup preserves drafts, supports keyboard selection and metadata-only chips without dropdowns or sending", async ({ page, request }, info) => {
   const data = await setup(page, request);
   const input = message(page), popup = page.getByRole("listbox", { name: "Skill suggestions", exact: true });
@@ -150,8 +227,7 @@ test("skill mentions use ordinary editing rules, ignore quoted/code context, and
   await message(page).fill("@selected Initial task");
   await expect(sendSkill(page)).toBeEnabled();
   await message(page).fill("@owner Human target");
-  await expect(sendSkill(page)).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
+  await expect(sendSkill(page)).toBeEnabled();
   await message(page).fill("@observer Capture this\n> @owner @channel\n`@selected`\n```\n@owner\n```");
   await message(page).press("Escape");
   await expect(sendSkill(page)).toBeEnabled();
@@ -178,7 +254,7 @@ test("skill mentions use ordinary editing rules, ignore quoted/code context, and
   expect((await messages(request, data.parentId)).find(row => row.body === "No mention, same sticky agent")!.to).toEqual([data.observerId]);
 });
 
-test("multi-recipient skill sends and unsupported broadcasts do not replace the single sticky target", async ({ page, request }) => {
+test("multi-recipient skill sends and Channel-wide drafts do not replace the single sticky target", async ({ page, request }) => {
   const data = await setup(page, request);
   await pick(page, "Channel");
   for (const body of ["@selected Set sticky", "@selected @observer Both agents"]) {
@@ -187,8 +263,8 @@ test("multi-recipient skill sends and unsupported broadcasts do not replace the 
     await published(page);
     await expect(message(page)).toHaveValue("");
   }
-  await message(page).fill("@channel Unsupported broadcast");
-  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
+  await message(page).fill("@channel Channel-wide draft");
+  await expect(sendSkill(page)).toBeEnabled();
   await message(page).fill("@missing Unknown recipient");
   await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
   await message(page).fill("Sticky after removing mentions");
@@ -198,7 +274,7 @@ test("multi-recipient skill sends and unsupported broadcasts do not replace the 
   const history = await messages(request, data.parentId);
   expect(history.find(row => row.body === "Sticky after removing mentions")!.to).toEqual([data.selectedId]);
   expect(history.find(row => row.body === "@selected @observer Both agents")!.to.sort()).toEqual([data.selectedId, data.observerId].sort());
-  expect(history.some(row => row.body.includes("Unsupported broadcast") || row.body.includes("Unknown recipient"))).toBe(false);
+  expect(history.some(row => row.body.includes("Channel-wide draft") || row.body.includes("Unknown recipient"))).toBe(false);
 });
 
 test("new active mentions entered with a slash draft replace the prior sticky recipient", async ({ page, request }) => {
@@ -266,7 +342,7 @@ test("parent/thread and human drafts, skill choices and recipients remain indepe
   await expect(message(page)).toHaveValue("@observer Parent draft");
 });
 
-test("new pending revisions and retirement block rather than substitute or restart", async ({ page, request }) => {
+test("new published revisions are usable without restarting while retirement still blocks", async ({ page, request }) => {
   const data = await setup(page, request), sessions = (await metrics(request, data)).sessions;
   await pick(page, "Channel");
   await message(page).fill("@selected Preserved arguments");
@@ -277,8 +353,7 @@ test("new pending revisions and retirement block rather than substitute or resta
   await expect(popup.getByRole("option")).toContainText("r2", { timeout: 10_000 });
   await expect(popup).not.toContainText(/Ready|Pending|Unavailable/);
   await popup.getByRole("option").click();
-  await expect(sendSkill(page)).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Send skill" })).toBeDisabled();
+  await expect(sendSkill(page)).toBeEnabled();
   await request.post(`${fixture}/change?workspace=${data.workspaceId}&document=${data.channelSkill}&action=archive`);
   await expect(sendSkill(page)).toBeDisabled({ timeout: 10_000 });
   await expect(message(page)).toHaveValue("@selected Preserved arguments");

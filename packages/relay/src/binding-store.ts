@@ -483,11 +483,13 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     const key = JSON.stringify([invocation.conversationId, invocation.actorIdentityId, invocation.requestId]);
     const existing = this.authoredInvocations.get(key);
     if (existing) return structuredClone(existing);
-    if (!invocation.targets.length || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length
+    if (invocation.to != null && (!Array.isArray(invocation.to) || new Set(invocation.to).size !== invocation.to.length
+      || invocation.to.some(id => typeof id !== "string" || !id.trim()))) return undefined;
+    if ((!invocation.to && !invocation.targets.length) || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length
       || !invocationDocumentMatches(invocation, this.authoredDocuments.get(invocation.documentId))) return undefined;
     const publication = this.authoredRevisions.get(invocation.documentId)?.find(row => row.revision === invocation.revision);
     if (!publication || publication.workspaceId !== invocation.workspaceId || publication.contentHash !== invocation.contentHash) return undefined;
-    for (const target of invocation.targets) {
+    for (const target of invocation.to ? [] : invocation.targets) {
       if (!invocationTargetMatches(invocation, target, this.bindings.get(target.bindingId),
         this.sessionHistory.get(`${target.bindingId}\0${target.generation}`))) return undefined;
     }

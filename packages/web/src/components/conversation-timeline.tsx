@@ -69,6 +69,9 @@ function MessageRow({
           ) : null}
           {targets.length ? <p className={`${continuation ? "" : "mt-1"} text-[11px] text-[var(--muted)]`}>to {targets.join(", ")}</p> : null}
           <div className={continuation || targets.length ? "mt-1" : "mt-2"}>
+            {message.authoredSkill ? <span aria-label="Attached skill" className="mb-1 inline-flex max-w-full rounded border border-[var(--border)] bg-[var(--panel)] px-2 py-0.5 text-xs font-medium">
+              <span className="truncate">{message.authoredSkill.name}</span>
+            </span> : null}
             <MessageMarkdown body={message.body} />
             <MessageImages attachments={message.attachments ?? []} conversationId={message.conversationId} />
           </div>

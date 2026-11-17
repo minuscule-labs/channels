@@ -394,7 +394,9 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
           eq(schema.authoredSkillInvocations.requestId, invocation.requestId),
         )).limit(1);
         if (existing) return existing;
-        if (!invocation.targets.length || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length) return undefined;
+        if (invocation.to != null && (!Array.isArray(invocation.to) || new Set(invocation.to).size !== invocation.to.length
+          || invocation.to.some(id => typeof id !== "string" || !id.trim()))) return undefined;
+        if ((!invocation.to && !invocation.targets.length) || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length) return undefined;
         const [document] = await transaction.select().from(schema.authoredDocuments).where(and(
           eq(schema.authoredDocuments.id, invocation.documentId), eq(schema.authoredDocuments.workspaceId, invocation.workspaceId),
         )).limit(1);
@@ -404,7 +406,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
           eq(schema.authoredDocumentRevisions.revision, invocation.revision), eq(schema.authoredDocumentRevisions.contentHash, invocation.contentHash),
         )).limit(1);
         if (!publication) return undefined;
-        for (const target of invocation.targets) {
+        for (const target of invocation.to ? [] : invocation.targets) {
           const [record] = await transaction.select().from(schema.conversationAgentBindings)
             .where(eq(schema.conversationAgentBindings.id, target.bindingId)).limit(1);
           const [activation] = await transaction.select().from(schema.conversationAgentSessionHistory).where(and(

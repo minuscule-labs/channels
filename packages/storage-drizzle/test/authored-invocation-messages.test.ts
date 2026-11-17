@@ -63,13 +63,15 @@ for (const kind of ["memory", "sqlite"] as const) {
       const conversation = await service.createConversation({ workspaceId: workspace.id, participantIds: [human.id, agent.id] });
       const events: ConversationEvent[] = [];
       const unsubscribe = await service.subscribe(conversation.id, event => events.push(event));
-      const input = { id: createResourceId("message"), authoredInvocationId: "public-correlation", participantId: human.id, to: [agent.id], body: "Arguments only" };
+      const metadata = { name: "Development Playbook", documentId: "skill-doc", source: "workspace" as const, revision: 3 };
+      const input = { id: createResourceId("message"), authoredInvocationId: "public-correlation", authoredSkill: metadata, participantId: human.id, to: [agent.id], body: "Arguments only" };
       const first = await service.createMessage(conversation.id, input, "stable");
       assert.equal(first.id, input.id);
       assert.equal(first.authoredInvocationId, input.authoredInvocationId);
+      assert.deepEqual(first.authoredSkill, metadata);
       assert.deepEqual(await service.createMessage(conversation.id, input, "stable"), first);
       assert.equal(events.filter(event => event.type === "message.created").length, 1);
-      for (const changed of [{ id: createResourceId("message") }, { authoredInvocationId: "copied" }, { body: "changed" }]) {
+      for (const changed of [{ id: createResourceId("message") }, { authoredInvocationId: "copied" }, { body: "changed" }, { authoredSkill: { ...metadata, revision: 4 } }]) {
         await assert.rejects(service.createMessage(conversation.id, { ...input, ...changed }, "stable"), /different payload/);
       }
       await assert.rejects(service.createMessage(conversation.id, input, "other-key"), /Message ID is already in use/);
@@ -82,6 +84,7 @@ for (const kind of ["memory", "sqlite"] as const) {
       assert.equal((await service.getConversation(conversation.id)).messages[0]?.authoredInvocationId, input.authoredInvocationId);
       const thread = await service.createThread(conversation.id, { actorIdentityId: human.id, rootMessageId: first.id });
       assert.equal(thread.thread.context[0]?.authoredInvocationId, input.authoredInvocationId);
+      assert.deepEqual(thread.thread.context[0]?.authoredSkill, metadata);
       unsubscribe();
       if (kind === "sqlite") {
         await storage.close?.();
@@ -89,10 +92,15 @@ for (const kind of ["memory", "sqlite"] as const) {
         service = new ConversationService(storage);
         assert.deepEqual(await service.createMessage(conversation.id, input, "stable"), first);
         assert.equal((await service.listMessages(conversation.id))[0]?.authoredInvocationId, input.authoredInvocationId);
+        assert.deepEqual((await service.listMessages(conversation.id))[0]?.authoredSkill, metadata);
       }
       const ordinary = await service.createMessage(conversation.id, { participantId: human.id, to: [], body: "ordinary" }, "ordinary");
       assert.equal(ordinary.sequence, 2, "Conflicts must not allocate or consume sequences");
       assert.equal(ordinary.authoredInvocationId, undefined);
+      const appended = await service.createMessage(conversation.id, { participantId: human.id, to: [], body: "Append", authoredInvocationId: "append", authoredSkill: metadata });
+      assert.deepEqual((await service.listMessages(conversation.id)).find(m => m.id === appended.id)?.authoredSkill, metadata);
+      await assert.rejects(service.createMessage(conversation.id, { participantId: human.id, to: [], body: "Invalid", authoredSkill: metadata }), /Invalid authored skill/);
+      await assert.rejects(service.createMessage(conversation.id, { ...input, authoredSkill: { ...metadata, revision: 0 } }, "bad-revision"), /Invalid authored skill/);
     } finally {
       await storage.close?.();
       await rm(directory, { recursive: true, force: true });

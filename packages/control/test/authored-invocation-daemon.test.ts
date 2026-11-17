@@ -115,7 +115,7 @@ test("normal product startup sends a selected Skill without an opt-in and preser
 
 for (const enabled of [undefined, false, true]) {
   const publicationEnabled = enabled !== false;
-  test(`daemon authored publication ${String(enabled)} preserves explicit disable and selected-only delivery`, { timeout: 20_000 }, async () => {
+  test(`daemon authored publication ${String(enabled)} preserves explicit disable and normal all_messages delivery`, { timeout: 20_000 }, async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-authored-daemon-")));
     const core = await createConversationHttpServer({ port: 0 });
     const client = new ConversationClient(core.endpoint, { serviceToken: core.serviceToken });
@@ -200,7 +200,7 @@ for (const enabled of [undefined, false, true]) {
         const inspection = await fetch(`${publicationUrl}?requestId=${encodeURIComponent(receipt.requestId)}`, { headers });
         assert.equal(inspection.status, 200);
         assert.equal((await inspection.json() as { messageId: string }).messageId, result.messageId);
-        assert.deepEqual(calls.slice(baseline).map(call => call.sessionId), [selected.id]);
+        assert.deepEqual(calls.slice(baseline).map(call => call.sessionId).sort(), [selected.id, peer.id].sort());
         assert.match(calls[baseline]!.input, /PRIVATE_DAEMON_PROCEDURE/);
         const trigger = (await client.listMessages(conversation.id)).find(message => message.id === result.messageId)!;
         assert.deepEqual(trigger.to, [selected.id]);
@@ -212,7 +212,7 @@ for (const enabled of [undefined, false, true]) {
         assert.equal(calls.length, baseline);
       }
       await daemon.close(); daemon = undefined;
-      assert.equal(calls.length, baseline + (publicationEnabled ? 1 : 0), "No unselected or duplicate turns after host shutdown");
+      assert.equal(calls.length, baseline + (publicationEnabled ? 2 : 0), "Normal all_messages delivery, without duplicate turns after host shutdown");
       store = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(databasePath) });
       const after = await store.listWorkspaceBindings(workspace.id);
       assert.deepEqual(after.map(binding => [binding.id, binding.generation, binding.runtimeSessionId]),

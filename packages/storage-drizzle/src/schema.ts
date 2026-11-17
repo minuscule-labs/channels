@@ -119,6 +119,7 @@ export const messages = sqliteTable(
       .references(() => conversations.id, { onDelete: "cascade" }),
     sequence: integer("sequence").notNull(),
     authoredInvocationId: text("authored_invocation_id"),
+    authoredSkill: text("authored_skill_json", { mode: "json" }).$type<NonNullable<ConversationMessage["authoredSkill"]>>(),
     participantId: text("participant_id").notNull(),
     targets: text("targets_json", { mode: "json" }).$type<string[]>().notNull(),
     body: text("body").notNull(),

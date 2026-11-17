@@ -44,19 +44,12 @@ export function readSkillRequest(value: string | null, actor: string): SkillRequ
       && typeof input.arguments === "string" && Array.isArray(input.to) && input.to.every((id: unknown) => typeof id === "string") ? v : undefined;
   } catch { return undefined; }
 }
-export function skillAvailability(skill: SkillChoice, targets: string[], participants: Participant[], catalog?: LocalConversationAuthoredSkillCatalog, live?: ReadonlyArray<{ identityId: string; state: string }>): "Ready" | "Pending" | "Unavailable" {
-  if (!catalog || !live || targets.some(id => !live.some(agent => agent.identityId === id && (agent.state === "idle" || agent.state === "running")))) return "Unavailable";
-  if (!targets.length || new Set(targets).size !== targets.length
-    || targets.some(id => !participants.some(p => p.id === id && p.status === "active" && (p.type === "agent" || p.type === "service")))) return "Unavailable";
+export function skillAvailability(skill: SkillChoice, targets: string[], participants: Participant[], catalog?: LocalConversationAuthoredSkillCatalog, _live?: ReadonlyArray<{ identityId: string; state: string }>): "Ready" | "Pending" | "Unavailable" {
+  if (!catalog || new Set(targets).size !== targets.length
+    || targets.some(id => id !== "@conversation" && !participants.some(p => p.id === id && p.status === "active"))) return "Unavailable";
   const current = catalog.skills.find(value => value.documentId === skill.documentId && value.source === skill.source);
   if (!current || current.revision < skill.revision || (current.revision === skill.revision && current.contentHash !== skill.contentHash)) return "Unavailable";
-  let pending = false;
-  for (const target of targets) {
-    const agent = catalog.agents?.find(value => value.identityId === target);
-    if (!agent?.supported || agent.state !== "ready") return "Unavailable";
-    if (!agent.skills.some(ref => ref.documentId === skill.documentId && ref.source === skill.source && ref.revision === skill.revision && ref.contentHash === skill.contentHash)) pending = true;
-  }
-  return pending ? "Pending" : "Ready";
+  return "Ready";
 }
 export function createSkillRequest(actorIdentityId: string, choice: SkillChoice, argumentsText: string, to: string[], createId: () => string = () => crypto.randomUUID()): SkillRequest {
   return { actorIdentityId, requestId: createId(), input: { documentId: choice.documentId, source: choice.source,

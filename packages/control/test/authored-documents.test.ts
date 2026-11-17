@@ -889,18 +889,14 @@ for (const failure of ["link_ack", "core_not_committed"] as const) {
   });
 }
 
-for (const change of ["archive", "actor_revoked", "stopped"] as const) {
+for (const change of ["archive", "actor_revoked"] as const) {
   test(`HTTP explicit publication blocks ${change} before reserving a public association`, async () => {
     const f = await invocationFixture({ publicationEnabled: true });
     try {
       const member = await f.login(f.member.id);
       const receipt = await (await f.submit(change, f.input, member)).json() as LocalAuthoredSkillInvocationReceipt;
       if (change === "archive") assert.equal((await f.request(`${f.path}/${f.document.id}`, "PATCH", { action: "archive", expectedVersion: 2 })).status, 200);
-      else if (change === "actor_revoked") await f.client.updateWorkspaceMember(f.workspace.id, f.member.id, { actorIdentityId: f.owner.id, status: "disabled" });
-      else {
-        const binding = (await f.store.listConversationBindings(f.channel.id))[0]!;
-        await f.store.disableBinding(binding.id, binding.generation, new Date().toISOString());
-      }
+      else await f.client.updateWorkspaceMember(f.workspace.id, f.member.id, { actorIdentityId: f.owner.id, status: "disabled" });
       const bindings = await f.store.listConversationBindings(f.channel.id);
       const assertNoEffects = prohibitPublicationHttpEffects(f, { allowProcedureReads: true });
       assert.equal((await f.publish(receipt, member)).status, change === "actor_revoked" ? 403 : 409);
@@ -1104,7 +1100,7 @@ test("HTTP invocation acceptance freezes exact identity/revision/recipients and 
   } finally { await f.close(); }
 });
 
-test("HTTP old pinned revisions remain explicit and archived acceptance receipts do not reaccept work", async () => {
+test("HTTP exact revisions remain explicit and new publications need no session reset", async () => {
   const f = await invocationFixture();
   try {
     const receipt = await (await f.submit("before-publication")).json();
@@ -1112,8 +1108,8 @@ test("HTTP old pinned revisions remain explicit and archived acceptance receipts
     assert.equal((await f.request(path, "PATCH", { action: "save", expectedVersion: 2, ...skill, kind: undefined, content: "PRIVATE_NEW_PROCEDURE" })).status, 200);
     assert.equal((await f.request(path, "PATCH", { action: "publish", expectedVersion: 3 })).status, 200);
     assert.equal((await f.submit("old-pinned", f.input)).status, 202);
-    assert.equal((await f.submit("not-in-manifest", { ...f.input, revision: 2 })).status, 409);
-    assert.equal((await f.read("not-in-manifest")).status, 404);
+    assert.equal((await f.submit("not-in-manifest", { ...f.input, revision: 2 })).status, 202);
+    assert.equal((await f.read("not-in-manifest")).status, 200);
     assert.deepEqual(await (await f.submit("before-publication")).json(), receipt);
     const bindings = await f.store.listConversationBindings(f.channel.id);
     assert.equal((await f.request(path, "PATCH", { action: "archive", expectedVersion: 4 })).status, 200);
@@ -1125,19 +1121,23 @@ test("HTTP old pinned revisions remain explicit and archived acceptance receipts
   } finally { await f.close(); }
 });
 
-test("HTTP invocation validation rejects forged, foreign, unsupported and partial recipient requests", async () => {
+test("HTTP invocation validates access while allowing ordinary human, Channel-wide and unaddressed routes", async () => {
   const f = await invocationFixture();
   try {
     const invalid = [
       { ...f.input, actorIdentityId: f.member.id }, { ...f.input, requestId: "body-override" }, { ...f.input, source: "harness" },
-      { ...f.input, source: "global" }, { ...f.input, to: [] }, { ...f.input, to: [f.agent.id, f.agent.id] },
+      { ...f.input, source: "global" }, { ...f.input, to: null }, { ...f.input, to: [f.agent.id, f.agent.id] },
       { ...f.input, revision: 0 }, { ...f.input, revision: null }, { ...f.input, arguments: "😀".repeat(16_385) },
     ];
     for (const [i, input] of invalid.entries()) {
       assert.equal((await f.submit(`invalid-${i}`, input)).status, 400);
       assert.equal((await f.read(`invalid-${i}`)).status, 404);
     }
-    for (const [i, recipient] of [f.owner.id, f.outsider.id, "@conversation", "@channel", "peer"].entries()) {
+    for (const [i, to] of [[], [f.owner.id], ["@conversation"]].entries()) {
+      assert.equal((await f.submit(`normal-${i}`, { ...f.input, to })).status, 202);
+      assert.deepEqual((await (await f.read(`normal-${i}`)).json() as LocalAuthoredSkillInvocationReceipt).to, to);
+    }
+    for (const [i, recipient] of [f.outsider.id, "@channel", "peer"].entries()) {
       assert.equal((await f.submit(`recipient-${i}`, { ...f.input, to: [recipient] })).status, 409);
       assert.equal((await f.read(`recipient-${i}`)).status, 404);
     }
@@ -1151,8 +1151,8 @@ test("HTTP invocation validation rejects forged, foreign, unsupported and partia
     const peerBinding = (await f.store.listConversationBindings(f.channel.id)).find(binding => binding.agentIdentityId === f.peer.id)!;
     await f.store.replaceBindingSession(peerBinding.id, peerBinding.generation, "fixture", "PRIVATE_UNAVAILABLE", new Date().toISOString(), "PRIVATE_OWNER",
       { authoredContext: { ...f.snapshot, documents: [] } });
-    assert.equal((await f.submit("partial-group")).status, 409);
-    assert.equal((await f.read("partial-group")).status, 404);
+    assert.equal((await f.submit("partial-group")).status, 202);
+    assert.equal((await f.read("partial-group")).status, 200);
     assert.deepEqual(await f.client.listMessages(f.channel.id), []);
   } finally { await f.close(); }
 });
@@ -1200,7 +1200,7 @@ test("HTTP invocation authority accepts active human members, while receipts sta
 });
 
 for (const change of ["generation", "archive"] as const) {
-  test(`HTTP acceptance rechecks ${change} at the durable commit boundary without partial intent`, async () => {
+  test(`HTTP acceptance ${change === "generation" ? "ignores session replacement" : "rechecks retirement"} at the durable commit boundary`, async () => {
     const f = await invocationFixture();
     try {
       const reserve = f.store.reserveAuthoredSkillInvocation.bind(f.store);
@@ -1214,8 +1214,8 @@ for (const change of ["generation", "archive"] as const) {
         }
         return reserve(record);
       };
-      assert.equal((await f.submit("commit-fence")).status, 409);
-      assert.equal((await f.read("commit-fence")).status, 404);
+      assert.equal((await f.submit("commit-fence")).status, change === "generation" ? 202 : 409);
+      assert.equal((await f.read("commit-fence")).status, change === "generation" ? 200 : 404);
       assert.deepEqual(await f.client.listMessages(f.channel.id), []);
     } finally { await f.close(); }
   });

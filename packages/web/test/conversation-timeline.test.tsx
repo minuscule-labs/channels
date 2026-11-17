@@ -28,6 +28,16 @@ function render(participants: Participant[]) {
 }
 
 describe("Conversation broadcast labels", () => {
+  it("renders a name-only sent Skill badge while retaining revision metadata on the message", () => {
+    const message: ConversationMessage = { ...messages[1]!, authoredInvocationId: "invocation",
+      authoredSkill: { name: "Development Playbook", documentId: "skill-doc", source: "workspace", revision: 7 } };
+    const html = renderToStaticMarkup(<ConversationTimeline messages={[message]} participants={[human, builder]} />);
+    expect(html).toContain('aria-label="Attached skill"');
+    expect(html).toContain("Development Playbook");
+    expect(html).not.toContain("· r7");
+    expect(html).not.toContain("skill-doc");
+    expect(message.authoredSkill?.revision).toBe(7);
+  });
   it("ignores Workspace-only collisions while retaining historical author and recipient labels", () => {
     const html = render([human, builder]);
     expect(html.match(/>to @channel</g)).toHaveLength(2);

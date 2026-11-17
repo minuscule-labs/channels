@@ -108,10 +108,19 @@ export interface MessageAttachment {
   contentUrl: string;
 }
 
+/** Display/audit metadata only; never dispatch authority or procedure text. */
+export interface MessageAuthoredSkill {
+  name: string;
+  documentId: string;
+  source: "workspace" | "channel";
+  revision: number;
+}
+
 export interface ConversationMessage {
   id: string;
   /** Public correlation only; private Relay linkage is required for skill delivery. */
   authoredInvocationId?: string;
+  authoredSkill?: MessageAuthoredSkill;
   conversationId: string;
   sequence: number;
   participantId: string;
@@ -287,6 +296,7 @@ export interface CreateMessageInput {
   id?: string;
   /** Public correlation only, never dispatch authority. */
   authoredInvocationId?: string;
+  authoredSkill?: MessageAuthoredSkill;
   participantId: string;
   /** Authoritative recipients, including []. Omit to resolve intentional human mentions. */
   to?: string[];

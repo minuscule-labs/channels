@@ -80,7 +80,7 @@ async function setup(enabled) {
     sessions.get(session.id).scope = { conversationId: scope, identityId: observer.id };
     await store.putBinding({ id: `observer-${scope}`, workspaceAgentConfigId: `config-${observer.id}`, workspaceId: workspace.id,
       conversationId: scope, agentIdentityId: observer.id, runtimeAdapter: "fixture", runtimeSessionId: session.id, runtimeOwnerId: ownerId,
-      generation: 1, state: "connected", wakePolicy: "all_messages", createdAt: now, updatedAt: now }, { authoredContext: manifest });
+      generation: 1, state: "connected", wakePolicy: "mentions", createdAt: now, updatedAt: now }, { authoredContext: manifest });
     await host.startConversationAgent(scope, selected.id, owner.id);
     const binding = (await store.listConversationBindings(scope)).find(value => value.agentIdentityId === selected.id);
     sessions.get(binding.runtimeSessionId).scope = { conversationId: scope, identityId: selected.id };

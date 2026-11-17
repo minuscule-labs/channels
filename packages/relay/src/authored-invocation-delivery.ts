@@ -23,18 +23,43 @@ export interface PreparedAuthoredInvocationTurn {
   input: string;
 }
 
+/** Revalidate message intent without requiring or mutating an agent's session manifest. */
+async function checkMessageInvocation(store: RelayBindingStore, client: ConversationClient, invocation: AuthoredSkillInvocation) {
+  const conversation = await client.getConversation(invocation.conversationId);
+  const [workspace, lifecycle, members, actor] = await Promise.all([
+    client.getWorkspace(invocation.workspaceId), client.getConversationLifecycle(invocation.conversationId),
+    client.listWorkspaceMembers(invocation.workspaceId), client.getIdentity(invocation.actorIdentityId),
+  ]);
+  const active = (id: string) => members.some(m => m.identityId === id && m.status === "active")
+    && conversation.participants.some(p => p.id === id && p.status === "active");
+  if (conversation.workspaceId !== invocation.workspaceId || (conversation.thread?.parentConversationId ?? conversation.id) !== invocation.channelId
+    || workspace.status !== "active" || lifecycle.state !== "active" || actor.type !== "human" || actor.status !== "active" || !active(actor.id)
+    || !invocationDocumentMatches(invocation, await store.getAuthoredDocument(invocation.workspaceId, invocation.documentId))) {
+    throw new AuthoredInvocationDeliveryUnavailableError();
+  }
+  for (const id of invocation.to ?? []) {
+    if (id === "@conversation") continue;
+    if (!active(id) || (await client.getIdentity(id)).status !== "active") throw new AuthoredInvocationDeliveryUnavailableError();
+  }
+  await resolveAuthoredPublication(store, { schemaVersion: 1, workspaceId: invocation.workspaceId, channelId: invocation.channelId, documents: [] },
+    { documentId: invocation.documentId, kind: "skill", source: invocation.source, revision: invocation.revision, contentHash: invocation.contentHash });
+}
+
 function publicInvocationBody(invocation: AuthoredSkillInvocation): string {
   // Arguments retain their exact accepted bytes, including the 64 KiB boundary.
   // Empty arguments still need a nonempty public message. Procedure text stays private.
   return invocation.arguments.trim() ? invocation.arguments
-    : `Use playbook: ${invocation.name} (${invocation.source}, revision ${invocation.revision})`;
+    : invocation.to ? `Use playbook: ${invocation.name}`
+      : `Use playbook: ${invocation.name} (${invocation.source}, revision ${invocation.revision})`;
 }
 
 function messageMatchesInvocation(message: ConversationMessage, invocation: AuthoredSkillInvocation): boolean {
   return message.conversationId === invocation.conversationId && message.authoredInvocationId === invocation.id
     && message.participantId === invocation.actorIdentityId && message.body === publicInvocationBody(invocation)
+    && (!invocation.to || (message.authoredSkill?.name === invocation.name && message.authoredSkill.documentId === invocation.documentId
+      && message.authoredSkill.source === invocation.source && message.authoredSkill.revision === invocation.revision))
     && message.replyTo === undefined && !message.attachments?.length
-    && JSON.stringify([...message.to].sort()) === JSON.stringify(invocation.targets.map(target => target.identityId).sort());
+    && JSON.stringify([...message.to].sort()) === JSON.stringify((invocation.to ?? invocation.targets.map(target => target.identityId)).slice().sort());
 }
 
 /**
@@ -49,18 +74,21 @@ export async function publishAuthoredInvocationMessage(
   try {
     const invocation = await store.getAuthoredSkillInvocation(context.conversationId, context.actorIdentityId, context.requestId);
     if (!invocation || invocation.workspaceId !== context.workspaceId) throw new AuthoredInvocationDeliveryUnavailableError();
-    await Promise.all(invocation.targets.map(target => prepareAuthoredInvocationTurn(store, client, { ...context, target })));
+    if (invocation.to) await checkMessageInvocation(store, client, invocation);
+    else await Promise.all(invocation.targets.map(target => prepareAuthoredInvocationTurn(store, client, { ...context, target })));
     options.assertSession?.();
     const messageId = createResourceId("message");
     const link = await store.reserveAuthoredInvocationMessageLink({ invocationId: invocation.id, messageId });
     if (!link || link.invocationId !== invocation.id || (options.requireNewLink && link.messageId !== messageId)) {
       throw new AuthoredInvocationDeliveryUnavailableError();
     }
+    if (invocation.to) await checkMessageInvocation(store, client, invocation);
     options.assertSession?.();
     // The private association must commit first: Core may emit SSE before postMessage returns.
     const message = await client.postMessage(invocation.conversationId, {
       id: link.messageId, authoredInvocationId: invocation.id, participantId: invocation.actorIdentityId,
-      to: invocation.targets.map(target => target.identityId), body: publicInvocationBody(invocation),
+      to: invocation.to ?? invocation.targets.map(target => target.identityId), body: publicInvocationBody(invocation),
+      ...(invocation.to ? { authoredSkill: { name: invocation.name, documentId: invocation.documentId, source: invocation.source, revision: invocation.revision } } : {}),
     }, { idempotencyKey: `authored-invocation:${invocation.id}` });
     if (message.id !== link.messageId || !messageMatchesInvocation(message, invocation)) throw new AuthoredInvocationDeliveryUnavailableError();
     return message;
@@ -163,7 +191,7 @@ export async function prepareAuthoredInvocationTurn(
 ): Promise<PreparedAuthoredInvocationTurn> {
   try {
     const invocation = await store.getAuthoredSkillInvocation(context.conversationId, context.actorIdentityId, context.requestId);
-    const target = invocation?.targets.find(target => target.identityId === context.target.identityId);
+    const target = invocation?.to ? context.target : invocation?.targets.find(target => target.identityId === context.target.identityId);
     if (!invocation || invocation.workspaceId !== context.workspaceId || invocation.conversationId !== context.conversationId
       || invocation.actorIdentityId !== context.actorIdentityId || invocation.requestId !== context.requestId
       || !target || target.bindingId !== context.target.bindingId || target.generation !== context.target.generation) {
@@ -190,7 +218,13 @@ export async function prepareAuthoredInvocationTurn(
       const { bindings, activation } = await store.getSessionInspectionRecords(invocation.workspaceId, invocation.conversationId, target.identityId);
       const binding = bindings[0];
       if (bindings.length !== 1 || !binding || binding.state !== "connected" || binding.wakePolicy === "muted"
-        || !activation?.authoredContext || !invocationTargetMatches(invocation, target, binding, activation)) {
+        || (invocation.to
+          ? binding.id !== target.bindingId || binding.generation !== target.generation
+            || binding.workspaceId !== invocation.workspaceId || binding.conversationId !== invocation.conversationId
+            || binding.agentIdentityId !== target.identityId
+            || !(invocation.to.includes(target.identityId) || binding.wakePolicy === "all_messages"
+              || (invocation.to.includes("@conversation") && binding.wakePolicy !== "direct_mentions"))
+          : !activation?.authoredContext || !invocationTargetMatches(invocation, target, binding, activation))) {
         throw new AuthoredInvocationDeliveryUnavailableError();
       }
       const config = await store.getAgentConfig(binding.workspaceAgentConfigId);
@@ -206,7 +240,11 @@ export async function prepareAuthoredInvocationTurn(
         || !(Date.parse(binding.leaseExpiresAt ?? "") > context.lease.now().getTime()))) {
         throw new AuthoredInvocationLeaseLostError();
       }
-      return activation.authoredContext;
+      return invocation.to
+        ? { schemaVersion: 1 as const, workspaceId: invocation.workspaceId, channelId: invocation.channelId, documents: [
+          { documentId: invocation.documentId, kind: "skill" as const, source: invocation.source, revision: invocation.revision, contentHash: invocation.contentHash },
+        ] }
+        : activation!.authoredContext!;
     };
 
     const snapshot = await checkCurrent();
