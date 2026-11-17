@@ -4,7 +4,7 @@ import { ConversationEventHub, RECENT_CONVERSATION_GRACE_MS, type EventHubMessag
 
 afterEach(() => vi.useRealTimers());
 
-function harness() {
+function harness(autoReady = true) {
   let active = 0;
   let peak = 0;
   const streams: Array<{ ids: string[]; options: EventStreamOptions; emit(event?: ConversationEvent): void }> = [];
@@ -16,7 +16,7 @@ function harness() {
     const abort = () => wake?.();
     options.signal.addEventListener("abort", abort);
     streams.push({ ids, options, emit: (event) => { queued.push(event); wake?.(); } });
-    options.onReady();
+    if (autoReady) options.onReady();
     try {
       while (!options.signal.aborted) {
         if (!queued.length) await new Promise<void>((resolve) => { wake = resolve; });
@@ -38,6 +38,77 @@ const event = (conversationId: string): ConversationEvent => ({
 });
 
 describe("shared physical event connection", () => {
+  it("coalesces topic changes during a handshake without cancelling before headers arrive", async () => {
+    const h = harness(false);
+    const a = {}, b = {};
+    const received: EventHubMessage[] = [];
+    h.hub.subscribe(a, ["channel"], (message) => received.push(message));
+    await vi.waitFor(() => expect(h.streams).toHaveLength(1));
+    h.hub.subscribe(b, ["thread"], (message) => received.push(message), { parentId: "channel" });
+    expect(h.streams[0]!.options.signal.aborted).toBe(false);
+    expect(h.streams).toHaveLength(1);
+    h.streams[0]!.options.onReady();
+    await vi.waitFor(() => expect(h.streams).toHaveLength(2));
+    expect(h.streams[0]!.options.signal.aborted).toBe(true);
+    expect(received.some(({ type }) => type === "ready")).toBe(false);
+    expect(h.streams[1]!.ids).toEqual(["channel", "thread"]);
+    h.streams[1]!.options.onReady();
+    expect(received.filter(({ type }) => type === "ready")).toHaveLength(2);
+    h.hub.unsubscribe(a);
+    h.hub.unsubscribe(b);
+    await vi.waitFor(() => expect(h.active()).toBe(0));
+    expect(h.peak()).toBe(1);
+  });
+
+  it("retires a pending handshake on readiness when its final consumer has left", async () => {
+    const h = harness(false);
+    const view = {};
+    const received: EventHubMessage[] = [];
+    h.hub.subscribe(view, ["channel"], (message) => received.push(message));
+    await vi.waitFor(() => expect(h.streams).toHaveLength(1));
+    h.hub.unsubscribe(view);
+    expect(h.streams[0]!.options.signal.aborted).toBe(false);
+    h.streams[0]!.options.onReady();
+    await vi.waitFor(() => expect(h.active()).toBe(0));
+    expect(h.streams).toHaveLength(1);
+    expect(received.some(({ type }) => type === "ready")).toBe(false);
+  });
+
+  it("still bounds a pending handshake after its final consumer leaves", async () => {
+    vi.useFakeTimers();
+    const h = harness(false);
+    const view = {};
+    h.hub.subscribe(view, ["channel"], () => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    h.hub.unsubscribe(view);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.active()).toBe(0);
+    expect(h.streams).toHaveLength(1);
+    expect(h.streams[0]!.options.signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not apply an obsolete handshake rejection to replacement topics", async () => {
+    let rejectFirst!: (error: Error) => void;
+    const first = new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+    let calls = 0;
+    const hub = new ConversationEventHub(async function* (_ids, options) {
+      if (++calls === 1) await first;
+      options.onReady();
+      await new Promise<void>(resolve => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+    });
+    const a = {}, b = {};
+    const received: EventHubMessage[] = [];
+    hub.subscribe(a, ["a"], () => undefined);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    hub.subscribe(b, ["b"], (message) => received.push(message));
+    rejectFirst(Object.assign(new Error("old request rejected"), { status: 400 }));
+    await vi.waitFor(() => expect(calls).toBe(2));
+    expect(received.at(-1)).toEqual({ type: "ready" });
+    hub.unsubscribe(a);
+    hub.unsubscribe(b);
+  });
+
   it("retains recent topics across a zero-port navigation handoff without an orphan stream", async () => {
     vi.useFakeTimers();
     const h = harness();

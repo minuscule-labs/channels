@@ -101,9 +101,13 @@ export class ConversationEventHub {
     if (selected.join("\0") !== this.selected.join("\0")) {
       this.selected = selected;
       this.revision++;
+      const established = this.ready;
       this.ready = false;
       this.permanentFailure = false;
-      this.controller?.abort();
+      // Chromium can retain a request cancelled before its response headers.
+      // Coalesce handshake changes, then retire the obsolete stream on readiness.
+      // The existing handshake deadline still bounds an unresponsive server.
+      if (established) this.controller?.abort();
       this.wake?.();
     }
     this.status();
@@ -150,6 +154,7 @@ export class ConversationEventHub {
             onReady: () => {
               if (controller.signal.aborted) return;
               clearTimeout(handshake);
+              if (revision !== this.revision) { controller.abort(); return; }
               this.ready = true;
               failures = 0;
               this.status();
@@ -165,7 +170,7 @@ export class ConversationEventHub {
           // An unchanged invalid/unauthorized request won't heal through backoff.
           // Keep private error details in the worker; use snapshot fallback instead.
           const status = (error as { status?: number } | null)?.status;
-          if (!controller.signal.aborted && status !== undefined && [400, 401, 403, 404].includes(status)) this.permanentFailure = true;
+          if (revision === this.revision && !controller.signal.aborted && status !== undefined && [400, 401, 403, 404].includes(status)) this.permanentFailure = true;
         } finally {
           clearTimeout(handshake);
           this.ready = false;
