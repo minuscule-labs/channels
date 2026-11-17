@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.40
+
+Release overview: [Bounded live-update subscriptions](docs/releases/v0.0.40.md).
+
+- Keep one shared browser SSE connection with at most 100 Conversation IDs across tabs, prioritizing viewed channels and open threads. Expire inactive subscriptions after five minutes and evict older inactive topics rather than retrying oversized subscriptions.
+- Unsubscribe settled/snoozed Conversations and their threads, catch up on reopening, and notify peer tabs to refresh lifecycle state so stale exclusions cannot block Reopen. Bound long custom-snooze timers to prevent rapid polling.
+- Observe background history without subscribing to every remembered Conversation. Inactive notification/unread updates may be delayed or missed; messages remain persisted and are reconciled when reopened.
+- Preserve Runtime pin, database schemas, local-control protocol and dependencies. Agent sleep and message/read-cursor semantics are unchanged.
+
 ## 0.0.39
 
 Release overview: [Shared playbooks as message attachments](docs/releases/v0.0.39.md).

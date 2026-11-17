@@ -8,11 +8,12 @@ import { mergeMessages } from "./messages";
 import { queryKeys } from "./query-keys";
 import { sharedConversationEvents } from "./shared-conversation-events";
 
-export type ConnectionState = "connecting" | "live" | "disconnected" | "polling";
+export type ConnectionState = "connecting" | "live" | "disconnected" | "polling" | "paused";
 
 const MAX_RECONNECT_DELAY_MS = 10_000;
 
-export function useLiveConversation(conversationId: string, identityId: string | undefined) {
+export function useLiveConversation(conversationId: string, identityId: string | undefined, options: { suspended?: boolean; parentId?: string } = {}) {
+  const { suspended = false, parentId } = options;
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [attempt, setAttempt] = useState(0);
@@ -52,7 +53,7 @@ export function useLiveConversation(conversationId: string, identityId: string |
             cacheConversationMetadata(queryClient, metadata);
             void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(metadata.workspaceId), exact: true });
             void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
-            void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(parentId ?? conversationId), exact: true });
             queryClient.setQueryData<ConversationMessage[]>(
               queryKeys.conversationMessages(conversationId),
               (current) => mergeMessages(current, messages),
@@ -86,7 +87,7 @@ export function useLiveConversation(conversationId: string, identityId: string |
         }
       } else if (action.type === "refresh-metadata") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
-        void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(parentId ?? conversationId), exact: true });
         if (action.rosterRevision !== undefined) {
           highestRosterRevisionSeen = Math.max(highestRosterRevisionSeen, action.rosterRevision);
         }
@@ -104,24 +105,28 @@ export function useLiveConversation(conversationId: string, identityId: string |
     const stream = (async () => {
       for await (const event of sharedConversationEvents(identityId, [conversationId], {
         signal: controller.signal,
+        mode: suspended ? "suspended" : undefined,
+        parentId,
         onConnecting: () => { generation++; setConnection(polling ? "polling" : "connecting"); },
         onDisconnected: () => { generation++; setConnection("disconnected"); },
         onPolling: () => { polling = true; },
+        onLive: () => { polling = false; },
+        onPaused: () => { generation++; setConnection("paused"); },
         onReady: reconcile,
       })) {
         apply(event);
       }
-      if (!controller.signal.aborted) throw new Error("Conversation event stream closed");
+      if (!controller.signal.aborted && !suspended) throw new Error("Conversation event stream closed");
     })();
     void stream.catch(failed);
-    setConnection("connecting");
+    setConnection(suspended ? "paused" : "connecting");
 
     return () => {
       controller.abort();
       if (retryTimer) clearTimeout(retryTimer);
       void stream.catch(() => undefined);
     };
-  }, [attempt, conversationId, identityId, queryClient]);
+  }, [attempt, conversationId, identityId, parentId, queryClient, suspended]);
 
   return {
     connection,

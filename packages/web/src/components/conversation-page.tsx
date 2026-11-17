@@ -7,6 +7,7 @@ import { AlertCircle, RefreshCw, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
+import { announceLifecycleChange, snoozeRefetchInterval } from "../lib/conversation-lifecycle";
 import { queryKeys } from "../lib/query-keys";
 import { agentStatusRequestError, pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions, type AgentSessionAction } from "../lib/agent-diagnostics";
 import { useAgentActions } from "../lib/use-agent-actions";
@@ -130,11 +131,13 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversationThreads(conversationId), exact: true });
     },
   });
+  const lifecycleConversationId = metadata.data?.thread?.parentConversationId ?? conversationId;
   const lifecycle = useQuery({
-    queryKey: queryKeys.localConversationLifecycle(conversationId),
-    queryFn: () => localControl.getConversationLifecycle(conversationId),
+    queryKey: queryKeys.localConversationLifecycle(lifecycleConversationId),
+    queryFn: () => localControl.getConversationLifecycle(lifecycleConversationId),
     retry: false,
     staleTime: 5_000,
+    refetchInterval: (query) => snoozeRefetchInterval(query.state.data),
   });
   const localCapabilities = useQuery({
     queryKey: queryKeys.localCapabilities(),
@@ -151,7 +154,10 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     retry: false,
     refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
   });
-  const { connection, retry } = useLiveConversation(conversationId, currentSession.data?.identityId);
+  const { connection, retry } = useLiveConversation(conversationId, currentSession.data?.identityId, {
+    suspended: Boolean(lifecycle.data && lifecycle.data.state !== "active"),
+    parentId: metadata.data?.thread?.parentConversationId,
+  });
   const participants = metadata.data?.participants ?? [];
   const currentMembership = workspaceMembers.data?.find(
     ({ identityId }) => identityId === currentSession.data?.identityId,
@@ -213,8 +219,10 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
         ? { state, snoozedUntil: new Date(Date.now() + 60 * 60 * 1_000).toISOString() }
         : { state },
     ),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId) });
+    onSuccess: (lifecycle) => {
+      queryClient.setQueryData(queryKeys.localConversationLifecycle(lifecycleConversationId), lifecycle);
+      announceLifecycleChange(currentSession.data?.identityId, lifecycleConversationId);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(lifecycleConversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(workspaceId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },

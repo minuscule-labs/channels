@@ -87,6 +87,121 @@ test("six tabs share one stream, keep status responsive, and survive the creatin
   }
 });
 
+test("101 remembered conversations and an open thread stay within one bounded live stream", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const data = await setup(request);
+  const human = data.primary.participants.find(({ type }) => type === "human")!;
+  const participantIds = data.primary.participants.map(({ id }) => id);
+  const remembered = await Promise.all(Array.from({ length: 101 }, async (_, index) => {
+    const response = await request.post(`${api}/conversations`, { data: {
+      workspaceId: data.primary.workspaceId, participantIds, name: `subscription-policy-${index}`,
+    } });
+    expect(response.ok()).toBe(true);
+    return (await response.json()).conversation as ConversationMetadata;
+  }));
+  const current = remembered[100]!;
+  const root = await request.post(`${api}/conversations/${current.id}/messages`, {
+    data: { participantId: human.id, body: "Subscription policy thread root" },
+  });
+  expect(root.ok()).toBe(true);
+  await page.addInitScript(({ identityId, conversations }) => {
+    localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(conversations));
+  }, { identityId: human.id, conversations: remembered });
+  const destination = `/app/workspaces/${current.workspaceId}/conversations/${current.id}`;
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(destination)}`)).json();
+  await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  const topics = async () => (await (await request.get(`${fixture}/stream-metrics`)).json()).topics as string[][];
+  await expect.poll(topics).toEqual([[current.id]]);
+  await page.getByRole("button", { name: "Open actions for message 1", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Start thread", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "Thread", exact: true });
+  await expect(panel.getByLabel("Live updates live")).toBeVisible();
+  const { threads } = await (await request.get(`${api}/conversations/${current.id}/threads`)).json();
+  const expected = [current.id, threads[0].id].sort();
+  await expect.poll(topics).toEqual([expected]);
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+
+  for (const state of ["snoozed", "settled"] as const) {
+    const response = await request.patch(`${api}/conversations/${current.id}/lifecycle`, { data: {
+      actorIdentityId: human.id, state,
+      ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 60_000).toISOString() } : {}),
+    } });
+    expect(response.ok()).toBe(true);
+    await expect(page.getByLabel("Live updates paused")).toHaveCount(2);
+    await expect.poll(topics).toEqual([]);
+    // The sleeping browser misses these events, then explicitly catches up on reopen.
+    expect((await request.patch(`${api}/conversations/${current.id}/lifecycle`, { data: {
+      actorIdentityId: human.id, state: "active",
+    } })).ok()).toBe(true);
+    const body = `Missed while ${state}`;
+    expect((await request.post(`${api}/conversations/${current.id}/messages`, { data: {
+      participantId: human.id, body,
+    } })).ok()).toBe(true);
+    await page.getByRole("button", { name: "Reopen", exact: true }).click();
+    await expect(page.getByLabel("Live updates live")).toHaveCount(2);
+    await expect(page.getByRole("log").getByText(body, { exact: true })).toBeVisible();
+    await expect.poll(topics).toEqual([expected]);
+  }
+  await panel.getByRole("button", { name: "Close thread", exact: true }).click();
+  // A just-closed thread is retained during the grace period, not indefinitely.
+  await expect.poll(topics).toEqual([expected]);
+});
+
+test("reopening in one tab clears another tab's stale suspension for the channel and thread", async ({ page, request, context }) => {
+  const data = await setup(request);
+  const human = data.primary.participants.find(({ type }) => type === "human")!;
+  const created = await request.post(`${api}/conversations`, { data: {
+    workspaceId: data.primary.workspaceId, participantIds: [human.id], name: "cross-tab-lifecycle",
+  } });
+  expect(created.ok()).toBe(true);
+  const { conversation } = await created.json();
+  expect((await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: human.id, body: "Cross-tab lifecycle root",
+  } })).ok()).toBe(true);
+  const destination = `/app/workspaces/${conversation.workspaceId}/conversations/${conversation.id}`;
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(destination)}`)).json();
+  await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await page.getByRole("button", { name: "Open actions for message 1", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Start thread", exact: true }).click();
+  await expect(page.getByLabel("Live updates live")).toHaveCount(2);
+  const other = await context.newPage();
+  try {
+    await other.goto(`${new URL(page.url()).origin}${destination}`, { waitUntil: "domcontentloaded" });
+    // Published thread selection is restored across tabs for the same principal.
+    await expect(other.getByLabel("Live updates live")).toHaveCount(2);
+    for (const state of ["settled", "snoozed"] as const) {
+      expect((await request.patch(`${api}/conversations/${conversation.id}/lifecycle`, { data: {
+        actorIdentityId: human.id, state,
+        ...(state === "snoozed" ? { snoozedUntil: new Date(Date.now() + 30 * 86_400_000).toISOString() } : {}),
+      } })).ok()).toBe(true);
+      await expect(page.getByLabel("Live updates paused")).toHaveCount(2);
+      await expect(other.getByLabel("Live updates paused")).toHaveCount(2);
+      await expect.poll(() => streamCount(request)).toBe(0);
+      // No SSE remains to inform the peer of Reopen; it must refresh its cached exclusion.
+      if (state === "settled") {
+        await page.getByRole("button", { name: "Reopen", exact: true }).click();
+      } else {
+        await page.getByRole("button", { name: "Snoozed", exact: true }).click();
+        await page.getByRole("button", { name: "Conversation actions for cross-tab-lifecycle", exact: true }).click();
+        await page.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
+      }
+      await expect(page.getByLabel("Live updates live")).toHaveCount(2, { timeout: 3_000 });
+      await expect(other.getByLabel("Live updates live")).toHaveCount(2, { timeout: 3_000 });
+      await expect.poll(() => streamCount(request)).toBe(1);
+      const body = `Delivered after cross-tab ${state}`;
+      expect((await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+        participantId: human.id, body,
+      } })).ok()).toBe(true);
+      await expect(page.getByRole("log").getByText(body, { exact: true })).toBeVisible();
+      await expect(other.getByRole("log").getByText(body, { exact: true })).toBeVisible();
+    }
+  } finally {
+    await other.close();
+  }
+});
+
 test("unsupported SharedWorker falls back to snapshot polling without long-lived connections", async ({ page, request }) => {
   const data = await setup(request);
   await page.addInitScript(() => Object.defineProperty(window, "SharedWorker", { configurable: true, value: undefined }));
