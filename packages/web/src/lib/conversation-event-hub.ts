@@ -83,19 +83,21 @@ export class ConversationEventHub {
       }
     }
     for (const [id, recent] of this.recent) {
-      if (!this.subscribers.size || suspended.has(id) || (recent.parentId && suspended.has(recent.parentId))
+      if (suspended.has(id) || (recent.parentId && suspended.has(recent.parentId))
         || (!active.has(id) && now - recent.lastUsed >= RECENT_CONVERSATION_GRACE_MS)) this.recent.delete(id);
     }
     const candidates = [...this.recent.keys()].sort((a, b) =>
       Number(active.has(b)) - Number(active.has(a))
       || this.recent.get(b)!.lastUsed - this.recent.get(a)!.lastUsed
       || a.localeCompare(b));
-    const selected = candidates.slice(0, MAX_LIVE_CONVERSATIONS).sort();
+    // Route changes can replace every port. Retain bounded recent history across
+    // that handoff, but never retain a physical stream without a consumer.
+    const selected = this.subscribers.size ? candidates.slice(0, MAX_LIVE_CONVERSATIONS).sort() : [];
     // Capacity eviction is final for inactive topics; a view must activate them again.
     for (const id of candidates.slice(MAX_LIVE_CONVERSATIONS)) if (!active.has(id)) this.recent.delete(id);
     const nextExpiry = [...this.recent].filter(([id]) => !active.has(id))
       .map(([, recent]) => recent.lastUsed + RECENT_CONVERSATION_GRACE_MS);
-    if (nextExpiry.length) this.expiry = setTimeout(() => this.update(), Math.max(1, Math.min(...nextExpiry) - now));
+    if (this.subscribers.size && nextExpiry.length) this.expiry = setTimeout(() => this.update(), Math.max(1, Math.min(...nextExpiry) - now));
     if (selected.join("\0") !== this.selected.join("\0")) {
       this.selected = selected;
       this.revision++;

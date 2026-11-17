@@ -38,6 +38,31 @@ const event = (conversationId: string): ConversationEvent => ({
 });
 
 describe("shared physical event connection", () => {
+  it("retains recent topics across a zero-port navigation handoff without an orphan stream", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const first = {}, next = {};
+    h.hub.subscribe(first, ["previous"], () => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    h.hub.unsubscribe(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.active()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    h.hub.subscribe(next, ["current"], () => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.streams.at(-1)!.ids).toEqual(["current", "previous"]);
+    await vi.advanceTimersByTimeAsync(RECENT_CONVERSATION_GRACE_MS);
+    expect(h.streams.at(-1)!.ids).toEqual(["current"]);
+    h.hub.unsubscribe(next);
+    await vi.advanceTimersByTimeAsync(RECENT_CONVERSATION_GRACE_MS);
+    expect(h.active()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    h.hub.subscribe(next, ["new"], () => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.streams.at(-1)!.ids).toEqual(["new"]);
+    h.hub.unsubscribe(next);
+    await vi.advanceTimersByTimeAsync(0);
+  });
   it("does not subscribe to remembered background conversations", async () => {
     const h = harness();
     const observer = {};
