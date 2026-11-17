@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.39
+
+Release overview: [Shared playbooks as message attachments](docs/releases/v0.0.39.md).
+
+- Show a Skill-name badge on new sent messages, without a visible revision suffix; retain exact source/document/revision metadata.
+- Let shared playbooks use ordinary sticky/explicit recipients, human recipients, Channel-wide broadcasts and unaddressed-message wake policies. An empty recipient list is not expanded into all agents.
+- Capture the selected publication at message acceptance so newly created or updated shared Skills work in existing supported sessions without resets. Historical accepted operations retain their original pinned behavior.
+- Add two nullable metadata/routing columns while retaining private procedures, permission/archive checks, stable-turn fencing and duplicate-send recovery. Unsupported native skills stay hidden from the picker; agent-scoped native invocation remains deferred.
+
 ## 0.0.38
 
 Release overview: [Current-worker integration discovery](docs/releases/v0.0.38.md).
