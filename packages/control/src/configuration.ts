@@ -609,8 +609,8 @@ export class LocalAgentHostConfiguration {
     if (typeof input.arguments !== "string" || bytes(input.arguments) > MAX_PERSONA_PROMPT_BYTES) {
       throw new LocalConfigurationRequestError("arguments must be a string of at most 64 KiB", 400, "invalid");
     }
-    if (!Array.isArray(input.to) || !input.to.length) {
-      throw new LocalConfigurationRequestError("Explicit agent recipients are required", 400, "invalid");
+    if (!Array.isArray(input.to)) {
+      throw new LocalConfigurationRequestError("Recipients must be an array", 400, "invalid");
     }
     const to = input.to.map(value => requiredString(value, "Recipient", 200)).sort();
     if (new Set(to).size !== to.length) throw new LocalConfigurationRequestError("Recipients must be unique", 400, "invalid");
@@ -620,7 +620,7 @@ export class LocalAgentHostConfiguration {
   private invocationReceipt(record: AuthoredSkillInvocation): LocalAuthoredSkillInvocationReceipt {
     return { id: record.id, requestId: record.requestId, workspaceId: record.workspaceId, conversationId: record.conversationId,
       actorIdentityId: record.actorIdentityId, documentId: record.documentId, source: record.source, revision: record.revision,
-      arguments: record.arguments, to: record.targets.map(target => target.identityId), name: record.name,
+      arguments: record.arguments, to: record.to ?? record.targets.map(target => target.identityId), name: record.name,
       acceptedAt: record.acceptedAt, acceptance: "accepted" };
   }
 
@@ -718,47 +718,36 @@ export class LocalAgentHostConfiguration {
       }
       const members = await this.options.client.listWorkspaceMembers(workspaceId);
       const targets: AuthoredSkillInvocation["targets"] = [];
-      let publication: AuthoredDocumentRevision | undefined;
-      let contentHash: string | undefined;
+      const publication = (await this.options.store.listAuthoredDocumentRevisions(workspaceId, input.documentId))
+        .find(row => row.revision === input.revision);
+      if (!publication) throw new LocalConfigurationRequestError("Skill publication is unavailable", 409, "unavailable");
+      const contentHash = publication.contentHash;
+      await resolveAuthoredPublication(this.options.store, { schemaVersion: 1, workspaceId, channelId, documents: [] },
+        { documentId: input.documentId, kind: "skill", source: input.source, revision: input.revision, contentHash });
       for (const identityId of input.to) {
+        if (identityId === "@conversation") continue;
         const participant = conversation.participants.find(participant => participant.id === identityId);
-        if (!participant || participant.status !== "active" || (participant.type !== "agent" && participant.type !== "service")
+        if (!participant || participant.status !== "active"
           || members.find(member => member.identityId === identityId)?.status !== "active") {
           throw new LocalConfigurationRequestError("Recipient is unavailable", 409, "unavailable");
         }
         const identity = await this.options.client.getIdentity(identityId).catch(() => undefined);
-        if (!identity || identity.status !== "active" || (identity.type !== "agent" && identity.type !== "service")) {
+        if (!identity || identity.status !== "active") {
           throw new LocalConfigurationRequestError("Recipient is unavailable", 409, "unavailable");
         }
-        const { bindings, activation } = await this.options.store.getSessionInspectionRecords(workspaceId, conversationId, identityId);
-        if (bindings.length !== 1 || !activation?.authoredContext) {
-          throw new LocalConfigurationRequestError("Recipient needs a session with the selected skill revision", 409, "unavailable");
-        }
-        validateAuthoredContext(activation.authoredContext, workspaceId, channelId);
-        const ref = activation.authoredContext.documents.find(ref => ref.documentId === input.documentId
-          && ref.kind === "skill" && ref.source === input.source && ref.revision === input.revision);
-        if (!ref || (contentHash !== undefined && ref.contentHash !== contentHash)) {
-          throw new LocalConfigurationRequestError("Selected skill revision is not available to every recipient", 409, "unavailable");
-        }
-        if (!publication) publication = await resolveAuthoredPublication(this.options.store, activation.authoredContext, ref);
-        contentHash = ref.contentHash;
-        const target = { identityId, bindingId: bindings[0]!.id, generation: bindings[0]!.generation };
-        const candidate = { workspaceId, conversationId, channelId,
-          documentId: input.documentId, source: input.source, revision: input.revision, contentHash };
-        if (!invocationTargetMatches(candidate, target, bindings[0], activation)) {
-          throw new LocalConfigurationRequestError("Recipient session is unavailable", 409, "unavailable");
-        }
-        targets.push(target);
+        // Acceptance records message intent, not an agent/session capability grant.
+        const { bindings } = await this.options.store.getSessionInspectionRecords(workspaceId, conversationId, identityId);
+        if (bindings.length === 1) targets.push({ identityId, bindingId: bindings[0]!.id, generation: bindings[0]!.generation });
       }
       const fresh = await this.authorizeInvocationActor(conversationId, actorIdentityId);
       if (fresh.workspaceId !== workspaceId || (fresh.thread?.parentConversationId ?? conversationId) !== channelId
-        || input.to.some(id => !fresh.participants.some(participant => participant.id === id && participant.status === "active"))) {
+        || input.to.some(id => id !== "@conversation" && !fresh.participants.some(participant => participant.id === id && participant.status === "active"))) {
         throw new LocalConfigurationRequestError("Invocation scope changed", 409, "unavailable");
       }
       const record = await this.options.store.reserveAuthoredSkillInvocation({
         id: randomUUID(), workspaceId, conversationId, channelId, actorIdentityId, requestId, requestHash,
-        documentId: input.documentId, source: input.source, revision: input.revision, contentHash: contentHash!,
-        name: publication!.name, arguments: input.arguments, targets, acceptedAt: this.now().toISOString(),
+        documentId: input.documentId, source: input.source, revision: input.revision, contentHash,
+        name: publication.name, arguments: input.arguments, targets, to: input.to, acceptedAt: this.now().toISOString(),
       });
       if (!record) throw new LocalConfigurationRequestError("Invocation state changed; inspect the receipt before retrying", 409, "unavailable");
       if (record.requestHash !== requestHash) throw new LocalConfigurationRequestError("Request identity already used with a different payload", 409, "invalid");

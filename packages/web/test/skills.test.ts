@@ -53,16 +53,17 @@ describe("explicit skill selection", () => {
     expect(q.input).toEqual({ documentId: choice.documentId, source: "channel", revision: 1, arguments: "@channel @disabled", to: ["a", "b"] });
     expect(q.requestId).toBe("key");
   });
-  it("distinguishes pending, retired, corrupt, unsupported and changing recipient states", () => {
+  it("uses normal recipients and published metadata without requiring live or pinned sessions", () => {
     const data = catalog();
     expect(skillAvailability(choice, ["a", "b"], participants, data, live)).toBe("Ready");
-    for (const targets of [[], ["@conversation"], ["human"], ["disabled"], ["a", "a"]]) expect(skillAvailability(choice, targets, participants, data, live)).toBe("Unavailable");
-    expect(skillAvailability(choice, ["a"], participants, data)).toBe("Unavailable");
-    expect(skillAvailability(choice, ["a"], participants, data, [{ identityId: "a", state: "offline" }])).toBe("Unavailable");
+    for (const targets of [[], ["@conversation"], ["human"]]) expect(skillAvailability(choice, targets, participants, data, live)).toBe("Ready");
+    for (const targets of [["disabled"], ["missing"], ["a", "a"]]) expect(skillAvailability(choice, targets, participants, data, live)).toBe("Unavailable");
+    expect(skillAvailability(choice, ["a"], participants, data)).toBe("Ready");
+    expect(skillAvailability(choice, ["a"], participants, data, [{ identityId: "a", state: "offline" }])).toBe("Ready");
     data.agents![1]!.skills = [];
-    expect(skillAvailability(choice, ["a", "b"], participants, data, live)).toBe("Pending");
+    expect(skillAvailability(choice, ["a", "b"], participants, data, live)).toBe("Ready");
     data.agents![1]!.supported = false;
-    expect(skillAvailability(choice, ["a", "b"], participants, data, live)).toBe("Unavailable");
+    expect(skillAvailability(choice, ["a", "b"], participants, data, live)).toBe("Ready");
     data.skills = [];
     expect(skillAvailability(choice, ["a"], participants, data, live)).toBe("Unavailable");
   });
@@ -71,7 +72,7 @@ describe("explicit skill selection", () => {
     const latest = { ...choice, revision: 2, contentHash: "b".repeat(64), name: "New name" };
     data.skills = [latest];
     expect(skillAvailability(choice, ["a"], participants, data, live)).toBe("Ready");
-    expect(skillAvailability(latest, ["a"], participants, data, live)).toBe("Pending");
+    expect(skillAvailability(latest, ["a"], participants, data, live)).toBe("Ready");
     expect(choice.revision).toBe(1);
   });
   it("scopes persisted choice/request to human and conversation, rejecting malformed state", () => {

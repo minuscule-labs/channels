@@ -169,6 +169,13 @@
       "when": 1799539200010,
       "tag": "0023_workspace_only_timeouts",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1799539200011,
+      "tag": "0024_invocation_message_routing",
+      "breakpoints": true
     }
   ]
 }

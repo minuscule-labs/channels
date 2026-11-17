@@ -10,7 +10,7 @@ import { captureAuthoredContext, prepareAuthoredInvocationTurn, AuthoredInvocati
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
 import { LocalAgentHostConfiguration } from "../src/configuration.ts";
 
-async function fixture(options: { paused?: boolean; muted?: boolean; memory?: boolean } = {}) {
+async function fixture(options: { paused?: boolean; muted?: boolean; memory?: boolean; legacy?: boolean; wakePolicy?: "mentions" | "direct_mentions" | "all_messages" } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "minu-authored-preparation-"));
   const server = await createConversationHttpServer({ port: 0 });
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
@@ -40,7 +40,7 @@ async function fixture(options: { paused?: boolean; muted?: boolean; memory?: bo
   await store.putAgentConfig({ id: "agent-config", workspaceId: workspace.id, agentIdentityId: agent.id, status: "active", createdAt: now, updatedAt: now });
   await store.putBinding({ id: "binding", workspaceAgentConfigId: "agent-config", workspaceId: workspace.id, conversationId: conversation.id,
     agentIdentityId: agent.id, runtimeAdapter: "fixture", runtimeSessionId: "PRIVATE_RUNTIME", runtimeOwnerId: "PRIVATE_OWNER", generation: 1,
-    state: options.paused ? "paused" : "connected", wakePolicy: options.muted ? "muted" : "mentions", createdAt: now, updatedAt: now }, { authoredContext: snapshot });
+    state: options.paused ? "paused" : "connected", wakePolicy: options.muted ? "muted" : options.wakePolicy ?? "mentions", createdAt: now, updatedAt: now }, options.legacy ? undefined : { authoredContext: snapshot });
   const receipt = await configuration.acceptAuthoredSkillInvocation(conversation.id, member.id, "request", {
     documentId: skill.id, source: "workspace", revision: 1, arguments: "ACCEPTED_ARGUMENTS: @channel is task text", to: [agent.id],
   });
@@ -50,6 +50,76 @@ async function fixture(options: { paused?: boolean; muted?: boolean; memory?: bo
     prepare: (value = context) => prepareAuthoredInvocationTurn(store, client, value),
     async close() { await store.close(); await server.close(); await rm(directory, { recursive: true, force: true }); },
   };
+}
+
+for (const memory of [true, false]) {
+  test(`message-time skill capture supports new publications in existing legacy sessions (memory=${memory})`, async () => {
+    const f = await fixture({ memory, legacy: true });
+    try {
+      // Existing manifest-free session; creating a Skill must not replace it.
+      const before = await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id);
+      assert.equal(before.activation?.authoredContext, undefined);
+      const skill = await f.configuration.createAuthoredDocument(f.workspace.id, f.owner.id, {
+        kind: "skill", name: "New after launch", description: "Created after session startup", content: "PRIVATE_NEW_AFTER_LAUNCH",
+      });
+      await f.configuration.updateAuthoredDocument(f.workspace.id, skill.id, f.owner.id, { action: "publish", expectedVersion: 1 });
+      const accepted = await f.configuration.acceptAuthoredSkillInvocation(f.conversation.id, f.member.id, "new-after-launch", {
+        documentId: skill.id, source: "workspace", revision: 1, arguments: "Task", to: [f.agent.id],
+      });
+      const context = { ...f.context, requestId: accepted.requestId,
+        target: { ...f.context.target, generation: before.bindings[0]!.generation } };
+      const prepared = await f.prepare(context);
+      assert.match(prepared.input, /PRIVATE_NEW_AFTER_LAUNCH/);
+      const message = await publishAuthoredInvocationMessage(f.store, f.client, context);
+      assert.deepEqual(message.authoredSkill, { name: "New after launch", documentId: skill.id, source: "workspace", revision: 1 });
+      assert.doesNotMatch(JSON.stringify(message), /PRIVATE_NEW_AFTER_LAUNCH/);
+      assert.deepEqual(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id), before);
+    } finally { await f.close(); }
+  });
+}
+
+for (const route of ["broadcast", "human", "unaddressed", "stopped"] as const) {
+  test(`publishes shared Skill using ordinary ${route} message routing without waking or replacing agents`, async () => {
+    const f = await fixture();
+    try {
+      if (route === "stopped") await f.store.disableBinding("binding", 1, new Date().toISOString());
+      const before = await f.store.listConversationBindings(f.conversation.id);
+      const to = route === "broadcast" ? ["@conversation"] : route === "human" ? [f.owner.id] : route === "stopped" ? [f.agent.id] : [];
+      const accepted = await f.configuration.acceptAuthoredSkillInvocation(f.conversation.id, f.member.id, route, {
+        documentId: f.skill.id, source: "workspace", revision: 1, arguments: "Shared task", to,
+      });
+      const context = { ...f.context, requestId: accepted.requestId };
+      const message = await publishAuthoredInvocationMessage(f.store, f.client, context);
+      assert.deepEqual(message.to, to);
+      assert.deepEqual(message.authoredSkill, { name: "Decision note", documentId: f.skill.id, source: "workspace", revision: 1 });
+      assert.equal((await inspectAuthoredInvocationPublication(f.store, f.client, context)).status, "observed");
+      if (route === "broadcast") assert.match((await f.prepare(context)).input, /PRIVATE_SELECTED_PROCEDURE_V1/);
+      else await assert.rejects(f.prepare(context), unavailable);
+      assert.deepEqual(await f.store.listConversationBindings(f.conversation.id), before);
+      assert.equal((await f.client.listMessages(f.conversation.id)).length, 1);
+    } finally { await f.close(); }
+  });
+}
+
+for (const [wakePolicy, to, allowed] of [
+  ["direct_mentions", ["@conversation"], false],
+  ["direct_mentions", "direct", true],
+  ["all_messages", [], true],
+  ["all_messages", "human", true],
+] as const) {
+  test(`message-time preparation respects normal ${wakePolicy} routing (${JSON.stringify(to)})`, async () => {
+    const f = await fixture({ wakePolicy });
+    try {
+      const accepted = await f.configuration.acceptAuthoredSkillInvocation(f.conversation.id, f.member.id, "wake-policy", {
+        documentId: f.skill.id, source: "workspace", revision: 1, arguments: "Task",
+        to: to === "direct" ? [f.agent.id] : to === "human" ? [f.owner.id] : [...to],
+      });
+      const context = { ...f.context, requestId: accepted.requestId };
+      if (allowed) assert.match((await f.prepare(context)).input, /PRIVATE_SELECTED_PROCEDURE/);
+      else await assert.rejects(f.prepare(context), unavailable);
+      assert.deepEqual(await f.client.listMessages(f.conversation.id), []);
+    } finally { await f.close(); }
+  });
 }
 
 function unavailable(error: unknown): boolean {
@@ -240,7 +310,9 @@ test("only a trusted exact public message can assemble a procedure; copied, stri
     for (const change of [
       { id: createResourceId("message") }, { authoredInvocationId: undefined }, { authoredInvocationId: "copied" },
       { body: "changed" }, { participantId: f.owner.id }, { to: [f.owner.id] }, { replyTo: message.id },
-      { conversationId: "other-conversation" },
+      { conversationId: "other-conversation" }, { authoredSkill: undefined },
+      { authoredSkill: { ...message.authoredSkill!, name: "Forged name" } },
+      { authoredSkill: { ...message.authoredSkill!, revision: 999 } },
     ]) await assert.rejects(prepareLinkedAuthoredInvocationTurn(f.store, f.client, { ...message, ...change }, f.context.target), unavailable);
     const ordinary = await f.client.postMessage(f.conversation.id, { participantId: f.member.id, to: [], body: message.body });
     assert.equal(await prepareLinkedAuthoredInvocationTurn(f.store, f.client, ordinary, f.context.target), undefined);

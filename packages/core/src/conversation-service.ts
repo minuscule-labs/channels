@@ -140,6 +140,7 @@ function validateIdempotencyKey(idempotencyKey: string | undefined): string | un
 function requestFingerprint(input: {
   id?: string;
   authoredInvocationId?: string;
+  authoredSkill?: ConversationMessage["authoredSkill"];
   participantId: string;
   body: string;
   to: string[];
@@ -150,6 +151,7 @@ function requestFingerprint(input: {
   const canonicalPayload = JSON.stringify({
     ...(input.id !== undefined ? { id: input.id } : {}),
     ...(input.authoredInvocationId !== undefined ? { authoredInvocationId: input.authoredInvocationId } : {}),
+    ...(input.authoredSkill !== undefined ? { authoredSkill: { name: input.authoredSkill.name, documentId: input.authoredSkill.documentId, source: input.authoredSkill.source, revision: input.authoredSkill.revision } } : {}),
     participantId: input.participantId,
     body: input.body,
     to: [...input.to].sort(),
@@ -1272,6 +1274,15 @@ export class ConversationService {
       || !input.authoredInvocationId.trim() || input.authoredInvocationId.length > 128)) {
       throw new ConversationValidationError("Invalid authored invocation reference");
     }
+    if (input?.authoredSkill !== undefined) {
+      const s = input.authoredSkill;
+      if (!input.authoredInvocationId || !s || typeof s.name !== "string" || !s.name.trim() || s.name.length > 1000
+        || typeof s.documentId !== "string" || !s.documentId.trim() || s.documentId.length > 200
+        || (s.source !== "workspace" && s.source !== "channel") || !Number.isSafeInteger(s.revision) || s.revision < 1
+        || Object.keys(s).some(key => !["name", "documentId", "source", "revision"].includes(key))) {
+        throw new ConversationValidationError("Invalid authored skill metadata");
+      }
+    }
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     await this.assertConversationMutable(conversationId);
@@ -1310,6 +1321,7 @@ export class ConversationService {
     const pendingMessage: NewConversationMessage = {
       id: input.id ?? createResourceId("message"),
       ...(input.authoredInvocationId !== undefined ? { authoredInvocationId: input.authoredInvocationId } : {}),
+      ...(input.authoredSkill !== undefined ? { authoredSkill: { ...input.authoredSkill } } : {}),
       conversationId,
       participantId,
       to,
@@ -1325,7 +1337,7 @@ export class ConversationService {
         : await this.storage.commitMessage(
             pendingMessage,
             validatedKey,
-            requestFingerprint({ id: input.id, authoredInvocationId: input.authoredInvocationId, participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
+            requestFingerprint({ id: input.id, authoredInvocationId: input.authoredInvocationId, authoredSkill: input.authoredSkill, participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
             attachmentIds,
           );
     } catch (error) {

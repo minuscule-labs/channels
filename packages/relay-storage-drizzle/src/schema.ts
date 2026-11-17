@@ -38,6 +38,7 @@ export const authoredSkillInvocations = sqliteTable("authored_skill_invocations"
   name: text("name").notNull(),
   arguments: text("arguments").notNull(),
   targets: text("targets", { mode: "json" }).$type<AuthoredInvocationTarget[]>().notNull(),
+  to: text("recipients_json", { mode: "json" }).$type<string[]>(),
   acceptedAt: text("accepted_at").notNull(),
 }, (table) => [
   uniqueIndex("authored_skill_invocation_request_unique").on(table.conversationId, table.actorIdentityId, table.requestId),

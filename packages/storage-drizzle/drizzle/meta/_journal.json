@@ -92,6 +92,13 @@
       "when": 1788314400001,
       "tag": "0012_authored_invocation_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1788314400002,
+      "tag": "0013_message_skill_metadata",
+      "breakpoints": true
     }
   ]
 }

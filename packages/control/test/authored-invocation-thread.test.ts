@@ -20,7 +20,7 @@ async function until(check: () => boolean | Promise<boolean>) {
   }
 }
 
-test("HTTP inherited channel skill runs only in the selected thread session with live parent and all_messages observer", { timeout: 20_000 }, async () => {
+test("HTTP inherited channel skill follows thread routing including all_messages while leaving the parent untouched", { timeout: 20_000 }, async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-authored-thread-")));
   let coreStorage!: DrizzleLibSqlConversationStorage;
   let core!: Awaited<ReturnType<typeof createConversationHttpServer>>;
@@ -192,15 +192,18 @@ test("HTTP inherited channel skill runs only in the selected thread session with
       && (await client.listMessages(thread.id)).some(message => message.replyTo === trigger.id));
     await settle();
     const measured = calls.slice(baselineCalls);
-    assert.equal(measured.length, 1);
-    assert.equal(measured[0]!.sessionId, "PRIVATE_SESSION_thread-selected");
-    assert.equal(measured[0]!.turnId, `conversation:${thread.id}:${selected.id}:${trigger.id}`);
-    assert.match(measured[0]!.input, /Playbook: Decision note \(channel, revision 1\)/);
-    assert.match(measured[0]!.input, /Procedure:\nPRIVATE_CHANNEL_PROCEDURE_V1/);
-    assert.ok(measured[0]!.input.includes(`User arguments:\n${argumentsText}`));
-    assert.doesNotMatch(measured[0]!.input, /PRIVATE_WORKSPACE_DECOY|PRIVATE_CHANNEL_PROCEDURE_V2/);
+    assert.equal(measured.length, 2);
+    assert.deepEqual(measured.map(call => call.sessionId).sort(), ["PRIVATE_SESSION_thread-selected", "PRIVATE_SESSION_thread-observer"].sort());
+    const selectedCall = measured.find(call => call.sessionId === "PRIVATE_SESSION_thread-selected")!;
+    assert.equal(selectedCall.turnId, `conversation:${thread.id}:${selected.id}:${trigger.id}`);
+    for (const call of measured) {
+      assert.match(call.input, /Playbook: Decision note \(channel, revision 1\)/);
+      assert.match(call.input, /Procedure:\nPRIVATE_CHANNEL_PROCEDURE_V1/);
+      assert.ok(call.input.includes(`User arguments:\n${argumentsText}`));
+      assert.doesNotMatch(call.input, /PRIVATE_WORKSPACE_DECOY|PRIVATE_CHANNEL_PROCEDURE_V2/);
+    }
     assert.equal(measured.filter(call => call.sessionId === "PRIVATE_SESSION_parent-selected").length, 0);
-    assert.equal(measured.filter(call => call.sessionId === "PRIVATE_SESSION_thread-observer").length, 0);
+    assert.equal(measured.filter(call => call.sessionId === "PRIVATE_SESSION_thread-observer").length, 1);
     assert.equal(legacySends, 0);
     assert.equal(newSessions, 0);
     assert.equal(interrupts, 0);
@@ -209,16 +212,16 @@ test("HTTP inherited channel skill runs only in the selected thread session with
     assert.deepEqual(await store.getAuthoredSkillInvocation(thread.id, member.id, requestId), operation);
     assert.deepEqual(await store.getAuthoredInvocationMessageLink(receipt.id), link);
     assert.equal(await store.getCursor(parent.id, selected.id), parentCursor);
-    assert.equal(await store.getCursor(thread.id, peer.id), peerCursor);
+    assert.ok((await store.getCursor(thread.id, peer.id)) > peerCursor);
     assert.deepEqual(await client.listMessages(parent.id), parentMessagesBefore);
     const threadMessages = await client.listMessages(thread.id);
     assert.deepEqual(threadMessages.find(message => message.id === trigger.id), trigger);
-    assert.equal(threadMessages.filter(message => message.replyTo === trigger.id).length, 1);
+    assert.equal(threadMessages.filter(message => message.replyTo === trigger.id).length, 2);
     assert.equal(threadMessages.find(message => message.replyTo === trigger.id)?.body, "Thread decision captured");
     assert.doesNotMatch(JSON.stringify([parentMessagesBefore, threadMessages, await client.getConversation(parent.id), await client.getConversation(thread.id)]),
       /PRIVATE_CHANNEL_PROCEDURE|PRIVATE_WORKSPACE_DECOY|PRIVATE_RUNTIME_TRANSCRIPT|PRIVATE_SESSION_|PRIVATE_OWNER_/);
     assert.ok(relays.every(relay => relay.workSnapshot().activeTurns === 0 && relay.workSnapshot().queuedTurns === 0 && relay.workSnapshot().queuedTurnsExact));
-    console.log("G1: authenticated thread invocation selected=1, parent=0, all_messages peer=0 after settled queues; both excluded sessions proved live by ordinary controls; original V1/IDs/sessions/cursors/privacy retained");
+    console.log("G1: ordinary thread routing selected=1, parent=0, all_messages peer=1; V1 metadata, sessions and private body protection retained");
   } finally {
     await control?.close();
     await Promise.all(relays.map(relay => relay.stop()));

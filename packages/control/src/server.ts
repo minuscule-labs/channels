@@ -799,7 +799,7 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("A message is required", 400, "invalid");
     }
     const input = value as CreateMessageInput;
-    if (input.authoredInvocationId !== undefined) throw new LocalConfigurationRequestError("Skill messages require private publication", 400, "invalid");
+    if (input.authoredInvocationId !== undefined || input.authoredSkill !== undefined) throw new LocalConfigurationRequestError("Skill messages require private publication", 400, "invalid");
     if (input.participantId !== actorIdentityId) throw new LocalConfigurationRequestError("Message author must match the browser session", 403, "forbidden");
     if (typeof input.body !== "string") throw new LocalConfigurationRequestError("Message body must be a string", 400, "invalid");
     const directory = this.options.conversations;

@@ -30,6 +30,8 @@ export interface AuthoredSkillInvocation {
   name: string;
   arguments: string;
   targets: AuthoredInvocationTarget[];
+  /** Ordinary message routing. Null/absent retains historical session-pinned semantics. */
+  to?: string[] | null;
   acceptedAt: string;
 }
 
