@@ -380,7 +380,7 @@ test("tracks durable unread mentions and plays only opt-in contextual sound", as
   await expect.poll(() => page.evaluate(() => (window as unknown as { __soundCount: number }).__soundCount)).toBe(0);
 });
 
-test("restored sound unlocks on pointer and keyboard interaction without changing the preference", async ({ page, request }) => {
+test("restored sound unlocks on pointer and keyboard interaction without changing the preference", async ({ page, request, context }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
     workspaces: Array<{ id: string; name: string }>;
   };
@@ -388,6 +388,13 @@ test("restored sound unlocks on pointer and keyboard interaction without changin
   await page.addInitScript(installNotificationAudioMock);
   await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
   await changeNotificationSound(page, workspace.name, "all");
+  // Reloading an Agents page alone does not subscribe to remembered history.
+  // A viewed peer keeps this Conversation eligible while the preference is restored.
+  const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json();
+  const primary = conversations.find(({ name }: { name: string }) => name === "browser-collaboration");
+  const peer = await context.newPage();
+  await peer.goto(`/app/workspaces/${workspace.id}/conversations/${primary.id}`, { waitUntil: "domcontentloaded" });
+  await expect(peer.getByLabel("Live updates live")).toBeVisible();
   const savedSound = () => page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith("minu-channels:sound:"))?.[1]);
 
   for (const interaction of ["pointer", "keyboard"] as const) {
@@ -409,6 +416,7 @@ test("restored sound unlocks on pointer and keyboard interaction without changin
   await expect.poll(savedSound).toBe("off");
   await page.keyboard.press("Shift");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __audioContextCount: number }).__audioContextCount)).toBe(0);
+  await peer.close();
 });
 
 test("tracks an inactive visited Workspace incrementally with cursor-bounded requests", async ({ page, request }) => {

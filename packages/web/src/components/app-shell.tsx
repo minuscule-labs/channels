@@ -1,5 +1,5 @@
-import type { ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ConversationMessage, ConversationMetadata, EffectiveConversationLifecycle } from "@minu/channels-core/types";
+import { useMutation, useQueries, useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { cacheConversationMetadata, writeFolderCollapsed } from "../lib/conversa
 import { mergeMessages } from "../lib/messages";
 import { runBackgroundConversationsConnection } from "../lib/background-conversation";
 import { sharedConversationEvents } from "../lib/shared-conversation-events";
+import { announceLifecycleChange, listenForLifecycleChanges, snoozeRefetchInterval } from "../lib/conversation-lifecycle";
 import { playNotificationSound } from "../lib/notification-sound";
 import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
 import { Drawer } from "./ui/drawer";
@@ -71,12 +72,20 @@ export function AppShell() {
     retry: false,
     staleTime: 60_000,
   });
+  useEffect(() => {
+    const identityId = currentSession.data?.identityId;
+    if (!identityId) return;
+    return listenForLifecycleChanges(identityId, (conversationId) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
+    });
+  }, [currentSession.data?.identityId, queryClient]);
   const conversationLifecycleQueries = useQueries({
     queries: (selectedConversations.data ?? []).map((conversation) => ({
       queryKey: queryKeys.localConversationLifecycle(conversation.id),
       queryFn: () => localControl.getConversationLifecycle(conversation.id),
       enabled: Boolean(currentSession.data?.identityId),
       staleTime: 5_000,
+      refetchInterval: (query: Query<EffectiveConversationLifecycle>) => snoozeRefetchInterval(query.state.data),
     })),
   });
   const selectedWorkspaceMembers = useQuery({
@@ -94,7 +103,9 @@ export function AppShell() {
       conversationId,
       state === "snoozed" ? { state, snoozedUntil } : { state },
     ),
-    onSuccess: (_lifecycle, { conversationId }) => {
+    onSuccess: (lifecycle, { conversationId }) => {
+      queryClient.setQueryData(queryKeys.localConversationLifecycle(conversationId), lifecycle);
+      announceLifecycleChange(currentSession.data?.identityId, conversationId);
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
@@ -124,8 +135,8 @@ export function AppShell() {
   useEffect(() => { observedConversationsRef.current = observedConversations; }, [observedConversations]);
   // Metadata changes must not tear down the same topic subscription. Otherwise
   // readiness refetches can feed back into another unsubscribe/ready cycle.
-  const backgroundConversationIdsKey = JSON.stringify(observedConversations
-    .filter(({ id }) => id !== activeConversationId).map(({ id }) => id).sort());
+  // Include the current view so the observer port survives navigation and preserves grace.
+  const backgroundConversationIdsKey = JSON.stringify(observedConversations.map(({ id }) => id).sort());
   const conversationMessageQueries = useQueries({
     queries: observedConversations.map((conversation) => ({
       queryKey: queryKeys.conversationMessages(conversation.id),
@@ -262,9 +273,11 @@ export function AppShell() {
       return next;
     });
   }, [currentSession.data?.identityId, selectedConversations.data, selectedWorkspaceId]);
+  const suspendedConversationIds = JSON.stringify([...conversationLifecycles].filter(([, state]) => state !== "active").map(([id]) => id).sort());
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
     const backgroundConversationIds = JSON.parse(backgroundConversationIdsKey) as string[];
+    const suspendedIds = JSON.parse(suspendedConversationIds) as string[];
     if (!identityId || backgroundConversationIds.length === 0) return;
     const controller = new AbortController();
     const connections = backgroundConversationIds.map((conversationId) => {
@@ -314,7 +327,10 @@ export function AppShell() {
             signal: controller.signal,
             onReady: refreshWorkspaceNavigation,
             conversations: connections,
-            events: (options) => sharedConversationEvents(identityId, backgroundConversationIds, options),
+            // Remembered history observes available events without adding live topics.
+            events: (options) => sharedConversationEvents(identityId, backgroundConversationIds, {
+              ...options, mode: "observe", suspendedIds,
+            }),
           });
         } catch {
           // The next bounded catch-up reconciles messages missed while disconnected.
@@ -323,7 +339,7 @@ export function AppShell() {
       }
     })();
     return () => controller.abort();
-  }, [backgroundConversationIdsKey, currentSession.data?.identityId, queryClient, refreshWorkspaceNavigation]);
+  }, [backgroundConversationIdsKey, currentSession.data?.identityId, queryClient, refreshWorkspaceNavigation, suspendedConversationIds]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
     if (!identityId || sound === "off") return;

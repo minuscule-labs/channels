@@ -135,6 +135,11 @@ test("active/background moves discover unknown folders, preserve unread activity
   const response = await request.post(`${api}/conversations`, { data: { workspaceId: f.workspace.id, actorIdentityId: f.ownerId, participantIds: [f.ownerId, f.agentId], name: "folder-sync-background" } });
   const { conversation: background } = await response.json() as { conversation: ConversationMetadata };
   await launch(page, request, f.destination);
+  // Only viewed/recent Conversations own live topics; remembered history does not.
+  await page.locator(`nav a[href$="/conversations/${background.id}"]`).click();
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await page.locator(`nav a[href$="/conversations/${f.conversation.id}"]`).click();
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(async () => {
     const metrics = await (await request.get(`${fixture}/stream-metrics`)).json() as { topics: string[][] };
     return metrics.topics.some(ids => ids.includes(background.id));
@@ -187,6 +192,10 @@ test("delayed background metadata cannot revert a newer assignment or notificati
   const { conversation: background } = await response.json() as { conversation: ConversationMetadata };
   const first = await f.folder("Ordering first"), final = await f.folder("Ordering final");
   await launch(page, request, f.destination);
+  await page.locator(`nav a[href$="/conversations/${background.id}"]`).click();
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
+  await page.locator(`nav a[href$="/conversations/${f.conversation.id}"]`).click();
+  await expect(page.getByLabel("Live updates live")).toBeVisible();
   await expect.poll(async () => (await (await request.get(`${fixture}/stream-metrics`)).json()).topics
     .some((ids: string[]) => ids.includes(background.id))).toBe(true);
   const notificationFolders: Array<string | null> = [];

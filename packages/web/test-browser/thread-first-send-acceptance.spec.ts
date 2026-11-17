@@ -127,9 +127,9 @@ async function application(page: Page, context: BrowserContext) {
     return {
       client, parent, workspace, identities, runtime, control, agentPath, controlEndpoint: daemon.endpoint,
       root(author: Author, body: string) { return client.postMessage(parent.id, { participantId: identities[author].id, body }); },
-      async open(root: ConversationMessage) {
+      async open(root: ConversationMessage, connection: "live" | "paused" = "live") {
         await page.goto(`${webOrigin}/app/workspaces/${workspace.id}/conversations/${parent.id}`, { waitUntil: "domcontentloaded" });
-        await expect(page.getByLabel("Live updates live").first()).toBeVisible();
+        await expect(page.getByLabel(`Live updates ${connection}`).first()).toBeVisible();
         const row = page.getByRole("log", { name: "Conversation messages", exact: true }).first()
           .getByRole("article").filter({ hasText: root.body });
         await row.getByRole("button", { name: new RegExp(`^Open (?:message )?actions for message ${root.sequence}$`) }).click();
@@ -242,7 +242,7 @@ test("first-Send acceptance: an archived parent does not permit sending or start
   const root = await app.root("alpha", "ARCHIVED_PARENT_ROOT");
   const thread = await app.open(root);
   await app.client.updateConversationLifecycle(app.parent.id, { actorIdentityId: app.identities.owner.id, state: "settled" });
-  await app.open(root);
+  await app.open(root, "paused");
   await expect(composer(page)).toBeDisabled();
   await expect(panel(page).getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
   expect(await app.client.listMessages(thread.id)).toEqual([]);
