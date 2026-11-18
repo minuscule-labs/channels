@@ -108,8 +108,19 @@ export interface MessageAttachment {
   contentUrl: string;
 }
 
+/** Display/audit metadata only; never dispatch authority or procedure text. */
+export interface MessageAuthoredSkill {
+  name: string;
+  documentId: string;
+  source: "workspace" | "channel";
+  revision: number;
+}
+
 export interface ConversationMessage {
   id: string;
+  /** Public correlation only; private Relay linkage is required for skill delivery. */
+  authoredInvocationId?: string;
+  authoredSkill?: MessageAuthoredSkill;
   conversationId: string;
   sequence: number;
   participantId: string;
@@ -166,6 +177,53 @@ export function assertConversationLifecycle(lifecycle: ConversationLifecycle): v
   }
 }
 
+/** A thread is a message scope with independent agent sessions and inherited administration. */
+export interface ConversationThreadOrigin {
+  parentConversationId: string;
+  rootMessageId: string;
+  /** Immutable public background from first thread creation; bounded, with the root always retained. Never a private transcript. */
+  context: ConversationMessage[];
+}
+
+export interface CreateThreadInput {
+  actorIdentityId: string;
+  rootMessageId: string;
+}
+
+export interface ConversationThread extends ConversationMetadata {
+  thread: ConversationThreadOrigin;
+  replyCount: number;
+}
+
+export interface ConversationFolder {
+  id: string;
+  workspaceId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateConversationFolderInput {
+  actorIdentityId: string;
+  name: string;
+}
+
+export type UpdateConversationFolderInput = CreateConversationFolderInput;
+
+export interface AssignConversationFolderInput {
+  actorIdentityId: string;
+  folderId: string | null;
+}
+
+/** Names are trimmed and exclude NUL; uniqueness uses locale-independent Unicode
+ * toLowerCase without accent folding or Unicode normalization, in both adapters. */
+export function normalizeConversationFolderName(value: unknown): string {
+  if (typeof value !== "string" || value.includes("\u0000") || !value.trim() || value.trim().length > 100) {
+    throw new Error("Folder name must be a non-empty string of at most 100 characters without NUL");
+  }
+  return value.trim();
+}
+
 export interface ConversationMetadata {
   id: string;
   workspaceId: string;
@@ -173,6 +231,9 @@ export interface ConversationMetadata {
   participants: Participant[];
   rosterRevision: number;
   createdAt: string;
+  /** Omitted legacy input is Unfiled; storage reads normalize it to null. Threads are not independently filed. */
+  folderId?: string | null;
+  thread?: ConversationThreadOrigin;
 }
 
 export interface Conversation extends ConversationMetadata {
@@ -209,6 +270,7 @@ export interface CreateConversationInput {
   id?: string;
   workspaceId?: string;
   name?: string;
+  folderId?: string | null;
   participantIds?: string[];
   /** Advisory product policy until requests are authenticated. */
   actorIdentityId?: string;
@@ -230,7 +292,13 @@ export interface UpdateConversationParticipantsInput {
 }
 
 export interface CreateMessageInput {
+  /** Caller-stable resource ID; requires an idempotency key. */
+  id?: string;
+  /** Public correlation only, never dispatch authority. */
+  authoredInvocationId?: string;
+  authoredSkill?: MessageAuthoredSkill;
   participantId: string;
+  /** Authoritative recipients, including []. Omit to resolve intentional human mentions. */
   to?: string[];
   body: string;
   replyTo?: string;

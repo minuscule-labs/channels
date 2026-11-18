@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { ConversationMessage } from "@minu/channels-core";
 import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const identities = sqliteTable("identities", {
@@ -48,14 +49,34 @@ export const workspaceMembers = sqliteTable(
   ],
 );
 
+export const conversationFolders = sqliteTable("conversation_folders", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  name: text("name").notNull(),
+  // Computed with the same Unicode toLowerCase policy as the in-memory adapter.
+  nameKey: text("name_key").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("conversation_folders_workspace_name_unique").on(table.workspaceId, table.nameKey),
+  check("conversation_folders_name_length", sql`length(${table.name}) between 1 and 100`),
+]);
+
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   workspaceId: text("workspace_id").references(() => workspaces.id),
   name: text("name").notNull().default("Untitled Conversation"),
+  folderId: text("folder_id").references(() => conversationFolders.id),
   createdAt: text("created_at").notNull(),
   nextSequence: integer("next_sequence").notNull().default(1),
   rosterRevision: integer("roster_revision").notNull().default(1),
-});
+  parentConversationId: text("parent_conversation_id"),
+  rootMessageId: text("root_message_id"),
+  threadContext: text("thread_context_json", { mode: "json" }).$type<ConversationMessage[]>(),
+}, (table) => [
+  uniqueIndex("conversations_thread_root_unique").on(table.parentConversationId, table.rootMessageId),
+  index("conversations_workspace_folder_idx").on(table.workspaceId, table.folderId),
+]);
 
 export const conversationLifecycles = sqliteTable("conversation_lifecycles", {
   conversationId: text("conversation_id")
@@ -97,6 +118,8 @@ export const messages = sqliteTable(
       .notNull()
       .references(() => conversations.id, { onDelete: "cascade" }),
     sequence: integer("sequence").notNull(),
+    authoredInvocationId: text("authored_invocation_id"),
+    authoredSkill: text("authored_skill_json", { mode: "json" }).$type<NonNullable<ConversationMessage["authoredSkill"]>>(),
     participantId: text("participant_id").notNull(),
     targets: text("targets_json", { mode: "json" }).$type<string[]>().notNull(),
     body: text("body").notNull(),

@@ -69,6 +69,8 @@ export interface LocalProductAppOptions {
   runtime: LocalManagedRuntimePort;
   runtimes?: Record<string, LocalManagedRuntimePort>;
   personaPrompt?: string;
+  /** Authored Skill sending is enabled by default; false explicitly disables publication. */
+  authoredSkillPublicationEnabled?: boolean;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
 }
@@ -518,6 +520,7 @@ export async function createLocalProductApp(
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
       runtimes: { ...options.runtimes, [options.runtimeAdapter]: options.runtime },
       autoResumeOfflineAgents: true,
+      authoredSkillPublicationEnabled: options.authoredSkillPublicationEnabled,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,
     });

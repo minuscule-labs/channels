@@ -56,6 +56,31 @@ function proxy(
   destination.search = incoming.search;
   const { origin: _origin, ...forwardedHeaders } = request.headers;
   if (!forwardCookie) delete forwardedHeaders.cookie;
+  let upstreamResponse: IncomingMessage | undefined;
+  let terminated = false;
+  const stopUpstream = () => {
+    request.unpipe(upstream);
+    upstreamResponse?.unpipe(response);
+    // Only a consumed response may have returned its socket to the HTTP pool.
+    // complete can already be true while backpressure leaves unread body bytes.
+    if (!upstreamResponse?.readableEnded) upstreamResponse?.destroy();
+    if (!upstreamResponse?.readableEnded || !upstream.writableFinished) upstream.destroy();
+  };
+  const cancel = () => {
+    if (terminated) return;
+    terminated = true;
+    stopUpstream();
+  };
+  const fail = () => {
+    if (terminated) return;
+    cancel();
+    if (response.destroyed || response.writableEnded) return;
+    if (response.headersSent) response.destroy();
+    else {
+      response.writeHead(502, { "content-type": "application/json; charset=utf-8" });
+      response.end(`${JSON.stringify({ error: "Local product service unavailable" })}\n`);
+    }
+  };
   const upstream = proxyRequest(destination, {
     method: request.method,
     headers: {
@@ -63,21 +88,31 @@ function proxy(
       host: destination.host,
       ...headers,
     },
-  }, (upstreamResponse) => {
-    // Preserve a renewed browser credential instead of letting an upstream response clear it.
-    const responseHeaders = { ...upstreamResponse.headers };
-    if (response.hasHeader("set-cookie")) responseHeaders["set-cookie"] = [String(response.getHeader("set-cookie"))];
-    response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders);
-    upstreamResponse.pipe(response);
-  });
-  upstream.once("error", (error) => {
-    if (response.headersSent) response.destroy(error);
-    else {
-      response.writeHead(502, { "content-type": "application/json; charset=utf-8" });
-      response.end(`${JSON.stringify({ error: "Local product service unavailable" })}\n`);
+  }, (incomingResponse) => {
+    upstreamResponse = incomingResponse;
+    // Keep error handling installed through destruction, including late cancellation.
+    incomingResponse.on("error", fail);
+    incomingResponse.once("aborted", fail);
+    incomingResponse.once("close", () => { if (!incomingResponse.complete) fail(); });
+    if (terminated || response.destroyed) {
+      incomingResponse.destroy();
+      return;
     }
+    // Preserve a renewed browser credential instead of letting an upstream response clear it.
+    const responseHeaders = { ...incomingResponse.headers };
+    if (response.hasHeader("set-cookie")) responseHeaders["set-cookie"] = [String(response.getHeader("set-cookie"))];
+    response.writeHead(incomingResponse.statusCode ?? 502, responseHeaders);
+    incomingResponse.pipe(response);
   });
-  request.pipe(upstream);
+  upstream.on("error", fail);
+  request.once("aborted", cancel);
+  request.once("error", cancel);
+  // IncomingMessage.close also fires on normal request completion; response.close
+  // owns cancellation while awaiting headers or streaming the response instead.
+  response.once("close", cancel);
+  response.once("error", () => { cancel(); response.destroy(); });
+  if (request.aborted || response.destroyed) cancel();
+  else request.pipe(upstream);
 }
 
 function safeStaticPath(webDirectory: string, pathname: string): string | undefined {

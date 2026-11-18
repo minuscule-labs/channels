@@ -1,3 +1,4 @@
+import { LOCAL_CONTROL_PROTOCOL_VERSION } from "@minu/channels-control/contracts";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 const conversationsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
@@ -21,10 +22,10 @@ test("working folders recover from an initial load failure and save previewed, d
     if (route.request().method() === "GET") {
       folderLoads += 1;
       if (folderLoads === 1) return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "unavailable" }) });
-      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 20, workspaceId, conversationId, inheritedFromWorkspace: true, folders: [], changesApplyToNewSessions: true, enforcement: "advisory" }) });
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, workspaceId, conversationId, inheritedFromWorkspace: true, folders: [], changesApplyToNewSessions: true, enforcement: "advisory" }) });
     }
     puts.push(route.request().postDataJSON());
-    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: 20, workspaceId, conversationId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, workspaceId, conversationId, inheritedFromWorkspace: false, folders: [{ relativePath: "apps/web", position: 0, primary: true }], changesApplyToNewSessions: true, enforcement: "advisory" }) });
   });
   await page.route(`**/local/conversations/${conversationId}/working-folders/preview`, (route) => {
     const { path } = route.request().postDataJSON() as { path: string };
@@ -35,27 +36,27 @@ test("working folders recover from an initial load failure and save previewed, d
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/conversations/${conversationId}`);
   await page.getByRole("button", { name: `Conversation actions for ${conversation.name}`, exact: true }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByText("Could not load working folders.")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
-  await dialog.getByRole("button", { name: "Retry" }).click();
-  await expect(dialog.getByText("Inherited from Workspace", { exact: false })).toBeVisible();
-  await dialog.getByRole("button", { name: "Add folder" }).click();
-  await expect(dialog.getByText("apps/web", { exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: "Add folder" }).click();
-  await expect(dialog.getByText("packages/shared", { exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: "Add folder" }).click();
-  await expect(dialog.getByText("apps/web", { exact: true })).toHaveCount(1);
-  const shared = dialog.getByText("packages/shared", { exact: true }).locator("..");
+  const folders = page.getByRole("main", { name: "Conversation settings" }).getByRole("region", { name: "Working folders", exact: true });
+  await expect(folders.getByText("Could not load working folders.")).toBeVisible();
+  await expect(folders.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await folders.getByRole("button", { name: "Retry" }).click();
+  await expect(folders.getByText("Inherited from Workspace", { exact: false })).toBeVisible();
+  await folders.getByRole("button", { name: "Add folder" }).click();
+  await expect(folders.getByText("apps/web", { exact: true })).toBeVisible();
+  await folders.getByRole("button", { name: "Add folder" }).click();
+  await expect(folders.getByText("packages/shared", { exact: true })).toBeVisible();
+  await folders.getByRole("button", { name: "Add folder" }).click();
+  await expect(folders.getByText("apps/web", { exact: true })).toHaveCount(1);
+  const shared = folders.getByText("packages/shared", { exact: true }).locator("..");
   await shared.getByRole("button", { name: "Make primary" }).click();
   await shared.getByRole("button", { name: "Up" }).click();
-  await expect(dialog.locator('section[aria-label="Working folders"] .font-mono')).toHaveText([
+  await expect(folders.locator('.font-mono')).toHaveText([
     "packages/shared",
     "apps/web",
   ]);
-  const web = dialog.getByText("apps/web", { exact: true }).locator("..");
+  const web = folders.getByText("apps/web", { exact: true }).locator("..");
   await web.getByRole("button", { name: "Remove" }).click();
-  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await folders.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => puts.length).toBe(1);
   expect(puts[0]).toEqual({ folders: [{ path: "/private/root/2", primary: true }] });
 });

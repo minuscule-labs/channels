@@ -10,11 +10,15 @@ It runs on one computer, stores product data locally, and uses [MinuRuntime](htt
 ## What it includes
 
 - Persistent Workspaces, Conversations, messages, and membership
+- Flat Workspace folders for organizing Conversations, with Unfiled navigation and remembered collapse state
+- Message-based threads with isolated agent sessions and a fixed creation-time public-context snapshot
+- Reusable Conversation presets with roles, model/effort defaults, and collaboration guidance
 - Reusable human, agent, and service identities
 - Live updates, mentions, Markdown, Mermaid diagrams, syntax highlighting, and code-copy controls
 - Image attachments with picker/paste/drop, durable local storage, and capability-gated vision for owned Pi agents
 - Per-agent instructions, Skills, harness, provider, model, and reasoning settings
-- Compact **Agent**, **New session**, and **Inspect** menus with explicit Start, full Stop, same-transcript Restart, context replacement and read-only diagnostics
+- Compact **Agent**, **New session**, and **Inspect** menus with explicit Start, full Stop, resume-first Restart with Conversation recovery, context replacement and read-only diagnostics
+- Durable native Pi session journals and retained resume metadata; failed resumes never silently create a replacement session
 - Conversation **Snooze**, **Archive**, and explicit **Reopen** lifecycle controls
 - Workspace and Conversation administration with native folder selection
 - Product-isolated local storage, recovery, locking, and checksum-verified updates
@@ -33,7 +37,7 @@ Requirements:
 Download the `.tgz` and `SHA256SUMS` from the approved [GitHub Release](https://github.com/minuscule-labs/channels/releases), verify the checksum, then install:
 
 ```bash
-npm install -g ./minu-channels-0.0.24.tgz
+npm install -g ./minu-channels-0.0.28.tgz
 
 # macOS background service
 minu-channels start
@@ -140,8 +144,11 @@ These are internal boundaries of one product, not separate services users must c
 - [Distribution model](docs/distribution.md)
 - [Product boundary and architecture](docs/product-boundary.md)
 - [Execution configuration](docs/execution-configuration.md)
+- [Conversation presets](docs/conversation-presets.md)
 - [Participant recovery and diagnostics](docs/participant-recovery.md)
+- [Conversation folders and organization](docs/conversation-folders.md)
 - [Conversation lifecycle and archive behavior](docs/conversation-lifecycle.md)
+- [Conversation threads and context](docs/conversation-threads.md)
 - [Skills](docs/skills.md)
 - [Web client MVP](docs/web-client-mvp.md)
 - [Control API and development details](packages/control/README.md)
@@ -162,7 +169,7 @@ pnpm web:test agent-actions
 pnpm web:test:browser participant-sidebar.spec.ts --grep "uncertain participants"
 ```
 
-See [development verification guidance](AGENTS.md). Rerun failing/affected checks while iterating; use required CI for broad integration evidence rather than duplicating every CI run locally. Browser CI uses three isolated, single-worker shards and cancels superseded pull-request runs. Its timing reports are uploaded as `browser-results-1`, `browser-results-2`, and `browser-results-3` artifacts.
+See [development verification guidance](AGENTS.md). Rerun failing/affected checks while iterating; use required CI for broad integration evidence rather than duplicating every CI run locally. Draft PRs skip all CI runner jobs; use focused local checks while drafting. Marking a PR ready for review triggers full backend, browser, and package verification; every push to `main` also retains those checks. Web unit tests run on Linux only; backend tests retain Linux/macOS coverage. Browser CI uses three isolated, single-worker shards in a version-matched Playwright image and cancels superseded pull-request runs. Its timing reports are uploaded as `browser-results-1`, `browser-results-2`, and `browser-results-3` artifacts.
 
 The unfiltered commands below remain available for integration checks, not as a per-edit checklist:
 

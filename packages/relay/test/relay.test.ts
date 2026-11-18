@@ -389,6 +389,7 @@ test("Relay gives agents attachment metadata but never image bytes or vision cla
     await humanClient.postMessage(conversation.id, {
       participantId: human.id,
       body: "",
+      to: [agent.id],
       attachmentIds: [attachment.id],
     });
     await waitUntil(async () => (await setupClient.listMessages(conversation.id)).length === 2);
@@ -1162,7 +1163,7 @@ test("dynamic attach orders high-water live events behind catch-up", async () =>
   }
 });
 
-test("two-participant Conversations implicitly wake the sole agent for human messages", async () => {
+test("unaddressed human messages do not guess the sole agent; explicit recipients wake it", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const runtime = new FakeRuntime();
@@ -1180,16 +1181,18 @@ test("two-participant Conversations implicitly wake the sole agent for human mes
 
   try {
     await relay.start();
-    await client.postMessage(conversation.id, {
-      participantId: "user",
-      body: "Create the query without requiring a mention",
+    const unaddressed = await client.postMessage(conversation.id, {
+      participantId: "user", body: "Shared history without a recipient", to: [],
     });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
+    relay.observeConversationHead("agent-a", unaddressed.sequence);
+    await relay.waitForIdle();
+    assert.equal(runtime.prompts.get("session-a")?.length ?? 0, 0);
+    await client.postMessage(conversation.id, {
+      participantId: "user", body: "Create the query without repeating a mention", to: ["agent-a"],
+    });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
     assert.equal(runtime.prompts.get("session-a")?.length, 1);
-    assert.match(
-      runtime.prompts.get("session-a")![0]!,
-      /implicitly addressed you in this two-participant Conversation/,
-    );
+    assert.match(runtime.prompts.get("session-a")![0]!, /explicitly addressed you/);
   } finally {
     await relay.stop();
     await server.close();
@@ -1442,7 +1445,7 @@ test("relay validates and enforces configurable turn polling timeouts", async ()
   }
 });
 
-test("the default turn deadline permits healthy work beyond the short fault budget", async () => {
+for (const minutes of [undefined, 30, 120]) for (const expires of [false, true]) test(`${minutes ?? "default60"}-minute turn ${expires ? "expires at its limit" : "permits healthy work until its limit"}`, async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
   const timestamp = new Date().toISOString();
@@ -1455,8 +1458,8 @@ test("the default turn deadline permits healthy work beyond the short fault budg
       if (!started) return undefined;
       polls += 1;
       if (polls === 1) {
-        // Cross the previous two-minute default without a Runtime request fault.
-        now = 2 * 60_000 + 1;
+        // Virtual time crosses old defaults without waiting real hours.
+        now = (minutes ?? 60) * 60_000 + (expires ? 1 : -1);
         return { id: turnId, input: "long work", status: "running", createdAt: timestamp, updatedAt: timestamp };
       }
       return {
@@ -1481,13 +1484,14 @@ test("the default turn deadline permits healthy work beyond the short fault budg
     conversationId: conversation.id,
     bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
     monotonicNow: () => now,
+    ...(minutes === undefined ? {} : { resolveTurnTimeoutMs: async () => minutes * 60_000 }),
     turnPollIntervalMs: 1,
   });
   try {
     await relay.start();
     await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a long work" });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).some(({ body }) => body === "Completed long work"));
-    assert.equal(polls, 2);
+    await waitUntil(async () => (await client.listMessages(conversation.id)).some(({ body }) => expires ? body.includes("Runtime turn failed") : body === "Completed long work"));
+    assert.equal(polls, expires ? 1 : 2);
   } finally {
     await relay.stop();
     await server.close();
@@ -1522,6 +1526,7 @@ test("an absolute retry budget bounds a stalled Runtime attempt while peer work 
     ],
     cursorStore: recoveryStore,
     turnRetryBudgetMs: 30,
+    resolveTurnTimeoutMs: async () => 120 * 60_000,
     runtimeRequestTimeoutMs: 1_000,
     terminalOutcomeTimeoutMs: 100,
   });
@@ -2201,46 +2206,56 @@ test("Relay shutdown is bounded when a Runtime request stalls", async () => {
   } finally { await relay.stop(); await server.close(); }
 });
 
-test("relay supports an explicit agent-to-agent mention handoff", async () => {
-  const server = await createConversationHttpServer();
-  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
-  const runtime = new FakeRuntime((sessionId) =>
-    sessionId === "session-a" ? "@agent-b Please review Agent A's work" : "Review complete",
-  );
-  const conversation = await client.createConversation({
-    participants: [
-      { id: "user", type: "human" },
-      { id: "agent-a", type: "agent" },
-      { id: "agent-b", type: "agent" },
-    ],
-  });
-  const relay = new ConversationRuntimeRelay({
-    client,
-    conversationId: conversation.id,
-    bindings: [
-      { participantId: "agent-a", sessionId: "session-a", runtime },
-      { participantId: "agent-b", sessionId: "session-b", runtime },
-    ],
-  });
-
-  try {
-    await relay.start();
-    await client.postMessage(conversation.id, {
-      participantId: "user",
-      body: "@agent-a Implement the change, then hand off review",
+for (const wakePolicy of ["mentions", "direct_mentions", "all_messages", "muted"] as const) {
+  test(`agent mention handoffs respect the recipient's ${wakePolicy} wake policy`, async () => {
+    const server = await createConversationHttpServer();
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    const runtime = new FakeRuntime((sessionId) =>
+      sessionId === "session-a" ? "@agent-b Please review Agent A's work" : "Review complete",
+    );
+    const conversation = await client.createConversation({
+      participants: [
+        { id: "user", type: "human" },
+        { id: "agent-a", type: "agent" },
+        { id: "agent-b", type: "agent" },
+      ],
     });
-    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 3);
-    const messages = await client.listMessages(conversation.id);
-    assert.deepEqual(messages.map((message) => message.participantId), ["user", "agent-a", "agent-b"]);
-    assert.deepEqual(messages[1]!.to, ["agent-b"]);
-    assert.deepEqual(messages[2]!.to, []);
-    assert.equal(runtime.prompts.get("session-a")?.length, 1);
-    assert.equal(runtime.prompts.get("session-b")?.length, 1);
-  } finally {
-    await relay.stop();
-    await server.close();
-  }
-});
+    const relay = new ConversationRuntimeRelay({
+      client,
+      conversationId: conversation.id,
+      bindings: [
+        { participantId: "agent-a", sessionId: "session-a", runtime },
+        { participantId: "agent-b", sessionId: "session-b", runtime, wakePolicy },
+      ],
+    });
+
+    try {
+      await relay.start();
+      await client.postMessage(conversation.id, {
+        participantId: "user",
+        body: "@agent-a Implement the change, then hand off review",
+      });
+      const expectedBetaTurns = wakePolicy === "muted" ? 0 : wakePolicy === "all_messages" ? 2 : 1;
+      await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2 + expectedBetaTurns);
+      const messages = await client.listMessages(conversation.id);
+      for (const id of ["agent-a", "agent-b"]) relay.observeConversationHead(id, messages.at(-1)!.sequence);
+      await relay.waitForIdle();
+      const handoff = messages.find(({ participantId }) => participantId === "agent-a")!;
+      assert.deepEqual(handoff.to, ["agent-b"]);
+      assert.equal(handoff.body, "@agent-b Please review Agent A's work");
+      assert.equal(runtime.prompts.get("session-a")?.length, 1, "Unaddressed review replies never wake the sender");
+      assert.equal(runtime.prompts.get("session-b")?.length ?? 0, expectedBetaTurns);
+      if (expectedBetaTurns) {
+        const review = messages.find(({ replyTo }) => replyTo === handoff.id)!;
+        assert.equal(review.participantId, "agent-b");
+        assert.match(runtime.prompts.get("session-b")!.at(-1)!, /Please review Agent A's work/);
+      }
+    } finally {
+      await relay.stop();
+      await server.close();
+    }
+  });
+}
 
 test("explicit steering reaches a working agent without creating another wake-up", async () => {
   const server = await createConversationHttpServer();
@@ -3127,7 +3142,9 @@ test("relay wakes only addressed agents and posts responses without reply loops"
       runtime.prompts.get("session-a")![0]!,
       /Role: Reviews correctness and regressions\./,
     );
-    assert.match(runtime.prompts.get("session-a")![0]!, /Mentions wake agents and consume compute/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /Generated replies do not change that selection/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /To hand work to another participant, mention its exact @handle/);
+    assert.match(runtime.prompts.get("session-a")![0]!, /Agent handoffs never start unbound agents or resume stopped agents/);
     assert.match(runtime.prompts.get("session-a")![0]!, /TRIGGER/);
     assert.equal(relay.cursor("agent-a"), 2);
 
@@ -3141,6 +3158,76 @@ test("relay wakes only addressed agents and posts responses without reply loops"
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal((await client.listMessages(conversation.id)).length, 6);
+  } finally {
+    await relay.stop();
+    await server.close();
+  }
+});
+
+test("all-messages policy admits human work but ignores unaddressed generated replies", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new FakeRuntime(() => "An unaddressed answer with `@agent-a` and quoted \"@agent-b\" examples");
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" }, { id: "agent-b", type: "agent" },
+  ] });
+  const relay = new ConversationRuntimeRelay({ client, conversationId: conversation.id, bindings: [
+    { participantId: "agent-a", sessionId: "session-a", runtime },
+    { participantId: "agent-b", sessionId: "session-b", runtime, wakePolicy: "all_messages" },
+  ] });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, { participantId: "user", body: "A human question", to: ["agent-a"] });
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length >= 3);
+    const head = (await client.listMessages(conversation.id)).at(-1)!.sequence;
+    for (const id of ["agent-a", "agent-b"]) relay.observeConversationHead(id, head);
+    await relay.waitForIdle();
+    assert.equal(runtime.prompts.get("session-a")?.length, 1);
+    assert.equal(runtime.prompts.get("session-b")?.length, 1);
+    const messages = await client.listMessages(conversation.id);
+    assert.equal(messages.length, 3);
+    assert.ok(messages.filter(({ participantId }) => participantId !== "user").every(({ to }) => to.length === 0));
+  } finally { await relay.stop(); await server.close(); }
+});
+
+
+test("relay resolves Conversation timeout policy once and applies it to the turn retry budget", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  const runtime = new RecoverableRuntime();
+  const conversation = await client.createConversation({
+    participants: [
+      { id: "user", type: "human" },
+      { id: "agent-a", type: "agent" },
+    ],
+  });
+  const baseOptions = {
+    client,
+    conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+  };
+  const errors: Error[] = [];
+  let policyReads = 0;
+  const relay = new ConversationRuntimeRelay({
+    ...baseOptions,
+    turnPollIntervalMs: 5,
+    resolveTurnTimeoutMs: async () => { policyReads++; return 30; },
+    onError(_binding, error) {
+      errors.push(error);
+    },
+  });
+  try {
+    await relay.start();
+    await client.postMessage(conversation.id, {
+      participantId: "user",
+      body: "@agent-a deliberately never complete",
+    });
+    await waitUntil(async () => errors.length > 0);
+    assert.match(errors[0]!.message, /Timed out waiting for agent turn|Agent turn retry deadline expired|Operation deadline expired/);
+    assert.equal(runtime.startCount, 1);
+    assert.equal(policyReads, 1, "resolve once for the active turn, including retries");
+    await waitUntil(async () => (await client.listMessages(conversation.id)).length === 2);
+    assert.match((await client.listMessages(conversation.id))[1]!.body, /Runtime turn failed/);
   } finally {
     await relay.stop();
     await server.close();

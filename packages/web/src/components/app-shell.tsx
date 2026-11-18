@@ -1,32 +1,43 @@
-import type { ConversationMessage, ConversationMetadata } from "@minu/channels-core/types";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ConversationMessage, ConversationMetadata, EffectiveConversationLifecycle } from "@minu/channels-core/types";
+import { useMutation, useQueries, useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
 import { queryKeys } from "../lib/query-keys";
+import { cacheConversationMetadata, writeFolderCollapsed } from "../lib/conversation-folders";
 import { mergeMessages } from "../lib/messages";
 import { runBackgroundConversationsConnection } from "../lib/background-conversation";
 import { sharedConversationEvents } from "../lib/shared-conversation-events";
+import { announceLifecycleChange, listenForLifecycleChanges, snoozeRefetchInterval } from "../lib/conversation-lifecycle";
 import { playNotificationSound } from "../lib/notification-sound";
 import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
+import { NotificationPreferencesContext } from "./notification-preferences";
 import { WorkspaceCreateDialog } from "./workspace-create-dialog";
+import { WorkspaceSettingsSidebar } from "./workspace-settings-sidebar";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  useEffect(() => { setNavigationOpen(false); }, [pathname]);
   const [readRevision, setReadRevision] = useState(0);
   const [sound, setSound] = useState<NotificationSound>("off");
   const soundedMessages = useRef(new Set<string>());
   const viewingActiveConversationEnd = useRef(false);
   const audioContext = useRef<AudioContext | undefined>(undefined);
   const [knownConversations, setKnownConversations] = useState<ConversationMetadata[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const changeFolderCollapse = useCallback((key: string, collapsed: boolean) => {
+    writeFolderCollapsed(localStorage, key, collapsed);
+    setCollapsedFolders(current => current[key] === collapsed ? current : { ...current, [key]: collapsed });
+  }, []);
   const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => conversations.listWorkspaces() });
   const routeWorkspaceId = pathname.match(/\/app\/workspaces\/([^/]+)/)?.[1];
+  const settingsWorkspaceId = pathname.match(/^\/app\/workspaces\/([^/]+)\/(?:settings|agents)(?:\/|$)/)?.[1];
   const selectedWorkspaceId = routeWorkspaceId
     ?? (workspaces.data ?? []).find((workspace) => workspace.id === localStorage.getItem("minu-channels:last-workspace"))?.id
     ?? workspaces.data?.[0]?.id;
@@ -36,19 +47,45 @@ export function AppShell() {
     queryFn: () => conversations.listWorkspaceConversations(selectedWorkspace!.id),
     enabled: Boolean(selectedWorkspace),
     staleTime: 5_000,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
   });
+  const workspaceFolders = useQuery({
+    queryKey: selectedWorkspace ? queryKeys.workspaceFolders(selectedWorkspace.id) : ["workspace", "none", "folders"],
+    queryFn: () => conversations.listWorkspaceFolders(selectedWorkspace!.id),
+    enabled: Boolean(selectedWorkspace),
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
+  });
+  const refreshWorkspaceNavigation = useCallback(() => {
+    if (!selectedWorkspaceId) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceConversations(selectedWorkspaceId), exact: true });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(selectedWorkspaceId), exact: true });
+  }, [queryClient, selectedWorkspaceId]);
+  useEffect(() => {
+    window.addEventListener("focus", refreshWorkspaceNavigation);
+    return () => window.removeEventListener("focus", refreshWorkspaceNavigation);
+  }, [refreshWorkspaceNavigation]);
   const currentSession = useQuery({
     queryKey: queryKeys.localCurrentSession(),
     queryFn: () => localControl.currentSession(),
     retry: false,
     staleTime: 60_000,
   });
+  useEffect(() => {
+    const identityId = currentSession.data?.identityId;
+    if (!identityId) return;
+    return listenForLifecycleChanges(identityId, (conversationId) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId), exact: true });
+    });
+  }, [currentSession.data?.identityId, queryClient]);
   const conversationLifecycleQueries = useQueries({
     queries: (selectedConversations.data ?? []).map((conversation) => ({
       queryKey: queryKeys.localConversationLifecycle(conversation.id),
       queryFn: () => localControl.getConversationLifecycle(conversation.id),
       enabled: Boolean(currentSession.data?.identityId),
       staleTime: 5_000,
+      refetchInterval: (query: Query<EffectiveConversationLifecycle>) => snoozeRefetchInterval(query.state.data),
     })),
   });
   const selectedWorkspaceMembers = useQuery({
@@ -66,7 +103,9 @@ export function AppShell() {
       conversationId,
       state === "snoozed" ? { state, snoozedUntil } : { state },
     ),
-    onSuccess: (_lifecycle, { conversationId }) => {
+    onSuccess: (lifecycle, { conversationId }) => {
+      queryClient.setQueryData(queryKeys.localConversationLifecycle(conversationId), lifecycle);
+      announceLifecycleChange(currentSession.data?.identityId, conversationId);
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(conversationId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationAgents(conversationId) });
     },
@@ -76,6 +115,7 @@ export function AppShell() {
     && member.status === "active"
     && (member.accessRole === "owner" || member.accessRole === "admin"),
   ) ?? false;
+  const canAdministerFolders = canAdministerLifecycle && selectedWorkspace?.status === "active";
   const runLifecycleChange = (
     conversationId: string,
     input: { state: "active" | "snoozed" | "settled"; snoozedUntil?: string },
@@ -83,12 +123,20 @@ export function AppShell() {
     lifecycleAction.reset();
     lifecycleAction.mutate({ conversationId, ...input });
   };
-  const activeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
+  const routeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
+  const selectedConversationId = routeConversationId === "new" ? undefined : routeConversationId;
+  const activeConversationId = /\/conversations\/[^/]+\/?$/.test(pathname) ? selectedConversationId : undefined;
   const observedConversations = useMemo(() => {
     const byId = new Map(knownConversations.map((conversation) => [conversation.id, conversation]));
     for (const conversation of selectedConversations.data ?? []) byId.set(conversation.id, conversation);
     return [...byId.values()];
   }, [knownConversations, selectedConversations.data]);
+  const observedConversationsRef = useRef(observedConversations);
+  useEffect(() => { observedConversationsRef.current = observedConversations; }, [observedConversations]);
+  // Metadata changes must not tear down the same topic subscription. Otherwise
+  // readiness refetches can feed back into another unsubscribe/ready cycle.
+  // Include the current view so the observer port survives navigation and preserves grace.
+  const backgroundConversationIdsKey = JSON.stringify(observedConversations.map(({ id }) => id).sort());
   const conversationMessageQueries = useQueries({
     queries: observedConversations.map((conversation) => ({
       queryKey: queryKeys.conversationMessages(conversation.id),
@@ -128,12 +176,13 @@ export function AppShell() {
   const navigationItems = useMemo<WorkspaceNavigationItem[]>(() => selectedWorkspace ? [{
     workspace: selectedWorkspace,
     conversations: selectedConversations.data ?? [],
+    folders: workspaceFolders.data ?? [],
     loading: selectedConversations.isLoading,
     lifecycle: conversationLifecycles,
     unread,
-  }] : [], [conversationLifecycles, selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, unread]);
+  }] : [], [conversationLifecycles, selectedConversations.data, selectedConversations.isLoading, selectedWorkspace, workspaceFolders.data, unread]);
 
-  const selectWorkspace = async (workspaceId: string) => {
+  const selectWorkspace = async (workspaceId: string, returnToWorkspace = false) => {
     const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);
     if (!workspace) return;
     localStorage.setItem("minu-channels:last-workspace", workspaceId);
@@ -143,7 +192,7 @@ export function AppShell() {
     void navigate(conversation ? {
       to: "/app/workspaces/$workspaceId/conversations/$conversationId",
       params: { workspaceId, conversationId: conversation.id },
-    } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
+    } : returnToWorkspace ? { to: "/" } : { to: "/app/workspaces/$workspaceId/agents", params: { workspaceId } });
   };
 
   const activateAudio = useCallback(() => {
@@ -224,37 +273,51 @@ export function AppShell() {
       return next;
     });
   }, [currentSession.data?.identityId, selectedConversations.data, selectedWorkspaceId]);
+  const suspendedConversationIds = JSON.stringify([...conversationLifecycles].filter(([, state]) => state !== "active").map(([id]) => id).sort());
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
-    const backgroundConversations = observedConversations.filter(({ id }) => id !== activeConversationId);
-    if (!identityId || backgroundConversations.length === 0) return;
+    const backgroundConversationIds = JSON.parse(backgroundConversationIdsKey) as string[];
+    const suspendedIds = JSON.parse(suspendedConversationIds) as string[];
+    if (!identityId || backgroundConversationIds.length === 0) return;
     const controller = new AbortController();
-    const connections = backgroundConversations.map((conversation) => {
+    const connections = backgroundConversationIds.map((conversationId) => {
       const mergeMessage = (message: ConversationMessage) => {
         queryClient.setQueryData<ConversationMessage[]>(
-          queryKeys.conversationMessages(conversation.id),
+          queryKeys.conversationMessages(conversationId),
           (current) => mergeMessages(current, [message]),
         );
       };
+      let metadataGeneration = 0;
+      const refreshMetadata = () => {
+        const generation = ++metadataGeneration;
+        void conversations.getConversation(conversationId).then(updated => {
+          // Responses may arrive out of order within this stable subscription.
+          if (controller.signal.aborted || generation !== metadataGeneration) return;
+          cacheConversationMetadata(queryClient, updated);
+          void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFolders(updated.workspaceId), exact: true });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.localConversationLifecycle(updated.id), exact: true });
+          setKnownConversations(current => {
+            if (controller.signal.aborted || generation !== metadataGeneration) return current;
+            const previous = current.find(item => item.id === updated.id);
+            if (!previous || JSON.stringify(previous) === JSON.stringify(updated)) return current;
+            const next = current.map(item => item.id === updated.id ? updated : item);
+            localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(next));
+            return next;
+          });
+        }).catch(() => undefined);
+      };
       return {
-        conversationId: conversation.id,
-        currentMessages: () => queryClient.getQueryData<ConversationMessage[]>(queryKeys.conversationMessages(conversation.id)),
-        listMessages: (options: { afterSequence: number; limit: number }) => conversations.listMessages(conversation.id, options),
+        conversationId,
+        currentMessages: () => queryClient.getQueryData<ConversationMessage[]>(queryKeys.conversationMessages(conversationId)),
+        listMessages: (options: { afterSequence: number; limit: number }) => conversations.listMessages(conversationId, options),
         onLiveMessage: (message: ConversationMessage) => {
           mergeMessage(message);
-          window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { conversation, message } }));
+          const conversation = observedConversationsRef.current.find(item => item.id === conversationId);
+          if (conversation) window.dispatchEvent(new CustomEvent("minu-live-message", { detail: { conversation, message } }));
         },
         onCatchUpMessage: mergeMessage,
-        onRosterUpdated: () => {
-          void conversations.getConversation(conversation.id).then((updated) => {
-            queryClient.setQueryData(queryKeys.conversation(conversation.id), updated);
-            setKnownConversations((current) => {
-              const next = current.map((item) => item.id === updated.id ? updated : item);
-              localStorage.setItem(`minu-channels:known-conversations:${identityId}`, JSON.stringify(next));
-              return next;
-            });
-          }).catch(() => undefined);
-        },
+        onRosterUpdated: refreshMetadata,
+        onConversationUpdated: refreshMetadata,
       };
     });
     void (async () => {
@@ -262,8 +325,12 @@ export function AppShell() {
         try {
           await runBackgroundConversationsConnection({
             signal: controller.signal,
+            onReady: refreshWorkspaceNavigation,
             conversations: connections,
-            events: (options) => sharedConversationEvents(identityId, backgroundConversations.map(({ id }) => id), options),
+            // Remembered history observes available events without adding live topics.
+            events: (options) => sharedConversationEvents(identityId, backgroundConversationIds, {
+              ...options, mode: "observe", suspendedIds,
+            }),
           });
         } catch {
           // The next bounded catch-up reconciles messages missed while disconnected.
@@ -272,7 +339,7 @@ export function AppShell() {
       }
     })();
     return () => controller.abort();
-  }, [activeConversationId, currentSession.data?.identityId, observedConversations, queryClient]);
+  }, [backgroundConversationIdsKey, currentSession.data?.identityId, queryClient, refreshWorkspaceNavigation, suspendedConversationIds]);
   useEffect(() => {
     const identityId = currentSession.data?.identityId;
     if (!identityId || sound === "off") return;
@@ -318,7 +385,8 @@ export function AppShell() {
   }, [activeConversationId, routeWorkspaceId]);
   useEffect(() => {
     if (pathname !== "/" || !selectedWorkspaceId) return;
-    void selectWorkspace(selectedWorkspaceId);
+    void selectWorkspace(selectedWorkspaceId, true);
+  // Empty Workspaces must keep the chooser outside the settings/Agents shell.
   // Redirecting from the index only needs the current loaded Workspace set.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname, selectedWorkspaceId]);
@@ -359,10 +427,25 @@ export function AppShell() {
           <button className="icon-button inline-flex" type="button" aria-label="Dismiss lifecycle error" onClick={() => lifecycleAction.reset()}>×</button>
         </div>
       ) : null}
+      {workspaceFolders.error ? (
+        <div role="alert" className="fixed right-4 top-3 z-50 rounded-md border border-[var(--danger)] bg-[var(--panel)] p-3 text-xs">
+          {workspaceFolders.error.message}
+          <button className="ml-2 underline" type="button" onClick={() => void workspaceFolders.refetch()}>Retry folders</button>
+        </div>
+      ) : null}
       <div className="hidden md:block">
-        <NavigationSidebar
+        {settingsWorkspaceId ? <WorkspaceSettingsSidebar
+          key={settingsWorkspaceId}
+          workspaceId={settingsWorkspaceId}
+          pathname={pathname}
+          onBack={() => selectWorkspace(settingsWorkspaceId, true)}
+        /> : <NavigationSidebar
           items={navigationItems}
-          activeConversationId={activeConversationId}
+          identityId={currentSession.data?.identityId}
+          actorIdentityId={canAdministerFolders ? currentSession.data?.identityId : undefined}
+          collapsedFolders={collapsedFolders}
+          onFolderCollapseChange={changeFolderCollapse}
+          activeConversationId={selectedConversationId}
           activeAgentsWorkspaceId={activeAgentsWorkspaceId}
           workspaces={workspaces.data ?? []}
           selectedWorkspaceId={selectedWorkspaceId}
@@ -372,7 +455,7 @@ export function AppShell() {
           onSoundChange={currentSession.isSuccess ? changeSound : undefined}
           onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
           pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
-        />
+        />}
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Drawer
@@ -380,7 +463,7 @@ export function AppShell() {
           onOpenChange={setNavigationOpen}
           side="left"
           title="Navigation"
-          description="Choose a Workspace and Conversation."
+          description={settingsWorkspaceId ? "Workspace settings" : "Choose a Workspace and Conversation."}
           trigger={(
             <button
               type="button"
@@ -391,9 +474,20 @@ export function AppShell() {
             </button>
           )}
         >
-          <NavigationSidebar
+          {settingsWorkspaceId ? <WorkspaceSettingsSidebar
+            key={settingsWorkspaceId}
+            workspaceId={settingsWorkspaceId}
+            pathname={pathname}
+            onBack={() => selectWorkspace(settingsWorkspaceId, true)}
+            mobile
+            onNavigate={() => setNavigationOpen(false)}
+          /> : <NavigationSidebar
             items={navigationItems}
-            activeConversationId={activeConversationId}
+            identityId={currentSession.data?.identityId}
+            actorIdentityId={canAdministerFolders ? currentSession.data?.identityId : undefined}
+            collapsedFolders={collapsedFolders}
+            onFolderCollapseChange={changeFolderCollapse}
+            activeConversationId={selectedConversationId}
             activeAgentsWorkspaceId={activeAgentsWorkspaceId}
             workspaces={workspaces.data ?? []}
             selectedWorkspaceId={selectedWorkspaceId}
@@ -405,9 +499,9 @@ export function AppShell() {
             pendingLifecycleConversationId={lifecycleAction.isPending ? lifecycleAction.variables.conversationId : undefined}
             onNavigate={() => setNavigationOpen(false)}
             onClose={() => setNavigationOpen(false)}
-          />
+          />}
         </Drawer>
-        <Outlet />
+        <NotificationPreferencesContext.Provider value={currentSession.data ? { sound, onSoundChange: changeSound } : null}><Outlet /></NotificationPreferencesContext.Provider>
       </div>
     </div>
   );

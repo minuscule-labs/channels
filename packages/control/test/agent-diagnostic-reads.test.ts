@@ -9,6 +9,7 @@ import { DiagnosticJournal } from "@minu/channels-relay-storage-drizzle";
 import { LocalDeliveryReads } from "../src/delivery-reads.ts";
 import type { DiagnosticRecorder } from "../src/diagnostics-recorder.ts";
 import { LocalAgentSessionInspections } from "../src/agent-session-inspection.ts";
+import { safeSessionIntegrations } from "../src/agent-session-integrations.ts";
 import { LocalAgentDiagnosticReads, type DiagnosticReader } from "../src/agent-diagnostic-reads.ts";
 import { LocalControlService, createLocalControlHttpServer } from "../src/server.ts";
 import { LocalControlBrowserSessions } from "../src/session.ts";
@@ -72,7 +73,13 @@ async function fixture() {
     events: [{ sequence: 1, observedAt: now, code: "turn_accepted", prompt: "SECRET_PROMPT", nativeId: "SECRET_NATIVE" }], token: "SECRET_TOKEN" });
   let eventReads = 0;
   let eventReader: typeof profileReader = async () => events();
+  let integrationReads = 0;
+  let integrationReader: typeof profileReader | undefined;
   const runtime = { status: async () => "idle" as const,
+    get inspectSessionIntegrations() {
+      const reader = integrationReader;
+      return reader ? async (id: string, owner: string, options?: { signal?: AbortSignal }) => { integrationReads++; return reader(id, owner, options); } : undefined;
+    },
     inspectSessionProfile: async (id: string, owner: string, options?: { signal?: AbortSignal }) => { profileReads++; return profileReader(id, owner, options); },
     inspectSessionEvents: async (id: string, owner: string, options?: { signal?: AbortSignal }) => { eventReads++; return eventReader(id, owner, options); },
   };
@@ -105,6 +112,7 @@ async function fixture() {
   return { client, directoryClient, owner, agent, otherAgent, workspace, conversation, journal, store, scope, record, reads, server, get, base, headers, binding, profile, sessionInspections,
     profileReads: () => profileReads, profileReader(value: typeof profileReader) { profileReader = value; },
     events, eventReads: () => eventReads, eventReader(value: typeof eventReader) { eventReader = value; },
+    integrationReads: () => integrationReads, integrationReader(value: typeof integrationReader) { integrationReader = value; },
     deliveryRecord, deliveryScope, deliverySource(value: typeof deliverySource) { deliverySource = value; },
     source(value: DiagnosticReader | undefined) { reader = value; }, expire() { clock += 120_000; },
     actorState(value: typeof actorState) { actorState = value; },
@@ -235,6 +243,7 @@ test("events cannot wake transitional/offline sessions or cross ambiguous/legacy
   for (const source of sources) {
     const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
       getSessionInspectionRecords: async () => source as typeof snapshot,
+      getConversationSettings: async () => undefined, getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
       getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
     }, runtimes: { pi: { inspectSessionEvents: async () => { calls++; return f.events(); } } } });
     assert.equal((await inspector.events(f.conversation.id, f.agent.id, f.owner.id)).availability, "unavailable");
@@ -327,6 +336,7 @@ test("event inspection caps total physical metadata work and retains canceled sl
   const targets = Array.from({ length: 17 }, (_, i) => ({ ...f.conversation.participants.find(participant => participant.id === f.agent.id)!, id: `target-${i}` }));
   const inspector = new LocalAgentSessionInspections({ client: { ...f.directoryClient, getConversation: async () => ({ ...f.conversation, participants: [...f.conversation.participants, ...targets] }) }, store: {
     getSessionInspectionRecords: async () => { if (++calls === 16) entered.release(); await pending.promise; return { bindings: [] }; },
+    getConversationSettings: async () => undefined, getConversationCreationSetup: async () => { throw new Error("must not read settings"); },
     getWorkspaceAgentConfig: async () => { throw new Error("must not read settings"); },
   }, runtimes: {} });
   const controllers = targets.slice(0, 16).map(() => new AbortController());
@@ -474,6 +484,7 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
   for (const source of cases) {
     const inspector = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
       getSessionInspectionRecords: async () => source, getWorkspaceAgentConfig: f.store.getWorkspaceAgentConfig.bind(f.store),
+      getConversationSettings: async () => undefined, getConversationCreationSetup: f.store.getConversationCreationSetup.bind(f.store),
     }, runtimes: { pi: { inspectSessionProfile: async () => { calls++; return f.profile(); } } } });
     const value = await inspector.read(f.conversation.id, f.agent.id, f.owner.id);
     assert.equal(value.running.status, "not_verified");
@@ -484,6 +495,7 @@ test("inspection fails closed on ambiguous, legacy, inconsistent and incorrectly
   await f.member({ accessRole: "member" });
   const denied = new LocalAgentSessionInspections({ client: f.directoryClient, store: {
     getSessionInspectionRecords: async () => { calls++; return snapshot; },
+    getConversationSettings: async () => undefined, getConversationCreationSetup: async () => { calls++; return undefined; },
     getWorkspaceAgentConfig: async () => { calls++; return undefined; },
   }, runtimes: {} });
   await assert.rejects(denied.read(f.conversation.id, f.agent.id, f.owner.id));
@@ -496,7 +508,7 @@ test("diagnostic GETs require a live browser, active human, owner/admin and Conv
   for (const path of ["/operations", "/operations/operation-selected", "/diagnostic-report?operationId=operation-selected", "/session-inspection", "/session-events", "/delivery-trails"]) {
     const response = await f.get(path);
     assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 24);
+    assert.equal((await response.json() as { protocolVersion: number }).protocolVersion, 25);
     assert.equal((await f.get(path, { method: "POST" })).status, 405);
   }
   await f.member({ accessRole: "member" });
@@ -703,4 +715,87 @@ test("client encodes diagnostic scopes and passes caller read cancellation witho
     assert.ok(requests[4]!.url.endsWith("conv%2Fone/agents/agent%2Fone/session-events"));
     assert.ok(requests.every(({ method }) => method === undefined));
   } finally { globalThis.fetch = original; }
+});
+
+const integrationSnapshot = () => ({ version: 1, capturedAt: new Date().toISOString(), status: "partial",
+  coverage: { configuration: "complete", tools: "complete" }, operations: { inspect: "supported", reconnect: "unsupported", reloadConfiguration: "unsupported" },
+  integrations: [{ id: "mcp.notes", name: "notes", kind: "mcp", source: "user", configured: "enabled", connection: "connected", toolCoverage: "complete", offeredCount: 1, registeredCount: 1, callableCount: 1 }],
+  tools: [{ name: "mcp__notes__read", integrationId: "mcp.notes", visibility: "discoverable", routes: ["indirect"], reachability: "unknown" }], issues: ["connection_failed"] });
+
+test("integration inspection independently excludes hostile extensions, bounds catalogs and preserves uncertainty", () => {
+  const raw = integrationSnapshot();
+  Object.assign(raw, { token: "SECRET", nativeSessionId: "SECRET", stderr: "SECRET" });
+  Object.assign(raw.integrations[0]!, { env: "SECRET", endpoint: "SECRET", sourcePath: "SECRET" });
+  const safe = safeSessionIntegrations(raw)!;
+  assert.equal(safe.integrations[0]?.reachableCount, undefined);
+  assert.doesNotMatch(JSON.stringify(safe), /SECRET|stderr|sourcePath|endpoint|nativeSessionId/);
+  const large = safeSessionIntegrations({ ...raw, tools: Array.from({ length: 1000 }, (_, i) => ({ ...raw.tools[0], name: `tool_${i}` })) })!;
+  assert.equal(large.coverage.tools, "partial");
+  assert.ok(large.tools.length <= 512);
+  assert.ok(Buffer.byteLength(JSON.stringify(large)) <= 96 * 1024);
+  assert.equal(safeSessionIntegrations({ ...raw, version: 2 }), undefined);
+  const attributed = safeSessionIntegrations({ ...raw, integrations: [
+    { ...raw.integrations[0], registeredCount: undefined, callableCount: undefined, failureCode: "registration_failed" },
+    { ...raw.integrations[0], id: "mcp.discovery", name: "discovery", failureCode: "discovery_failed" },
+  ] })!;
+  assert.equal(attributed.integrations[0]?.registeredCount, undefined);
+  assert.equal(attributed.integrations[0]?.callableCount, undefined);
+  assert.deepEqual(attributed.integrations.map(entry => [entry.id, entry.failureCode]), [["mcp.notes", "registration_failed"], ["mcp.discovery", "discovery_failed"]]);
+  assert.equal(safeSessionIntegrations({ ...raw, integrations: [{ ...raw.integrations[0], failureCode: "SECRET" }] })?.integrations[0]?.failureCode, undefined);
+  const hidden = safeSessionIntegrations({ ...raw, tools: [{ ...raw.tools[0], visibility: "hidden", routes: ["model"], reachability: "reachable" }] })!;
+  assert.deepEqual(hidden.tools[0]?.routes, []);
+  assert.equal(hidden.tools[0]?.reachability, "not_reachable");
+});
+
+test("session integration reads use exact current ownership, existing diagnostics authorization and no writes", async () => {
+  const f = await fixture();
+  try {
+    const before = JSON.stringify(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id));
+    f.integrationReader(async (id, owner) => { assert.equal(id, "SECRET_MANAGED"); assert.equal(owner, "SECRET_OWNER"); return { ...integrationSnapshot(), token: "SECRET" }; });
+    const response = await f.get("/session-inspection");
+    assert.equal(response.status, 200);
+    const value = await response.json() as LocalAgentSessionInspection;
+    assert.equal(value.integrations?.integrations[0]?.connection, "connected");
+    assert.equal(value.integrations?.operations.reconnect, "unsupported");
+    assert.doesNotMatch(JSON.stringify(value), /SECRET|nativeSessionId/);
+    assert.equal(f.integrationReads(), 1);
+    assert.equal(JSON.stringify(await f.store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id)), before);
+    f.integrationReader(undefined);
+    const unsupported = await (await f.get("/session-inspection")).json() as LocalAgentSessionInspection;
+    assert.equal(unsupported.integrations?.status, "unsupported");
+    assert.equal(unsupported.integrations?.coverage.configuration, "unknown");
+  } finally { await f.close(); }
+});
+
+test("changed bindings and revoked roles discard late integration observations", async () => {
+  for (const revoke of [false, true]) {
+    const f = await fixture(), entered = gate(), pending = gate();
+    try {
+      f.integrationReader(async () => { entered.release(); await pending.promise; return integrationSnapshot(); });
+      const request = f.get("/session-inspection"); await entered.promise;
+      if (revoke) f.actorState({ status: "disabled" });
+      else assert.ok(await f.store.replaceBindingSession(f.binding.id, f.binding.generation, "pi", "SECRET_REPLACEMENT", new Date().toISOString(), "SECRET_OWNER"));
+      pending.release();
+      const response = await request;
+      if (revoke) assert.equal(response.status, 404);
+      else { const result = await response.json() as LocalAgentSessionInspection; assert.equal(result.availability, "changed"); assert.equal(result.integrations, undefined); }
+    } finally { pending.release(); await f.close(); }
+  }
+});
+
+test("disconnecting session inspection cancels integration delivery and retains its physical slot", async () => {
+  const f = await fixture(), entered = gate(), pending = gate();
+  let signal: AbortSignal | undefined;
+  try {
+    f.integrationReader(async (_id, _owner, options) => { signal = options?.signal; entered.release(); await pending.promise; return integrationSnapshot(); });
+    const controller = new AbortController();
+    const request = f.get("/session-inspection", { signal: controller.signal });
+    await entered.promise; controller.abort();
+    await assert.rejects(request, { name: "AbortError" });
+    for (let i = 0; !signal?.aborted && i < 20; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(signal?.aborted, true);
+    const blocked = await f.sessionInspections.read(f.conversation.id, f.agent.id, f.owner.id);
+    assert.equal(blocked.integrations, undefined);
+    assert.equal(f.integrationReads(), 1);
+  } finally { pending.release(); await f.close(); }
 });

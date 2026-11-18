@@ -1,9 +1,22 @@
 import type {
+  ConversationMetadata,
   EffectiveConversationLifecycle,
   ConversationLifecycleState,
+  ConversationMessage,
+  CreateMessageInput,
 } from "@minu/channels-core/types";
 import type {
   LocalAgentRuntimeOptions,
+  CreateLocalAuthoredDocumentInput,
+  LocalAuthoredDocument,
+  LocalAuthoredDocumentRevision,
+  LocalAuthoredDocumentSummary,
+  LocalAuthoredSkillInvocationInput,
+  LocalAuthoredSkillInvocationReceipt,
+  LocalAuthoredSkillInvocationPublicationReceipt,
+  LocalConversationAuthoredContext,
+  LocalConversationAuthoredSkillCatalog,
+  UpdateLocalAuthoredDocumentInput,
   LocalAgentActionInput, LocalAgentActionReceipt,
   LocalAgentOperationHistory, LocalAgentOperationDetail, LocalAgentDiagnosticReport, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails,
   LocalBulkAgentLifecycleResponse,
@@ -25,6 +38,13 @@ import type {
   UpdateLocalRuntimeModelPolicyInput,
   UpdateLocalWorkspaceAgentConfigurationInput,
   UpdateLocalWorkspaceConfigurationInput,
+  LocalConversationPresets,
+  LocalConversationCreationSetup,
+  LocalConversationSettings,
+  UpdateConversationSettingsInput,
+  ConversationPreset,
+  SaveConversationPresetInput,
+  CreateLocalConversationInput,
 } from "./contracts.ts";
 
 export class LocalControlClientError extends Error {
@@ -56,6 +76,13 @@ export class LocalControlClient {
     return this.get<LocalControlHealth>("/local/health");
   }
 
+  async postConversationMessage(conversationId: string, input: CreateMessageInput, options: { idempotencyKey: string }): Promise<ConversationMessage> {
+    const result = await this.request<{ message: ConversationMessage }>(`/local/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: "POST", headers: { "idempotency-key": options.idempotencyKey }, body: JSON.stringify(input),
+    }, this.lifecycleTimeoutMs);
+    return result.message;
+  }
+
   async currentSession(): Promise<LocalCurrentSession> {
     return this.get<LocalCurrentSession>("/local/session");
   }
@@ -82,6 +109,37 @@ export class LocalControlClient {
 
   async listConversationAgents(conversationId: string): Promise<LocalConversationAgentsResponse> {
     return this.get<LocalConversationAgentsResponse>(`/local/conversations/${encodeURIComponent(conversationId)}/agents`);
+  }
+
+  async listConversationPresets(workspaceId: string): Promise<LocalConversationPresets> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversation-presets`);
+  }
+
+  async saveConversationPreset(workspaceId: string, presetId: string, input: SaveConversationPresetInput): Promise<ConversationPreset> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversation-presets/${encodeURIComponent(presetId)}`,
+      { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<void> {
+    await this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversation-presets/${encodeURIComponent(presetId)}`,
+      { method: "DELETE", body: JSON.stringify({ expectedRevision }) });
+  }
+
+  async createConversationWithSetup(workspaceId: string, input: CreateLocalConversationInput): Promise<ConversationMetadata> {
+    const result = await this.request<{ conversation: ConversationMetadata }>(`/local/workspaces/${encodeURIComponent(workspaceId)}/conversations`,
+      { method: "POST", body: JSON.stringify(input) });
+    return result.conversation;
+  }
+
+  async getConversationSettings(conversationId: string): Promise<LocalConversationSettings> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/settings`);
+  }
+  async updateConversationSettings(conversationId: string, input: UpdateConversationSettingsInput): Promise<LocalConversationSettings> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/settings`, { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  async getConversationCreationSetup(conversationId: string): Promise<LocalConversationCreationSetup> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/creation-setup`);
   }
 
   async conversationAgent(conversationId: string, identityId: string): Promise<LocalConversationAgent> {
@@ -246,6 +304,60 @@ export class LocalControlClient {
       this.lifecycleTimeoutMs,
     );
     return response.agent;
+  }
+
+  async acceptAuthoredSkillInvocation(conversationId: string, input: LocalAuthoredSkillInvocationInput, options: { idempotencyKey: string }): Promise<LocalAuthoredSkillInvocationReceipt> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocations`, {
+      method: "POST", headers: { "idempotency-key": options.idempotencyKey }, body: JSON.stringify(input),
+    });
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocations/${encodeURIComponent(requestId)}`);
+  }
+
+  /** Publish only the exact accepted receipt identity, not a reinterpreted raw header key. */
+  async publishAuthoredSkillInvocation(conversationId: string, receipt: Pick<LocalAuthoredSkillInvocationReceipt, "id" | "requestId">): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    return this.request(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocation-publications`, {
+      method: "POST", body: JSON.stringify({ requestId: receipt.requestId, invocationId: receipt.id }),
+    });
+  }
+
+  async getAuthoredSkillInvocationPublication(conversationId: string, requestId: string): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    const query = new URLSearchParams({ requestId });
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/skill-invocation-publications?${query}`);
+  }
+
+  async getConversationAuthoredSkillCatalog(conversationId: string): Promise<LocalConversationAuthoredSkillCatalog> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/authored-skill-catalog`);
+  }
+
+  async getConversationAuthoredContext(conversationId: string): Promise<LocalConversationAuthoredContext> {
+    return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/authored-context`);
+  }
+
+  async listAuthoredDocuments(workspaceId: string): Promise<LocalAuthoredDocumentSummary[]> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents`);
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string): Promise<LocalAuthoredDocument> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents/${encodeURIComponent(documentId)}`);
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<LocalAuthoredDocumentRevision[]> {
+    return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents/${encodeURIComponent(documentId)}/revisions`);
+  }
+
+  async createAuthoredDocument(workspaceId: string, input: CreateLocalAuthoredDocumentInput): Promise<LocalAuthoredDocument> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents`, {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async updateAuthoredDocument(workspaceId: string, documentId: string, input: UpdateLocalAuthoredDocumentInput): Promise<LocalAuthoredDocument> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents/${encodeURIComponent(documentId)}`, {
+      method: "PATCH", body: JSON.stringify(input),
+    });
   }
 
   async getWorkspaceConfiguration(workspaceId: string): Promise<LocalWorkspaceConfigurationSummary> {

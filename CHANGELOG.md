@@ -2,6 +2,168 @@
 
 ## Unreleased
 
+## 0.0.40
+
+Release overview: [Bounded live-update subscriptions](docs/releases/v0.0.40.md).
+
+- Keep one shared browser SSE connection with at most 100 Conversation IDs across tabs, prioritizing viewed channels and open threads. Expire inactive subscriptions after five minutes and evict older inactive topics rather than retrying oversized subscriptions.
+- Unsubscribe settled/snoozed Conversations and their threads, catch up on reopening, and notify peer tabs to refresh lifecycle state so stale exclusions cannot block Reopen. Bound long custom-snooze timers to prevent rapid polling.
+- Observe background history without subscribing to every remembered Conversation. Inactive notification/unread updates may be delayed or missed; messages remain persisted and are reconciled when reopened.
+- Preserve Runtime pin, database schemas, local-control protocol and dependencies. Agent sleep and message/read-cursor semantics are unchanged.
+
+## 0.0.39
+
+Release overview: [Shared playbooks as message attachments](docs/releases/v0.0.39.md).
+
+- Show a Skill-name badge on new sent messages, without a visible revision suffix; retain exact source/document/revision metadata.
+- Let shared playbooks use ordinary sticky/explicit recipients, human recipients, Channel-wide broadcasts and unaddressed-message wake policies. An empty recipient list is not expanded into all agents.
+- Capture the selected publication at message acceptance so newly created or updated shared Skills work in existing supported sessions without resets. Historical accepted operations retain their original pinned behavior.
+- Add two nullable metadata/routing columns while retaining private procedures, permission/archive checks, stable-turn fencing and duplicate-send recovery. Unsupported native skills stay hidden from the picker; agent-scoped native invocation remains deferred.
+
+## 0.0.38
+
+Release overview: [Current-worker integration discovery](docs/releases/v0.0.38.md).
+
+- Show bounded, current-worker integration and tool observations in existing session diagnostics: configuration source, connection state, attributed safe failure codes, callable/registered tools and exposure. Preserve unknown and unsupported evidence rather than claiming integrations are absent.
+- Add optional, owner-scoped Runtime inspection without waking agents, invoking business tools, changing credentials or reconnecting integrations. Refresh remains read-only; reconnect and configuration reload are not included.
+- Pin Runtime `42be4b7a89bf10f38bb453bb9b29bb5edd6eb6b9`. Supporting Pi workers expose the shared native `get_integrations` reader and agent-facing `inspect_integrations` tool; older workers remain usable and report inspection unsupported. The separately prepared local Pi patch is not bundled or installed by this release; full native discovery requires an explicitly selected supporting worker.
+- Keep existing worker executable resolution, local-control protocol, database schemas and dependencies unchanged. Required CI and exact-artifact acceptance remain release gates.
+
+## 0.0.37
+
+Release overview: [Shared-playbook picker](docs/releases/v0.0.37.md).
+
+- Show only Workspace and Channel playbooks in the send picker; hide native Harness skills until explicit invocation is supported. Native skill configuration and agent use remain unchanged.
+- Remove Ready/Pending/Unavailable labels from picker options, retaining source and revision, keyboard selection and existing send safeguards.
+- This UI-only patch does not add legacy-session compatibility, change message routing or implement agent-scoped slash commands.
+
+## 0.0.36
+
+Release overview: [Simpler Skill composer](docs/releases/v0.0.36.md).
+
+- Remove the visible Ready/Pending/Unavailable Skill indicator from the composer, without changing the Skill chip, Send eligibility or backend validation.
+- Preserve existing recipient selection, immutable session/revision pins and legacy-session behavior. This UI-only patch does not enable Skills for legacy sessions or add conversation-wide Skill routing.
+
+## 0.0.35
+
+Release overview: [Enable supported Skill sending](docs/releases/v0.0.35.md).
+
+- Enable the existing authored Skill-send flow by default in normal product/control-daemon startup, retaining explicit disable and all permission, recipient, session-pin and retirement checks. The lower-level service remains fail-closed without host enablement; unsupported Harness invocation stays disabled.
+- Verify normal product reopen and default-enabled publication, selected-only delivery, unchanged session pins, duplicate-publication acknowledgment without an extra turn, and unauthenticated/retired-request denial. No migration, Runtime pin, protocol or frontend behavior change is included.
+
+## 0.0.34
+
+Release overview: [Simpler Settings and Workspace-authored guidance](docs/releases/v0.0.34.md).
+
+- Standardize desktop/mobile Workspace Settings navigation and move Agents, Instructions, Skills and Presets into dedicated content pages. Use compact Agents/Skills tables and separate Skill editors; hide People navigation without changing authorization.
+- Save Instructions and Skills atomically with immutable internal snapshots, Preview, revision-checked conflicts and archive behavior. Recheck owner/admin authority after private reads, before writes and before returning private results.
+- Keep Instructions/Skills authoring in Workspace Settings. Limit Conversation settings to name, normal participants and working folders; preserve legacy channel-authored guidance, saved non-timeout advanced settings and existing session behavior. Preset instructions remain copied at creation, not live-linked.
+- Simplify reusable Presets to name, participants and instructions, with confirmed revision-checked removal. Migration `0022_minimal_presets` removes obsolete model/effort/timeout overrides, participant roles and unassigned role slots from saved presets without rewriting existing Conversation snapshots/settings.
+- Remove per-Conversation timeout overrides through migration `0023_workspace_only_timeouts`, fencing stale edits while preserving immutable snapshots and explicitly saved Workspace policies. Offer Workspace turn limits of 30 minutes, 1 hour and 2 hours, defaulting to 1 hour; keep idle sleep and shorter internal safety waits separate.
+- Add private authored documents, session manifests, pinned invocation/link records and the nullable public invocation correlation field through Relay migrations `0018`–`0021` and Core migration `0012`. Procedure bodies remain private; existing messages and IDs are preserved.
+- Add the explicit `/skills` catalog/picker and guarded invocation infrastructure without enabling production publication. Supported sessions lacking a selected publication report Pending; a new session captures current publications, while reconnect/resume retains existing pins. Unsupported Harness invocation remains disabled.
+- Keep local-control protocol v25, the existing Runtime pin and the single-user, loopback-only deployment model. Retain the known Runtime recovery/native-library caveats; exact-artifact clean-account/reopen/genuine-Pi acceptance and required CI remain release gates.
+
+## 0.0.33
+
+Release overview: [Bounded connection cleanup and content-page settings](docs/releases/v0.0.33.md).
+
+- Release production-proxy connections when browser consumers disconnect, propagate premature upstream failure, and dispose of fully parsed but unread responses without breaking normal HTTP completion or socket reuse.
+- Make both SSE routes release subscriptions and heartbeat timers across disconnect, asynchronous setup, response failure, and shutdown. Add real-HTTP regressions, including 100 disconnect cycles per route and backpressure cancellation.
+- Handle deferred libSQL cleanup unlinking an optional diagnostic sidecar between open and descriptor validation. Accept only a genuinely absent private sidecar while retaining file-safety checks and rejecting replacements or an unlinked main database.
+- Isolate optional diagnostic I/O in a child process so forced timeout/shutdown during native libSQL execution cannot abort the Channels host. Preserve bounded shutdown, journal formats, private projections and existing recovery coverage. This contains the reproduced worker-termination abort, not every possible native-library or Runtime failure.
+- Move Workspace and Conversation settings, people/permissions, and preset editing into content pages. Persist current Conversation roles, model/effort overrides, guidance, and timeouts separately from immutable creation snapshots; validate and prepare creation working folders before publication.
+- Generate new typed resource IDs with UUIDv7 while preserving the existing prefixed 32-hex shape and acceptance of existing IDs. Add the core `uuid` dependency; message sequences remain authoritative and UUID timestamps are public.
+- Add private Relay migrations `0016_conversation_settings` and `0017_creation_folder_preparation`; advance local-control protocol to v25. Keep the public database schema and Runtime pin `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732` unchanged from v0.0.32.
+- Skip runner jobs for draft PRs and use bundled Playwright browsers in CI; ready-for-review PRs, main commits, and releases retain their verification gates.
+- Retain the known Runtime resume/PID-publication and recovery/context-reconstruction limitations. Other native Neon abort mechanisms have not been ruled out; historical ENOBUFS causality and the 24–48-hour connection soak remain unverified.
+
+## 0.0.32
+
+Release overview: [Conversation folders and consistent action controls](docs/releases/v0.0.32.md).
+
+- Add flat Workspace folders with create/rename, optional creation-time filing, Move/unfile, empty/Unfiled groups, remembered collapse preferences and collapsed unread/mention totals.
+- Keep folder organization separate from permissions, agent context, private Presets, source/working scopes, lifecycle and thread/session identity. Fence stale background metadata responses without reopening stable subscriptions.
+- Use compact folder navigation, quick-create plus vertical popup actions, matching text sizes and aligned borderless action controls. Highlight the active Conversation rather than its folder; keep the existing Workspace selector.
+- Add public migration `0011_conversation_folders`; existing Conversations become Unfiled without rewriting messages or bindings. Keep the private Relay schema, local-control protocol v24, Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732` and dependencies unchanged from v0.0.31.
+- Retain the known Runtime resume/PID-publication race, recovery/context-reconstruction and intermittent native Neon database-abort limitations. This release does not claim to fix them or introduce shadcn/ui.
+
+## 0.0.31
+
+Release overview: [Reusable Conversation presets](docs/releases/v0.0.31.md).
+
+- Add editable Workspace presets and Exploration, Feature delivery, and Incident/debug starting points. Assign existing agents to roles, review optional Conversation model/effort defaults and guidance, then create explicitly.
+- Save independent creation snapshots so later preset edits or deletion do not change existing Conversations. Apply settings to initial and replacement sessions, including threads, without modifying Workspace agent configuration.
+- Recover exact preset-save and Conversation-create retries, reject stale edits, and isolate late editor responses from the currently selected draft.
+- Add private Relay migration `0015_conversation_presets` for presets and creation snapshots. Keep the public Conversation schema, local-control protocol v24, Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`, and dependencies unchanged from v0.0.30.
+- Retain the documented recovery/context-reconstruction and intermittent native Neon database-abort limitations. Disabled-model readiness for existing agents remains separate lifecycle work.
+
+## 0.0.30
+
+Release overview: [Restore mention-based agent handoffs](docs/releases/v0.0.30.md).
+
+- Restore intentional agent-response mentions as handoffs to eligible existing sessions in the same conversation or thread. No new messaging tool is required.
+- Keep each human's browser-local sticky recipient independent: incoming agent handoffs and replies never change the destination of that human's follow-ups.
+- Preserve recipient wake policies, permissions, archive/retirement fences and explicit Stop. Agent handoffs do not start unbound agents or resume stopped ones; unaddressed agent replies do not wake peers, including under `all_messages`.
+- Keep supplied API `to` authoritative, including `[]`; exclude code, quotations and escaped mentions from implicit routing.
+- Keep Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`, protocol v24, dependencies and database schemas unchanged from v0.0.29. Existing recovery/context-reconstruction and native Neon database-abort limitations remain.
+
+## 0.0.29
+
+Release overview: [Simpler composer and thread-only message menus](docs/releases/v0.0.29.md).
+
+- Remove the composer recipient dropdown without a replacement indicator or helper text. Keep attachment on the left and Send on the right in main conversations and threads.
+- Remove the separate Reply action. Message popups offer only Start/Open thread; thread messages no longer show an otherwise empty actions menu.
+- Keep intentional mention selection, per-human/conversation sticky follow-ups, thread defaults and Send-triggered activation. Preserve saved retry metadata, backend reply support, permissions and independent thread sessions/frozen context.
+- Keep Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`, protocol v24, dependencies and database schemas unchanged from v0.0.28. Browser-login/dev-instance isolation improvements and CI/CD changes remain separate work.
+- Retain the recovery/context-reconstruction and intermittent native Neon database-abort limitations disclosed in v0.0.28; this UI patch does not claim to fix them.
+
+## 0.0.28
+
+Release overview: [Agent recovery without installation-wide transcript scans](docs/releases/v0.0.28.md).
+
+- Recover and inspect exact owner-scoped sessions without scanning every saved transcript. Bound full-transcript validation to four readers per Runtime module and one per path, cancel queued/active read work safely, and keep guards occupied until physical settlement.
+- Make explicit Restart resume the same transcript first, then permit controlled replacement in the same Conversation only after confirmed shutdown. Retain original transcripts/history and bounded public context; ordinary Start and background recovery never automatically replace existing sessions.
+- Reserve recovery with a separate durable lease, reject competing lifecycle actions, and atomically commit replacement generation/history with its no-replay cursor boundary so cleanup failures cannot replay captured commands.
+- Carry forward the emergency recovery build's cancellation and exact-manifest-version package verification. Document the manual, checksum-verified upgrade path from `0.0.27-recovery.0` without resetting product data or Runtime resume material.
+- Pin Runtime `f0ffbfcc5f24e75174bff1919aa5cd41ce22d732`. Keep local-control protocol v24, dependencies and database schemas unchanged.
+- Accept imperfect context reconstruction for now: repeated fallback replacements of a Fresh session can narrow recovered public context while the Conversation and retained transcripts remain intact. Do not claim a fix for the previously disclosed intermittent native Neon database abort.
+
+## 0.0.27
+
+Release overview: [Select once and start agents on Send](docs/releases/v0.0.27.md).
+
+- Unify per-person, browser-local recipient selection across main conversations and threads, with a visible recipient control, intentional mention switching, Reply and sticky follow-ups. Incoming messages and generated replies cannot redirect selection.
+- Start eligible never-bound addressed agents on Send, including later Sends and explicit multiple recipients. Preserve saved questions, retry identity, pending work, permissions, archive restrictions and explicit Stop; never implicitly resume or replace an existing binding.
+- Keep broadcasts and multiple-recipient overrides message-only without replacing the sticky selection. Broadcasts do not start idle or resume stopped agents; unclear recipients do not start the roster.
+- Add the borderless message-actions menu with separate Reply and Start/Open thread actions, and remember open threads per person/channel. Opening, restoring and drafting start nobody; thread sessions and frozen context remain separate.
+- Fix manual-Start/Send ordering, omitted-recipient retry inference and retained Reply intents crossing authenticated identity changes, while preserving cancellation and retirement fences.
+- Make supplied API `to` authoritative, including an empty list, rather than unioning body mentions. Generated agent text is not a routing command, and unaddressed messages no longer implicitly wake a sole agent. SDK clients should submit their effective targets explicitly; see the release overview.
+- Keep protocol v24, Runtime `86bd35ea846740f55e83038b3ff823d9ddd67e34`, dependencies and database schemas unchanged from v0.0.26. Presets, Copy/link actions and automatic history synchronization remain outside this release.
+- Retain the previously disclosed intermittent native Neon database-abort limitation; this release does not claim to fix it or waive required CI and artifact-acceptance gates.
+
+## 0.0.26
+
+Release overview: [Conversation threads with isolated agent sessions](docs/releases/v0.0.26.md).
+
+- Add one durable side-panel thread per top-level message, live reply counts and thread-local message streams, drafts and retry keys.
+- Give each agent a separate thread session seeded once with bounded public parent context through first thread creation, always retaining the root. Keep the snapshot frozen across reopen, delayed startup and restart; never clone private Runtime history or automatically sync later messages.
+- Inherit current parent participants, lifecycle and working folders. Keep thread Start, Stop and session controls scoped while preserving parent permissions and archive safeguards.
+- Fence retired thread work across recovery, cancellation and delayed delivery, including authoritative rejection of new obsolete responses while allowing already-committed responses to be retried.
+- Return results to main manually: ask for a summary, copy it and post a new message. Copy-message, Share-to-conversation and reusable presets are not included.
+- Add public Conversation migration 0010 for thread relationships and frozen context. Keep local-control protocol v24, the existing Runtime pin and dependencies unchanged. Back up the complete stopped data directory before upgrading; downgrading migrated data is unsupported.
+
+## 0.0.25
+
+Release overview: [Durable Pi sessions without destructive recovery fallbacks](docs/releases/v0.0.25.md).
+
+- Fix resume rejection of valid native Pi journals containing context edits, usage records or additional tree roots. Remove stale entry/role allowlists while retaining ownership, private-file, identity, bounded-read and ancestry checks.
+- Remove automatic replacement when an existing session cannot be resumed. Preserve managed identity, binding generation, context policy and pending-message cursor rather than silently starting over.
+- Retire and suspend replaced sessions without discarding their resume manifests. Convert older queued automatic-destroy cleanup intents to non-destructive suspend attempts and retain visible failures instead of claiming successful cleanup of missing sessions.
+- Record safe, bounded resume-failure reasons and stop recommending replacement as the ordinary recovery action. Keep worker-exit confirmation, delivery fencing and explicit-stop resume protection.
+- Pin Runtime `86bd35ea846740f55e83038b3ff823d9ddd67e34`. Keep local-control protocol v24 and database schemas unchanged. Previously discarded manifests are not automatically reconstructed.
+- Make development checks focused by default, fix web test-name filter forwarding, consolidate redundant browser coverage and split browser CI across three isolated single-worker runners. Superseded PR checks are cancelled; release gates are unchanged.
+
 ## 0.0.24
 
 Release overview: [Clearer agent controls and reliable manual recovery](docs/releases/v0.0.24.md).

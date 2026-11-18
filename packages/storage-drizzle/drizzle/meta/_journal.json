@@ -71,6 +71,34 @@
       "when": 1788115200000,
       "tag": "0009_conversation_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1788228000000,
+      "tag": "0010_conversation_threads",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1788314400000,
+      "tag": "0011_conversation_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788314400001,
+      "tag": "0012_authored_invocation_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1788314400002,
+      "tag": "0013_message_skill_metadata",
+      "breakpoints": true
     }
   ]
 }

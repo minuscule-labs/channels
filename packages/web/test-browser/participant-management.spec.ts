@@ -38,7 +38,7 @@ test("agent-first roster editing preserves existing human and service participan
     await page.getByRole("button", { name: "Settings", exact: true }).click();
   };
   await openSettings();
-  const dialog = page.getByRole("dialog", { name: "Manage #existing-participant-regression" });
+  const dialog = page.getByRole("main", { name: "Conversation settings" });
   await expect(dialog.getByText("You are included automatically.", { exact: true })).toBeVisible();
   await expect(dialog.getByRole("checkbox", { name: /Workspace Member/ })).toHaveCount(0);
   await expect(dialog.getByRole("checkbox", { name: /Existing human participant/ })).toBeChecked();
@@ -54,6 +54,7 @@ test("agent-first roster editing preserves existing human and service participan
     }
   });
   await dialog.getByRole("button", { name: "Save participants" }).click();
+  await dialog.getByRole("link", { name: "Back to Conversation", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(new Set(savedIds[0])).toEqual(new Set([ownerId, agentId, ...existingIds]));
 
@@ -64,6 +65,7 @@ test("agent-first roster editing preserves existing human and service participan
   await expect(serviceChoice).toBeChecked();
   await serviceChoice.uncheck();
   await dialog.getByRole("button", { name: "Save participants" }).click();
+  await dialog.getByRole("link", { name: "Back to Conversation", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(new Set(savedIds[1])).toEqual(new Set([ownerId, agentId, existingIds[0]]));
 

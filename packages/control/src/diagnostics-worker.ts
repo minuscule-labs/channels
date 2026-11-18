@@ -1,4 +1,3 @@
-import { parentPort, workerData } from "node:worker_threads";
 import { DiagnosticJournal, DiagnosticQueryError } from "@minu/channels-relay-storage-drizzle";
 import { diagnosticRecord, deliveryRecord, type DeliveryScope, type DiagnosticScope, type DiagnosticTurnReference } from "@minu/channels-relay";
 
@@ -14,14 +13,31 @@ interface Request {
   reference?: DiagnosticTurnReference;
   gap?: boolean;
 }
-const port = parentPort!;
-const epoch: string = workerData.epoch;
+if (!process.send) throw new Error("Diagnostic process requires IPC");
+process.once("disconnect", () => process.exit(0));
+const configuration = await new Promise<{ path: string; epoch: string }>(resolve => {
+  process.once("message", (message: unknown) => {
+    const input = message as { type?: unknown; path?: unknown; epoch?: unknown } | null;
+    if (!input || input.type !== "initialize" || typeof input.path !== "string" || !input.path.length || input.path.length > 4096
+      || typeof input.epoch !== "string" || !input.epoch.length || input.epoch.length > 128) {
+      throw new Error("Invalid diagnostic process initialization");
+    }
+    resolve({ path: input.path, epoch: input.epoch });
+  });
+});
+const epoch = configuration.epoch;
 let journal: DiagnosticJournal | undefined;
 let stopped = false;
 let deliveryOff = false;
 let pruning = false;
 let queue = Promise.resolve();
-const send = (message: object) => port.postMessage({ ...message, epoch });
+const send = (message: object, done?: () => void) => {
+  if (!process.connected) return;
+  process.send!({ ...message, epoch }, error => {
+    if (error) process.exit(1);
+    else done?.();
+  });
+};
 const unavailable = () => {
   if (stopped) return;
   stopped = true;
@@ -30,7 +46,7 @@ const unavailable = () => {
 };
 
 try {
-  journal = await DiagnosticJournal.open(workerData.path, epoch);
+  journal = await DiagnosticJournal.open(configuration.path, epoch);
   send({ type: "ready", gap: journal.recordingGap, deliveryGap: journal.delivery.recordingGap });
 } catch { unavailable(); }
 
@@ -42,7 +58,7 @@ const prune = setInterval(() => {
 }, 60_000);
 prune.unref();
 
-port.on("message", (request: Request) => {
+process.on("message", (request: Request) => {
   if (stopped || request.epoch !== epoch || !journal) return;
   queue = queue.then(async () => {
     if (stopped) return;
@@ -68,8 +84,7 @@ port.on("message", (request: Request) => {
       await journal!.close();
       stopped = true;
       clearInterval(prune);
-      send({ type: "closed" });
-      port.close();
+      send({ type: "closed" }, () => process.disconnect());
     } else {
       try {
         if (deliveryOff && request.type.startsWith("delivery_")) throw new Error("Delivery diagnostics unavailable");

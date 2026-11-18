@@ -42,7 +42,7 @@ A future Conversation working scope may narrow the Runtime working directory wit
 - expose only a redacted or relative summary in ordinary browser responses; and
 - apply to newly started sessions or explicit **New session** replacements, never mutate an active session.
 
-This is filesystem scoping, not nested Conversations. Conversational threads or subconversations are a separate future product decision.
+This is filesystem scoping, not conversational context isolation. [Message-based threads](conversation-threads.md) use separate Conversation/session scopes and inherit the parent's working folders; they do not create filesystem sandboxes. Independently named subconversations remain outside that feature.
 
 ## Reusable Workspace agents
 
@@ -115,6 +115,10 @@ The model allowlist enables models per Runtime adapter and filters the adapter's
 A native Codex harness should register as its own MinuRuntime adapter and implement the same capability/start contract. This remains distinct from selecting an `openai-codex` provider through the Pi adapter. Other harnesses can expose the common model and reasoning fields, omit unsupported capabilities, and later contribute capability-defined options without changing Conversations core or the collaboration schema.
 
 Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the launch specification with which they were created. Harness-discovered, per-agent skill selection follows the same lifecycle; [`skills.md`](skills.md) defines its MVP boundary and documents later invocation and Conversations-authored skill options.
+
+## Shared workspace/channel instructions
+
+[Authored content](authored-content.md) adds private published workspace/channel defaults alongside each agent's existing persona. Newly created sessions capture immutable publication references; threads inherit their parent's channel scope. Retained sessions and recovery keep their original manifest, while explicit New session applies current publications. The owner/admin effective-context view distinguishes current publications from the revisions supplied at launch. Drafts and full playbook procedures are not injected into standing instructions; explicit playbook invocation remains unfinished.
 
 ## Current implementation
 

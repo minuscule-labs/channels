@@ -47,10 +47,14 @@ if (!existsSync(join(root, "LICENSE"))) fail("LICENSE is required before the fir
 if (typeof metadata.license !== "string" || !metadata.license) fail("package.json license metadata is required.");
 const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
 if (!changelog.includes(`## ${version}`)) fail(`CHANGELOG.md is missing a ${version} section.`);
+const runtimeSource = JSON.parse(readFileSync(join(root, "runtime-source.json"), "utf8"));
+if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(runtimeSource.repository ?? "")
+  || !/^[a-f0-9]{40}$/.test(runtimeSource.commit ?? "")) {
+  fail("runtime-source.json must pin a GitHub repository and a full Runtime commit.");
+}
 
 const branch = run("git", ["branch", "--show-current"], true).trim();
-console.log(`release: validating ${tag} from ${branch || "detached HEAD"}`);
-run("pnpm", ["release:check"]);
+console.log(`release: validating tag metadata for ${tag} from ${branch || "detached HEAD"}`);
 
 if (run("git", ["status", "--porcelain", "--untracked-files=all"], true).trim()) {
   fail("validation changed the working tree; refusing to tag moving release input.");
@@ -64,7 +68,7 @@ const originMain = run("git", ["rev-parse", "origin/main"], true).trim();
 if (head !== originMain) fail("release input must exactly match the freshly fetched origin/main.");
 
 if (dryRun) {
-  console.log(`release: dry run complete. ${tag} was not created.`);
+  console.log(`release: metadata dry run complete. ${tag} was not created; CI and artifact acceptance are separate gates.`);
   process.exit(0);
 }
 if (branch !== "main") fail("release tags must be created from main.");
@@ -73,7 +77,7 @@ run("git", ["tag", "-a", tag, "-m", `MinuChannels ${tag}`]);
 if (push) {
   run("git", ["push", "origin", "main"]);
   run("git", ["push", "origin", tag]);
-  console.log(`release: pushed ${tag}; GitHub Actions will prepare draft release artifacts for acceptance before publication.`);
+  console.log(`release: pushed ${tag}; GitHub Actions must verify successful main CI for this exact commit before preparing draft artifacts.`);
 } else {
   console.log(`release: created ${tag}. Push it with: git push origin ${tag}`);
 }

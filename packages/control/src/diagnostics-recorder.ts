@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Worker } from "node:worker_threads";
+import { createDiagnosticProcess, type DiagnosticWorker, type DiagnosticWorkerOptions } from "./diagnostics-process.ts";
 import { DeliveryRecorder } from "./delivery-recorder.ts";
 import { deliveryScope, type DeliveryScope, type DeliveryHistory, type DeliveryDetail } from "@minu/channels-relay";
 import {
@@ -20,16 +20,16 @@ export interface DiagnosticRecorderOptions {
   monotonicNow?: () => number;
   startupTimeoutMs?: number;
   ioTimeoutMs?: number;
-  workerFactory?: (url: URL, options: { workerData: { path: string; epoch: string } }) => Worker;
+  workerFactory?: (url: URL, options: DiagnosticWorkerOptions) => DiagnosticWorker;
 }
 interface Tracked { record: DiagnosticRecord; start: number }
 interface ReadRequest { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
 
-/** All I/O is off-thread. Neither begin(), event(), nor finish() waits or throws into lifecycle work. */
+/** All I/O is off-process. Neither begin(), event(), nor finish() waits or throws into lifecycle work. */
 export class DiagnosticRecorder {
   readonly epoch = randomUUID();
   readonly delivery: DeliveryRecorder;
-  private worker?: Worker;
+  private worker?: DiagnosticWorker;
   private state: "starting" | "ready" | "unavailable" | "closed" = "starting";
   private tracked = new Map<string, Tracked>();
   private dirty = new Map<string, DiagnosticRecord>();
@@ -51,7 +51,7 @@ export class DiagnosticRecorder {
     this.delivery = new DeliveryRecorder(this.epoch, () => !this.closing && (this.state === "ready" || this.state === "starting"), () => this.flush(), this.now, this.monotonic);
     try {
       if (typeof options.path !== "string" || options.path.length > 4096) throw new Error("Invalid diagnostic path");
-      this.worker = (options.workerFactory ?? ((url, config) => new Worker(url, config)))(
+      this.worker = (options.workerFactory ?? createDiagnosticProcess)(
         new URL("./diagnostics-worker.js", import.meta.url), { workerData: { path: options.path, epoch: this.epoch } },
       );
       this.worker.on("message", (message) => { try { this.receive(message); } catch { this.disable(); } });

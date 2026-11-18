@@ -1,5 +1,5 @@
 import { ConversationClient } from "@minu/channels-core/client";
-import { ConversationEventHub, type EventHubMessage } from "./conversation-event-hub";
+import { ConversationEventHub, type EventHubMessage, type EventSubscriptionOptions } from "./conversation-event-hub";
 
 const client = new ConversationClient((import.meta.env.VITE_CHANNELS_API_URL ?? "").replace(/\/$/, ""));
 const hub = new ConversationEventHub((ids, options) => client.eventsMany(ids, options));
@@ -42,8 +42,11 @@ setInterval(() => {
     }
     if (data?.type !== "subscribe") return;
     const ids: unknown = data.ids;
-    if (!Array.isArray(ids) || !ids.length || ids.length > 1_000
-      || !ids.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256 && !id.includes("\0"))) {
+    const validId = (id: unknown): id is string => typeof id === "string" && id.length > 0 && id.length <= 256 && !id.includes("\0");
+    if (!Array.isArray(ids) || !ids.length || ids.length > 1_000 || !ids.every(validId)
+      || (data.mode !== undefined && !["active", "recent", "observe", "suspended"].includes(data.mode))
+      || (data.parentId !== undefined && !validId(data.parentId))
+      || (data.suspendedIds !== undefined && (!Array.isArray(data.suspendedIds) || data.suspendedIds.length > 1_000 || !data.suspendedIds.every(validId)))) {
       port.postMessage({ type: "unavailable" });
       return remove(port);
     }
@@ -56,7 +59,7 @@ setInterval(() => {
         if (message.type === "ready" && state.inFlight === 0) state.resync = false;
       }
       port.postMessage(message);
-    });
+    }, { mode: data.mode, parentId: data.parentId, suspendedIds: data.suspendedIds } as EventSubscriptionOptions);
   };
   port.onmessageerror = () => remove(port);
   port.start();

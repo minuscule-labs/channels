@@ -19,9 +19,13 @@ export {
   ConversationPayloadTooLargeError,
   ConversationService,
   ConversationValidationError,
+  resolveMessageTargets,
 } from "./conversation-service.ts";
 export {
+  ConversationMessageIdConflictError,
   ConversationAttachmentUnavailableError,
+  ConversationFolderConflictError,
+  ConversationResponseRetiredError,
   InMemoryConversationStorage,
   type ConversationAttachmentRecord,
   type ConversationAttachmentStatus,
@@ -39,12 +43,16 @@ export {
   type ConversationHttpServer,
   type ConversationHttpServerOptions,
 } from "./http-server.ts";
-export { assertConversationLifecycle } from "./types.ts";
+export { assertConversationLifecycle, normalizeConversationFolderName } from "./types.ts";
 export type {
   AddWorkspaceMemberInput,
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
   Conversation,
   ConversationCursorStore,
   ConversationEvent,
+  ConversationFolder,
   ConversationLifecycle,
   ConversationLifecycleState,
   EffectiveConversationLifecycle,

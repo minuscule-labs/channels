@@ -101,7 +101,7 @@ process.on("SIGTERM", () => process.exit(0));
     await relay.start();
   }
   await attach();
-  await human.postMessage(conversation.id, { participantId: "human", body: "Inspect this image", attachmentIds: [image.id] }, { idempotencyKey: "vision-once" });
+  await human.postMessage(conversation.id, { participantId: "human", to: ["agent"], body: "Inspect this image", attachmentIds: [image.id] }, { idempotencyKey: "vision-once" });
   await waitFor(async () => (await client.listMessages(conversation.id)).at(-1)?.body === "PIXELS_OK");
   await relay.stop(); relay = undefined;
   await server.close(); server = undefined;
@@ -114,7 +114,7 @@ process.on("SIGTERM", () => process.exit(0));
   assert.equal(reopened[0].attachments[0].id, image.id);
   assert.deepEqual((await client.readAttachmentContent(conversation.id, image.id)).bytes, new Uint8Array(pixels));
   await attach();
-  await client.postMessage(conversation.id, { participantId: "human", body: "Recheck the earlier image" });
+  await client.postMessage(conversation.id, { participantId: "human", to: ["agent"], body: "Recheck the earlier image" });
   await waitFor(async () => (await client.listMessages(conversation.id)).length === 4);
   assert.equal((await client.listMessages(conversation.id)).at(-1).body, "PIXELS_OK");
   const requests = (await readFile(requestsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line));
@@ -124,7 +124,7 @@ process.on("SIGTERM", () => process.exit(0));
 
   // Hold the owned worker's final get_state, after Relay and bridge capability reads.
   await writeFile(holdCapability, "3");
-  const canceled = await client.postMessage(conversation.id, { participantId: "human", body: "Cancel during native image preparation" });
+  const canceled = await client.postMessage(conversation.id, { participantId: "human", to: ["agent"], body: "Cancel during native image preparation" });
   await waitFor(async () => readFile(capabilityHeld).then(() => true, () => false));
   canceledTurnId = `conversation:${conversation.id}:agent:${canceled.id}`;
   assert.equal((await runtime.turn(session.id, canceledTurnId))?.status, "running");
@@ -136,7 +136,7 @@ process.on("SIGTERM", () => process.exit(0));
   assert.equal((await readFile(requestsFile, "utf8")).trim().split("\n").length, 2);
 
   // A later turn must run even while the canceled read remains physically outstanding.
-  const followup = await client.postMessage(conversation.id, { participantId: "human", body: "Continue after canceled preparation" });
+  const followup = await client.postMessage(conversation.id, { participantId: "human", to: ["agent"], body: "Continue after canceled preparation" });
   await waitFor(() => relay.cursor("agent") >= followup.sequence);
   assert.equal((await client.listMessages(conversation.id)).at(-1).body, "PIXELS_OK");
   await writeFile(releaseCapability, "release");

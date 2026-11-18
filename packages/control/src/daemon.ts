@@ -44,6 +44,8 @@ export interface LocalControlDaemonOptions {
   port?: number;
   runtimes?: Readonly<Record<string, LocalManagedRuntimePort>>;
   statusTimeoutMs?: number;
+  /** Authored Skill sending is enabled by default; false explicitly disables publication. */
+  authoredSkillPublicationEnabled?: boolean;
   stopStartedSessionsOnClose?: boolean;
   /** Replace stale offline managed sessions during startup for a local product owner. */
   autoResumeOfflineAgents?: boolean;
@@ -116,7 +118,7 @@ export async function createLocalControlDaemon(
       diagnostics,
       now: options.now,
       stopStartedSessionsOnClose: options.stopStartedSessionsOnClose,
-      autoResumeActorIdentityId: options.autoResumeOfflineAgents ? options.currentHumanIdentityId : undefined,
+      autoResumeOfflineAgents: options.autoResumeOfflineAgents,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,
     });
@@ -139,6 +141,7 @@ export async function createLocalControlDaemon(
         onAudit: options.onAudit,
       }),
       statusTimeoutMs: options.statusTimeoutMs,
+      authoredSkillPublicationEnabled: options.authoredSkillPublicationEnabled ?? true,
     });
     server = await createLocalControlHttpServer({
       service,

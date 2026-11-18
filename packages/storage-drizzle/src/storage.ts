@@ -1,10 +1,11 @@
-import { createClient, type Client } from "@libsql/client";
-import { assertConversationLifecycle, ConversationAttachmentUnavailableError } from "@minu/channels-core";
+import { createClient, LibsqlError, type Client } from "@libsql/client";
+import { assertConversationLifecycle, ConversationMessageIdConflictError, ConversationAttachmentUnavailableError, ConversationFolderConflictError, ConversationResponseRetiredError, normalizeConversationFolderName } from "@minu/channels-core";
 import { chmod, mkdir } from "node:fs/promises";
 import type {
   Conversation,
   ConversationAttachmentRecord,
   ConversationCursorStore,
+  ConversationFolder,
   ConversationLifecycle,
   ConversationMessage,
   ConversationMetadata,
@@ -23,13 +24,27 @@ import type {
   WorkspaceMember,
   WorkspaceMemberUpdateResult,
 } from "@minu/channels-core";
-import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, DrizzleQueryError, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "./schema.ts";
+
+function threadMetadata(row: typeof schema.conversations.$inferSelect): Pick<ConversationMetadata, "thread"> {
+  return row.parentConversationId && row.rootMessageId ? {
+    thread: {
+      parentConversationId: row.parentConversationId,
+      rootMessageId: row.rootMessageId,
+      context: row.threadContext ?? [],
+    },
+  } : {};
+}
+
+function conversationFolder(row: typeof schema.conversationFolders.$inferSelect): ConversationFolder {
+  return { id: row.id, workspaceId: row.workspaceId, name: row.name, createdAt: row.createdAt, updatedAt: row.updatedAt };
+}
 
 export interface DrizzleLibSqlStorageOptions {
   url: string;
@@ -378,15 +393,84 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     }));
   }
 
+  async createConversationFolder(folder: ConversationFolder): Promise<ConversationFolder> {
+    const name = normalizeConversationFolderName(folder.name);
+    const workspace = await this.database.query.workspaces.findFirst({ where: eq(schema.workspaces.id, folder.workspaceId) });
+    if (!workspace) throw new Error("Folder Workspace not found");
+    const [created] = await this.database.insert(schema.conversationFolders)
+      .values({ ...folder, name, nameKey: name.toLowerCase() }).onConflictDoNothing().returning();
+    if (!created) throw new ConversationFolderConflictError("Folder id or name already exists in this Workspace");
+    return conversationFolder(created);
+  }
+
+  async getConversationFolder(folderId: string): Promise<ConversationFolder | undefined> {
+    const row = await this.database.query.conversationFolders.findFirst({ where: eq(schema.conversationFolders.id, folderId) });
+    return row ? conversationFolder(row) : undefined;
+  }
+
+  async listWorkspaceConversationFolders(workspaceId: string): Promise<ConversationFolder[]> {
+    const rows = await this.database.select().from(schema.conversationFolders)
+      .where(eq(schema.conversationFolders.workspaceId, workspaceId));
+    return rows.map(conversationFolder)
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id));
+  }
+
+  async updateConversationFolderName(folderId: string, name: string, updatedAt: string): Promise<ConversationFolder | undefined> {
+    const normalized = normalizeConversationFolderName(name);
+    try {
+      // A single write avoids deferred read-to-write transaction upgrades under contention.
+      // The Workspace/name-key unique index decides competing renames atomically.
+      const [updated] = await this.database.update(schema.conversationFolders)
+        .set({ name: normalized, nameKey: normalized.toLowerCase(), updatedAt })
+        .where(eq(schema.conversationFolders.id, folderId)).returning();
+      return updated ? conversationFolder(updated) : undefined;
+    } catch (error) {
+      const cause = error instanceof DrizzleQueryError ? error.cause : error;
+      // SQLite's extended UNIQUE constraint code (not a busy or other constraint error).
+      if (cause instanceof LibsqlError && cause.rawCode === 2067) {
+        throw new ConversationFolderConflictError("Folder name already exists in this Workspace");
+      }
+      throw error;
+    }
+  }
+
+  async assignConversationFolder(conversationId: string, folderId: string | null): Promise<ConversationMetadata | undefined> {
+    // Migration 0011's trigger validates folder existence and Workspace scope in
+    // this same write. Excluding threads also rejects independent unfiling.
+    const [updated] = await this.database.update(schema.conversations).set({ folderId })
+      .where(and(eq(schema.conversations.id, conversationId), isNull(schema.conversations.parentConversationId)))
+      .returning({ id: schema.conversations.id });
+    if (!updated) {
+      const existing = await this.database.query.conversations.findFirst({
+        columns: { parentConversationId: true }, where: eq(schema.conversations.id, conversationId),
+      });
+      if (existing?.parentConversationId) throw new Error("Threads cannot be independently filed");
+      return undefined;
+    }
+    return await this.getConversationMetadata(conversationId);
+  }
+
   async createConversation(conversation: Conversation): Promise<Conversation> {
+    const folderId = conversation.folderId ?? null;
+    if (conversation.thread && folderId !== null) throw new Error("Threads cannot be independently filed");
     await this.database.transaction(async (transaction) => {
+      if (folderId !== null) {
+        const [folder] = await transaction.select({ id: schema.conversationFolders.id }).from(schema.conversationFolders)
+          .where(and(eq(schema.conversationFolders.id, folderId),
+            eq(schema.conversationFolders.workspaceId, conversation.workspaceId))).limit(1);
+        if (!folder) throw new Error("Folder must belong to the Conversation Workspace");
+      }
       await transaction.insert(schema.conversations).values({
         id: conversation.id,
         workspaceId: conversation.workspaceId,
         name: conversation.name,
+        folderId,
         createdAt: conversation.createdAt,
         nextSequence: 1,
         rosterRevision: conversation.rosterRevision,
+        parentConversationId: conversation.thread?.parentConversationId,
+        rootMessageId: conversation.thread?.rootMessageId,
+        threadContext: conversation.thread?.context,
       });
       if (conversation.participants.length > 0) {
         await transaction.insert(schema.participants).values(
@@ -406,6 +490,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
     });
     return {
       ...conversation,
+      folderId,
       participants: conversation.participants.map((participant) => ({ ...participant })),
       messages: [],
     };
@@ -431,7 +516,11 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       .from(schema.participants)
       .where(eq(schema.participants.conversationId, conversationId))
       .orderBy(asc(schema.participants.position));
+    const parent = conversation.parentConversationId
+      ? await this.getConversationMetadata(conversation.parentConversationId) : undefined;
     return {
+      ...threadMetadata(conversation),
+      folderId: conversation.folderId,
       id: conversation.id,
       workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
       name: conversation.name,
@@ -446,10 +535,16 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         profile: participant.profile ?? undefined,
         status: participant.status,
       })),
+      ...(parent ? { participants: parent.participants, rosterRevision: parent.rosterRevision } : {}),
     };
   }
 
   async getConversationLifecycle(conversationId: string): Promise<ConversationLifecycle | undefined> {
+    const conversation = await this.database.query.conversations.findFirst({
+      columns: { parentConversationId: true },
+      where: eq(schema.conversations.id, conversationId),
+    });
+    if (conversation?.parentConversationId) return this.getConversationLifecycle(conversation.parentConversationId);
     const lifecycle = await this.database.query.conversationLifecycles.findFirst({
       where: eq(schema.conversationLifecycles.conversationId, conversationId),
     });
@@ -529,6 +624,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         id: schema.conversations.id,
         workspaceId: schema.conversations.workspaceId,
         name: schema.conversations.name,
+        folderId: schema.conversations.folderId,
         createdAt: schema.conversations.createdAt,
       }).from(schema.conversations).where(eq(schema.conversations.id, conversationId)).limit(1);
       const previous = await transaction.select({ id: schema.participants.id })
@@ -565,23 +661,28 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         .filter(({ id }) => !nextIds.has(id))
         .map(({ id }) => id);
       if (removedParticipantIds.length > 0) {
-        const latest = await transaction.select({
-          sequence: sql<number>`coalesce(max(${schema.messages.sequence}), 0)`,
-        }).from(schema.messages).where(eq(schema.messages.conversationId, conversationId));
-        const headSequence = latest[0]?.sequence ?? 0;
-        for (const participantId of removedParticipantIds) {
-          await transaction.insert(schema.agentCursors).values({
-            conversationId: conversationId,
-            participantId,
-            lastProcessedSequence: headSequence,
-            updatedAt,
-          }).onConflictDoUpdate({
-            target: [schema.agentCursors.conversationId, schema.agentCursors.participantId],
-            set: {
-              lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${headSequence})`,
+        const scopes = await transaction.select({
+          id: schema.conversations.id, nextSequence: schema.conversations.nextSequence,
+        }).from(schema.conversations).where(or(
+          eq(schema.conversations.id, conversationId),
+          eq(schema.conversations.parentConversationId, conversationId),
+        ));
+        for (const scope of scopes) {
+          const headSequence = scope.nextSequence - 1;
+          for (const participantId of removedParticipantIds) {
+            await transaction.insert(schema.agentCursors).values({
+              conversationId: scope.id,
+              participantId,
+              lastProcessedSequence: headSequence,
               updatedAt,
-            },
-          });
+            }).onConflictDoUpdate({
+              target: [schema.agentCursors.conversationId, schema.agentCursors.participantId],
+              set: {
+                lastProcessedSequence: sql`max(${schema.agentCursors.lastProcessedSequence}, ${headSequence})`,
+                updatedAt,
+              },
+            });
+          }
         }
       }
       if (!conversation) throw new Error(`Conversation disappeared during roster update: ${conversationId}`);
@@ -590,6 +691,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
           id: conversation.id,
           workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
           name: conversation.name,
+          folderId: conversation.folderId,
           createdAt: conversation.createdAt,
           rosterRevision: revisions[0].rosterRevision,
           participants: participants.map((participant) => ({ ...participant })),
@@ -638,7 +740,11 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         .orderBy(asc(schema.messages.sequence)),
     ]);
     const attachmentsByMessage = await this.messageAttachments(messages.map(({ id }) => id));
+    const inherited = conversation.parentConversationId
+      ? await this.getConversationMetadata(conversation.parentConversationId) : undefined;
     return {
+      ...threadMetadata(conversation),
+      folderId: conversation.folderId,
       id: conversation.id,
       workspaceId: conversation.workspaceId ?? "legacy-default-workspace",
       name: conversation.name,
@@ -653,6 +759,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         profile: participant.profile ?? undefined,
         status: participant.status,
       })),
+      ...(inherited ? { participants: inherited.participants, rosterRevision: inherited.rosterRevision } : {}),
       messages: messages.map((message) => ({
         id: message.id,
         conversationId: message.conversationId,
@@ -661,6 +768,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         to: [...message.targets],
         body: message.body,
         replyTo: message.replyTo ?? undefined,
+        ...(message.authoredInvocationId !== null ? { authoredInvocationId: message.authoredInvocationId } : {}),
+        ...(message.authoredSkill !== null ? { authoredSkill: message.authoredSkill } : {}),
         createdAt: message.createdAt,
         attachments: attachmentsByMessage.get(message.id) ?? [],
       })),
@@ -695,6 +804,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       to: [...message.targets],
       body: message.body,
       replyTo: message.replyTo ?? undefined,
+      ...(message.authoredInvocationId !== null ? { authoredInvocationId: message.authoredInvocationId } : {}),
+      ...(message.authoredSkill !== null ? { authoredSkill: message.authoredSkill } : {}),
       createdAt: message.createdAt,
       attachments: attachmentsByMessage.get(message.id) ?? [],
     }));
@@ -792,6 +903,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         targets: message.to,
         body: message.body,
         replyTo: message.replyTo,
+        authoredInvocationId: message.authoredInvocationId,
+        authoredSkill: message.authoredSkill,
         createdAt: message.createdAt,
       });
       const attachments: MessageAttachment[] = [];
@@ -895,7 +1008,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
       const existingResult = await transaction.execute({
         sql: `
           SELECT i.request_fingerprint, m.id, m.conversation_id, m.sequence,
-                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at
+                 m.participant_id, m.targets_json, m.body, m.reply_to, m.created_at, m.authored_invocation_id, m.authored_skill_json
           FROM message_idempotency i
           JOIN messages m ON m.id = i.message_id
           WHERE i.conversation_id = ? AND i.participant_id = ? AND i.idempotency_key = ?
@@ -915,12 +1028,17 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             to: JSON.parse(String(existing.targets_json)) as string[],
             body: String(existing.body),
             replyTo: existing.reply_to === null ? undefined : String(existing.reply_to),
+            ...(existing.authored_invocation_id !== null ? { authoredInvocationId: String(existing.authored_invocation_id) } : {}),
+            ...(existing.authored_skill_json !== null ? { authoredSkill: JSON.parse(String(existing.authored_skill_json)) } : {}),
             createdAt: String(existing.created_at),
             attachments: existing.request_fingerprint === requestFingerprint ? [...(message.attachments ?? [])] : [],
           },
         };
         await transaction.commit();
       } else {
+        if ((await transaction.execute({ sql: "SELECT id FROM messages WHERE id = ? LIMIT 1", args: [message.id] })).rows.length) {
+          throw new ConversationMessageIdConflictError("Message ID is already in use");
+        }
         const allocatedResult = await transaction.execute({
           sql: `
             UPDATE conversations SET next_sequence = next_sequence + 1
@@ -934,8 +1052,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         await transaction.execute({
           sql: `
             INSERT INTO messages
-              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (id, conversation_id, sequence, participant_id, targets_json, body, reply_to, created_at, authored_invocation_id, authored_skill_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           args: [
             message.id,
@@ -946,6 +1064,8 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
             message.body,
             message.replyTo ?? null,
             message.createdAt,
+            message.authoredInvocationId ?? null,
+            message.authoredSkill ? JSON.stringify(message.authoredSkill) : null,
           ],
         });
         for (const [position, attachmentId] of attachmentIds.entries()) {
@@ -1049,7 +1169,7 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         .update(schema.conversations)
         .set({ nextSequence: sql`${schema.conversations.nextSequence}` })
         .where(eq(schema.conversations.id, message.conversationId))
-        .returning({ id: schema.conversations.id });
+        .returning({ id: schema.conversations.id, parentConversationId: schema.conversations.parentConversationId });
       if (!lockedConversation) throw new Error(`Conversation not found: ${message.conversationId}`);
       const [existingDelivery] = await transaction
         .select({ responseMessageId: schema.responseDeliveries.responseMessageId })
@@ -1085,6 +1205,19 @@ export class DrizzleLibSqlConversationStorage implements ConversationStorage, Co
         };
       }
 
+      // Reuse a committed response above before applying retirement. This check
+      // shares the write transaction with allocation, so roster retirement cannot
+      // interleave between the floor read and publishing a new thread response.
+      if (lockedConversation.parentConversationId) {
+        const [cursor] = await transaction.select({ lastProcessedSequence: schema.agentCursors.lastProcessedSequence })
+          .from(schema.agentCursors).where(and(
+            eq(schema.agentCursors.conversationId, message.conversationId),
+            eq(schema.agentCursors.participantId, message.participantId),
+          )).limit(1);
+        if ((cursor?.lastProcessedSequence ?? 0) >= triggerSequence) {
+          throw new ConversationResponseRetiredError("Thread request was retired");
+        }
+      }
       const [allocated] = await transaction
         .update(schema.conversations)
         .set({ nextSequence: sql`${schema.conversations.nextSequence} + 1` })

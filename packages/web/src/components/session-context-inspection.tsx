@@ -1,6 +1,7 @@
 import type { DiagnosticSurface, DiagnosticSurfaceState } from "../lib/operation-diagnostics";
 import { observationLabel } from "../lib/operation-diagnostics";
 import { TriggerLink } from "./trigger-message-link";
+import { SessionIntegrationInspection } from "./session-integration-inspection";
 
 export function SessionContextInspection({ state, surface, loadedSequences, onViewMessage }: {
   state: DiagnosticSurfaceState; surface: DiagnosticSurface;
@@ -44,6 +45,7 @@ export function SessionContextInspection({ state, surface, loadedSequences, onVi
         <p>Available skill commands: {live?.skills.status === "verified" ? `${live.skills.commandIds.join(", ") || (live.skills.complete ? "None" : "No verified identifiers")}${live.skills.complete ? " (verified)" : " (partial evidence)"}` : "Not verified"}</p>
         <p className="text-[var(--muted)]">Available commands are not evidence that skill instructions were loaded or used in a turn.</p>
       </section>
+      <SessionIntegrationInspection snapshot={value.integrations} />
       <section aria-label="Saved future session settings" className="space-y-1">
         <h4 className="font-semibold">Saved settings for future new sessions</h4>
         {saved ? <>

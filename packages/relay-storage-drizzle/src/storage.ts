@@ -1,6 +1,15 @@
 import { createClient, type Client, type ResultSet } from "@libsql/client";
 import { randomUUID } from "node:crypto";
 import type {
+  ConversationSettings,
+  ConversationPreset,
+  ConversationCreationSetup,
+  AuthoredDocument,
+  AuthoredDocumentMutation,
+  AuthoredDocumentRevision,
+  AuthoredSkillInvocation,
+  AuthoredInvocationMessageLink,
+  AuthoredContextSnapshot,
   ConversationAgentBindingRecord,
   ConversationAgentBindingState,
   ConversationWorkingFolder,
@@ -14,12 +23,13 @@ import type {
   TurnFailureDiagnosticRecord,
   RuntimeSessionCleanupAttempt,
   RuntimeSessionHistoryOrigin,
+  RuntimeSessionActivation,
   RuntimeSessionHistoryRecord,
   RuntimeSessionContextMode,
   RuntimeSessionRetirementReason,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { validateConversationWorkingFolders } from "@minu/channels-relay";
+import { AuthoredContextUnavailableError, validateAuthoredContext, invocationDocumentMatches, invocationTargetMatches, reviseAuthoredDocument, prepareAuthoredDocumentCreation, validateConversationWorkingFolders } from "@minu/channels-relay";
 import { and, asc, desc, eq, gt, isNull, lte, lt, ne, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -59,6 +69,7 @@ function workspaceConfig(row: typeof schema.localWorkspaceConfigs.$inferSelect):
     ...row,
     notesFolderId: row.notesFolderId ?? undefined,
     idleSleepTimeoutMs: row.idleSleepTimeoutMs ?? undefined,
+    turnTimeoutMs: row.turnTimeoutMs ?? undefined,
     runtimeModelPolicies,
   };
 }
@@ -107,8 +118,21 @@ function binding(row: typeof schema.conversationAgentBindings.$inferSelect): Con
 function sessionHistory(
   row: typeof schema.conversationAgentSessionHistory.$inferSelect,
 ): RuntimeSessionHistoryRecord {
+  const { authoredContext: serialized, ...fields } = row;
+  let authoredContext: AuthoredContextSnapshot | undefined;
+  if (serialized !== null) {
+    try {
+      const parsed = JSON.parse(serialized) as AuthoredContextSnapshot;
+      if (typeof parsed?.channelId !== "string" || !parsed.channelId.trim()) throw new AuthoredContextUnavailableError();
+      validateAuthoredContext(parsed, row.workspaceId, parsed.channelId);
+      authoredContext = parsed;
+    } catch {
+      throw new AuthoredContextUnavailableError();
+    }
+  }
   return {
-    ...row,
+    ...fields,
+    ...(authoredContext !== undefined ? { authoredContext } : {}),
     managedSessionId: row.managedSessionId ?? undefined,
     runtimeOwnerId: row.runtimeOwnerId ?? undefined,
     legacyRuntimeSessionRef: row.legacyRuntimeSessionRef ?? undefined,
@@ -129,6 +153,18 @@ type RelayStorageTransaction = SQLiteTransaction<
   typeof schema,
   ExtractTablesWithRelations<typeof schema>
 >;
+
+async function advanceRecoveryCursor(
+  transaction: RelayStorageTransaction,
+  conversationId: string, participantId: string, sequence: number, updatedAt: string,
+): Promise<void> {
+  await transaction.insert(schema.agentHostCursors).values({
+    conversationId, participantId, lastProcessedSequence: sequence, updatedAt,
+  }).onConflictDoUpdate({
+    target: [schema.agentHostCursors.conversationId, schema.agentHostCursors.participantId],
+    set: { lastProcessedSequence: sql`max(${schema.agentHostCursors.lastProcessedSequence}, ${sequence})`, updatedAt },
+  });
+}
 
 async function assertManagedSessionReusable(
   transaction: RelayStorageTransaction,
@@ -156,11 +192,7 @@ async function assertManagedSessionReusable(
 async function insertSessionActivation(
   transaction: RelayStorageTransaction,
   record: ConversationAgentBindingRecord,
-  activation?: {
-    origin?: RuntimeSessionHistoryOrigin;
-    conversationSequence?: number;
-    contextMode?: RuntimeSessionContextMode;
-  },
+  activation?: RuntimeSessionActivation,
 ): Promise<void> {
   if (record.runtimeOwnerId !== undefined && !record.runtimeOwnerId.trim()) {
     throw new Error("Runtime owner scope must not be empty");
@@ -183,6 +215,7 @@ async function insertSessionActivation(
     state: "active",
     origin: activation?.origin ?? (managed ? "started" : "migrated"),
     contextMode: activation?.contextMode ?? "with_context",
+    authoredContext: activation?.authoredContext === undefined ? null : JSON.stringify(activation.authoredContext),
     conversationSequenceAtActivation: activation?.conversationSequence ?? null,
     activatedAt: record.updatedAt,
     retirementReason: null,
@@ -210,13 +243,8 @@ async function retireSessionActivation(
     state: "retired",
     retiredAt: timestamp,
     retirementReason: reason,
-    cleanupAction: reason === "replaced" || reason === "stopped"
-      ? sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'destroy' ELSE 'none' END`
-      : sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'suspend' ELSE 'none' END`,
+    cleanupAction: sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'suspend' ELSE 'none' END`,
     cleanupStatus: sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'pending' ELSE 'unknown' END`,
-    ...((reason === "replaced" || reason === "stopped")
-      ? { retentionStatus: sql`CASE WHEN ${schema.conversationAgentSessionHistory.mapping} = 'managed' THEN 'destroy_pending' ELSE ${schema.conversationAgentSessionHistory.retentionStatus} END` }
-      : {}),
     updatedAt: timestamp,
   }).where(and(
     eq(schema.conversationAgentSessionHistory.bindingId, bindingId),
@@ -237,7 +265,71 @@ function conversationWorkingFolder(
   };
 }
 
+function authoredDocument(row: typeof schema.authoredDocuments.$inferSelect): AuthoredDocument {
+  return { ...row, conversationId: row.conversationId ?? undefined, publishedRevision: row.publishedRevision ?? undefined };
+}
+
 export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
+  async getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined> {
+    const table = schema.conversationSettings;
+    const rows = await this.database.select().from(table)
+      .where(and(eq(table.workspaceId, workspaceId), eq(table.conversationId, conversationId)));
+    return rows[0] ? JSON.parse(rows[0].definition) as ConversationSettings : undefined;
+  }
+  async putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean> {
+    const table = schema.conversationSettings;
+    const values = { workspaceId: settings.workspaceId, conversationId: settings.conversationId,
+      revision: settings.revision, definition: JSON.stringify(settings) };
+    const rows = expectedRevision === 0
+      ? await this.database.insert(table).values(values).onConflictDoNothing().returning({ id: table.conversationId })
+      : await this.database.update(table).set(values).where(and(eq(table.workspaceId, settings.workspaceId),
+        eq(table.conversationId, settings.conversationId), eq(table.revision, expectedRevision)))
+        .returning({ id: table.conversationId });
+    return rows.length === 1;
+  }
+
+  async listConversationPresets(workspaceId: string): Promise<ConversationPreset[]> {
+    const rows = await this.database.select().from(schema.conversationPresets)
+      .where(eq(schema.conversationPresets.workspaceId, workspaceId));
+    return rows.map((row) => JSON.parse(row.definition) as ConversationPreset);
+  }
+
+  async putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean> {
+    const table = schema.conversationPresets;
+    if (expectedRevision === null) {
+      const rows = await this.database.insert(table).values({
+        workspaceId: preset.workspaceId, id: preset.id, revision: preset.revision, definition: JSON.stringify(preset),
+      }).onConflictDoNothing().returning({ id: table.id });
+      return rows.length === 1;
+    }
+    const rows = await this.database.update(table).set({ revision: preset.revision, definition: JSON.stringify(preset) })
+      .where(and(eq(table.workspaceId, preset.workspaceId), eq(table.id, preset.id), eq(table.revision, expectedRevision)))
+      .returning({ id: table.id });
+    return rows.length === 1;
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean> {
+    const table = schema.conversationPresets;
+    const rows = await this.database.delete(table)
+      .where(and(eq(table.workspaceId, workspaceId), eq(table.id, presetId), eq(table.revision, expectedRevision)))
+      .returning({ id: table.id });
+    return rows.length === 1;
+  }
+
+  async getConversationCreationSetup(workspaceId: string, conversationId: string): Promise<ConversationCreationSetup | undefined> {
+    const table = schema.conversationCreationSetups;
+    const rows = await this.database.select().from(table)
+      .where(and(eq(table.workspaceId, workspaceId), eq(table.conversationId, conversationId)));
+    return rows[0] ? JSON.parse(rows[0].definition) as ConversationCreationSetup : undefined;
+  }
+
+  async putConversationCreationSetup(setup: ConversationCreationSetup): Promise<ConversationCreationSetup> {
+    await this.database.insert(schema.conversationCreationSetups).values({
+      workspaceId: setup.workspaceId, conversationId: setup.conversationId, definition: JSON.stringify(setup),
+    }).onConflictDoNothing();
+    return (await this.getConversationCreationSetup(setup.workspaceId, setup.conversationId))!;
+  }
+
   private constructor(
     private readonly client: Client,
     private readonly database: LibSQLDatabase<typeof schema>,
@@ -258,10 +350,153 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return new DrizzleLibSqlRelayStorage(client, database);
   }
 
+  async getAuthoredInvocationMessageLink(invocationId: string): Promise<AuthoredInvocationMessageLink | undefined> {
+    const [row] = await this.database.select().from(schema.authoredInvocationMessageLinks)
+      .where(eq(schema.authoredInvocationMessageLinks.invocationId, invocationId)).limit(1);
+    return row;
+  }
+
+  async reserveAuthoredInvocationMessageLink(link: AuthoredInvocationMessageLink): Promise<AuthoredInvocationMessageLink | undefined> {
+    const existing = await this.getAuthoredInvocationMessageLink(link.invocationId);
+    if (existing) return existing;
+    const [invocation] = await this.database.select({ id: schema.authoredSkillInvocations.id }).from(schema.authoredSkillInvocations)
+      .where(eq(schema.authoredSkillInvocations.id, link.invocationId)).limit(1);
+    if (!invocation) return undefined;
+    // One insert is the CAS: both invocation and message IDs are independently unique.
+    await this.database.insert(schema.authoredInvocationMessageLinks).values(link).onConflictDoNothing();
+    return this.getAuthoredInvocationMessageLink(link.invocationId);
+  }
+
+  async getAuthoredSkillInvocationForMessage(conversationId: string, messageId: string): Promise<AuthoredSkillInvocation | undefined> {
+    const [row] = await this.database.select({ invocation: schema.authoredSkillInvocations }).from(schema.authoredInvocationMessageLinks)
+      .innerJoin(schema.authoredSkillInvocations, eq(schema.authoredSkillInvocations.id, schema.authoredInvocationMessageLinks.invocationId))
+      .where(and(eq(schema.authoredSkillInvocations.conversationId, conversationId), eq(schema.authoredInvocationMessageLinks.messageId, messageId))).limit(1);
+    return row?.invocation;
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<AuthoredSkillInvocation | undefined> {
+    const [row] = await this.database.select().from(schema.authoredSkillInvocations).where(and(
+      eq(schema.authoredSkillInvocations.conversationId, conversationId), eq(schema.authoredSkillInvocations.actorIdentityId, actorIdentityId),
+      eq(schema.authoredSkillInvocations.requestId, requestId),
+    )).limit(1);
+    return row;
+  }
+
+  async reserveAuthoredSkillInvocation(invocation: AuthoredSkillInvocation): Promise<AuthoredSkillInvocation | undefined> {
+    // Resolving immutable intent needs no write transaction (or write lock).
+    const prior = await this.getAuthoredSkillInvocation(invocation.conversationId, invocation.actorIdentityId, invocation.requestId);
+    if (prior) return prior;
+    try {
+      return await this.database.transaction(async transaction => {
+        const [existing] = await transaction.select().from(schema.authoredSkillInvocations).where(and(
+          eq(schema.authoredSkillInvocations.conversationId, invocation.conversationId),
+          eq(schema.authoredSkillInvocations.actorIdentityId, invocation.actorIdentityId),
+          eq(schema.authoredSkillInvocations.requestId, invocation.requestId),
+        )).limit(1);
+        if (existing) return existing;
+        if (invocation.to != null && (!Array.isArray(invocation.to) || new Set(invocation.to).size !== invocation.to.length
+          || invocation.to.some(id => typeof id !== "string" || !id.trim()))) return undefined;
+        if ((!invocation.to && !invocation.targets.length) || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length) return undefined;
+        const [document] = await transaction.select().from(schema.authoredDocuments).where(and(
+          eq(schema.authoredDocuments.id, invocation.documentId), eq(schema.authoredDocuments.workspaceId, invocation.workspaceId),
+        )).limit(1);
+        if (!invocationDocumentMatches(invocation, document ? authoredDocument(document) : undefined)) return undefined;
+        const [publication] = await transaction.select().from(schema.authoredDocumentRevisions).where(and(
+          eq(schema.authoredDocumentRevisions.documentId, invocation.documentId), eq(schema.authoredDocumentRevisions.workspaceId, invocation.workspaceId),
+          eq(schema.authoredDocumentRevisions.revision, invocation.revision), eq(schema.authoredDocumentRevisions.contentHash, invocation.contentHash),
+        )).limit(1);
+        if (!publication) return undefined;
+        for (const target of invocation.to ? [] : invocation.targets) {
+          const [record] = await transaction.select().from(schema.conversationAgentBindings)
+            .where(eq(schema.conversationAgentBindings.id, target.bindingId)).limit(1);
+          const [activation] = await transaction.select().from(schema.conversationAgentSessionHistory).where(and(
+            eq(schema.conversationAgentSessionHistory.bindingId, target.bindingId),
+            eq(schema.conversationAgentSessionHistory.bindingGeneration, target.generation),
+          )).limit(1);
+          if (!invocationTargetMatches(invocation, target, record ? binding(record) : undefined, activation ? sessionHistory(activation) : undefined)) return undefined;
+        }
+        const [created] = await transaction.insert(schema.authoredSkillInvocations).values(invocation).onConflictDoNothing().returning();
+        return created;
+      });
+    } catch (error) {
+      const failure = error as { code?: string; cause?: { code?: string } };
+      if (failure.code === "SQLITE_BUSY" || failure.cause?.code === "SQLITE_BUSY") return undefined;
+      throw error;
+    }
+  }
+
+  async createAuthoredDocument(document: AuthoredDocument, commit = false): Promise<AuthoredDocument | undefined> {
+    const next = prepareAuthoredDocumentCreation(document, commit);
+    return this.database.transaction(async transaction => {
+      const rows = await transaction.insert(schema.authoredDocuments).values({
+        ...next.document,
+        conversationId: next.document.conversationId ?? null,
+        publishedRevision: next.document.publishedRevision ?? null,
+      }).onConflictDoNothing().returning();
+      if (!rows[0]) return undefined;
+      if (next.publication) await transaction.insert(schema.authoredDocumentRevisions).values(next.publication);
+      return authoredDocument(rows[0]);
+    });
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined> {
+    const [row] = await this.database.select().from(schema.authoredDocuments).where(and(
+      eq(schema.authoredDocuments.workspaceId, workspaceId), eq(schema.authoredDocuments.id, documentId),
+    )).limit(1);
+    return row ? authoredDocument(row) : undefined;
+  }
+
+  async listAuthoredDocuments(workspaceId: string): Promise<AuthoredDocument[]> {
+    const rows = await this.database.select().from(schema.authoredDocuments)
+      .where(eq(schema.authoredDocuments.workspaceId, workspaceId)).orderBy(asc(schema.authoredDocuments.id));
+    return rows.map(authoredDocument);
+  }
+
+  async mutateAuthoredDocument(
+    workspaceId: string,
+    documentId: string,
+    mutation: AuthoredDocumentMutation,
+  ): Promise<AuthoredDocument | undefined> {
+    try {
+      return await this.database.transaction(async (transaction) => {
+        const [row] = await transaction.select().from(schema.authoredDocuments).where(and(
+          eq(schema.authoredDocuments.workspaceId, workspaceId), eq(schema.authoredDocuments.id, documentId),
+        )).limit(1);
+        if (!row) return undefined;
+        const next = reviseAuthoredDocument(authoredDocument(row), mutation);
+        if (!next) return undefined;
+        const updated = await transaction.update(schema.authoredDocuments).set({
+          name: next.document.name, description: next.document.description, content: next.document.content,
+          version: next.document.version, publishedRevision: next.document.publishedRevision ?? null,
+          state: next.document.state, updatedBy: next.document.updatedBy, updatedAt: next.document.updatedAt,
+        }).where(and(
+          eq(schema.authoredDocuments.workspaceId, workspaceId), eq(schema.authoredDocuments.id, documentId),
+          eq(schema.authoredDocuments.version, mutation.expectedVersion), eq(schema.authoredDocuments.state, "active"),
+        )).returning();
+        if (!updated[0]) return undefined;
+        if (next.publication) await transaction.insert(schema.authoredDocumentRevisions).values(next.publication);
+        return authoredDocument(updated[0]);
+      });
+    } catch (error) {
+      const failure = error as { code?: string; cause?: { code?: string } };
+      // A competing SQLite writer is a conflict, never a reason to replay a publication automatically.
+      if (failure.code === "SQLITE_BUSY" || failure.cause?.code === "SQLITE_BUSY") return undefined;
+      throw error;
+    }
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<AuthoredDocumentRevision[]> {
+    return this.database.select().from(schema.authoredDocumentRevisions).where(and(
+      eq(schema.authoredDocumentRevisions.workspaceId, workspaceId),
+      eq(schema.authoredDocumentRevisions.documentId, documentId),
+    )).orderBy(asc(schema.authoredDocumentRevisions.revision));
+  }
+
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
     await this.database.insert(schema.localWorkspaceConfigs).values({
       ...config,
       idleSleepTimeoutMs: config.idleSleepTimeoutMs ?? null,
+      turnTimeoutMs: config.turnTimeoutMs ?? null,
       runtimeModelPolicies: config.runtimeModelPolicies
         ? JSON.stringify(config.runtimeModelPolicies)
         : null,
@@ -271,6 +506,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         rootUri: config.rootUri,
         notesFolderId: config.notesFolderId ?? null,
         idleSleepTimeoutMs: config.idleSleepTimeoutMs ?? null,
+        turnTimeoutMs: config.turnTimeoutMs ?? null,
         runtimeModelPolicies: config.runtimeModelPolicies
           ? JSON.stringify(config.runtimeModelPolicies)
           : null,
@@ -300,6 +536,22 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return rows.map(conversationWorkingFolder);
   }
 
+  async initializeConversationWorkingFolders(workspaceId: string, conversationId: string, folders: readonly ConversationWorkingFolder[]): Promise<void> {
+    validateConversationWorkingFolders(workspaceId, conversationId, folders);
+    await this.database.transaction(async (transaction) => {
+      const table = schema.conversationCreationSetups;
+      const scope = and(eq(table.workspaceId, workspaceId), eq(table.conversationId, conversationId));
+      const claimed = await transaction.update(table).set({ workingFoldersPrepared: 1 })
+        .where(and(scope, eq(table.workingFoldersPrepared, 0))).returning({ id: table.conversationId });
+      if (claimed.length === 0) {
+        const snapshot = await transaction.select({ id: table.conversationId }).from(table).where(scope);
+        if (!snapshot.length) throw new Error("Creation snapshot is required before preparing folders");
+        return;
+      }
+      await this.writeWorkingFolders(transaction, workspaceId, conversationId, folders, new Date().toISOString());
+    });
+  }
+
   async replaceConversationWorkingFolders(
     workspaceId: string,
     conversationId: string,
@@ -309,32 +561,35 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     const replacement = folders.map((folder) => ({ ...folder }))
       .sort((left, right) => left.position - right.position);
     const timestamp = new Date().toISOString();
-    await this.database.transaction(async (transaction) => {
-      const existing = await transaction.select({
-        relativePath: schema.conversationWorkingFolders.relativePath,
-        createdAt: schema.conversationWorkingFolders.createdAt,
-      }).from(schema.conversationWorkingFolders).where(and(
-        eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, conversationId),
-      ));
-      const createdAtByPath = new Map(existing.map((row) => [row.relativePath, row.createdAt]));
-      await transaction.delete(schema.conversationWorkingFolders).where(and(
-        eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
-        eq(schema.conversationWorkingFolders.conversationId, conversationId),
-      ));
-      if (replacement.length > 0) {
-        await transaction.insert(schema.conversationWorkingFolders).values(replacement.map((folder) => ({
-          workspaceId,
-          conversationId: conversationId,
-          relativePath: folder.relativePath,
-          position: folder.position,
-          isPrimary: folder.primary ? 1 : 0,
-          createdAt: createdAtByPath.get(folder.relativePath) ?? timestamp,
-          updatedAt: timestamp,
-        })));
-      }
-    });
+    await this.database.transaction((transaction) => this.writeWorkingFolders(transaction, workspaceId, conversationId, replacement, timestamp));
     return replacement;
+  }
+
+  private async writeWorkingFolders(transaction: RelayStorageTransaction, workspaceId: string, conversationId: string,
+    replacement: readonly ConversationWorkingFolder[], timestamp: string): Promise<void> {
+    const existing = await transaction.select({
+      relativePath: schema.conversationWorkingFolders.relativePath,
+      createdAt: schema.conversationWorkingFolders.createdAt,
+    }).from(schema.conversationWorkingFolders).where(and(
+      eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
+      eq(schema.conversationWorkingFolders.conversationId, conversationId),
+    ));
+    const createdAtByPath = new Map(existing.map((row) => [row.relativePath, row.createdAt]));
+    await transaction.delete(schema.conversationWorkingFolders).where(and(
+      eq(schema.conversationWorkingFolders.workspaceId, workspaceId),
+      eq(schema.conversationWorkingFolders.conversationId, conversationId),
+    ));
+    if (replacement.length > 0) {
+      await transaction.insert(schema.conversationWorkingFolders).values(replacement.map((folder) => ({
+        workspaceId,
+        conversationId: conversationId,
+        relativePath: folder.relativePath,
+        position: folder.position,
+        isPrimary: folder.primary ? 1 : 0,
+        createdAt: createdAtByPath.get(folder.relativePath) ?? timestamp,
+        updatedAt: timestamp,
+      })));
+    }
   }
 
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {
@@ -404,11 +659,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
 
   async putBinding(
     record: ConversationAgentBindingRecord,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
   ): Promise<ConversationAgentBindingRecord> {
     await this.database.transaction(async (transaction) => {
       await transaction.insert(schema.conversationAgentBindings).values({
@@ -504,6 +755,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       lastCleanupAttemptAt: input.attemptedAt,
       lastObservedRuntimeStatus: input.observedRuntimeStatus,
       cleanupStatus: input.outcome,
+      ...(input.cleanupAction ? { cleanupAction: input.cleanupAction } : {}),
       ...(input.retentionOutcome ? { retentionStatus: input.retentionOutcome } : {}),
       lastVerifiedAt: input.attemptedAt,
       lastCleanupErrorCategory: input.outcome === "failed" ? input.errorCategory ?? "operation_failed" : null,
@@ -636,12 +888,13 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
+    recoveryLeaseOwner?: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
+    if (recoveryLeaseOwner !== undefined
+      && (!Number.isSafeInteger(activation?.conversationSequence) || activation!.conversationSequence! < 0)) {
+      throw new Error("Recovery requires a valid no-replay boundary");
+    }
     return this.database.transaction(async (transaction) => {
       const rows = await transaction.update(schema.conversationAgentBindings).set({
         runtimeAdapter,
@@ -661,12 +914,58 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
       }).where(and(
         eq(schema.conversationAgentBindings.id, bindingId),
         eq(schema.conversationAgentBindings.generation, expectedGeneration),
+        ...(recoveryLeaseOwner !== undefined ? [
+          eq(schema.conversationAgentBindings.state, "stopping"),
+          eq(schema.conversationAgentBindings.leaseOwner, recoveryLeaseOwner),
+          gt(schema.conversationAgentBindings.leaseExpiresAt, updatedAt),
+        ] : [or(ne(schema.conversationAgentBindings.state, "stopping"), isNull(schema.conversationAgentBindings.leaseOwner))]),
       )).returning();
       if (!rows[0]) return undefined;
       await retireSessionActivation(transaction, bindingId, expectedGeneration, updatedAt, "replaced");
       const replacement = binding(rows[0]);
       await insertSessionActivation(transaction, replacement, activation);
+      if (recoveryLeaseOwner !== undefined) {
+        await advanceRecoveryCursor(transaction, replacement.conversationId, replacement.agentIdentityId,
+          activation!.conversationSequence!, updatedAt);
+      }
       return replacement;
+    });
+  }
+
+  async beginBindingRecovery(
+    bindingId: string, expectedGeneration: number,
+    expectedState: Exclude<ConversationAgentBindingState, "disabled">,
+    leaseOwner: string, now: string, leaseExpiresAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const rows = await this.database.update(schema.conversationAgentBindings).set({
+      state: "stopping", leaseOwner, leaseExpiresAt, lastVerifiedAt: null, wakeRequestedAt: null, updatedAt: now,
+    }).where(and(
+      eq(schema.conversationAgentBindings.id, bindingId),
+      eq(schema.conversationAgentBindings.generation, expectedGeneration),
+      eq(schema.conversationAgentBindings.state, expectedState),
+      or(ne(schema.conversationAgentBindings.state, "stopping"), isNull(schema.conversationAgentBindings.leaseOwner),
+        lte(schema.conversationAgentBindings.leaseExpiresAt, now)),
+    )).returning();
+    return rows[0] ? binding(rows[0]) : undefined;
+  }
+
+  async completeBindingRecovery(
+    bindingId: string, expectedGeneration: number, leaseOwner: string,
+    conversationSequence: number, state: "paused" | "replacing", now: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    return this.database.transaction(async transaction => {
+      const rows = await transaction.update(schema.conversationAgentBindings).set({
+        state, updatedAt: now, leaseOwner: null, leaseExpiresAt: null,
+      }).where(and(
+        eq(schema.conversationAgentBindings.id, bindingId),
+        eq(schema.conversationAgentBindings.generation, expectedGeneration),
+        eq(schema.conversationAgentBindings.state, "stopping"),
+        eq(schema.conversationAgentBindings.leaseOwner, leaseOwner),
+        gt(schema.conversationAgentBindings.leaseExpiresAt, now),
+      )).returning();
+      if (!rows[0]) return undefined;
+      await advanceRecoveryCursor(transaction, rows[0].conversationId, rows[0].agentIdentityId, conversationSequence, now);
+      return binding(rows[0]);
     });
   }
 
@@ -709,6 +1008,7 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         eq(schema.conversationAgentBindings.id, bindingId),
         eq(schema.conversationAgentBindings.generation, expectedGeneration),
         ne(schema.conversationAgentBindings.state, "disabled"),
+        or(ne(schema.conversationAgentBindings.state, "stopping"), isNull(schema.conversationAgentBindings.leaseOwner)),
       )).returning();
       if (!rows[0]) return undefined;
       await transaction.insert(schema.agentHostCursors).values({

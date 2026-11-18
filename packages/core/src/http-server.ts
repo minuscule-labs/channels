@@ -10,8 +10,12 @@ import {
 } from "./conversation-service.ts";
 import type {
   AddWorkspaceMemberInput,
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
   ConversationEvent,
   CreateConversationInput,
+  CreateThreadInput,
   CreateIdentityInput,
   CreateMessageInput,
   CreateResponseInput,
@@ -87,6 +91,14 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   }
 }
 
+async function readJsonObject(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const input = await readJson(request);
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new ConversationValidationError("request body must be a JSON object");
+  }
+  return input as Record<string, unknown>;
+}
+
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(body)}\n`);
@@ -136,6 +148,60 @@ export async function createConversationHttpServer(
   const service = options.service ?? new ConversationService();
   const serviceToken = options.serviceToken ?? randomBytes(32).toString("base64url");
   const streams = new Set<ServerResponse>();
+  let closing = false;
+
+  async function openEventStream(
+    response: ServerResponse,
+    subscribe: (listener: (event: ConversationEvent) => void) => Promise<() => void>,
+    readiness: { conversationId: string } | { conversationIds: string[] },
+  ): Promise<void> {
+    let closed = false;
+    let ready = false;
+    let unsubscribe: (() => void) | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    const pending: ConversationEvent[] = [];
+    const cleanup = () => {
+      closed = true;
+      streams.delete(response);
+      clearInterval(heartbeat);
+      heartbeat = undefined;
+      pending.length = 0;
+      const release = unsubscribe;
+      unsubscribe = undefined;
+      release?.();
+    };
+    // Install before awaiting setup: close can precede acquisition of unsubscribe.
+    response.once("close", cleanup);
+    response.once("error", () => { cleanup(); response.destroy(); });
+    try {
+      unsubscribe = await subscribe((event) => {
+        if (closed || closing || response.destroyed) return;
+        if (ready) sendEvent(response, event);
+        else pending.push(event);
+      });
+      if (closed || closing || response.destroyed) {
+        cleanup();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      });
+      streams.add(response);
+      response.write(`event: ready\ndata: ${JSON.stringify(readiness)}\n\n`);
+      ready = true;
+      for (const event of pending) sendEvent(response, event);
+      pending.length = 0;
+      heartbeat = setInterval(() => {
+        if (!closed && !closing && !response.destroyed) response.write(": keepalive\n\n");
+      }, heartbeatIntervalMs);
+      heartbeat.unref();
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+  }
 
   const server = createServer(async (request, response) => {
     try {
@@ -201,6 +267,28 @@ export async function createConversationHttpServer(
         ) });
         return;
       }
+      const workspaceFoldersMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/folders$/);
+      if (workspaceFoldersMatch && request.method === "GET") {
+        json(response, 200, { folders: await service.listWorkspaceFolders(workspaceFoldersMatch[1]!) });
+        return;
+      }
+      if (workspaceFoldersMatch && request.method === "POST") {
+        const input = await readJsonObject(request);
+        requireActor(input, actor, "actorIdentityId");
+        json(response, 201, { folder: await service.createWorkspaceFolder(
+          workspaceFoldersMatch[1]!, input as unknown as CreateConversationFolderInput,
+        ) });
+        return;
+      }
+      const workspaceFolderMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/folders\/([^/]+)$/);
+      if (workspaceFolderMatch && request.method === "PATCH") {
+        const input = await readJsonObject(request);
+        requireActor(input, actor, "actorIdentityId");
+        json(response, 200, { folder: await service.updateWorkspaceFolder(
+          workspaceFolderMatch[1]!, workspaceFolderMatch[2]!, input as unknown as UpdateConversationFolderInput,
+        ) });
+        return;
+      }
       const workspaceMembersMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/members$/);
       if (workspaceMembersMatch && request.method === "POST") {
         const member = await service.addWorkspaceMember(
@@ -228,7 +316,7 @@ export async function createConversationHttpServer(
       }
       const workspaceConversationsMatch = url.pathname.match(/^\/workspaces\/([^/]+)\/conversations$/);
       if (workspaceConversationsMatch && request.method === "POST") {
-        const input = (await readJson(request)) as CreateConversationInput;
+        const input = (await readJsonObject(request)) as CreateConversationInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
           throw new ConversationValidationError("actorIdentityId must match the authenticated browser identity");
         }
@@ -246,7 +334,7 @@ export async function createConversationHttpServer(
       }
 
       if (request.method === "POST" && url.pathname === "/conversations") {
-        const input = (await readJson(request)) as CreateConversationInput;
+        const input = (await readJsonObject(request)) as CreateConversationInput;
         if (actor !== undefined && input.actorIdentityId !== undefined && input.actorIdentityId !== actor) {
           throw new ConversationValidationError("actorIdentityId must match the authenticated browser identity");
         }
@@ -260,31 +348,7 @@ export async function createConversationHttpServer(
         if (conversationIds.length === 0 || conversationIds.length > 100 || conversationIds.some((conversationId) => !conversationId)) {
           throw new ConversationValidationError("conversationId must identify between 1 and 100 Conversations");
         }
-        const pending: ConversationEvent[] = [];
-        let ready = false;
-        const unsubscribe = await service.subscribeMany(conversationIds, (event) => {
-          if (ready) sendEvent(response, event);
-          else pending.push(event);
-        });
-        response.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        });
-        streams.add(response);
-        response.write(`event: ready\ndata: ${JSON.stringify({ conversationIds })}\n\n`);
-        ready = true;
-        for (const event of pending) sendEvent(response, event);
-        const heartbeat = setInterval(
-          () => response.write(": keepalive\n\n"),
-          heartbeatIntervalMs,
-        );
-        heartbeat.unref();
-        request.on("close", () => {
-          clearInterval(heartbeat);
-          streams.delete(response);
-          unsubscribe();
-        });
+        await openEventStream(response, (listener) => service.subscribeMany(conversationIds, listener), { conversationIds });
         return;
       }
 
@@ -318,6 +382,28 @@ export async function createConversationHttpServer(
           await readAttachmentBytes(request),
         );
         json(response, 201, { attachment });
+        return;
+      }
+
+      const threadsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/threads$/);
+      if (threadsMatch && request.method === "GET") {
+        json(response, 200, { threads: await service.listThreads(threadsMatch[1]!) });
+        return;
+      }
+      if (threadsMatch && request.method === "POST") {
+        const input = await readJson(request) as CreateThreadInput;
+        requireActor(input as unknown as Record<string, unknown>, actor, "actorIdentityId");
+        json(response, 200, { thread: await service.createThread(threadsMatch[1]!, input) });
+        return;
+      }
+
+      const folderAssignmentMatch = url.pathname.match(/^\/conversations\/([^/]+)\/folder$/);
+      if (folderAssignmentMatch && request.method === "PATCH") {
+        const input = await readJsonObject(request);
+        requireActor(input, actor, "actorIdentityId");
+        json(response, 200, { conversation: await service.assignConversationFolder(
+          folderAssignmentMatch[1]!, input as unknown as AssignConversationFolderInput,
+        ) });
         return;
       }
 
@@ -360,6 +446,12 @@ export async function createConversationHttpServer(
           input,
         );
         json(response, 200, { conversation });
+        return;
+      }
+
+      const cursorMatch = url.pathname.match(/^\/conversations\/([^/]+)\/cursors\/([^/]+)$/);
+      if (cursorMatch && request.method === "GET") {
+        json(response, 200, { sequence: await service.getCursor(cursorMatch[1]!, cursorMatch[2]!) });
         return;
       }
 
@@ -409,29 +501,13 @@ export async function createConversationHttpServer(
       const eventsMatch = url.pathname.match(/^\/conversations\/([^/]+)\/events$/);
       if (eventsMatch && request.method === "GET") {
         const conversationId = eventsMatch[1]!;
-        const unsubscribe = await service.subscribe(conversationId, (event) => sendEvent(response, event));
-        response.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-        });
-        streams.add(response);
-        response.write(`event: ready\ndata: ${JSON.stringify({ conversationId })}\n\n`);
-        const heartbeat = setInterval(
-          () => response.write(": keepalive\n\n"),
-          heartbeatIntervalMs,
-        );
-        heartbeat.unref();
-        request.on("close", () => {
-          clearInterval(heartbeat);
-          streams.delete(response);
-          unsubscribe();
-        });
+        await openEventStream(response, (listener) => service.subscribe(conversationId, listener), { conversationId });
         return;
       }
 
       json(response, 404, { error: "Not found" });
     } catch (error) {
+      if (response.destroyed || response.writableEnded) return;
       if (response.headersSent) {
         response.end();
         return;
@@ -465,6 +541,7 @@ export async function createConversationHttpServer(
     service,
     serviceToken,
     async close() {
+      closing = true;
       for (const stream of streams) stream.end();
       streams.clear();
       try {

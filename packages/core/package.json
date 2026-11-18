@@ -12,6 +12,10 @@
       "types": "./dist/src/client.d.ts",
       "default": "./dist/src/client.js"
     },
+    "./ids": {
+      "types": "./dist/src/ids.d.ts",
+      "default": "./dist/src/ids.js"
+    },
     "./mentions": {
       "types": "./dist/src/mentions.d.ts",
       "default": "./dist/src/mentions.js"
@@ -25,5 +29,8 @@
       "default": "./dist/src/image-validation.js"
     }
   },
-  "types": "./dist/src/index.d.ts"
+  "types": "./dist/src/index.d.ts",
+  "dependencies": {
+    "uuid": "^14.0.2"
+  }
 }

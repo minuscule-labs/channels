@@ -3,6 +3,7 @@ import { ConversationClient, ConversationClientError } from "@minu/channels-core
 import { MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_ATTACHMENT_BYTES, validateImageBytes } from "@minu/channels-core/image-validation";
 import { safeDiagnosticObservation, type DiagnosticObservation, type DiagnosticStage, type DiagnosticEvent } from "./diagnostics.ts";
 import { safeDeliveryObservation, type DeliveryObservation } from "./delivery-diagnostics.ts";
+import { AuthoredInvocationLeaseLostError } from "./authored-invocation-delivery.ts";
 export interface RuntimePortImage {
   type: "image";
   data: string;
@@ -41,11 +42,14 @@ export interface ManagedRuntimeSessionSummary {
   id: string;
   ownerId: string;
   state: "active" | "suspended" | "unavailable";
+  unavailableReason?: "session_metadata_unavailable" | "session_transcript_invalid";
 }
 
 export interface AgentRuntimePort {
+  /** Exact metadata-only lookup; resume, not status polling, validates transcript contents. */
+  getManagedSession?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<ManagedRuntimeSessionSummary | undefined>;
   /** Owner-scoped operations for Runtime-managed sessions; absent on legacy adapters. */
-  listManagedSessions?(ownerId: string): Promise<ManagedRuntimeSessionSummary[]>;
+  listManagedSessions?(ownerId: string, options?: { signal?: AbortSignal }): Promise<ManagedRuntimeSessionSummary[]>;
   /** Authenticate an already-living worker only; never cold-resume or allocate. */
   connectManaged?(managedSessionId: string, ownerId: string): Promise<ManagedRuntimeSessionRef>;
   resume?(managedSessionId: string, ownerId: string, options?: { allowStopped?: boolean }): Promise<ManagedRuntimeSessionRef>;
@@ -145,6 +149,8 @@ export interface AgentConversationBinding {
   diagnosticBinding?: { id: string; generation: number; workspaceId?: string; runtimeAdapter?: string; runtimeOwnerId?: string };
   /** Private fencing check used to suppress work and responses after lease loss. */
   verifyLease?(): Promise<boolean>;
+  /** Server-private, message-linked skill assembly. Undefined means an ordinary message. */
+  prepareAuthoredTurn?(trigger: ConversationMessage): Promise<string | undefined>;
   /** Sleeping is private binding lifecycle state; the next eligible turn must wake first. */
   isSleeping?: boolean;
   ensureAwake?(): Promise<void | "missing">;
@@ -159,6 +165,8 @@ export interface ConversationRuntimeRelayOptions {
   cursorStore?: RelayCursorStore;
   turnPollIntervalMs?: number;
   turnTimeoutMs?: number;
+  /** Resolved once for each turn; edits never shorten a turn already in progress. */
+  resolveTurnTimeoutMs?(): Promise<number | undefined>;
   runtimeRequestTimeoutMs?: number;
   turnRetryBudgetMs?: number;
   terminalOutcomeTimeoutMs?: number;
@@ -305,6 +313,8 @@ interface TurnObservation {
 interface BindingState {
   delivery?: DeliveryObservation;
   binding: AgentConversationBinding;
+  initializing: boolean;
+  rosterWaitController: AbortController;
   lastProcessedSequence: number;
   scanSequence: number;
   observedHighWaterSequence: number;
@@ -331,6 +341,7 @@ interface BindingState {
   phase?: RelayAgentActivityPhase;
   retryAttempt?: number;
   retryDeadline?: number;
+  turnTimeoutMs?: number;
   queuedTurns: number;
   /** Retained for the legacy interrupt-and-replace operation. */
   interruptedTriggerId?: string;
@@ -364,18 +375,21 @@ function shouldWake(
   participants: Participant[],
 ): boolean {
   if (message.participantId === binding.participantId) return false;
+  const sender = participants.find(({ id }) => id === message.participantId);
+  // Agent handoffs require an explicit recipient. Unaddressed generated replies
+  // remain shared history, even under all_messages, to avoid automatic reply loops.
+  if (sender?.type !== "human" && !isExplicitlyAddressed(message, binding.participantId)) return false;
   const policy = binding.wakePolicy ?? "mentions";
+  // Historical session-pinned Skills retain their original explicit-only routing.
+  // Message-time shared playbooks use the same wake policy as ordinary messages.
+  if (message.authoredInvocationId !== undefined && !message.authoredSkill) return policy !== "muted" && message.to.includes(binding.participantId);
   if (policy === "muted") return false;
   if (message.to.includes(binding.participantId)) return true;
   if (message.to.includes("@conversation")) return policy !== "direct_mentions";
   if (policy === "all_messages") return true;
   if (policy === "direct_mentions") return false;
 
-  const active = participants.filter((participant) => participant.status !== "disabled");
-  const sender = active.find((participant) => participant.id === message.participantId);
-  return active.length === 2
-    && sender?.type === "human"
-    && active.some((participant) => participant.id === binding.participantId);
+  return false;
 }
 
 function latestAssistant(
@@ -460,7 +474,7 @@ function contextEnvelope(
 
   const triggerDescription = isExplicitlyAddressed(trigger, participantId)
     ? "explicitly addressed you"
-    : "implicitly addressed you in this two-participant Conversation";
+    : "was admitted by your configured wake policy";
 
   return { selected, text: `You are @${self?.handle ?? participantId} (identity ${participantId}), participating in a shared MinuConversation.
 Message ${trigger.sequence} from ${label(trigger.participantId)} ${triggerDescription}.
@@ -471,10 +485,12 @@ ${participantRoster(participants, connectedAgents)}
 
 Use this roster to choose the right collaborator for delegation.
 Perform the requested work using the current project and respond concisely for the Conversation.
+Recipient selection belongs to each human separately in each Conversation or thread.
+Generated replies do not change that selection.
 To hand work to another participant, mention its exact @handle from the roster in your response.
-Mentions wake agents and consume compute, so mention only when concrete follow-up work is needed.
-In a two-participant human-agent Conversation, the human's messages implicitly wake the agent without a mention.
-In larger Conversations, an unaddressed response remains shared history without waking anyone.
+Intentional mentions outside code, quotations and escaped text can wake eligible connected agents; mention only when concrete follow-up work is needed.
+Agent handoffs never start unbound agents or resume stopped agents. Collaboration tools with explicit recipient fields must use those fields.
+Unaddressed agent replies remain shared history without waking peers. Human messages follow each agent's configured wake policy.
 
 Conversation context${omitted > 0 ? ` (${omitted} older message(s) omitted; request history if needed)` : ""}:
 ${transcript}` };
@@ -523,7 +539,7 @@ const CATCH_UP_DIAGNOSTIC_INTERVAL_MS = 30_000;
 const DEFAULT_CATCH_UP_PAGE_SIZE = 100;
 // Pi allows a control turn to run for 30 minutes. Use that same deadline for
 // healthy Relay work; transient Runtime calls remain individually bounded below.
-const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 const DEFAULT_TURN_RETRY_BUDGET_MS = DEFAULT_TURN_TIMEOUT_MS;
 const DEFAULT_RUNTIME_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS = 15_000;
@@ -542,6 +558,7 @@ export class ConversationRuntimeRelay {
   private controller: AbortController | undefined;
   private task: Promise<void> | undefined;
   private roster: ConversationMetadata | undefined;
+  private observedRosterRevision = 0;
   private rosterReady: Promise<void> = Promise.resolve();
   private quiescing = false;
 
@@ -560,6 +577,8 @@ export class ConversationRuntimeRelay {
     }
     this.states = options.bindings.map((binding) => ({
       binding,
+      initializing: true,
+      rosterWaitController: new AbortController(),
       lastProcessedSequence: 0,
       scanSequence: 0,
       observedHighWaterSequence: 0,
@@ -578,12 +597,15 @@ export class ConversationRuntimeRelay {
   async start(): Promise<void> {
     if (this.task) return;
     this.quiescing = false;
+    this.observedRosterRevision = 0;
     let resolveRosterReady!: () => void;
     this.rosterReady = new Promise<void>((resolve) => {
       resolveRosterReady = resolve;
     });
     await Promise.all(
       this.states.map(async (state) => {
+        state.initializing = true;
+        state.rosterWaitController = new AbortController();
         state.lastProcessedSequence =
           (await this.options.cursorStore?.getCursor(
             this.options.conversationId,
@@ -611,13 +633,16 @@ export class ConversationRuntimeRelay {
         this.options.onError?.(undefined, normalized);
       }
     });
-    await ready;
     // Close the metadata/event subscription race on every start or reconnect.
     try {
+      await ready;
       this.roster = await this.options.client.getConversation(this.options.conversationId);
+      await Promise.all(this.states.map((state) => this.reconcileThreadCursor(state)));
+      for (const state of this.states) state.initializing = false;
     } finally {
       resolveRosterReady();
     }
+    await this.waitForRoster(this.controller.signal);
     for (const state of this.states) this.startDrain(state);
   }
 
@@ -625,10 +650,12 @@ export class ConversationRuntimeRelay {
     this.controller?.abort();
     for (const state of this.states) {
       this.clearActivitySilence(state);
+      state.rosterWaitController.abort(new FencedTurnError("Conversation Relay stopped"));
       state.activityController?.abort();
       state.drainController?.abort();
     }
     await this.task?.catch(() => {});
+    await this.rosterReady.catch(() => undefined);
     await this.waitForIdle();
     await Promise.all(this.states.map((state) => state.activityTask?.catch(() => undefined)));
     for (const state of this.states) {
@@ -706,6 +733,8 @@ export class ConversationRuntimeRelay {
       (await this.options.cursorStore?.getCursor(this.options.conversationId, binding.participantId)) ?? 0;
     const state: BindingState = {
       binding,
+      initializing: true,
+      rosterWaitController: new AbortController(),
       lastProcessedSequence,
       scanSequence: lastProcessedSequence,
       observedHighWaterSequence: lastProcessedSequence,
@@ -722,8 +751,54 @@ export class ConversationRuntimeRelay {
     // Install before starting the background scan so live events can raise only the
     // durable high-water mark without retaining their message bodies.
     this.states.push(state);
-    if (!this.quiescing) this.startActivityEvents(state);
-    if (this.task) this.startDrain(state);
+    try {
+      await this.waitForRoster(state.rosterWaitController.signal);
+      await this.reconcileThreadCursor(state);
+      state.initializing = false;
+      if (!this.quiescing) this.startActivityEvents(state);
+      if (this.task) this.startDrain(state);
+    } catch (error) {
+      // Failed initialization must not leave an attached, dispatchable binding.
+      const index = this.states.indexOf(state);
+      if (index >= 0) this.states.splice(index, 1);
+      throw error;
+    }
+  }
+
+  /** Reconcile only after subscription, before this binding can dispatch catch-up. */
+  private async reconcileThreadCursor(state: BindingState): Promise<void> {
+    if (!this.roster?.thread) return;
+    while (!this.controller?.signal.aborted && this.states.includes(state)) {
+      const before = await this.options.client.getConversation(this.options.conversationId);
+      let retiredThrough = state.lastProcessedSequence;
+      try {
+        if (before.participants.some((participant) => participant.id === state.binding.participantId)) {
+          retiredThrough = await this.options.client.getCursor(this.options.conversationId, state.binding.participantId);
+        }
+      } catch (error) {
+        // Removal can invalidate the cursor read. Retry only when the roster really
+        // changed; transport/permission failures must keep attachment closed.
+        const current = await this.options.client.getConversation(this.options.conversationId);
+        if (current.rosterRevision !== before.rosterRevision) continue;
+        throw error;
+      }
+      if (retiredThrough > state.lastProcessedSequence) {
+        await this.options.cursorStore?.setCursor(this.options.conversationId, state.binding.participantId, retiredThrough);
+      }
+      const after = await this.options.client.getConversation(this.options.conversationId);
+      // A re-added member looks active again, so membership alone cannot detect a
+      // stale floor. Bracket the read/persistence with revisions and live events.
+      if (before.rosterRevision !== after.rosterRevision
+        || this.roster.rosterRevision > after.rosterRevision
+        || this.observedRosterRevision > after.rosterRevision) continue;
+      this.roster = after;
+      state.lastProcessedSequence = Math.max(state.lastProcessedSequence, retiredThrough);
+      state.scanSequence = Math.max(state.scanSequence, retiredThrough);
+      state.knownThroughSequence = Math.max(state.knownThroughSequence, retiredThrough);
+      state.observedHighWaterSequence = Math.max(state.observedHighWaterSequence, retiredThrough);
+      return;
+    }
+    throw new Error("Thread binding retired during cursor reconciliation");
   }
 
   /** Atomically close turn admission while the owner-scoped Runtime suspend is decided. */
@@ -779,6 +854,7 @@ export class ConversationRuntimeRelay {
     const [state] = this.states.splice(index, 1);
     this.closeDeliveryObservations(state!);
     this.clearActivitySilence(state!);
+    state!.rosterWaitController.abort(new FencedTurnError("Conversation binding retired"));
     state!.activityController?.abort();
     state!.drainController?.abort();
     await Promise.all([
@@ -916,6 +992,9 @@ export class ConversationRuntimeRelay {
       }
       this.requestRuntimeInterrupt(state, participantId);
     }
+    // Unlike quiescing, an explicit Stop must release this binding's wait on
+    // shared metadata recovery and let its cancellation handler settle the turn.
+    state.rosterWaitController.abort(new Error("Conversation binding stop requested"));
     await state.drainTask?.catch(() => undefined);
     const interruptSettled = await state.stopInterruptPromise;
     if (interruptSettled === false || state.stopError || state.activeTrigger) {
@@ -983,7 +1062,11 @@ export class ConversationRuntimeRelay {
     state.interruptIssued = true;
     const ref = state.binding.diagnosticBinding;
     this.observeInterrupt(state, { binding: state.binding, bindingId: ref?.id, generation: ref?.generation, triggerId: state.activeTrigger?.id }, "interrupt_requested", "started");
-    state.interruptPromise = this.invokeCancellation(state, participantId, state.retryDeadline);
+    const interruptDeadline = Math.max(
+      state.retryDeadline ?? 0,
+      this.monotonicNow() + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS),
+    );
+    state.interruptPromise = this.invokeCancellation(state, participantId, interruptDeadline);
     if (state.stopRequested) state.stopInterruptPromise = state.interruptPromise;
   }
 
@@ -1150,44 +1233,114 @@ export class ConversationRuntimeRelay {
       signal: this.controller!.signal,
       onReady,
     })) {
-      await this.rosterReady;
-      if (event.type === "conversation.updated") {
-        this.roster = await this.options.client.getConversation(this.options.conversationId);
-        continue;
-      }
-      if (event.type === "roster.updated") {
-        if (!this.roster || event.rosterRevision > this.roster.rosterRevision) {
-          this.roster = await this.options.client.getConversation(this.options.conversationId);
+      if (event.type === "roster.updated" || event.type === "conversation.updated") {
+        if (event.type === "roster.updated") {
+          // Observe invalidations immediately, even while startup or an earlier
+          // metadata response is pending. Never block the event reader on them.
+          this.observedRosterRevision = Math.max(this.observedRosterRevision, event.rosterRevision);
         }
-        const retired = this.states.filter(
-          (state) => !this.isActiveParticipant(state.binding.participantId),
+        const reconcileRetirement = event.type === "roster.updated";
+        const update = this.rosterReady.then(
+          () => this.refreshRoster(reconcileRetirement),
+          () => this.refreshRoster(true),
         );
-        if (retired.length > 0) {
-          const messages = await this.options.client.listMessages(this.options.conversationId, {
-            beforeSequence: Number.MAX_SAFE_INTEGER,
-            limit: 1,
-          });
-          const headSequence = messages.at(-1)?.sequence ?? 0;
-          for (const state of retired) {
-            state.lastProcessedSequence = Math.max(state.lastProcessedSequence, headSequence);
-            state.scanSequence = Math.max(state.scanSequence, headSequence);
-            state.knownThroughSequence = Math.max(state.knownThroughSequence, headSequence);
-            state.observedHighWaterSequence = Math.max(
-              state.observedHighWaterSequence,
-              headSequence,
-            );
-            state.needsHeadScan = false;
-            state.queuedTurns = 0;
-            await this.options.cursorStore?.setCursor(
-              this.options.conversationId,
-              state.binding.participantId,
-              headSequence,
-            );
-          }
-        }
+        this.rosterReady = update;
+        void update.catch((error) => this.options.onError?.(undefined,
+          error instanceof Error ? error : new Error(String(error))));
         continue;
       }
       for (const state of this.states) this.observeMessage(state, event.message.sequence);
+    }
+  }
+
+  private async waitForRoster(signal?: AbortSignal): Promise<void> {
+    // Include invalidations queued while an earlier reconciliation was in flight.
+    while (true) {
+      const ready = this.rosterReady;
+      if (!signal) await ready;
+      else await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (callback: () => void) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", abort);
+          callback();
+        };
+        const abort = () => finish(() => reject(signal.reason instanceof Error
+          ? signal.reason : new FencedTurnError("Conversation roster wait stopped")));
+        signal.addEventListener("abort", abort, { once: true });
+        ready.then(() => finish(resolve), (error) => finish(() => reject(error)));
+        if (signal.aborted) abort();
+      });
+      if (ready === this.rosterReady) return;
+    }
+  }
+
+  private async refreshRoster(reconcileRetirement: boolean): Promise<void> {
+    const signal = this.controller!.signal;
+    let failures = 0;
+    while (!signal.aborted) {
+      try {
+        await this.refreshRosterOnce(reconcileRetirement);
+        if (!signal.aborted) return;
+        break;
+      } catch (error) {
+        if (signal.aborted) break;
+        if (error instanceof ConversationClientError && isPermanentDeliveryStatus(error.status)) {
+          throw new FencedTurnError("Conversation roster reconciliation was rejected");
+        }
+        // Keep the shared readiness promise pending: a successful Runtime result
+        // must wait here, not exhaust execution retries or be replaced by a notice.
+        if (failures === 0) this.options.onError?.(undefined, new Error("Conversation roster reconciliation unavailable"));
+        const backoffMs = CATCH_UP_RETRY_BACKOFF_MS[Math.min(failures, CATCH_UP_RETRY_BACKOFF_MS.length - 1)]!;
+        failures += 1;
+        await this.waitForCatchUpRetry(signal, backoffMs);
+      }
+    }
+    throw new FencedTurnError("Conversation roster reconciliation was stopped");
+  }
+
+  private async refreshRosterOnce(reconcileRetirement: boolean): Promise<void> {
+    while (!this.controller?.signal.aborted) {
+      const roster = await this.options.client.getConversation(this.options.conversationId);
+      if (roster.rosterRevision < this.observedRosterRevision) continue;
+      if (!this.roster || roster.rosterRevision >= this.roster.rosterRevision) this.roster = roster;
+      if (!reconcileRetirement) return;
+      const retired = this.states.filter((state) => !this.isActiveParticipant(state.binding.participantId));
+      if (retired.length > 0) {
+        const messages = await this.options.client.listMessages(this.options.conversationId, {
+          beforeSequence: Number.MAX_SAFE_INTEGER,
+          limit: 1,
+        });
+        // A stale absent-member snapshot must not retire fresh work posted after
+        // re-addition while this head read was in flight.
+        if (roster.rosterRevision < this.observedRosterRevision
+          || roster.rosterRevision < this.roster!.rosterRevision) continue;
+        const headSequence = messages.at(-1)?.sequence ?? 0;
+        for (const state of retired) {
+          state.lastProcessedSequence = Math.max(state.lastProcessedSequence, headSequence);
+          state.scanSequence = Math.max(state.scanSequence, headSequence);
+          state.knownThroughSequence = Math.max(state.knownThroughSequence, headSequence);
+          state.observedHighWaterSequence = Math.max(state.observedHighWaterSequence, headSequence);
+          state.needsHeadScan = false;
+          state.queuedTurns = 0;
+          await this.options.cursorStore?.setCursor(this.options.conversationId, state.binding.participantId, headSequence);
+        }
+      }
+      // A remove/re-add may be coalesced into an active roster. The durable floor,
+      // not current membership alone, decides which thread requests were retired.
+      if (this.roster?.thread) {
+        await Promise.all(this.states.map((state) => this.reconcileThreadCursor(state)));
+      }
+      return;
+    }
+  }
+
+  private async assertThreadTurnCurrent(state: BindingState, trigger: ConversationMessage): Promise<void> {
+    if (!this.roster?.thread) return;
+    await this.waitForRoster(state.rosterWaitController.signal);
+    if (trigger.sequence <= state.lastProcessedSequence || !this.isActiveParticipant(state.binding.participantId)) {
+      throw new FencedTurnError("Thread request was retired by a roster change");
     }
   }
 
@@ -1198,7 +1351,7 @@ export class ConversationRuntimeRelay {
   }
 
   private startDrain(state: BindingState): void {
-    if (this.quiescing || state.sleepTransition || state.wakeUnavailable || state.stopRequested
+    if (this.quiescing || state.initializing || state.sleepTransition || state.wakeUnavailable || state.stopRequested
       || state.drainTask || !this.task || !this.states.includes(state)) return;
     state.drainController ??= new AbortController();
     if (state.drainController.signal.aborted) return;
@@ -1240,11 +1393,13 @@ export class ConversationRuntimeRelay {
     while (!this.quiescing && !state.stopRequested && !signal.aborted && this.states.includes(state)) {
       let messages: ConversationMessage[];
       try {
+        await this.waitForRoster(signal);
         messages = await this.options.client.listMessages(this.options.conversationId, {
           afterSequence: state.scanSequence,
           limit: pageSize,
           signal,
         });
+        await this.waitForRoster(signal);
       } catch {
         if (signal.aborted || !this.states.includes(state)) return;
         failures += 1;
@@ -1398,13 +1553,23 @@ export class ConversationRuntimeRelay {
 
   private async handleWithRetry(state: BindingState, message: ConversationMessage): Promise<void> {
     let attempts = 0;
-    const deadline = this.monotonicNow()
-      + (this.options.turnRetryBudgetMs ?? DEFAULT_TURN_RETRY_BUDGET_MS);
+    const started = this.monotonicNow();
+    let deadline = started + (this.options.turnRetryBudgetMs ?? DEFAULT_TURN_RETRY_BUDGET_MS);
     state.retryDeadline = deadline;
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
       attempts += 1;
       if (attempts > 1) state.delivery?.event("retrying", { attempt: attempts });
       try {
+        if (state.turnTimeoutMs === undefined) {
+          const configured = this.options.resolveTurnTimeoutMs
+            ? await this.awaitRuntime(this.options.resolveTurnTimeoutMs(), "read turn timeout", undefined, deadline) : undefined;
+          validatePositiveMilliseconds("turnTimeoutMs", configured);
+          state.turnTimeoutMs = configured ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+          if (this.options.turnRetryBudgetMs === undefined) {
+            deadline = started + state.turnTimeoutMs;
+            state.retryDeadline = deadline;
+          }
+        }
         await this.handle(state, message, deadline);
         return;
       } catch (error) {
@@ -1586,6 +1751,7 @@ export class ConversationRuntimeRelay {
     state.phase = undefined;
     state.retryAttempt = undefined;
     state.retryDeadline = undefined;
+    state.turnTimeoutMs = undefined;
     state.interruptedTriggerId = undefined;
     state.cancelActorId = undefined;
     state.runtimeTurnAccepted = undefined;
@@ -1638,6 +1804,7 @@ export class ConversationRuntimeRelay {
   ): Promise<void> {
     const { binding } = state;
     this.assertBeforeDeadline(deadline);
+    await this.assertThreadTurnCurrent(state, trigger);
     if (binding.verifyLease) {
       let leaseValid: boolean;
       try {
@@ -1720,6 +1887,48 @@ export class ConversationRuntimeRelay {
           await this.completeCancellation(state, trigger, deadline);
           return;
         }
+        await this.assertThreadTurnCurrent(state, trigger);
+        if (this.isCanceling(state)) {
+          await this.completeCancellation(state, trigger, deadline);
+          return;
+        }
+        // Resolve privately only AFTER all waits and image/context work. A prepared
+        // input is not a cached grant; every not-yet-accepted Runtime attempt repeats this.
+        let authoredInput: string | undefined;
+        try {
+          authoredInput = binding.prepareAuthoredTurn ? await this.awaitRuntime(
+            binding.prepareAuthoredTurn(trigger), "prepare private skill turn", undefined, deadline,
+          ) : undefined;
+          if (trigger.authoredInvocationId !== undefined && !authoredInput) throw new Error();
+        } catch (error) {
+          if (error instanceof AuthoredInvocationLeaseLostError) throw new FencedTurnError("Agent binding lease was lost");
+          throw new PermanentTurnError("Skill invocation delivery is unavailable");
+        }
+        if (authoredInput !== undefined) {
+          if (!binding.verifyLease || !await binding.verifyLease()) throw new FencedTurnError("Agent binding lease was lost");
+          // Lease renewal can wait while access or retirement changes. Revalidate
+          // trusted linkage/current policy after that I/O, not just before it.
+          // Keep this the last asynchronous admission step before Runtime start.
+          try {
+            if (!binding.prepareAuthoredTurn) throw new Error();
+            const admittedInput = await this.awaitRuntime(
+              binding.prepareAuthoredTurn(trigger), "admit private skill turn", undefined, deadline,
+            );
+            if (admittedInput === undefined || admittedInput !== authoredInput) throw new Error();
+            authoredInput = admittedInput;
+          } catch (error) {
+            if (error instanceof AuthoredInvocationLeaseLostError) throw new FencedTurnError("Agent binding lease was lost");
+            throw new PermanentTurnError("Skill invocation delivery is unavailable");
+          }
+          prompt += `\n\n${authoredInput}`;
+        }
+        // Stop closes admission before its asynchronous interruptibility checks finish.
+        if (state.stopRequested && !this.isCanceling(state)) throw new FencedTurnError("Agent binding stop requested");
+        if (this.isCanceling(state)) {
+          await this.completeCancellation(state, trigger, deadline);
+          return;
+        }
+        if (!this.isActiveParticipant(binding.participantId)) throw new FencedTurnError("Agent participant was removed");
         this.assertBeforeDeadline(deadline);
         state.delivery?.event("dispatch_requested");
         turn = await this.awaitRuntime(
@@ -1747,6 +1956,14 @@ export class ConversationRuntimeRelay {
       if (turn.status === "completed") state.delivery?.event("runtime_completed");
       response = turn.response;
     } else {
+      // Authored invocations require a caller-stable Runtime turn: never fall back
+      // to an uncertain legacy send, even when the public arguments look ordinary.
+      if (trigger.authoredInvocationId !== undefined) throw new PermanentTurnError("Skill invocation delivery is unavailable");
+      try {
+        if (binding.prepareAuthoredTurn && await this.awaitRuntime(
+          binding.prepareAuthoredTurn(trigger), "check private message linkage", undefined, deadline,
+        ) !== undefined) throw new Error();
+      } catch { throw new PermanentTurnError("Skill invocation delivery is unavailable"); }
       // A legacy Runtime cannot expose a stable turn id. Once cancellation has begun,
       // only reconcile it to idle; never send the original prompt again.
       if (state.phase === "canceling") {
@@ -1776,6 +1993,11 @@ export class ConversationRuntimeRelay {
         await this.completeCancellation(state, trigger, deadline);
         return;
       }
+      await this.assertThreadTurnCurrent(state, trigger);
+      if (this.isCanceling(state)) {
+        await this.completeCancellation(state, trigger, deadline);
+        return;
+      }
       state.runtimeTurnAccepted = true;
       state.delivery?.event("dispatch_requested");
       try {
@@ -1783,7 +2005,7 @@ export class ConversationRuntimeRelay {
         await this.awaitRuntime(
           binding.runtime.send(binding.sessionId, prompt, images),
           `send to ${binding.participantId}`,
-          this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
+          state.turnTimeoutMs ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
           deadline,
         );
       } catch (error) {
@@ -1857,7 +2079,11 @@ export class ConversationRuntimeRelay {
       state.cancelObservation?.observer.event("interrupt_requested", "skipped", { source: "relay", reasonCode: "not_required", triggerSequence: trigger.sequence });
     }
     if (state.stopRequested) {
-      await this.markProcessed(state, trigger.sequence, deadline);
+      const settlementDeadline = Math.max(
+        deadline,
+        this.monotonicNow() + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS),
+      );
+      await this.markProcessed(state, trigger.sequence, settlementDeadline);
     } else {
       await this.commitCancellation(state, trigger, deadline);
     }
@@ -1903,8 +2129,30 @@ export class ConversationRuntimeRelay {
     // Delivery is idempotent by trigger. Never re-run a Runtime turn merely because the
     // Conversation service acknowledgement was lost. A stopped/fenced Relay has no authority
     // to continue delivery and must let shutdown complete normally.
+    let deliveryStarted = false;
     while (!this.controller?.signal.aborted && this.states.includes(state)) {
+      const readinessStartedAt = this.monotonicNow();
       if (!await this.mayDeliverResponse(state) || state.stopRequested) return undefined;
+      if (this.roster?.thread) {
+        const readyAt = this.monotonicNow();
+        // Completed outcomes get a bounded delivery allowance after authority is
+        // ready. Later authority waits pause, but never replenish, that allowance;
+        // network attempts and retry backoff still consume the same fixed budget.
+        deadline = deliveryStarted
+          ? deadline + Math.max(0, readyAt - readinessStartedAt)
+          : Math.max(deadline, readyAt + (this.options.terminalOutcomeTimeoutMs ?? DEFAULT_TERMINAL_OUTCOME_TIMEOUT_MS));
+        deliveryStarted = true;
+      }
+      // Cancellation can arrive while delivery waits for roster reconciliation.
+      // Settle it instead of publishing the original reply; its terminal notice
+      // must still be allowed through this same idempotent delivery path.
+      if (!terminal && this.isCanceling(state) && state.activeTrigger) {
+        if (!state.binding.runtime.startTurn || !state.binding.runtime.turn) {
+          await this.waitUntilIdle(state.binding, deadline);
+        }
+        await this.completeCancellation(state, state.activeTrigger, deadline);
+        return undefined;
+      }
       let committed;
       const kind = state.failureDiagnostic ? "failure_notice" : terminal ? "cancellation_notice" : "reply";
       try {
@@ -2028,6 +2276,10 @@ export class ConversationRuntimeRelay {
     // reach commitResponse's retry loop rather than silently dropping this outcome.
     if (!this.states.includes(state) || state.stopRequested) return false;
     if (state.binding.verifyLease && !(await state.binding.verifyLease())) return false;
+    if (this.roster?.thread) {
+      await this.waitForRoster(state.rosterWaitController.signal);
+      if (state.activeTrigger && state.activeTrigger.sequence <= state.lastProcessedSequence) return false;
+    }
     return !state.stopRequested && this.isActiveParticipant(state.binding.participantId);
   }
 
@@ -2049,6 +2301,11 @@ export class ConversationRuntimeRelay {
     state.lastProcessedSequence = Math.max(state.lastProcessedSequence, sequence);
   }
 
+  private turnTimeoutFor(binding: AgentConversationBinding): number {
+    return this.states.find((state) => state.binding === binding)?.turnTimeoutMs
+      ?? this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  }
+
   private async waitForTurn(
     binding: AgentConversationBinding,
     turnId: string,
@@ -2056,7 +2313,7 @@ export class ConversationRuntimeRelay {
     retryDeadline: number,
   ): Promise<RuntimePortTurn> {
     let turn = initial;
-    const turnDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+    const turnDeadline = this.monotonicNow() + this.turnTimeoutFor(binding);
     const deadline = Math.min(retryDeadline, turnDeadline);
     try {
       while (this.monotonicNow() < deadline) {
@@ -2084,7 +2341,7 @@ export class ConversationRuntimeRelay {
   }
 
   private async waitUntilIdle(binding: AgentConversationBinding, retryDeadline: number): Promise<void> {
-    const idleDeadline = this.monotonicNow() + (this.options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS);
+    const idleDeadline = this.monotonicNow() + this.turnTimeoutFor(binding);
     const deadline = Math.min(retryDeadline, idleDeadline);
     try {
       while (this.monotonicNow() < deadline) {
@@ -2166,6 +2423,9 @@ export class ConversationRuntimeRelay {
     const signal = this.controller?.signal;
     const remaining = deadline === undefined ? undefined : deadline - this.monotonicNow();
     if (remaining !== undefined && remaining <= 0) {
+      // The caller already invoked this operation before the deadline check.
+      // Observe any rejection even though its result can no longer be awaited.
+      void operation.catch(() => undefined);
       throw new TurnTimeoutError(`Operation deadline expired: ${label}`);
     }
     const effectiveTimeout = remaining === undefined ? timeoutMs : Math.min(timeoutMs, remaining);

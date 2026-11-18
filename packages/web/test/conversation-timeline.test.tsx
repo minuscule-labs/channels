@@ -28,6 +28,16 @@ function render(participants: Participant[]) {
 }
 
 describe("Conversation broadcast labels", () => {
+  it("renders a name-only sent Skill badge while retaining revision metadata on the message", () => {
+    const message: ConversationMessage = { ...messages[1]!, authoredInvocationId: "invocation",
+      authoredSkill: { name: "Development Playbook", documentId: "skill-doc", source: "workspace", revision: 7 } };
+    const html = renderToStaticMarkup(<ConversationTimeline messages={[message]} participants={[human, builder]} />);
+    expect(html).toContain('aria-label="Attached skill"');
+    expect(html).toContain("Development Playbook");
+    expect(html).not.toContain("· r7");
+    expect(html).not.toContain("skill-doc");
+    expect(message.authoredSkill?.revision).toBe(7);
+  });
   it("ignores Workspace-only collisions while retaining historical author and recipient labels", () => {
     const html = render([human, builder]);
     expect(html.match(/>to @channel</g)).toHaveLength(2);
@@ -78,5 +88,24 @@ describe("Conversation broadcast labels", () => {
     expect(memberHtml).toContain('aria-label="Issue notice for Builder"');
     expect(memberHtml).toContain("An owner or admin can review the details.");
     expect(memberHtml).not.toContain('aria-label="View Runtime issue details for Builder"');
+  });
+
+  it("keeps reply shortcuts and message menus on parent timelines only", () => {
+    const thread = {
+      id: "thread-scope", workspaceId: "workspace-id", name: "Thread", participants: [human, builder],
+      rosterRevision: 1, createdAt: messages[0]!.createdAt, replyCount: 2,
+      thread: { parentConversationId: "conversation-id", rootMessageId: messages[0]!.id, context: [messages[0]!] },
+    };
+    const html = renderToStaticMarkup(<ConversationTimeline messages={messages} participants={[human, builder]}
+      threads={[thread]} onOpenThread={() => undefined} canStartThread={false} />);
+    expect(html).toContain("2 replies");
+    expect(html).toContain('aria-label="Open thread for message 1: 2 replies"');
+    expect(html.match(/aria-label="Open actions for message \d+"/g)).toHaveLength(messages.length);
+    expect(html.match(/aria-haspopup="menu"/g)).toHaveLength(messages.length);
+    expect(html).not.toContain("Start thread on message");
+    const replies = renderToStaticMarkup(<ConversationTimeline messages={messages} participants={[human, builder]} />);
+    expect(replies).not.toContain("Open actions for message");
+    expect(replies).not.toContain("Open thread for message");
+    expect(renderToStaticMarkup(<ConversationTimeline messages={[]} participants={[human, builder]} hideEmptyState />)).toBe("");
   });
 });

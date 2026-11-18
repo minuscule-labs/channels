@@ -1,14 +1,38 @@
-import { ConversationClient } from "@minu/channels-core/client";
+import { ConversationClient, ConversationClientError } from "@minu/channels-core/client";
+import { isResourceId } from "@minu/channels-core";
+import type { ConversationMetadata } from "@minu/channels-core/types";
+import { createHash, randomUUID } from "node:crypto";
 import {
   DEFAULT_HANDOFF_SUMMARY_TOKENS,
   DEFAULT_RECENT_CONTEXT_MESSAGES,
   DEFAULT_RECENT_CONTEXT_TOKENS,
   LocalRelayDirectory,
+  captureAuthoredContext,
+  resolveAuthoredInstructions,
+  resolveAuthoredPublication,
+  invocationTargetMatches,
+  inspectAuthoredInvocationPublication,
+  publishAuthoredInvocationMessage,
+  type AuthoredSkillInvocation,
+  type AgentRuntimePort,
+  validateAuthoredContext,
+  type AuthoredDocument,
+  type AuthoredDocumentRevision,
   type ConversationWorkingFolder,
   type RelayBindingStore,
+  type ConversationSetup,
+  type ConversationPreset,
+  type ConversationCreationSetup,
+  type ConversationSettings,
 } from "@minu/channels-relay";
 import type {
   LocalAgentRuntimeOptions,
+  LocalAuthoredDocumentSummary,
+  LocalAuthoredSkillInvocationInput,
+  LocalAuthoredSkillInvocationReceipt,
+  LocalAuthoredSkillInvocationPublicationReceipt,
+  LocalConversationAuthoredContext,
+  LocalConversationAuthoredSkillCatalog,
   LocalConversationWorkingFolders,
   LocalRuntimeModelOption,
   LocalRuntimeOptions,
@@ -39,7 +63,7 @@ const MAX_RECENT_CONTEXT_MESSAGES = 100;
 export class LocalConfigurationRequestError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 403 | 404 | 409 | 413,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 413,
     readonly reason: "invalid" | "forbidden" | "unavailable",
     readonly actionOutcome: "failed" | "unconfirmed" = "failed",
   ) {
@@ -54,6 +78,8 @@ export interface LocalAgentHostConfigurationOptions {
   now?: () => Date;
   runtimeOptionsCacheTtlMs?: number;
   runtimes?: Readonly<Record<string, {
+    startTurn?: AgentRuntimePort["startTurn"];
+    turn?: AgentRuntimePort["turn"];
     capabilities?(config?: { cwd?: string }): Promise<{
       models: Array<Omit<LocalRuntimeModelOption, "enabled">>;
       reasoningLevels: LocalAgentRuntimeOptions["reasoningLevels"];
@@ -91,6 +117,21 @@ function requiredString(value: unknown, label: string, maxBytes: number): string
     throw new LocalConfigurationRequestError(`${label} is too large`, 400, "invalid");
   }
   return value;
+}
+
+function conversationLabel(value: unknown, label: string): string {
+  const text = requiredString(value, label, 400).trim();
+  if (text.length > 100) throw new LocalConfigurationRequestError(`${label} must be at most 100 characters`, 400, "invalid");
+  return text;
+}
+
+function samePresetContents(left: ConversationSetup & { name: string }, right: ConversationSetup & { name: string }): boolean {
+  return left.name === right.name
+    && JSON.stringify(left.participants) === JSON.stringify(right.participants)
+    && left.model?.provider === right.model?.provider
+    && left.model?.id === right.model?.id
+    && left.reasoningLevel === right.reasoningLevel
+    && left.guidance === right.guidance;
 }
 
 async function canonicalWorkspaceRoot(value: string): Promise<string> {
@@ -194,6 +235,264 @@ function relativePathWithinWorkspace(workspaceRoot: string, selectedPath: string
 }
 
 export class LocalAgentHostConfiguration {
+  async listConversationPresets(workspaceId: string, actorIdentityId: string) {
+    await this.authorize(workspaceId, actorIdentityId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, presets: await this.options.store.listConversationPresets(workspaceId) };
+  }
+
+  private parseConversationSetup(input: Record<string, unknown>, requireAssignments: boolean): ConversationSetup {
+    if (!Array.isArray(input.participants) || input.participants.length > 16) {
+      throw new LocalConfigurationRequestError("Choose at most 16 agent roles", 400, "invalid");
+    }
+    const participants = input.participants.map((value) => {
+      const participant = object(value, "Participant");
+      rejectUnknown(participant, ["identityId", "role"]);
+      const role = participant.role === undefined ? undefined : conversationLabel(participant.role, "Role");
+      const identityId = participant.identityId === undefined
+        ? undefined : requiredString(participant.identityId, "Agent identity", 100);
+      if (requireAssignments && !identityId) {
+        throw new LocalConfigurationRequestError("Assign a Workspace agent to every role", 400, "invalid");
+      }
+      return { ...(identityId ? { identityId } : {}), ...(role ? { role } : {}) };
+    });
+    const ids = participants.flatMap(({ identityId }) => identityId ? [identityId] : []);
+    if (new Set(ids).size !== ids.length) throw new LocalConfigurationRequestError("Each agent can fill only one role", 400, "invalid");
+    let model: ConversationSetup["model"];
+    if (input.model !== undefined) {
+      const value = object(input.model, "Model");
+      rejectUnknown(value, ["provider", "id"]);
+      model = { provider: requiredString(value.provider, "Model provider", 100), id: requiredString(value.id, "Model id", 300) };
+    }
+    const reasoningLevel = input.reasoningLevel;
+    if (reasoningLevel !== undefined && (typeof reasoningLevel !== "string"
+      || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(reasoningLevel))) {
+      throw new LocalConfigurationRequestError("Reasoning level is invalid", 400, "invalid");
+    }
+    if (input.guidance !== undefined && (typeof input.guidance !== "string" || bytes(input.guidance) > 16 * 1024)) {
+      throw new LocalConfigurationRequestError("Guidance must be text of at most 16 KiB", 400, "invalid");
+    }
+    const guidance = (input.guidance as string | undefined)?.trim();
+    return { participants, ...(model ? { model } : {}),
+      ...(reasoningLevel ? { reasoningLevel: reasoningLevel as ConversationSetup["reasoningLevel"] } : {}),
+      ...(guidance ? { guidance } : {}) };
+  }
+
+  async saveConversationPreset(workspaceId: string, presetId: string, actorIdentityId: string, value: unknown): Promise<ConversationPreset> {
+    await this.authorize(workspaceId, actorIdentityId);
+    if (!/^preset_[0-9a-f]{32}$/.test(presetId)) throw new LocalConfigurationRequestError("Preset id is invalid", 400, "invalid");
+    const input = object(value, "Preset");
+    rejectUnknown(input, ["name", "expectedRevision", "participants", "guidance"]);
+    const expected = input.expectedRevision;
+    if (expected !== null && (!Number.isSafeInteger(expected) || (expected as number) < 1)) {
+      throw new LocalConfigurationRequestError("Expected preset revision is required", 400, "invalid");
+    }
+    const setup = this.parseConversationSetup(input, true);
+    for (const participant of input.participants as unknown[]) rejectUnknown(object(participant, "Participant"), ["identityId"]);
+    const contents = { participants: setup.participants.map(({ identityId }) => ({ identityId: identityId! })),
+      ...(setup.guidance ? { guidance: setup.guidance } : {}), name: conversationLabel(input.name, "Preset name") };
+    const nextRevision = ((expected as number | null) ?? 0) + 1;
+    const currentPreset = async () => (await this.options.store.listConversationPresets(workspaceId)).find(({ id }) => id === presetId);
+    const isExactRetry = (preset: ConversationPreset): boolean =>
+      preset.revision === nextRevision && samePresetContents(preset, contents);
+    const current = await currentPreset();
+    if (current && isExactRetry(current)) return current;
+    const timestamp = this.now().toISOString();
+    const preset: ConversationPreset = { ...contents, id: presetId, workspaceId,
+      revision: nextRevision, createdAt: current?.createdAt ?? timestamp, updatedAt: timestamp };
+    if (!await this.options.store.putConversationPreset(preset, expected as number | null)) {
+      // Another copy of this exact request may have committed during the write.
+      const committed = await currentPreset();
+      if (committed && isExactRetry(committed)) return committed;
+      throw new LocalConfigurationRequestError("Preset changed; reload presets before saving", 409, "unavailable");
+    }
+    return preset;
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, actorIdentityId: string, value: unknown): Promise<void> {
+    await this.authorize(workspaceId, actorIdentityId);
+    const input = object(value, "Preset deletion");
+    rejectUnknown(input, ["expectedRevision"]);
+    if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 1) {
+      throw new LocalConfigurationRequestError("Expected preset revision is required", 400, "invalid");
+    }
+    if (!await this.options.store.deleteConversationPreset(workspaceId, presetId, input.expectedRevision as number)) {
+      throw new LocalConfigurationRequestError("Preset changed; reload presets before deleting", 409, "unavailable");
+    }
+  }
+
+  async getConversationCreationSetup(conversationId: string, actorIdentityId: string) {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    const setup = await this.options.store.getConversationCreationSetup(conversation.workspaceId, conversationId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, setup: setup ?? null };
+  }
+
+  async createConversationWithSetup(workspaceId: string, actorIdentityId: string, value: unknown): Promise<ConversationMetadata> {
+    const members = await this.authorize(workspaceId, actorIdentityId);
+    const input = object(value, "Conversation");
+    rejectUnknown(input, ["workingFolder", "id", "name", "folderId", "participants", "model", "reasoningLevel", "guidance"]);
+    if (!isResourceId(input.id, "conversation")) throw new LocalConfigurationRequestError("Conversation id is invalid", 400, "invalid");
+    const folderId = input.folderId ?? null;
+    if (folderId !== null && !isResourceId(folderId, "folder")) {
+      throw new LocalConfigurationRequestError("Folder id is invalid", 400, "invalid");
+    }
+    const original = await this.options.store.getConversationCreationSetup(workspaceId, input.id);
+    const existing = await this.options.client.getConversation(input.id).catch((error) => {
+      if (error instanceof ConversationClientError && error.status === 404) return undefined;
+      throw error;
+    });
+    let folder: Pick<ConversationCreationSetup, "workingFolder" | "workingFolderRequestHash"> = {};
+    if (input.workingFolder !== undefined) {
+      const candidate = object(input.workingFolder, "Working folder");
+      rejectUnknown(candidate, ["path", "relativePath"]);
+      const selection = localWorkingFolderInput({ ...candidate, primary: true });
+      const workingFolderRequestHash = createHash("sha256").update(JSON.stringify([selection.path ?? null, selection.relativePath ?? null])).digest("hex");
+      // Recover a committed request even if its folder or Workspace source moved
+      // since publication. Absolute folder paths are never saved in the snapshot.
+      folder = { workingFolderRequestHash, workingFolder: existing?.workspaceId === workspaceId && original?.workingFolderRequestHash === workingFolderRequestHash
+        ? original.workingFolder : await this.creationWorkingFolder(workspaceId, input.workingFolder) };
+    }
+    const setup: ConversationCreationSetup = { ...this.parseConversationSetup(input, true), workspaceId,
+      conversationId: input.id, actorIdentityId, name: conversationLabel(input.name, "Conversation name"), ...folder };
+    // A retry may find the public Conversation even when the first response was lost.
+    if (original && JSON.stringify(original) !== JSON.stringify(setup)) {
+      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+    }
+    if (existing) {
+      if (original && existing.workspaceId === workspaceId) {
+        if ((existing.folderId ?? null) !== folderId) {
+          throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+        }
+        return existing;
+      }
+      throw new LocalConfigurationRequestError("Conversation id is already in use", 409, "unavailable");
+    }
+    if (folderId !== null && !(await this.options.client.listWorkspaceFolders(workspaceId)).some(folder => folder.id === folderId)) {
+      throw new LocalConfigurationRequestError("Folder is unavailable in this Workspace", 404, "unavailable");
+    }
+    await this.validateConversationAgents(workspaceId, setup, members);
+    // Persist before publication: an agent can never start without its reviewed settings.
+    const saved = await this.options.store.putConversationCreationSetup(setup);
+    if (JSON.stringify(saved) !== JSON.stringify(setup)) {
+      throw new LocalConfigurationRequestError("Creation request changed; start a new draft", 409, "unavailable");
+    }
+    if (setup.workingFolder) {
+      await this.options.store.initializeConversationWorkingFolders(workspaceId, setup.conversationId,
+        setup.workingFolder.relativePath === "." ? [] : [{ workspaceId, conversationId: setup.conversationId,
+          relativePath: setup.workingFolder.relativePath, position: 0, primary: true }]);
+    }
+    try {
+      return await this.options.client.createConversation({ id: input.id, workspaceId, name: setup.name, folderId,
+        participantIds: [actorIdentityId, ...setup.participants.map(({ identityId }) => identityId!)], actorIdentityId });
+    } catch (error) {
+      if (error instanceof ConversationClientError && error.status === 409) {
+        const created = await this.options.client.getConversation(input.id);
+        if (created.workspaceId === workspaceId && (created.folderId ?? null) === folderId) return created;
+      }
+      throw error;
+    }
+  }
+
+  private async creationWorkingFolder(workspaceId: string, value: unknown): Promise<{ relativePath: string }> {
+    const selection = object(value, "Working folder");
+    rejectUnknown(selection, ["path", "relativePath"]);
+    const input = localWorkingFolderInput({ ...selection, primary: true });
+    const config = await this.options.store.getWorkspaceConfig(workspaceId);
+    if (!config?.rootUri) throw new LocalConfigurationRequestError("Configure the Workspace source folder first", 409, "unavailable");
+    const root = await canonicalDirectory(config.rootUri, "Workspace source folder");
+    const path = input.relativePath;
+    if (path && (isAbsolute(path) || path.includes("\0") || path.split(/[\\/]/).includes(".."))) {
+      throw new LocalConfigurationRequestError("Working folder relativePath is invalid", 400, "invalid");
+    }
+    const selected = await canonicalDirectory(input.path ?? resolve(root, path!), "Working folder");
+    const relativePath = relativePathWithinWorkspace(root, selected);
+    if (selected !== root && relativePath === undefined) {
+      throw new LocalConfigurationRequestError("Working folder must be inside the Workspace source folder", 400, "invalid");
+    }
+    return { relativePath: relativePath ?? "." };
+  }
+
+  private async validateConversationAgents(workspaceId: string, setup: ConversationSetup,
+    members: Awaited<ReturnType<ConversationClient["listWorkspaceMembers"]>>): Promise<void> {
+    const identities = await this.options.client.listIdentities();
+    for (const participant of setup.participants) {
+      const identity = identities.find(({ id }) => id === participant.identityId);
+      if (!identity || identity.type !== "agent" || identity.status !== "active"
+        || !members.some((member) => member.identityId === identity.id && member.status === "active")) {
+        throw new LocalConfigurationRequestError("A selected Workspace agent is unavailable; review participants", 409, "unavailable");
+      }
+      if (setup.model || setup.reasoningLevel) {
+        const config = await this.options.store.getWorkspaceAgentConfig(workspaceId, identity.id);
+        if (!config?.runtimeAdapter || config.status !== "active") {
+          throw new LocalConfigurationRequestError("Configure each agent before choosing Conversation launch defaults", 409, "unavailable");
+        }
+        const options = await this.resolveRuntimeOptions(workspaceId, config.runtimeAdapter);
+        const modelRef = setup.model ?? (config.modelProvider && config.modelId
+          ? { provider: config.modelProvider, id: config.modelId } : options.defaultModel);
+        const model = options.models.find((candidate) => candidate.enabled
+          && candidate.provider === modelRef?.provider && candidate.id === modelRef?.id);
+        const reasoningLevel = setup.reasoningLevel ?? config.reasoningLevel;
+        if (setup.model && !model) {
+          throw new LocalConfigurationRequestError("Conversation model is unavailable for a selected agent", 409, "unavailable");
+        }
+        if (reasoningLevel && !options.reasoningLevels.includes(reasoningLevel)) {
+          throw new LocalConfigurationRequestError("Conversation reasoning level is unavailable for a selected agent", 409, "unavailable");
+        }
+        if (model && !model.reasoning && reasoningLevel && reasoningLevel !== "off") {
+          throw new LocalConfigurationRequestError("Selected model does not support reasoning; choose off for Conversation effort", 409, "unavailable");
+        }
+      }
+    }
+  }
+
+  async getConversationSettings(conversationId: string, actorIdentityId: string) {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    const sourceId = conversation.thread?.parentConversationId ?? conversationId;
+    const stored = await this.options.store.getConversationSettings(conversation.workspaceId, sourceId);
+    const setup = stored ?? await this.options.store.getConversationCreationSetup(conversation.workspaceId, sourceId);
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings: {
+      ...this.parseConversationSetup({ ...setup, participants: setup?.participants ?? [] }, false),
+      workspaceId: conversation.workspaceId, conversationId: sourceId, revision: stored?.revision ?? 0,
+    } };
+  }
+
+  async updateConversationSettings(conversationId: string, actorIdentityId: string, value: unknown) {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation settings", 409, "unavailable");
+    const members = await this.authorize(conversation.workspaceId, actorIdentityId);
+    const input = object(value, "Conversation settings");
+    rejectUnknown(input, ["expectedRevision", "participants", "model", "reasoningLevel", "guidance"]);
+    if (!Number.isSafeInteger(input.expectedRevision) || (input.expectedRevision as number) < 0) {
+      throw new LocalConfigurationRequestError("Expected settings revision is required", 400, "invalid");
+    }
+    const expected = input.expectedRevision as number;
+    const setup = this.parseConversationSetup(input, true);
+    const previous = await this.options.store.getConversationSettings(conversation.workspaceId, conversationId);
+    if (previous?.revision === expected + 1 && samePresetContents({ ...previous, name: "" }, { ...setup, name: "" })) {
+      return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings: previous };
+    }
+    if ((previous?.revision ?? 0) !== expected) {
+      throw new LocalConfigurationRequestError("Settings changed; reload before saving", 409, "unavailable");
+    }
+    if (setup.participants.some(({ identityId }) => !conversation.participants.some((participant) => participant.id === identityId && participant.status === "active"))) {
+      throw new LocalConfigurationRequestError("Participants changed; reload before saving settings", 409, "unavailable");
+    }
+    const identities = await this.options.client.listIdentities();
+    const activeAgents = conversation.participants.filter((participant) => participant.status === "active"
+      && identities.some((identity) => identity.id === participant.id && identity.type === "agent"));
+    await this.validateConversationAgents(conversation.workspaceId, { ...setup,
+      participants: activeAgents.map(({ id }) => ({ identityId: id, role: setup.participants.find(({ identityId }) => identityId === id)?.role ?? "Collaborator" })) }, members);
+    const settings: ConversationSettings = { ...setup, workspaceId: conversation.workspaceId, conversationId, revision: expected + 1 };
+    if (!await this.options.store.putConversationSettings(settings, expected)) {
+      const current = await this.options.store.getConversationSettings(conversation.workspaceId, conversationId);
+      if (!current || current.revision !== expected + 1
+        || !samePresetContents({ ...current, name: "" }, { ...settings, name: "" })) {
+        throw new LocalConfigurationRequestError("Settings changed; reload before saving", 409, "unavailable");
+      }
+      return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings: current };
+    }
+    return { protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION, settings };
+  }
+
   private readonly directory: LocalRelayDirectory;
   private readonly now: () => Date;
   private readonly runtimeOptions = new Map<string, {
@@ -269,6 +568,446 @@ export class LocalAgentHostConfiguration {
     };
   }
 
+  private async authorizeInvocationActor(conversationId: string, actorIdentityId: string) {
+    let conversation;
+    try {
+      conversation = await this.options.client.getConversation(conversationId);
+    } catch {
+      throw new LocalConfigurationRequestError("Conversation is unavailable", 404, "unavailable");
+    }
+    let workspace;
+    let members;
+    let actor;
+    try {
+      [workspace, members, actor] = await Promise.all([
+        this.options.client.getWorkspace(conversation.workspaceId),
+        this.options.client.listWorkspaceMembers(conversation.workspaceId),
+        this.options.client.getIdentity(actorIdentityId),
+      ]);
+    } catch {
+      throw new LocalConfigurationRequestError("Workspace is unavailable", 404, "unavailable");
+    }
+    if (workspace.status !== "active") throw new LocalConfigurationRequestError("Workspace is unavailable", 409, "unavailable");
+    if (actor.type !== "human" || actor.status !== "active"
+      || !members.some(member => member.identityId === actorIdentityId && member.status === "active")
+      || !conversation.participants.some(participant => participant.id === actorIdentityId
+        && participant.type === "human" && participant.status === "active")) {
+      throw new LocalConfigurationRequestError("An active human workspace member and participant is required", 403, "forbidden");
+    }
+    return conversation;
+  }
+
+  private invocationInput(value: unknown): LocalAuthoredSkillInvocationInput {
+    const input = object(value, "Skill invocation");
+    rejectUnknown(input, ["documentId", "source", "revision", "arguments", "to"]);
+    const documentId = requiredString(input.documentId, "documentId", MAX_SKILL_ID_BYTES);
+    if (input.source !== "workspace" && input.source !== "channel") {
+      throw new LocalConfigurationRequestError("Only authored workspace/channel invocation is supported", 400, "invalid");
+    }
+    const revision = optionalNullableInteger(input.revision, "revision", 1, Number.MAX_SAFE_INTEGER - 1);
+    if (revision == null) throw new LocalConfigurationRequestError("revision is required", 400, "invalid");
+    if (typeof input.arguments !== "string" || bytes(input.arguments) > MAX_PERSONA_PROMPT_BYTES) {
+      throw new LocalConfigurationRequestError("arguments must be a string of at most 64 KiB", 400, "invalid");
+    }
+    if (!Array.isArray(input.to)) {
+      throw new LocalConfigurationRequestError("Recipients must be an array", 400, "invalid");
+    }
+    const to = input.to.map(value => requiredString(value, "Recipient", 200)).sort();
+    if (new Set(to).size !== to.length) throw new LocalConfigurationRequestError("Recipients must be unique", 400, "invalid");
+    return { documentId, source: input.source, revision, arguments: input.arguments, to };
+  }
+
+  private invocationReceipt(record: AuthoredSkillInvocation): LocalAuthoredSkillInvocationReceipt {
+    return { id: record.id, requestId: record.requestId, workspaceId: record.workspaceId, conversationId: record.conversationId,
+      actorIdentityId: record.actorIdentityId, documentId: record.documentId, source: record.source, revision: record.revision,
+      arguments: record.arguments, to: record.to ?? record.targets.map(target => target.identityId), name: record.name,
+      acceptedAt: record.acceptedAt, acceptance: "accepted" };
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt> {
+    requiredString(requestId, "requestId", 255);
+    const conversation = await this.authorizeInvocationActor(conversationId, actorIdentityId);
+    const record = await this.options.store.getAuthoredSkillInvocation(conversationId, actorIdentityId, requestId);
+    if (!record || record.workspaceId !== conversation.workspaceId) {
+      throw new LocalConfigurationRequestError("Invocation receipt is unavailable", 404, "unavailable");
+    }
+    await this.authorizeInvocationActor(conversationId, actorIdentityId);
+    return this.invocationReceipt(record);
+  }
+
+  async getAuthoredSkillInvocationPublication(
+    conversationId: string, actorIdentityId: string, requestId: string,
+  ): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    // Reuse own-receipt authorization/validation, including 404 for another
+    // active human's request. The selector always comes from the browser actor.
+    const receipt = await this.getAuthoredSkillInvocation(conversationId, actorIdentityId, requestId);
+    try {
+      const observation = await inspectAuthoredInvocationPublication(this.options.store, this.options.client, {
+        workspaceId: receipt.workspaceId, conversationId, actorIdentityId, requestId,
+      });
+      // Explicit projection: never expose private fields if inspection grows.
+      return observation.status === "not_linked"
+        ? { requestId, invocationId: observation.invocationId, status: observation.status }
+        : { requestId, invocationId: observation.invocationId, status: observation.status, messageId: observation.messageId };
+    } catch {
+      throw new LocalConfigurationRequestError("Skill invocation publication is unavailable", 409, "unavailable");
+    }
+  }
+
+  async publishAuthoredSkillInvocation(
+    conversationId: string, actorIdentityId: string, value: unknown, assertSession?: () => void,
+  ): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    const input = object(value, "Skill publication");
+    rejectUnknown(input, ["requestId", "invocationId"]);
+    const requestId = requiredString(input.requestId, "requestId", 255);
+    const invocationId = requiredString(input.invocationId, "invocationId", 128);
+    const receipt = await this.getAuthoredSkillInvocation(conversationId, actorIdentityId, requestId);
+    if (receipt.id !== invocationId) throw new LocalConfigurationRequestError("Accepted invocation does not match", 409, "invalid");
+    try {
+      const context = { workspaceId: receipt.workspaceId, conversationId, actorIdentityId, requestId };
+      const observation = await inspectAuthoredInvocationPublication(this.options.store, this.options.client, context);
+      assertSession?.();
+      if (observation.status === "observed") {
+        return { requestId, invocationId, status: "observed", messageId: observation.messageId };
+      }
+      if (observation.status !== "not_linked") {
+        throw new LocalConfigurationRequestError("Publication outcome is unresolved; inspect the original receipt", 409, "unavailable");
+      }
+      // Only this reservation's creator may post. A concurrent writer retaining
+      // an existing link is uncertainty, never implicit permission to resend.
+      const message = await publishAuthoredInvocationMessage(this.options.store, this.options.client, context,
+        { requireNewLink: true, assertSession });
+      return { requestId, invocationId, status: "observed", messageId: message.id };
+    } catch (error) {
+      assertSession?.();
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      throw new LocalConfigurationRequestError("Skill invocation publication is unavailable; inspect the original receipt", 409, "unavailable");
+    }
+  }
+
+  async acceptAuthoredSkillInvocation(
+    conversationId: string, actorIdentityId: string, requestId: string, value: unknown,
+  ): Promise<LocalAuthoredSkillInvocationReceipt> {
+    let workspaceId: string | undefined;
+    try {
+      requiredString(requestId, "requestId", 255);
+      const conversation = await this.authorizeInvocationActor(conversationId, actorIdentityId);
+      workspaceId = conversation.workspaceId;
+      const input = this.invocationInput(value);
+      const requestHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const existing = await this.options.store.getAuthoredSkillInvocation(conversationId, actorIdentityId, requestId);
+      if (existing) {
+        if (existing.workspaceId !== workspaceId || existing.requestHash !== requestHash) {
+          throw new LocalConfigurationRequestError("Request identity already used with a different payload", 409, "invalid");
+        }
+        // Resolving an old acknowledgment is not accepting or dispatching new work.
+        await this.authorizeInvocationActor(conversationId, actorIdentityId);
+        return this.invocationReceipt(existing);
+      }
+      if ((await this.options.client.getConversationLifecycle(conversationId)).state !== "active") {
+        throw new LocalConfigurationRequestError("Conversation is not active", 409, "unavailable");
+      }
+      const channelId = conversation.thread?.parentConversationId ?? conversationId;
+      const document = await this.options.store.getAuthoredDocument(workspaceId, input.documentId);
+      if (!document || document.kind !== "skill"
+        || document.conversationId !== (input.source === "channel" ? channelId : undefined)) {
+        throw new LocalConfigurationRequestError("Skill is unavailable", 404, "unavailable");
+      }
+      if (document.state !== "active" || !document.publishedRevision || document.publishedRevision < input.revision) {
+        throw new LocalConfigurationRequestError("Skill publication is unavailable", 409, "unavailable");
+      }
+      const members = await this.options.client.listWorkspaceMembers(workspaceId);
+      const targets: AuthoredSkillInvocation["targets"] = [];
+      const publication = (await this.options.store.listAuthoredDocumentRevisions(workspaceId, input.documentId))
+        .find(row => row.revision === input.revision);
+      if (!publication) throw new LocalConfigurationRequestError("Skill publication is unavailable", 409, "unavailable");
+      const contentHash = publication.contentHash;
+      await resolveAuthoredPublication(this.options.store, { schemaVersion: 1, workspaceId, channelId, documents: [] },
+        { documentId: input.documentId, kind: "skill", source: input.source, revision: input.revision, contentHash });
+      for (const identityId of input.to) {
+        if (identityId === "@conversation") continue;
+        const participant = conversation.participants.find(participant => participant.id === identityId);
+        if (!participant || participant.status !== "active"
+          || members.find(member => member.identityId === identityId)?.status !== "active") {
+          throw new LocalConfigurationRequestError("Recipient is unavailable", 409, "unavailable");
+        }
+        const identity = await this.options.client.getIdentity(identityId).catch(() => undefined);
+        if (!identity || identity.status !== "active") {
+          throw new LocalConfigurationRequestError("Recipient is unavailable", 409, "unavailable");
+        }
+        // Acceptance records message intent, not an agent/session capability grant.
+        const { bindings } = await this.options.store.getSessionInspectionRecords(workspaceId, conversationId, identityId);
+        if (bindings.length === 1) targets.push({ identityId, bindingId: bindings[0]!.id, generation: bindings[0]!.generation });
+      }
+      const fresh = await this.authorizeInvocationActor(conversationId, actorIdentityId);
+      if (fresh.workspaceId !== workspaceId || (fresh.thread?.parentConversationId ?? conversationId) !== channelId
+        || input.to.some(id => id !== "@conversation" && !fresh.participants.some(participant => participant.id === id && participant.status === "active"))) {
+        throw new LocalConfigurationRequestError("Invocation scope changed", 409, "unavailable");
+      }
+      const record = await this.options.store.reserveAuthoredSkillInvocation({
+        id: randomUUID(), workspaceId, conversationId, channelId, actorIdentityId, requestId, requestHash,
+        documentId: input.documentId, source: input.source, revision: input.revision, contentHash,
+        name: publication.name, arguments: input.arguments, targets, to: input.to, acceptedAt: this.now().toISOString(),
+      });
+      if (!record) throw new LocalConfigurationRequestError("Invocation state changed; inspect the receipt before retrying", 409, "unavailable");
+      if (record.requestHash !== requestHash) throw new LocalConfigurationRequestError("Request identity already used with a different payload", 409, "invalid");
+      this.audit({ action: "skill.invocation.accepted", outcome: "accepted", actorIdentityId, workspaceId, conversationId });
+      return this.invocationReceipt(record);
+    } catch (error) {
+      this.auditFailure("skill.invocation.accepted", actorIdentityId, workspaceId, undefined, error, conversationId);
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      throw new LocalConfigurationRequestError("Skill invocation is unavailable; inspect the receipt before retrying", 409, "unavailable");
+    }
+  }
+
+  async getConversationAuthoredSkillCatalog(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredSkillCatalog> {
+    const conversation = await this.authorizeInvocationActor(conversationId, actorIdentityId);
+    const channelId = conversation.thread?.parentConversationId ?? conversationId;
+    try {
+      const select = (documents: AuthoredDocument[]) => documents.filter(document => document.kind === "skill"
+        && document.state === "active" && document.publishedRevision !== undefined
+        && (document.conversationId === undefined || document.conversationId === channelId))
+        .sort((left, right) => left.id.localeCompare(right.id));
+      const documents = select(await this.options.store.listAuthoredDocuments(conversation.workspaceId));
+      // Discovery observes publication heads once; acceptance and delivery validate later use.
+      const skills: LocalConversationAuthoredSkillCatalog["skills"] = [];
+      for (const document of documents) {
+        const publication = (await this.options.store.listAuthoredDocumentRevisions(conversation.workspaceId, document.id))
+          .find(value => value.revision === document.publishedRevision);
+        if (!publication || publication.workspaceId !== conversation.workspaceId || publication.documentId !== document.id
+          || publication.contentHash !== createHash("sha256").update(JSON.stringify({
+            name: publication.name, description: publication.description, content: publication.content,
+          })).digest("hex")) throw new Error();
+        const source = document.conversationId === undefined ? "workspace" as const : "channel" as const;
+        // Project published metadata only; never return the mutable draft or private procedure.
+        skills.push({ documentId: document.id, source, revision: publication.revision, contentHash: publication.contentHash,
+          name: publication.name, description: publication.description });
+      }
+      const agents: NonNullable<LocalConversationAuthoredSkillCatalog["agents"]> = [];
+      for (const participant of conversation.participants.filter(value => value.status === "active" && (value.type === "agent" || value.type === "service"))) {
+        const [config, records] = await Promise.all([
+          this.options.store.getWorkspaceAgentConfig(conversation.workspaceId, participant.id),
+          this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, participant.id),
+        ]);
+        const binding = records.bindings[0], activation = records.activation;
+        const runtime = binding && this.options.runtimes?.[binding.runtimeAdapter];
+        const supported = typeof runtime?.startTurn === "function" && typeof runtime.turn === "function";
+        let sessionReady = false;
+        const references: NonNullable<LocalConversationAuthoredSkillCatalog["agents"]>[number]["skills"] = [];
+        if (config?.status === "active" && binding?.state === "connected" && binding.wakePolicy !== "muted"
+          && records.bindings.length === 1 && activation?.authoredContext) {
+          try {
+            validateAuthoredContext(activation.authoredContext, conversation.workspaceId, channelId);
+            // Session validity is independent of whether any published skill is pinned.
+            sessionReady = activation.state === "active" && binding.workspaceId === conversation.workspaceId
+              && binding.conversationId === conversationId && binding.agentIdentityId === participant.id
+              && activation.workspaceId === conversation.workspaceId && activation.conversationId === conversationId
+              && activation.agentIdentityId === participant.id && activation.bindingId === binding.id
+              && activation.bindingGeneration === binding.generation && activation.runtimeAdapter === binding.runtimeAdapter
+              && (activation.mapping === "managed"
+                ? activation.managedSessionId === binding.runtimeSessionId && activation.runtimeOwnerId === binding.runtimeOwnerId
+                : activation.legacyRuntimeSessionRef === binding.runtimeSessionId);
+            for (const ref of activation.authoredContext.documents.filter(value => value.kind === "skill")) {
+              if (!documents.some(document => document.id === ref.documentId)) continue;
+              if (invocationTargetMatches({ workspaceId: conversation.workspaceId, conversationId, channelId, ...ref },
+                { identityId: participant.id, bindingId: binding.id, generation: binding.generation }, binding, activation)) {
+                references.push({ documentId: ref.documentId, source: ref.source, revision: ref.revision, contentHash: ref.contentHash });
+              }
+            }
+          } catch { /* Corrupt/legacy context is unavailable, never a substitute. */ }
+        }
+        const harness = config?.skillIds?.filter(value => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,199}$/.test(value)) ?? [];
+        agents.push({ identityId: participant.id, state: sessionReady && supported ? "ready" : "unavailable",
+          supported, skills: references, harness: [...new Set(harness)] });
+      }
+      const fresh = await this.authorizeInvocationActor(conversationId, actorIdentityId);
+      if (fresh.workspaceId !== conversation.workspaceId || (fresh.thread?.parentConversationId ?? fresh.id) !== channelId) throw new Error();
+      return { workspaceId: conversation.workspaceId, conversationId, channelId, availability: "not_checked", skills, agents };
+    } catch (error) {
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      throw new LocalConfigurationRequestError("Skill catalog is unavailable", 409, "unavailable");
+    }
+  }
+
+  async getConversationAuthoredContext(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredContext> {
+    const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    const channelId = conversation.thread?.parentConversationId ?? conversationId;
+    try {
+      const published = await captureAuthoredContext(this.options.store, conversation.workspaceId, channelId);
+      const instructions = await resolveAuthoredInstructions(this.options.store, published);
+      const agents: LocalConversationAuthoredContext["agents"] = [];
+      for (const participant of conversation.participants.filter((participant) =>
+        participant.status === "active" && (participant.type === "agent" || participant.type === "service"))) {
+        const { bindings, activation } = await this.options.store.getSessionInspectionRecords(conversation.workspaceId, conversationId, participant.id);
+        if (!bindings.length) { agents.push({ identityId: participant.id, status: "not_started" }); continue; }
+        const binding = bindings[0]!;
+        if (bindings.length !== 1 || !activation || activation.state !== "active"
+          || activation.bindingId !== binding.id || activation.bindingGeneration !== binding.generation
+          || activation.workspaceId !== conversation.workspaceId || activation.conversationId !== conversationId
+          || activation.agentIdentityId !== participant.id) {
+          agents.push({ identityId: participant.id, status: "unavailable" });
+        } else if (activation.authoredContext === undefined) {
+          agents.push({ identityId: participant.id, status: "legacy" });
+        } else {
+          try {
+            validateAuthoredContext(activation.authoredContext, conversation.workspaceId, channelId);
+            await resolveAuthoredInstructions(this.options.store, activation.authoredContext);
+            agents.push({ identityId: participant.id,
+              status: JSON.stringify(activation.authoredContext.documents) === JSON.stringify(published.documents) ? "applied" : "pending",
+              applied: activation.authoredContext.documents });
+          } catch {
+            agents.push({ identityId: participant.id, status: "unavailable" });
+          }
+        }
+      }
+      await this.authorizeConversation(conversationId, actorIdentityId);
+      return { workspaceId: conversation.workspaceId, conversationId, channelId, capturedAt: this.now().toISOString(),
+        published, ...(instructions ? { instructions } : {}), agents, changesApplyToNewSessions: true };
+    } catch (error) {
+      if (error instanceof LocalConfigurationRequestError) throw error;
+      throw new LocalConfigurationRequestError("Published instruction context is unavailable", 409, "unavailable");
+    }
+  }
+
+  async listAuthoredDocuments(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]> {
+    await this.authorize(workspaceId, actorIdentityId);
+    const documents = await this.options.store.listAuthoredDocuments(workspaceId);
+    await this.authorize(workspaceId, actorIdentityId);
+    return documents.map(({ content, ...summary }) => summary);
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string, actorIdentityId: string): Promise<AuthoredDocument> {
+    await this.authorize(workspaceId, actorIdentityId);
+    const document = await this.options.store.getAuthoredDocument(workspaceId, documentId);
+    if (!document) throw new LocalConfigurationRequestError("Document is unavailable", 404, "unavailable");
+    await this.authorizeAuthoredScope(workspaceId, document.conversationId);
+    await this.authorize(workspaceId, actorIdentityId);
+    return document;
+  }
+
+  async listAuthoredDocumentRevisions(
+    workspaceId: string,
+    documentId: string,
+    actorIdentityId: string,
+  ): Promise<AuthoredDocumentRevision[]> {
+    await this.getAuthoredDocument(workspaceId, documentId, actorIdentityId);
+    const revisions = await this.options.store.listAuthoredDocumentRevisions(workspaceId, documentId);
+    await this.authorize(workspaceId, actorIdentityId);
+    return revisions;
+  }
+
+  async createAuthoredDocument(workspaceId: string, actorIdentityId: string, value: unknown): Promise<AuthoredDocument> {
+    try {
+      await this.authorize(workspaceId, actorIdentityId);
+      const input = object(value, "Document");
+      rejectUnknown(input, ["action", "kind", "conversationId", "name", "description", "content"]);
+      if (input.action !== undefined && input.action !== "commit") throw new LocalConfigurationRequestError("Document action is invalid", 400, "invalid");
+      if (input.kind !== "instructions" && input.kind !== "skill") {
+        throw new LocalConfigurationRequestError("Document kind is invalid", 400, "invalid");
+      }
+      const conversationId = input.conversationId === undefined
+        ? undefined : requiredString(input.conversationId, "conversationId", 200);
+      await this.authorizeAuthoredScope(workspaceId, conversationId);
+      const draft = this.authoredDraft(input, input.kind, conversationId);
+      if (input.action === "commit" && input.kind === "skill" && (!draft.description.trim() || !draft.content.trim())) {
+        throw new LocalConfigurationRequestError("A saved skill requires a description and instructions", 400, "invalid");
+      }
+      const timestamp = this.now().toISOString();
+      await this.authorize(workspaceId, actorIdentityId);
+      const document = await this.options.store.createAuthoredDocument({
+        id: randomUUID(), workspaceId, conversationId, kind: input.kind, ...draft,
+        version: 1, state: "active", createdBy: actorIdentityId, updatedBy: actorIdentityId,
+        createdAt: timestamp, updatedAt: timestamp,
+      }, input.action === "commit");
+      if (!document) throw new LocalConfigurationRequestError("Instructions already exist for this scope", 409, "unavailable");
+      this.audit({ action: "authored-document.created", outcome: "accepted", actorIdentityId, workspaceId, conversationId });
+      // The commit may have succeeded while access changed; withhold its private result.
+      await this.authorize(workspaceId, actorIdentityId);
+      return document;
+    } catch (error) {
+      this.auditFailure("authored-document.created", actorIdentityId, workspaceId, undefined, error);
+      throw error;
+    }
+  }
+
+  async updateAuthoredDocument(
+    workspaceId: string,
+    documentId: string,
+    actorIdentityId: string,
+    value: unknown,
+  ): Promise<AuthoredDocument> {
+    let action: "authored-document.updated" | "authored-document.published" | "authored-document.archived" = "authored-document.updated";
+    try {
+      const current = await this.getAuthoredDocument(workspaceId, documentId, actorIdentityId);
+      const input = object(value, "Document update");
+      if (input.action !== "save" && input.action !== "commit" && input.action !== "publish" && input.action !== "archive") {
+        throw new LocalConfigurationRequestError("Document action is invalid", 400, "invalid");
+      }
+      action = input.action === "publish" || input.action === "commit" ? "authored-document.published"
+        : input.action === "archive" ? "authored-document.archived" : "authored-document.updated";
+      rejectUnknown(input, input.action === "save" || input.action === "commit"
+        ? ["action", "expectedVersion", "name", "description", "content"] : ["action", "expectedVersion"]);
+      const expectedVersion = optionalNullableInteger(input.expectedVersion, "expectedVersion", 1, Number.MAX_SAFE_INTEGER - 1);
+      if (expectedVersion == null) throw new LocalConfigurationRequestError("expectedVersion is required", 400, "invalid");
+      if (current.version !== expectedVersion || current.state !== "active") {
+        throw new LocalConfigurationRequestError("Document changed or is archived; reload before retrying", 409, "unavailable");
+      }
+      if (input.action === "publish" && current.kind === "skill"
+        && (!current.description.trim() || !current.content.trim())) {
+        throw new LocalConfigurationRequestError("A published skill requires a description and instructions", 400, "invalid");
+      }
+      if (input.action === "archive" && current.kind === "instructions") {
+        throw new LocalConfigurationRequestError("Save empty instructions to clear this scope", 400, "invalid");
+      }
+      const mutation = input.action === "save" || input.action === "commit"
+        ? { action: input.action, ...this.authoredDraft(input, current.kind, current.conversationId) } as const
+        : { action: input.action } as const;
+      if (mutation.action === "commit" && current.kind === "skill" && (!mutation.description.trim() || !mutation.content.trim())) {
+        throw new LocalConfigurationRequestError("A saved skill requires a description and instructions", 400, "invalid");
+      }
+      await this.authorize(workspaceId, actorIdentityId);
+      const document = await this.options.store.mutateAuthoredDocument(workspaceId, documentId, {
+        ...mutation, expectedVersion, actorIdentityId, timestamp: this.now().toISOString(),
+      });
+      if (!document) throw new LocalConfigurationRequestError("Document changed; reload before retrying", 409, "unavailable");
+      this.audit({ action, outcome: "accepted", actorIdentityId, workspaceId, conversationId: current.conversationId });
+      await this.authorize(workspaceId, actorIdentityId);
+      return document;
+    } catch (error) {
+      this.auditFailure(action, actorIdentityId, workspaceId, undefined, error);
+      throw error;
+    }
+  }
+
+  private authoredDraft(input: Record<string, unknown>, kind: AuthoredDocument["kind"], conversationId?: string) {
+    if (typeof input.content !== "string" || bytes(input.content) > MAX_PERSONA_PROMPT_BYTES) {
+      throw new LocalConfigurationRequestError("content must be Markdown of at most 64 KiB", 400, "invalid");
+    }
+    if (kind === "instructions" && (input.name !== undefined || input.description !== undefined)) {
+      throw new LocalConfigurationRequestError("Instruction names and descriptions are not editable", 400, "invalid");
+    }
+    if (input.description !== undefined && (typeof input.description !== "string" || bytes(input.description) > 2_000)) {
+      throw new LocalConfigurationRequestError("description must be at most 2000 bytes", 400, "invalid");
+    }
+    return {
+      name: kind === "skill" ? requiredString(input.name, "name", 200).trim()
+        : conversationId ? "Channel instructions" : "Workspace instructions",
+      description: kind === "skill" ? (input.description as string | undefined) ?? "" : "",
+      content: input.content,
+    };
+  }
+
+  private async authorizeAuthoredScope(workspaceId: string, conversationId?: string): Promise<void> {
+    if (!conversationId) return;
+    const conversation = await this.options.client.getConversation(conversationId).catch(() => undefined);
+    if (!conversation || conversation.workspaceId !== workspaceId) {
+      throw new LocalConfigurationRequestError("Document scope is unavailable", 404, "unavailable");
+    }
+    if (conversation.thread) {
+      throw new LocalConfigurationRequestError("Threads inherit parent channel content", 409, "unavailable");
+    }
+  }
+
   async getWorkspaceConfiguration(
     workspaceId: string,
     actorIdentityId: string,
@@ -312,6 +1051,7 @@ export class LocalAgentHostConfiguration {
       workspaceId,
       rootConfigured: Boolean(workspaceConfig?.rootUri),
       notesFolderConfigured: Boolean(workspaceConfig?.notesFolderId),
+      ...(workspaceConfig?.turnTimeoutMs !== undefined ? { turnTimeoutMs: workspaceConfig.turnTimeoutMs } : {}),
       ...(workspaceConfig?.idleSleepTimeoutMs !== undefined
         ? { idleSleepTimeoutMs: workspaceConfig.idleSleepTimeoutMs }
         : {}),
@@ -360,7 +1100,7 @@ export class LocalAgentHostConfiguration {
     actorIdentityId: string,
   ): Promise<LocalConversationWorkingFolders> {
     const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
-    const folders = await this.options.store.getConversationWorkingFolders(conversation.workspaceId, conversationId);
+    const folders = await this.options.store.getConversationWorkingFolders(conversation.workspaceId, conversation.thread?.parentConversationId ?? conversationId);
     return {
       protocolVersion: LOCAL_CONTROL_PROTOCOL_VERSION,
       workspaceId: conversation.workspaceId,
@@ -382,6 +1122,7 @@ export class LocalAgentHostConfiguration {
     value: unknown,
   ): Promise<{ relativePath: string }> {
     const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
+    if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation working folders", 409, "unavailable");
     const selection = localWorkingFolderInput(value);
     if (!selection.path) {
       throw new LocalConfigurationRequestError("Working folder preview requires a selected path", 400, "invalid");
@@ -410,6 +1151,7 @@ export class LocalAgentHostConfiguration {
     try {
       const conversation = await this.authorizeConversation(conversationId, actorIdentityId);
       workspaceId = conversation.workspaceId;
+      if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit parent Conversation working folders", 409, "unavailable");
       const input = object(value, "Conversation working folders");
       rejectUnknown(input, ["folders"]);
       if (!Array.isArray(input.folders) || input.folders.length > MAX_CHANNEL_WORKING_FOLDERS) {
@@ -568,7 +1310,7 @@ export class LocalAgentHostConfiguration {
     try {
       await this.authorize(workspaceId, actorIdentityId);
       const input = object(value, "Workspace configuration");
-      rejectUnknown(input, ["rootUri", "notesFolderId", "idleSleepTimeoutMs"]);
+      rejectUnknown(input, ["rootUri", "notesFolderId", "idleSleepTimeoutMs", "turnTimeoutMs"]);
       if (Object.keys(input).length === 0) {
         throw new LocalConfigurationRequestError("Workspace configuration update is empty", 400, "invalid");
       }
@@ -586,6 +1328,11 @@ export class LocalAgentHostConfiguration {
         && ![15, 30, 60, 240, 1440].includes(idleSleepTimeoutMs / 60_000)) {
         throw new LocalConfigurationRequestError("Unsupported idle sleep timeout", 400, "invalid");
       }
+      const turnTimeoutMs = input.turnTimeoutMs;
+      if (turnTimeoutMs !== undefined && turnTimeoutMs !== null
+        && (typeof turnTimeoutMs !== "number" || ![30, 60, 120].includes(turnTimeoutMs / 60_000))) {
+        throw new LocalConfigurationRequestError("Unsupported turn timeout", 400, "invalid");
+      }
       const notesFolderId = optionalNullableString(
         input.notesFolderId,
         "notesFolderId",
@@ -596,6 +1343,7 @@ export class LocalAgentHostConfiguration {
         rootUri,
         notesFolderId,
         idleSleepTimeoutMs,
+        turnTimeoutMs: turnTimeoutMs as number | null | undefined,
       });
       for (const key of this.runtimeOptions.keys()) {
         if (key.startsWith(`${workspaceId}\0`)) this.runtimeOptions.delete(key);
@@ -848,7 +1596,8 @@ export class LocalAgentHostConfiguration {
   }
 
   private auditFailure(
-    action: "workspace.config.updated" | "conversation.working-folders.updated" | "runtime.models.updated" | "agent.config.updated",
+    action: "workspace.config.updated" | "conversation.working-folders.updated" | "runtime.models.updated" | "agent.config.updated"
+      | "authored-document.created" | "authored-document.updated" | "authored-document.published" | "authored-document.archived" | "skill.invocation.accepted",
     actorIdentityId: string,
     workspaceId: string | undefined,
     targetIdentityId: string | undefined,

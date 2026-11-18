@@ -147,7 +147,7 @@ export function ParticipantSessionActionsMenu({
         <DropdownMenuTrigger asChild ref={triggerRef}>
           {trigger ?? <button
             type="button"
-            className="icon-button inline-flex shrink-0"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
             aria-label={`Open actions for ${participantName}`}
             title={`Actions for ${participantName}`}
           >

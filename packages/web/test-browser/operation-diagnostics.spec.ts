@@ -1,5 +1,5 @@
 import { openParticipantSection } from "./participant-menu";
-import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails } from "@minu/channels-control/contracts";
+import type { LocalAgentDiagnosticReport, LocalAgentOperationDetail, LocalAgentOperationHistory, LocalAgentSessionInspection, LocalAgentSessionEvents, LocalAgentDeliveryTrails, LocalConversationAuthoredContext } from "@minu/channels-control/contracts";
 import type { ConversationMetadata, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { mockActionRequests } from "./agent-action-fixtures";
@@ -33,13 +33,13 @@ async function open(page: Page, data: Fixture) {
 }
 function history(data: Fixture): LocalAgentOperationHistory {
   return {
-    protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
+    protocolVersion: 25, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", recordingGap: true,
     nextCursor: "2:2", retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 },
     operations: [{ operationId: "selected-stop", conversationId: data.primary.id, participantIdentityId: data.agent.id, action: "stop", requestedAt: "2026-10-01T09:59:00.000Z", acceptedAt: "2026-10-01T09:59:00.000Z", outcome: "unknown", requestDisposition: "handler_failed", observedAt: "2026-10-01T09:59:01.000Z", closedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, eventsDropped: 1, recordingGap: true, lastConfirmedStage: "delivery_fenced" }],
   };
 }
 function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperationDetail {
-  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
+  return { protocolVersion: 25, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", coverage: "available", detail: {
     operation: { ...history(data).operations[0]!, operationId, ...(operationId === "parent" ? {
       action: "bulk_stop", participantIdentityId: data.ownerId,
       bulk: { targets: 4, completed: 3, started: 0, stopped: 1, skipped: 1, failed: 1, unknown: 1, childrenUnrecorded: 1, childrenUnavailable: 2 },
@@ -52,10 +52,10 @@ function detail(data: Fixture, operationId = "selected-stop"): LocalAgentOperati
   failures: [{ triggerSequence: 1, participant: { identityId: data.agent.id, displayLabel: "Builder Agent" }, causeCategory: "runtime_request_timeout", failedAt: "2026-10-01T09:59:01.000Z", elapsedMs: 1_000, attemptCount: 1, deliveryOutcome: "pending", remediation: { code: "retry_request", label: "Retry request" }, operationRelation: "targeted_trigger" }] };
 }
 function report(data: Fixture, count = 1): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 24, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
+  return { formatVersion: 1, protocolVersion: 25, conversationId: data.primary.id, capturedAt: `capture-${count}`, participant: { identityId: data.agent.id, displayLabel: '<img src=x onerror="window.DIAGNOSTIC_XSS=true">', availability: "current" }, selected: detail(data), coverage: { snapshotUnavailable: true, truncated: true, notes: ["Snapshot unavailable; timeline clipped"] } };
 }
 function inspection(data: Fixture): LocalAgentSessionInspection {
-  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 25, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     recorded: { bindingState: "paused", origin: "started", adapter: "pi", contextMode: "fresh", activationSequence: 999999, activatedAt: "2026-10-01T09:00:00.000Z" },
     running: { status: "available", profile: { version: 1, capturedAt: "2026-10-01T10:00:00.000Z",
       model: { status: "verified", provider: "provider", id: "running-model" }, reasoning: { status: "verified", level: "low" },
@@ -65,14 +65,14 @@ function inspection(data: Fixture): LocalAgentSessionInspection {
     latestStart: "not_verified", lastStopBoundary: "not_recorded" };
 }
 function runtimeEvents(data: Fixture): LocalAgentSessionEvents {
-  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 25, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     snapshot: { version: 1, source: "runtime_bridge", capturedAt: "2026-10-01T10:00:00.000Z", recordingSince: "2026-10-01T09:00:00.000Z", eventsDropped: 0,
       events: [{ sequence: 1, observedAt: "2026-10-01T09:59:00.000Z", code: "turn_accepted" }, { sequence: 2, observedAt: "2026-10-01T09:59:01.000Z", code: "turn_dispatch_requested" }] } };
 }
 function deliveryTrails(data: Fixture): LocalAgentDeliveryTrails {
   const selected = { trailId: "trail-selected", triggerSequence: 1, startedAt: "2026-10-01T09:59:00.000Z", observedAt: "2026-10-01T10:00:00.000Z", closedAt: "2026-10-01T10:00:00.000Z", outcome: "delivered" as const,
     eventsDropped: 0, recordingGap: false, events: [{ sequence: 1, stage: "runtime_completed" as const, observedAt: "2026-10-01T09:59:59.000Z", elapsedMs: 59000 }, { sequence: 2, stage: "response_committed" as const, observedAt: "2026-10-01T10:00:00.000Z", elapsedMs: 60000, kind: "reply" as const, responseSequence: 2 }] };
-  return { protocolVersion: 24, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
+  return { protocolVersion: 25, conversationId: data.primary.id, participantIdentityId: data.agent.id, capturedAt: "2026-10-01T10:00:00.000Z", availability: "available",
     retention: { days: 7, terminalLimit: 1000, eventLimit: 16 }, history: { trails: [selected], nextCursor: "2:2", recordingGap: false }, selected };
 }
 async function mocks(page: Page, data: Fixture) {
@@ -95,6 +95,34 @@ async function mocks(page: Page, data: Fixture) {
   return counts;
 }
 function gate() { let release!: () => void; const promise = new Promise<void>((resolve) => { release = resolve; }); return { promise, release }; }
+
+test("integration observations refresh read-only within existing session diagnostics", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let unsupported = false;
+  await page.route(`**/local/conversations/${data.primary.id}/agents/${data.agent.id}/session-inspection`, route => {
+    counts.inspection++;
+    return route.fulfill({ json: { ...inspection(data), integrations: {
+      version: 1, capturedAt: "2026-10-01T10:00:00.000Z", status: unsupported ? "unsupported" : "partial",
+      coverage: { configuration: unsupported ? "unknown" : "complete", tools: "unknown" },
+      operations: { inspect: unsupported ? "unsupported" : "supported", reconnect: "unsupported", reloadConfiguration: "unsupported" },
+      integrations: unsupported ? [] : [{ id: "mcp.mongodb_fixture", name: "mongodb_fixture", kind: "mcp", source: "user", configured: "enabled", connection: "failed", failureCode: "connection_failed", toolCoverage: "unknown", registeredCount: 0 }],
+      tools: [], issues: [],
+    } } });
+  });
+  await launch(page, request, data);
+  const modal = await open(page, data), region = modal.getByRole("region", { name: "Integrations", exact: true });
+  await expect(region).toContainText("mongodb_fixture");
+  await expect(region).toContainText("failed");
+  await expect(region.getByRole("row").filter({ hasText: "mongodb_fixture" })).toContainText("connection failed");
+  await expect(region.getByRole("cell", { name: "Unknown", exact: true })).toHaveCount(3);
+  expect(await region.getByRole("button").count()).toBe(0);
+  unsupported = true;
+  await modal.getByRole("button", { name: "Refresh session", exact: true }).click();
+  await expect(region).toContainText("unsupported");
+  await expect(region).not.toContainText("mongodb_fixture");
+  await expect(region).not.toContainText("None");
+  expect(counts.inspection).toBe(2); expect(counts.mutations).toBe(0);
+});
 
 test("message delivery is advanced-only, explicit and keyboard accessible", async ({ page, request }) => {
   const data = await fixture(request), counts = await mocks(page, data); await launch(page, request, data);
@@ -425,7 +453,7 @@ for (const loss of ["session", "identity", "participation", "disabled-human", "d
   const data = await fixture(request);
   await mocks(page, data);
   let lost = false;
-  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 24, identityId: lost ? data.agent.id : data.ownerId } }));
+  if (loss === "session" || loss === "identity") await page.route("**/local/session", (route) => lost && loss === "session" ? route.fulfill({ status: 401, json: { error: "PRIVATE_AUTH_ERROR" } }) : route.fulfill({ json: { protocolVersion: 25, identityId: lost ? data.agent.id : data.ownerId } }));
   else if (loss === "participation") await page.route(`**/conversations/${data.primary.id}`, (route) => route.fulfill({ json: { conversation: { ...data.primary, participants: lost ? data.primary.participants.filter(({ id }) => id !== data.ownerId) : data.primary.participants } } }));
   else if (loss === "disabled-membership") await page.route(`**/workspaces/${data.workspaceId}/members`, (route) => route.fulfill({ json: { members: data.members.map((member) => member.identityId === data.ownerId && lost ? { ...member, status: "disabled" } : member) } }));
   else if (loss === "workspace") {
@@ -510,7 +538,7 @@ for (const kind of ["individual", "bulk"] as const) test(`timeline/report remain
   const data = await fixture(request);
   const counts = await mocks(page, data);
   await page.route(`**/local/conversations/${data.primary.id}/agents`, route => route.fulfill({ json: {
-    protocolVersion: 24, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
+    protocolVersion: 25, conversationId: data.primary.id, agents: [{ workspaceId: data.workspaceId, conversationId: data.primary.id, identityId: data.agent.id, state: "idle", capabilities: { start: false, stop: true, replace: false, interrupt: false, reconnect: false, steer: false } }],
   } }));
   const actions = await mockActionRequests(page, data.primary.id);
   if (kind === "individual") {
@@ -580,12 +608,14 @@ test("minimized keyboard inspection restores focus and tabs do not share reports
 test("members never query privileged history; unavailable and missing timelines remain honest", async ({ page, request }) => {
   const data = await fixture(request);
   const counts = await mocks(page, data);
+  let instructionReads = 0;
+  await page.route("**/authored-context", route => { instructionReads++; return route.continue(); });
   await request.post(`${fixtureBase}/member-participant?value=true`);
   try {
     await launch(page, request, data, "member");
     const modal = await open(page, data);
     await expect(modal.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
-    expect(counts.history).toBe(0); expect(counts.events).toBe(0); expect(counts.trails).toBe(0);
+    expect(counts.history).toBe(0); expect(counts.events).toBe(0); expect(counts.trails).toBe(0); expect(instructionReads).toBe(0);
   } finally { await request.post(`${fixtureBase}/member-participant?value=false`); }
   await launch(page, request, data);
   await page.route("**/operations/selected-stop", (route) => route.fulfill({ json: { ...detail(data), detail: undefined } }));
@@ -602,7 +632,7 @@ test("issue notices select exact public trigger evidence, not a matching timesta
   const first = { ...detail(data).failures[0]!, causeCategory: "runtime_offline" };
   const other = { ...first, triggerSequence: 999_999, causeCategory: "runtime_rejected" };
   await page.route(`**/local/conversations/${data.primary.id}/turn-failures`, (route) => route.fulfill({ json: {
-    protocolVersion: 24, conversationId: data.primary.id,
+    protocolVersion: 25, conversationId: data.primary.id,
     notices: [first, other].map(({ participant, failedAt, triggerSequence }) => ({ participant, failedAt, triggerSequence })),
     diagnostics: [first, other],
   } }));
@@ -658,4 +688,113 @@ test("diagnostics opens in a separate tab without losing chat controls or issuin
     await expect(diagnostics.getByRole("button", { name: "Fresh session", exact: true })).toHaveCount(0);
     expect(mutations).toBe(0);
   } finally { await diagnostics.close(); }
+});
+
+function authoredContext(data: Fixture, status: LocalConversationAuthoredContext["agents"][number]["status"], conversationId = data.primary.id): LocalConversationAuthoredContext {
+  return { workspaceId: data.workspaceId, conversationId, channelId: conversationId, capturedAt: "2026-10-01T10:00:00.000Z",
+    published: { schemaVersion: 1, workspaceId: data.workspaceId, channelId: conversationId, documents: [] },
+    instructions: "PRIVATE_INSTRUCTION_BODY", changesApplyToNewSessions: true,
+    agents: [{ identityId: data.agent.id, status }, { identityId: "another-agent", status: "pending" }] };
+}
+
+test("session instructions are agent-scoped, read-only and absent from Conversation settings", async ({ page, request }, info) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let status: LocalConversationAuthoredContext["agents"][number]["status"] = "applied", reads = 0;
+  await page.route(`**/local/conversations/${data.primary.id}/authored-context`, route => {
+    reads++; return route.fulfill({ json: authoredContext(data, status) });
+  });
+  await launch(page, request, data);
+  expect(reads).toBe(0);
+  await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}/settings`);
+  const settings = page.getByRole("main", { name: "Conversation settings", exact: true });
+  await expect(settings.getByLabel("Conversation name", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("region", { name: "Channel instructions", exact: true })).toHaveCount(0);
+  await expect(settings.getByRole("region", { name: "Authored skills", exact: true })).toHaveCount(0);
+  await expect(settings.getByRole("region", { name: "Session instructions", exact: true })).toHaveCount(0);
+  expect(reads).toBe(0);
+  await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}/participants/${data.agent.id}/diagnostics`);
+  const main = page.getByRole("main", { name: "Participant diagnostics", exact: true });
+  const instructions = main.getByRole("region", { name: "Session instructions", exact: true });
+  await expect(instructions.locator('[data-context-status="applied"]')).toHaveText("Applied");
+  await expect(instructions).not.toContainText("Pending");
+  await expect(main).not.toContainText("PRIVATE_INSTRUCTION_BODY");
+  await expect(main).not.toContainText("another-agent");
+  for (const [next, label] of [["pending", "Pending"], ["legacy", "Not verified"], ["not_started", "Not started"], ["unavailable", "Unavailable"]] as const) {
+    status = next;
+    await main.getByRole("button", { name: "Refresh status", exact: true }).click();
+    await expect(instructions.locator(`[data-context-status="${next}"]`)).toHaveText(label);
+  }
+  await page.screenshot({ path: info.outputPath("agent-session-instructions.png") });
+  expect(counts.mutations).toBe(0);
+  expect(await page.evaluate(() => Object.values(localStorage).some(value => /PRIVATE_INSTRUCTION_BODY|another-agent/.test(value)))).toBe(false);
+  await page.clock.install();
+  await main.getByRole("link", { name: "Back to conversation", exact: true }).click();
+  const closedReads = reads;
+  await page.clock.fastForward(15_000);
+  expect(reads).toBe(closedReads);
+});
+
+test("session instructions discard stale status on errors and clear diagnostics on denial", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let result = 200;
+  await page.route(`**/local/conversations/${data.primary.id}/authored-context`, route => result === 200
+    ? route.fulfill({ json: authoredContext(data, "applied") })
+    : route.fulfill({ status: result, json: { error: "PRIVATE_INSTRUCTION_ERROR" } }));
+  await launch(page, request, data);
+  const main = await open(page, data);
+  const instructions = main.getByRole("region", { name: "Session instructions", exact: true });
+  await expect(instructions).toContainText("Applied");
+  result = 503;
+  await main.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(instructions).toContainText("Unavailable");
+  await expect(instructions).not.toContainText("Applied");
+  await expect(main).not.toContainText("PRIVATE_INSTRUCTION_ERROR");
+  result = 403;
+  await main.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await expect(main).toContainText("Diagnostics unavailable");
+  await expect(main.getByRole("region", { name: "Session instructions", exact: true })).toHaveCount(0);
+  await expect(main.getByRole("region", { name: "Operation history", exact: true })).toHaveCount(0);
+  await expect(main).not.toContainText("PRIVATE_INSTRUCTION_ERROR");
+  expect(counts.mutations).toBe(0);
+});
+
+test("session instructions fence a late read after Conversation navigation", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  const entered = gate(), held = gate(), delivered = gate();
+  await page.route(`**/local/conversations/${data.primary.id}/authored-context`, async route => {
+    entered.release(); await held.promise;
+    try { await route.fulfill({ json: authoredContext(data, "applied") }); } catch {} finally { delivered.release(); }
+  });
+  await page.route(`**/local/conversations/${data.alternate.id}/authored-context`, route => route.fulfill({ json: authoredContext(data, "pending", data.alternate.id) }));
+  try {
+    await launch(page, request, data);
+    const main = await open(page, data);
+    await entered.promise;
+    await page.goto(`/app/workspaces/${data.workspaceId}/conversations/${data.alternate.id}/participants/${data.agent.id}/diagnostics`);
+    const instructions = main.getByRole("region", { name: "Session instructions", exact: true });
+    await expect(instructions).toContainText("Pending");
+    held.release(); await delivered.promise;
+    await expect(instructions).toContainText("Pending");
+    await expect(instructions).not.toContainText("Applied");
+    await expect(main).not.toContainText("PRIVATE_INSTRUCTION_BODY");
+    expect(counts.mutations).toBe(0);
+  } finally { held.release(); }
+});
+
+test("session instructions are not queried when authored content is unsupported", async ({ page, request }) => {
+  const data = await fixture(request), counts = await mocks(page, data);
+  let reads = 0;
+  await page.route("**/local/capabilities", async route => {
+    const response = await route.fetch({ url: `http://127.0.0.1:${process.env.MINU_TEST_CONTROL_PORT ?? 58411}/local/capabilities` });
+    const body = await response.json();
+    body.features.authoredContent = false;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/authored-context", route => { reads++; return route.fulfill({ json: authoredContext(data, "applied") }); });
+  await launch(page, request, data);
+  const main = await open(page, data);
+  await expect(main.getByRole("region", { name: "Session and context", exact: true })).toBeVisible();
+  await expect(main.getByRole("region", { name: "Session instructions", exact: true })).toHaveCount(0);
+  expect(reads).toBe(0);
+  expect(counts.mutations).toBe(0);
 });

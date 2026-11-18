@@ -1,5 +1,11 @@
 import { createResourceId, type ConversationClient } from "@minu/channels-core";
 import { randomUUID } from "node:crypto";
+import { getManagedRuntimeSession, resumeManagedRuntimeSession } from "./managed-sessions.ts";
+import type { ConversationPreset, ConversationCreationSetup, ConversationSettings } from "./conversation-presets.ts";
+import type { AuthoredContextSnapshot } from "./authored-context.ts";
+import { prepareLinkedAuthoredInvocationTurn } from "./authored-invocation-delivery.ts";
+import { invocationDocumentMatches, invocationTargetMatches, type AuthoredInvocationMessageLink, type AuthoredSkillInvocation } from "./authored-invocations.ts";
+import { reviseAuthoredDocument, prepareAuthoredDocumentCreation, type AuthoredDocument, type AuthoredDocumentMutation, type AuthoredDocumentRevision } from "./authored-documents.ts";
 import type {
   AgentConversationBinding,
   AgentRuntimePort,
@@ -45,6 +51,7 @@ export interface LocalWorkspaceConfig {
   notesFolderId?: string;
   /** Undefined means no automatic sleep for this Workspace. */
   idleSleepTimeoutMs?: number;
+  turnTimeoutMs?: number;
   runtimeModelPolicies?: Record<string, RuntimeModelRef[]>;
   createdAt: string;
   updatedAt: string;
@@ -113,6 +120,13 @@ export type RuntimeSessionCleanupErrorCategory =
   | "operation_unsupported"
   | "operation_failed";
 
+export interface RuntimeSessionActivation {
+  origin?: RuntimeSessionHistoryOrigin;
+  conversationSequence?: number;
+  contextMode?: RuntimeSessionContextMode;
+  authoredContext?: AuthoredContextSnapshot;
+}
+
 /** Private activation metadata. Legacy native ids are intentionally not copied into this history. */
 export interface RuntimeSessionHistoryRecord {
   id: string;
@@ -131,6 +145,7 @@ export interface RuntimeSessionHistoryRecord {
   state: RuntimeSessionHistoryState;
   origin: RuntimeSessionHistoryOrigin;
   contextMode: RuntimeSessionContextMode;
+  authoredContext?: AuthoredContextSnapshot;
   conversationSequenceAtActivation?: number;
   conversationSequenceAtRetirement?: number;
   activatedAt: string;
@@ -156,6 +171,8 @@ export interface RuntimeSessionCleanupAttempt {
   observedRuntimeStatus: "idle" | "working" | "offline" | "unknown";
   errorCategory?: RuntimeSessionCleanupErrorCategory;
   retentionOutcome?: "retained" | "destroyed";
+  /** Normalize legacy automatic-destroy intents to non-destructive retirement. */
+  cleanupAction?: "suspend";
 }
 
 export interface DeliveryDeadLetterRecord {
@@ -196,9 +213,29 @@ export interface ConversationWorkingFolder {
 }
 
 export interface RelayBindingStore extends RelayCursorStore {
+  getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined>;
+  putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean>;
+  listConversationPresets(workspaceId: string): Promise<ConversationPreset[]>;
+  putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean>;
+  deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean>;
+  getConversationCreationSetup(workspaceId: string, conversationId: string): Promise<ConversationCreationSetup | undefined>;
+  /** Insert once; retries return the original immutable snapshot. */
+  putConversationCreationSetup(setup: ConversationCreationSetup): Promise<ConversationCreationSetup>;
+  getAuthoredInvocationMessageLink(invocationId: string): Promise<AuthoredInvocationMessageLink | undefined>;
+  reserveAuthoredInvocationMessageLink(link: AuthoredInvocationMessageLink): Promise<AuthoredInvocationMessageLink | undefined>;
+  getAuthoredSkillInvocationForMessage(conversationId: string, messageId: string): Promise<AuthoredSkillInvocation | undefined>;
+  getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<AuthoredSkillInvocation | undefined>;
+  reserveAuthoredSkillInvocation(invocation: AuthoredSkillInvocation): Promise<AuthoredSkillInvocation | undefined>;
+  createAuthoredDocument(document: AuthoredDocument, commit?: boolean): Promise<AuthoredDocument | undefined>;
+  getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined>;
+  listAuthoredDocuments(workspaceId: string): Promise<AuthoredDocument[]>;
+  mutateAuthoredDocument(workspaceId: string, documentId: string, mutation: AuthoredDocumentMutation): Promise<AuthoredDocument | undefined>;
+  listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<AuthoredDocumentRevision[]>;
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
   getConversationWorkingFolders(workspaceId: string, conversationId: string): Promise<ConversationWorkingFolder[]>;
+  /** Prepare a creation snapshot's folders once, preserving subsequent edits across retries. */
+  initializeConversationWorkingFolders(workspaceId: string, conversationId: string, folders: readonly ConversationWorkingFolder[]): Promise<void>;
   replaceConversationWorkingFolders(
     workspaceId: string,
     conversationId: string,
@@ -214,11 +251,7 @@ export interface RelayBindingStore extends RelayCursorStore {
   getOrCreateRuntimeOwnerId(): Promise<string>;
   putBinding(
     binding: ConversationAgentBindingRecord,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
   ): Promise<ConversationAgentBindingRecord>;
   getBinding(bindingId: string): Promise<ConversationAgentBindingRecord | undefined>;
   deleteBinding(bindingId: string): Promise<void>;
@@ -266,11 +299,19 @@ export interface RelayBindingStore extends RelayCursorStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
+    recoveryLeaseOwner?: string,
+  ): Promise<ConversationAgentBindingRecord | undefined>;
+  /** Reserve the existing stopping fence for one recovery owner, without admitting delivery. */
+  beginBindingRecovery(
+    bindingId: string, expectedGeneration: number,
+    expectedState: Exclude<ConversationAgentBindingState, "disabled">,
+    leaseOwner: string, now: string, leaseExpiresAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined>;
+  /** Commit the stop boundary and release recovery ownership with the completed state transition. */
+  completeBindingRecovery(
+    bindingId: string, expectedGeneration: number, leaseOwner: string,
+    conversationSequence: number, state: "paused" | "replacing", now: string,
   ): Promise<ConversationAgentBindingRecord | undefined>;
   beginStopBinding(
     bindingId: string,
@@ -355,6 +396,72 @@ export function validateConversationWorkingFolders(
 }
 
 export class InMemoryRelayBindingStore implements RelayBindingStore {
+  private readonly currentConversationSettings = new Map<string, ConversationSettings>();
+  async getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined> {
+    return structuredClone(this.currentConversationSettings.get(`${workspaceId}:${conversationId}`));
+  }
+  async putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean> {
+    const key = `${settings.workspaceId}:${settings.conversationId}`;
+    if ((this.currentConversationSettings.get(key)?.revision ?? 0) !== expectedRevision) return false;
+    this.currentConversationSettings.set(key, structuredClone(settings));
+    return true;
+  }
+  private readonly conversationPresets = new Map<string, ConversationPreset>();
+  private readonly conversationSetups = new Map<string, ConversationCreationSetup>();
+
+  async listConversationPresets(workspaceId: string): Promise<ConversationPreset[]> {
+    return [...this.conversationPresets.values()].filter((preset) => preset.workspaceId === workspaceId)
+      .map((preset) => structuredClone(preset));
+  }
+
+  async putConversationPreset(preset: ConversationPreset, expectedRevision: number | null): Promise<boolean> {
+    const key = JSON.stringify([preset.workspaceId, preset.id]);
+    if ((this.conversationPresets.get(key)?.revision ?? null) !== expectedRevision) return false;
+    this.conversationPresets.set(key, structuredClone(preset));
+    return true;
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, expectedRevision: number): Promise<boolean> {
+    const key = JSON.stringify([workspaceId, presetId]);
+    if (this.conversationPresets.get(key)?.revision !== expectedRevision) return false;
+    return this.conversationPresets.delete(key);
+  }
+
+  async getConversationCreationSetup(workspaceId: string, conversationId: string): Promise<ConversationCreationSetup | undefined> {
+    const setup = this.conversationSetups.get(JSON.stringify([workspaceId, conversationId]));
+    return setup ? structuredClone(setup) : undefined;
+  }
+
+  async putConversationCreationSetup(setup: ConversationCreationSetup): Promise<ConversationCreationSetup> {
+    const key = JSON.stringify([setup.workspaceId, setup.conversationId]);
+    if (!this.conversationSetups.has(key)) this.conversationSetups.set(key, structuredClone(setup));
+    return structuredClone(this.conversationSetups.get(key)!);
+  }
+
+  private readonly authoredInvocations = new Map<string, AuthoredSkillInvocation>();
+  private readonly authoredMessageLinks = new Map<string, AuthoredInvocationMessageLink>();
+
+  async getAuthoredInvocationMessageLink(invocationId: string): Promise<AuthoredInvocationMessageLink | undefined> {
+    const link = this.authoredMessageLinks.get(invocationId);
+    return link ? { ...link } : undefined;
+  }
+
+  async reserveAuthoredInvocationMessageLink(link: AuthoredInvocationMessageLink): Promise<AuthoredInvocationMessageLink | undefined> {
+    const existing = this.authoredMessageLinks.get(link.invocationId);
+    if (existing) return { ...existing };
+    if (![...this.authoredInvocations.values()].some(row => row.id === link.invocationId)
+      || [...this.authoredMessageLinks.values()].some(row => row.messageId === link.messageId)) return undefined;
+    this.authoredMessageLinks.set(link.invocationId, { ...link });
+    return { ...link };
+  }
+
+  async getAuthoredSkillInvocationForMessage(conversationId: string, messageId: string): Promise<AuthoredSkillInvocation | undefined> {
+    const link = [...this.authoredMessageLinks.values()].find(row => row.messageId === messageId);
+    const invocation = link && [...this.authoredInvocations.values()].find(row => row.id === link.invocationId && row.conversationId === conversationId);
+    return invocation ? structuredClone(invocation) : undefined;
+  }
+  private readonly authoredDocuments = new Map<string, AuthoredDocument>();
+  private readonly authoredRevisions = new Map<string, AuthoredDocumentRevision[]>();
   private readonly workspaceConfigs = new Map<string, LocalWorkspaceConfig>();
   private readonly conversationWorkingFolders = new Map<string, ConversationWorkingFolder[]>();
   private readonly agentConfigs = new Map<string, WorkspaceAgentConfig>();
@@ -366,6 +473,74 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   /** Private recovery marker for a pending record evicted from the safe 100-row projection. */
   private readonly turnFailureFinalizationTombstones = new Set<string>();
   private readonly deliveryDeadLetters = new Map<string, DeliveryDeadLetterRecord>();
+
+  async getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<AuthoredSkillInvocation | undefined> {
+    const record = this.authoredInvocations.get(JSON.stringify([conversationId, actorIdentityId, requestId]));
+    return record ? structuredClone(record) : undefined;
+  }
+
+  async reserveAuthoredSkillInvocation(invocation: AuthoredSkillInvocation): Promise<AuthoredSkillInvocation | undefined> {
+    const key = JSON.stringify([invocation.conversationId, invocation.actorIdentityId, invocation.requestId]);
+    const existing = this.authoredInvocations.get(key);
+    if (existing) return structuredClone(existing);
+    if (invocation.to != null && (!Array.isArray(invocation.to) || new Set(invocation.to).size !== invocation.to.length
+      || invocation.to.some(id => typeof id !== "string" || !id.trim()))) return undefined;
+    if ((!invocation.to && !invocation.targets.length) || new Set(invocation.targets.map(target => target.identityId)).size !== invocation.targets.length
+      || !invocationDocumentMatches(invocation, this.authoredDocuments.get(invocation.documentId))) return undefined;
+    const publication = this.authoredRevisions.get(invocation.documentId)?.find(row => row.revision === invocation.revision);
+    if (!publication || publication.workspaceId !== invocation.workspaceId || publication.contentHash !== invocation.contentHash) return undefined;
+    for (const target of invocation.to ? [] : invocation.targets) {
+      if (!invocationTargetMatches(invocation, target, this.bindings.get(target.bindingId),
+        this.sessionHistory.get(`${target.bindingId}\0${target.generation}`))) return undefined;
+    }
+    if ([...this.authoredInvocations.values()].some(row => row.id === invocation.id)) return undefined;
+    this.authoredInvocations.set(key, structuredClone(invocation));
+    return structuredClone(invocation);
+  }
+
+  async createAuthoredDocument(document: AuthoredDocument, commit = false): Promise<AuthoredDocument | undefined> {
+    if (this.authoredDocuments.has(document.id) || (document.kind === "instructions"
+      && [...this.authoredDocuments.values()].some((existing) => existing.kind === "instructions"
+        && existing.workspaceId === document.workspaceId && existing.conversationId === document.conversationId))) {
+      return undefined;
+    }
+    const next = prepareAuthoredDocumentCreation(document, commit);
+    this.authoredDocuments.set(document.id, { ...next.document });
+    if (next.publication) this.authoredRevisions.set(document.id, [next.publication]);
+    return { ...next.document };
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string): Promise<AuthoredDocument | undefined> {
+    const document = this.authoredDocuments.get(documentId);
+    return document?.workspaceId === workspaceId ? { ...document } : undefined;
+  }
+
+  async listAuthoredDocuments(workspaceId: string): Promise<AuthoredDocument[]> {
+    return [...this.authoredDocuments.values()].filter((document) => document.workspaceId === workspaceId)
+      .sort((left, right) => left.id.localeCompare(right.id)).map((document) => ({ ...document }));
+  }
+
+  async mutateAuthoredDocument(
+    workspaceId: string,
+    documentId: string,
+    mutation: AuthoredDocumentMutation,
+  ): Promise<AuthoredDocument | undefined> {
+    const current = this.authoredDocuments.get(documentId);
+    if (current?.workspaceId !== workspaceId) return undefined;
+    const next = reviseAuthoredDocument(current, mutation);
+    if (!next) return undefined;
+    this.authoredDocuments.set(documentId, next.document);
+    if (next.publication) {
+      const history = this.authoredRevisions.get(documentId) ?? [];
+      this.authoredRevisions.set(documentId, [...history, next.publication]);
+    }
+    return { ...next.document };
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<AuthoredDocumentRevision[]> {
+    if (this.authoredDocuments.get(documentId)?.workspaceId !== workspaceId) return [];
+    return (this.authoredRevisions.get(documentId) ?? []).map((revision) => ({ ...revision }));
+  }
 
   async putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig> {
     this.workspaceConfigs.set(config.workspaceId, copyWorkspaceConfig(config));
@@ -383,6 +558,23 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
   ): Promise<ConversationWorkingFolder[]> {
     return (this.conversationWorkingFolders.get(`${workspaceId}\0${conversationId}`) ?? [])
       .map(copyConversationWorkingFolder);
+  }
+
+  private readonly folderInitializations = new Map<string, Promise<void>>();
+  async initializeConversationWorkingFolders(workspaceId: string, conversationId: string, folders: readonly ConversationWorkingFolder[]): Promise<void> {
+    const key = `${workspaceId}\0${conversationId}`;
+    const current = this.folderInitializations.get(key);
+    if (current) return current;
+    const initialization = (async () => {
+      if (!await this.getConversationCreationSetup(workspaceId, conversationId)) throw new Error("Creation snapshot is required before preparing folders");
+      await this.replaceConversationWorkingFolders(workspaceId, conversationId, folders);
+    })();
+    this.folderInitializations.set(key, initialization);
+    try { await initialization; }
+    catch (error) {
+      if (this.folderInitializations.get(key) === initialization) this.folderInitializations.delete(key);
+      throw error;
+    }
   }
 
   async replaceConversationWorkingFolders(
@@ -438,11 +630,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
 
   async putBinding(
     binding: ConversationAgentBindingRecord,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
   ): Promise<ConversationAgentBindingRecord> {
     validateRuntimeOwnerScope(binding.runtimeOwnerId);
     if (this.bindings.has(binding.id)) throw new Error("Conversation agent binding id already exists");
@@ -482,11 +670,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
 
   private createSessionActivation(
     binding: ConversationAgentBindingRecord,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
   ): void {
     const managed = binding.runtimeOwnerId !== undefined;
     const record: RuntimeSessionHistoryRecord = {
@@ -505,6 +689,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       state: "active",
       origin: activation?.origin ?? (managed ? "started" : "migrated"),
       contextMode: activation?.contextMode ?? "with_context",
+      ...(activation?.authoredContext !== undefined ? { authoredContext: structuredClone(activation.authoredContext) } : {}),
       conversationSequenceAtActivation: activation?.conversationSequence,
       activatedAt: binding.updatedAt,
       cleanupAction: "none",
@@ -527,12 +712,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     record.state = "retired";
     record.retiredAt = timestamp;
     record.retirementReason = reason;
-    const destructionRequested = reason === "replaced" || reason === "stopped";
-    record.cleanupAction = record.mapping === "managed"
-      ? destructionRequested ? "destroy" : "suspend"
-      : "none";
+    record.cleanupAction = record.mapping === "managed" ? "suspend" : "none";
     record.cleanupStatus = record.mapping === "managed" ? "pending" : "unknown";
-    if (record.mapping === "managed" && destructionRequested) record.retentionStatus = "destroy_pending";
     record.updatedAt = timestamp;
   }
 
@@ -551,7 +732,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     const bindings = [...this.bindings.values()].filter(row => row.workspaceId === workspaceId && row.conversationId === conversationId && row.agentIdentityId === agentIdentityId).slice(0, 2).map(copyBinding);
     const binding = bindings.length === 1 ? bindings[0] : undefined;
     const activation = binding ? this.sessionHistory.get(`${binding.id}\0${binding.generation}`) : undefined;
-    return { bindings, ...(activation ? { activation: { ...activation } } : {}) };
+    return { bindings, ...(activation ? { activation: structuredClone(activation) } : {}) };
   }
 
   async listSessionHistory(
@@ -562,7 +743,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       .filter((record) => record.conversationId === conversationId
         && (!agentIdentityId || record.agentIdentityId === agentIdentityId))
       .sort((left, right) => left.activatedAt.localeCompare(right.activatedAt))
-      .map((record) => ({ ...record }));
+      .map((record) => structuredClone(record));
   }
 
   async listPendingSessionCleanups(limit: number): Promise<RuntimeSessionHistoryRecord[]> {
@@ -575,7 +756,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
           || (record.cleanupStatus === "failed" && record.cleanupAttemptCount < 5)))
       .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
       .slice(0, limit)
-      .map((record) => ({ ...record }));
+      .map((record) => structuredClone(record));
   }
 
   async recordSessionCleanupAttempt(input: RuntimeSessionCleanupAttempt): Promise<void> {
@@ -585,6 +766,7 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     record.lastCleanupAttemptAt = input.attemptedAt;
     record.lastObservedRuntimeStatus = input.observedRuntimeStatus;
     record.cleanupStatus = input.outcome;
+    if (input.cleanupAction) record.cleanupAction = input.cleanupAction;
     if (input.retentionOutcome) record.retentionStatus = input.retentionOutcome;
     record.lastCleanupErrorCategory = input.outcome === "failed" ? input.errorCategory : undefined;
     record.lastVerifiedAt = input.attemptedAt;
@@ -698,14 +880,18 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     runtimeSessionId: string,
     updatedAt: string,
     runtimeOwnerId?: string,
-    activation?: {
-      origin?: RuntimeSessionHistoryOrigin;
-      conversationSequence?: number;
-      contextMode?: RuntimeSessionContextMode;
-    },
+    activation?: RuntimeSessionActivation,
+    recoveryLeaseOwner?: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
     if (!binding || binding.generation !== expectedGeneration) return undefined;
+    if (recoveryLeaseOwner !== undefined) {
+      if (binding.state !== "stopping" || binding.leaseOwner !== recoveryLeaseOwner
+        || !binding.leaseExpiresAt || binding.leaseExpiresAt <= updatedAt) return undefined;
+      if (!Number.isSafeInteger(activation?.conversationSequence) || activation!.conversationSequence! < 0) {
+        throw new Error("Recovery requires a valid no-replay boundary");
+      }
+    } else if (binding.state === "stopping" && binding.leaseOwner) return undefined;
     validateRuntimeOwnerScope(runtimeOwnerId);
     const sessionOwner = [...this.bindings.values()].find(
       (candidate) => candidate.id !== bindingId
@@ -736,6 +922,11 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     delete binding.managedSessionMissingAt;
     binding.updatedAt = updatedAt;
     this.createSessionActivation(binding, activation);
+    // The replacement identity and recovery boundary become visible together.
+    if (recoveryLeaseOwner !== undefined) {
+      const key = `${binding.conversationId}:${binding.agentIdentityId}`;
+      this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, activation!.conversationSequence!));
+    }
     // Remain visibly uncertain until the new session is leased, verified, and attached.
     binding.state = "replacing";
     delete binding.leaseOwner;
@@ -839,6 +1030,40 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       .map((record) => ({ ...record }));
   }
 
+  async beginBindingRecovery(
+    bindingId: string, expectedGeneration: number,
+    expectedState: Exclude<ConversationAgentBindingState, "disabled">,
+    leaseOwner: string, now: string, leaseExpiresAt: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration || binding.state !== expectedState
+      || (binding.state === "stopping" && binding.leaseOwner
+        && (!binding.leaseExpiresAt || binding.leaseExpiresAt > now))) return undefined;
+    binding.state = "stopping";
+    binding.leaseOwner = leaseOwner;
+    binding.leaseExpiresAt = leaseExpiresAt;
+    delete binding.lastVerifiedAt;
+    delete binding.wakeRequestedAt;
+    binding.updatedAt = now;
+    return copyBinding(binding);
+  }
+
+  async completeBindingRecovery(
+    bindingId: string, expectedGeneration: number, leaseOwner: string,
+    conversationSequence: number, state: "paused" | "replacing", now: string,
+  ): Promise<ConversationAgentBindingRecord | undefined> {
+    const binding = this.bindings.get(bindingId);
+    if (!binding || binding.generation !== expectedGeneration || binding.state !== "stopping"
+      || binding.leaseOwner !== leaseOwner || !binding.leaseExpiresAt || binding.leaseExpiresAt <= now) return undefined;
+    const key = `${binding.conversationId}:${binding.agentIdentityId}`;
+    this.cursors.set(key, Math.max(this.cursors.get(key) ?? 0, conversationSequence));
+    binding.state = state;
+    delete binding.leaseOwner;
+    delete binding.leaseExpiresAt;
+    binding.updatedAt = now;
+    return copyBinding(binding);
+  }
+
   async beginStopBinding(
     bindingId: string,
     expectedGeneration: number,
@@ -863,7 +1088,8 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     updatedAt: string,
   ): Promise<ConversationAgentBindingRecord | undefined> {
     const binding = this.bindings.get(bindingId);
-    if (!binding || binding.generation !== expectedGeneration || binding.state === "disabled") return undefined;
+    if (!binding || binding.generation !== expectedGeneration || binding.state === "disabled"
+      || (binding.state === "stopping" && binding.leaseOwner)) return undefined;
     const cursorKey = `${binding.conversationId}:${binding.agentIdentityId}`;
     this.cursors.set(cursorKey, Math.max(this.cursors.get(cursorKey) ?? 0, conversationSequence));
     binding.state = "paused";
@@ -909,6 +1135,7 @@ export class LocalRelayDirectory {
     rootUri: string;
     notesFolderId?: string | null;
     idleSleepTimeoutMs?: number | null;
+    turnTimeoutMs?: number | null;
   }): Promise<LocalWorkspaceConfig> {
     await this.client.getWorkspace(input.workspaceId);
     if (!input.rootUri.trim()) throw new Error("rootUri is required");
@@ -921,6 +1148,7 @@ export class LocalRelayDirectory {
         ? existing?.notesFolderId
         : input.notesFolderId ?? undefined,
       runtimeModelPolicies: existing?.runtimeModelPolicies,
+      turnTimeoutMs: input.turnTimeoutMs === undefined ? existing?.turnTimeoutMs : input.turnTimeoutMs ?? undefined,
       idleSleepTimeoutMs: input.idleSleepTimeoutMs === undefined
         ? existing?.idleSleepTimeoutMs
         : input.idleSleepTimeoutMs ?? undefined,
@@ -1044,6 +1272,7 @@ export class LocalRelayDirectory {
     conversationSequenceAtActivation?: number;
     contextMode?: RuntimeSessionContextMode;
     origin?: RuntimeSessionHistoryOrigin;
+    authoredContext?: AuthoredContextSnapshot;
     wakePolicy?: WakePolicy;
   }): Promise<ConversationAgentBindingRecord> {
     if (!input.runtimeAdapter.trim() || !input.runtimeSessionId.trim()) {
@@ -1085,6 +1314,7 @@ export class LocalRelayDirectory {
       origin: input.origin ?? (input.runtimeOwnerId ? "started" : "attached"),
       conversationSequence: input.conversationSequenceAtActivation,
       contextMode: input.contextMode,
+      authoredContext: input.authoredContext,
     });
   }
 
@@ -1097,6 +1327,8 @@ export class LocalRelayDirectory {
     conversationSequenceAtActivation?: number;
     contextMode?: RuntimeSessionContextMode;
     origin?: RuntimeSessionHistoryOrigin;
+    authoredContext?: AuthoredContextSnapshot;
+    recoveryLeaseOwner?: string;
   }): Promise<ConversationAgentBindingRecord> {
     const replaced = await this.store.replaceBindingSession(
       input.bindingId,
@@ -1109,7 +1341,9 @@ export class LocalRelayDirectory {
         origin: input.origin ?? (input.runtimeOwnerId ? "started" : "attached"),
         conversationSequence: input.conversationSequenceAtActivation,
         contextMode: input.contextMode,
+        authoredContext: input.authoredContext,
       },
+      input.recoveryLeaseOwner,
     );
     if (!replaced) throw new Error("Binding generation changed; reload before replacing the session");
     return replaced;
@@ -1122,7 +1356,10 @@ export type RestoreBindingOutcome =
   | "invalid_binding"
   | "runtime_unavailable"
   | "runtime_offline"
-  | "runtime_uncertain";
+  | "runtime_uncertain"
+  | "session_metadata_unavailable"
+  | "session_transcript_invalid"
+  | "session_resume_failed";
 
 export interface RestoreConversationBindingsOptions {
   /** Recovery must not attach a replacement generation that appeared after its stop fence. */
@@ -1412,15 +1649,15 @@ export async function restoreConversationBindings(
         await release();
         continue;
       }
-      if (!runtime.listManagedSessions) {
+      if (!runtime.getManagedSession && !runtime.listManagedSessions) {
         outcomes.set(leased.id, "runtime_unavailable");
         await release();
         continue;
       }
-      let managedSessions: Awaited<ReturnType<NonNullable<AgentRuntimePort["listManagedSessions"]>>>;
+      let ownedSession: Awaited<ReturnType<typeof getManagedRuntimeSession>>;
       try {
-        managedSessions = await withRuntimeTimeout(
-          runtime.listManagedSessions(leased.runtimeOwnerId),
+        ownedSession = await withRuntimeTimeout(
+          getManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId, statusTimeoutMs),
           statusTimeoutMs,
           "Runtime session listing",
         );
@@ -1429,8 +1666,6 @@ export async function restoreConversationBindings(
         await release();
         continue;
       }
-      const ownedSession = managedSessions.find((session) =>
-        session.id === leased.runtimeSessionId && session.ownerId === leased.runtimeOwnerId);
       if (!ownedSession) {
         if (leased.state !== "paused") {
           const verifiedAt = now().toISOString();
@@ -1451,14 +1686,15 @@ export async function restoreConversationBindings(
           );
           outcomes.set(leased.id, offline ? "runtime_offline" : "runtime_uncertain");
         } else {
-          outcomes.set(leased.id, "runtime_offline");
+          outcomes.set(leased.id, "session_metadata_unavailable");
         }
         await release();
         continue;
       }
       managedSessionState = ownedSession.state;
       if (managedSessionState === "unavailable") {
-        outcomes.set(leased.id, "runtime_uncertain");
+        const reason = ownedSession.unavailableReason;
+        outcomes.set(leased.id, reason === "session_metadata_unavailable" || reason === "session_transcript_invalid" ? reason : "runtime_uncertain");
         await release();
         continue;
       }
@@ -1485,12 +1721,12 @@ export async function restoreConversationBindings(
         let resumed: { id: string; ownerId: string };
         try {
           resumed = await withRuntimeTimeout(
-            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId, { allowStopped: true }),
+            resumeManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId, { allowStopped: true }),
             resumeTimeoutMs,
             "Runtime session resume",
           );
         } catch {
-          outcomes.set(leased.id, "runtime_uncertain");
+          outcomes.set(leased.id, "session_resume_failed");
           await release();
           continue;
         }
@@ -1512,7 +1748,7 @@ export async function restoreConversationBindings(
           // Resume is idempotent and serialized by Runtime. Calling it for an already-
           // active worker also waits out any interrupted suspend/resume transition.
           resumed = await withRuntimeTimeout(
-            runtime.resume(leased.runtimeSessionId, leased.runtimeOwnerId),
+            resumeManagedRuntimeSession(runtime, leased.runtimeSessionId, leased.runtimeOwnerId),
             resumeTimeoutMs,
             "Runtime session resume",
           );
@@ -1646,6 +1882,9 @@ export async function restoreConversationBindings(
       diagnosticBinding: { id: connected.id, generation: connected.generation, workspaceId: connected.workspaceId,
         runtimeAdapter: connected.runtimeAdapter, runtimeOwnerId: connected.runtimeOwnerId },
       isSleeping: remainsSleeping,
+      prepareAuthoredTurn: async trigger => (await prepareLinkedAuthoredInvocationTurn(options.store, options.client, trigger,
+        { identityId: connected.agentIdentityId, bindingId: connected.id, generation: connected.generation },
+        { owner: options.leaseOwner, now }))?.input,
       verifyLease: async () => {
         const checkedAt = now();
         return options.store.renewBindingLease(
@@ -1665,7 +1904,7 @@ export async function restoreConversationBindings(
         }
         if (latest.state !== "sleeping" && latest.state !== "waking") return;
         const ownerId = latest.runtimeOwnerId;
-        if (!ownerId || !runtime.listManagedSessions) {
+        if (!ownerId || (!runtime.getManagedSession && !runtime.listManagedSessions)) {
           throw new Error("Managed session listing is unavailable");
         }
         const requestedAt = now().toISOString();
@@ -1681,13 +1920,11 @@ export async function restoreConversationBindings(
         );
         if (!waking) throw new Error("Managed binding lease changed before wake");
         try {
-          const sessions = await withRuntimeTimeout(
-            runtime.listManagedSessions(ownerId),
+          const owned = await withRuntimeTimeout(
+            getManagedRuntimeSession(runtime, latest.runtimeSessionId, ownerId, statusTimeoutMs),
             statusTimeoutMs,
             "Runtime session listing",
           );
-          const owned = sessions.find((session) =>
-            session.id === latest.runtimeSessionId && session.ownerId === latest.runtimeOwnerId);
           if (!owned) {
             const verifiedAt = now().toISOString();
             const offline = await options.store.updateBindingState(
@@ -1710,7 +1947,7 @@ export async function restoreConversationBindings(
           // Runtime serializes idempotent resume with suspend. This is required even
           // when inventory says active because a timed-out suspend may still be settling.
           const resumed = await withRuntimeTimeout(
-            runtime.resume(latest.runtimeSessionId, ownerId),
+            resumeManagedRuntimeSession(runtime, latest.runtimeSessionId, ownerId),
             resumeTimeoutMs,
             "Runtime session resume",
           );

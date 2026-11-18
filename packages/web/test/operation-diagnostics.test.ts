@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { DiagnosticSurface, diagnosticReportText, diagnosticScopeKey, requestDispositionLabel } from "../src/lib/operation-diagnostics";
 
 const scope = { humanIdentityId: "owner", workspaceId: "workspace", conversationId: "conversation", participantIdentityId: "agent" };
-const history: LocalAgentOperationHistory = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
-const detail: LocalAgentOperationDetail = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
+const history: LocalAgentOperationHistory = { protocolVersion: 25, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", operations: [], coverage: "available", recordingGap: false, retention: { days: 7, terminalLimit: 1_000, eventLimit: 128 } };
+const detail: LocalAgentOperationDetail = { protocolVersion: 25, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", coverage: "available", relations: [], failures: [], failuresUnavailable: false };
 function report(capturedAt = "now"): LocalAgentDiagnosticReport {
-  return { formatVersion: 1, protocolVersion: 24, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
+  return { formatVersion: 1, protocolVersion: 25, capturedAt, conversationId: "conversation", participant: { identityId: "agent", displayLabel: "<script>not executable</script>", availability: "current" }, selected: detail, coverage: { snapshotUnavailable: true, truncated: false, notes: [] } };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -15,11 +15,11 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const inspection: LocalAgentSessionInspection = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
+const inspection: LocalAgentSessionInspection = { protocolVersion: 25, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "unavailable",
   running: { status: "not_verified" }, saved: { status: "unavailable" }, latestStart: "not_verified", lastStopBoundary: "not_recorded" };
-const events: LocalAgentSessionEvents = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+const events: LocalAgentSessionEvents = { protocolVersion: 25, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
   snapshot: { version: 1, source: "runtime_bridge", capturedAt: "now", recordingSince: "window", eventsDropped: 0, events: [{ sequence: 1, observedAt: "now", code: "turn_accepted" }] } };
-const trails: LocalAgentDeliveryTrails = { protocolVersion: 24, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
+const trails: LocalAgentDeliveryTrails = { protocolVersion: 25, conversationId: "conversation", participantIdentityId: "agent", capturedAt: "now", availability: "available",
   retention: { days: 7, terminalLimit: 1000, eventLimit: 16 }, history: { trails: [], recordingGap: false } };
 function fixture() {
   const reads = {
@@ -35,6 +35,23 @@ function fixture() {
 }
 
 describe("open-surface diagnostic ownership", () => {
+  it("worker replacement clears evidence retained under an unchanged managed binding", async () => {
+    const { surface, reads } = fixture();
+    const integrations = { version: 1 as const, capturedAt: "now", status: "partial" as const,
+      coverage: { configuration: "unknown" as const, tools: "unknown" as const },
+      operations: { inspect: "supported" as const, reconnect: "unsupported" as const, reloadConfiguration: "unsupported" as const }, integrations: [], tools: [], issues: [] };
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, integrations: { ...integrations, workerId: "worker-one" } });
+    await surface.inspectSession(); await surface.openEvents(); await surface.openTrails(); await surface.select("operation"); await surface.report();
+    expect(surface.state.preview).toBeDefined();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, integrations: { ...integrations, workerId: "worker-two" } });
+    await surface.inspectSession();
+    expect(surface.state.runtimeEvents).toBeUndefined(); expect(surface.state.deliveryTrails).toBeUndefined(); expect(surface.state.preview).toBeUndefined();
+  });
+  it("session inspection rejects a returned foreign participant scope", async () => {
+    const { surface, reads } = fixture();
+    reads.agentSessionInspection.mockResolvedValueOnce({ ...inspection, participantIdentityId: "other-agent" });
+    await surface.inspectSession(); expect(surface.state.inspection).toBeUndefined(); expect(surface.state.inspectionError).toBeDefined();
+  });
   it("message trails read only on explicit open/refresh and are cleared on close", async () => {
     const { surface, reads } = fixture(); await surface.history(); await surface.inspectSession();
     expect(reads.agentDeliveryTrails).not.toHaveBeenCalled(); await surface.openTrails(); expect(surface.state.deliveryTrails).toEqual(trails);

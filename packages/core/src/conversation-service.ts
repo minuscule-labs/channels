@@ -11,7 +11,10 @@ import {
 import { createResourceId, isResourceId } from "./ids.ts";
 import { isReservedMentionHandle, mentionHandles } from "./mentions.ts";
 import {
+  ConversationMessageIdConflictError,
   ConversationAttachmentUnavailableError,
+  ConversationFolderConflictError,
+  ConversationResponseRetiredError,
   InMemoryConversationStorage,
   type ConversationAttachmentRecord,
   type ConversationStorage,
@@ -20,7 +23,12 @@ import {
   type NewConversationMessage,
   type WorkspaceMemberUpdateResult,
 } from "./storage.ts";
+import { normalizeConversationFolderName } from "./types.ts";
 import type {
+  AssignConversationFolderInput,
+  CreateConversationFolderInput,
+  UpdateConversationFolderInput,
+  ConversationFolder,
   Conversation,
   ConversationEvent,
   ConversationLifecycle,
@@ -29,6 +37,8 @@ import type {
   MessageAttachment,
   AddWorkspaceMemberInput,
   ConversationMetadata,
+  ConversationThread,
+  CreateThreadInput,
   CreateConversationInput,
   CreateIdentityInput,
   CreateMessageInput,
@@ -56,6 +66,18 @@ export class ConversationAttachmentStorageError extends Error {}
 type EventListener = (event: ConversationEvent) => void;
 
 const LEGACY_WORKSPACE_ID = "legacy-default-workspace";
+
+function folderMutationName(input: CreateConversationFolderInput): string {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+    throw new ConversationValidationError("actorIdentityId is required");
+  }
+  try {
+    return normalizeConversationFolderName(input.name);
+  } catch (error) {
+    throw new ConversationValidationError(error instanceof Error ? error.message : "Invalid folder name");
+  }
+}
 
 function assertUnreservedMentionHandle(handle: string): void {
   if (isReservedMentionHandle(handle)) {
@@ -116,6 +138,9 @@ function validateIdempotencyKey(idempotencyKey: string | undefined): string | un
 }
 
 function requestFingerprint(input: {
+  id?: string;
+  authoredInvocationId?: string;
+  authoredSkill?: ConversationMessage["authoredSkill"];
   participantId: string;
   body: string;
   to: string[];
@@ -124,6 +149,9 @@ function requestFingerprint(input: {
 }): string {
   // Preserve the pre-attachment fingerprint format for existing text-only retries.
   const canonicalPayload = JSON.stringify({
+    ...(input.id !== undefined ? { id: input.id } : {}),
+    ...(input.authoredInvocationId !== undefined ? { authoredInvocationId: input.authoredInvocationId } : {}),
+    ...(input.authoredSkill !== undefined ? { authoredSkill: { name: input.authoredSkill.name, documentId: input.authoredSkill.documentId, source: input.authoredSkill.source, revision: input.authoredSkill.revision } } : {}),
     participantId: input.participantId,
     body: input.body,
     to: [...input.to].sort(),
@@ -164,7 +192,7 @@ function validateAttachmentIds(value: unknown): string[] {
   return ids;
 }
 
-function messageTargets(conversation: Conversation, input: CreateMessageInput): string[] {
+export function resolveMessageTargets(conversation: Pick<Conversation, "participants">, input: CreateMessageInput): string[] {
   if (input.to !== undefined && !Array.isArray(input.to)) {
     throw new ConversationValidationError("to must be an array of participant ids");
   }
@@ -187,7 +215,10 @@ function messageTargets(conversation: Conversation, input: CreateMessageInput): 
     }
     return participant.id;
   };
-  const mentioned = mentionHandles(input.body).map(resolveTarget);
+  // Structured recipients are authoritative, including an empty list.
+  // Otherwise intentional mentions route both human messages and agent handoffs;
+  // neither changes a human's browser-local sticky recipient selection.
+  const mentioned = input.to === undefined ? mentionHandles(input.body).map(resolveTarget) : [];
   const structured = (input.to ?? []).map((target) => {
     if (typeof target !== "string" || !target.trim()) {
       throw new ConversationValidationError("to must contain non-empty participant ids");
@@ -204,6 +235,7 @@ export class ConversationService {
 
   /** Private in-process gate shared by message commits and a managed lifecycle Stop. */
   async withConversationMessageAdmission<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    conversationId = (await this.storage.getConversationMetadata(conversationId))?.thread?.parentConversationId ?? conversationId;
     const prior = this.messageAdmissions.get(conversationId) ?? Promise.resolve();
     const current = prior.catch(() => undefined).then(operation);
     this.messageAdmissions.set(conversationId, current);
@@ -215,6 +247,7 @@ export class ConversationService {
   }
 
   private async serializeConversation<T>(conversationId: string, operation: () => Promise<T>): Promise<T> {
+    conversationId = (await this.storage.getConversationMetadata(conversationId))?.thread?.parentConversationId ?? conversationId;
     const prior = this.conversationOperations.get(conversationId) ?? Promise.resolve();
     const current = prior.catch(() => undefined).then(operation);
     this.conversationOperations.set(conversationId, current);
@@ -670,7 +703,81 @@ export class ConversationService {
 
   async listWorkspaceConversations(workspaceId: string): Promise<ConversationMetadata[]> {
     await this.getWorkspace(workspaceId);
-    return await this.storage.listWorkspaceConversations(workspaceId);
+    return (await this.storage.listWorkspaceConversations(workspaceId)).filter((conversation) => !conversation.thread);
+  }
+
+  async listThreads(conversationId: string): Promise<ConversationThread[]> {
+    const parent = await this.getConversationMetadata(conversationId);
+    if (parent.thread) throw new ConversationValidationError("Nested threads are not supported");
+    const children = (await this.storage.listWorkspaceConversations(parent.workspaceId))
+      .filter((conversation) => conversation.thread?.parentConversationId === conversationId);
+    return Promise.all(children.map(async (child) => ({
+      ...child,
+      participants: parent.participants,
+      rosterRevision: parent.rosterRevision,
+      thread: child.thread!,
+      replyCount: (await this.storage.listMessages(child.id))!.length,
+    })));
+  }
+
+  async createThread(conversationId: string, input: CreateThreadInput): Promise<ConversationThread> {
+    return this.withConversationMessageAdmission(conversationId, () => this.serializeConversation(conversationId, async () => {
+      const parent = await this.getConversation(conversationId);
+      if (parent.thread) throw new ConversationValidationError("Nested threads are not supported");
+      await this.assertConversationMutable(conversationId);
+      if (!input || typeof input.actorIdentityId !== "string" || typeof input.rootMessageId !== "string") {
+        throw new ConversationValidationError("actorIdentityId and rootMessageId are required");
+      }
+      const actor = parent.participants.find((participant) => participant.id === input.actorIdentityId);
+      if (!actor || actor.type !== "human" || actor.status === "disabled") {
+        throw new ConversationValidationError("An active human Conversation participant is required");
+      }
+      await this.assertActiveWorkspaceIdentity(parent, actor.id);
+      const root = parent.messages.find((message) => message.id === input.rootMessageId);
+      if (!root) throw new ConversationValidationError("Root message is not in this Conversation");
+      const existing = (await this.listThreads(conversationId)).find((thread) => thread.thread.rootMessageId === root.id);
+      if (existing) return existing;
+      // Capture the public parent at first creation, reserving the root even
+      // when it is older than the recent window or larger than the background budget.
+      const context: ConversationMessage[] = [structuredClone(root)];
+      let characters = root.body.length;
+      for (const message of [...parent.messages].reverse()) {
+        if (message.id === root.id) continue;
+        if (context.length >= 20 || characters + message.body.length > 16_000) break;
+        context.push(structuredClone(message));
+        characters += message.body.length;
+      }
+      context.sort((left, right) => left.sequence - right.sequence);
+      const thread = await this.storage.createConversation({
+        id: createResourceId("conversation"),
+        workspaceId: parent.workspaceId,
+        name: `Thread #${root.sequence}`,
+        participants: parent.participants,
+        rosterRevision: parent.rosterRevision,
+        createdAt: new Date().toISOString(),
+        messages: [],
+        thread: { parentConversationId: conversationId, rootMessageId: root.id, context },
+      }).catch(async (error) => {
+        // The unique parent/root key also handles callers using another service instance.
+        const raced = (await this.listThreads(conversationId)).find((candidate) => candidate.thread.rootMessageId === root.id);
+        if (raced) return { ...raced, messages: [] };
+        throw error;
+      });
+      this.notifyConversationUpdated(conversationId);
+      return { ...thread, thread: thread.thread!, replyCount: thread.messages.length };
+    }));
+  }
+
+  private notifyConversationUpdated(conversationId: string): void {
+    const event: ConversationEvent = {
+      id: createResourceId("event"), type: "conversation.updated", conversationId, createdAt: new Date().toISOString(),
+    };
+    for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
+  }
+
+  private async notifyThreadParent(conversationId: string): Promise<void> {
+    const thread = (await this.storage.getConversationMetadata(conversationId))?.thread;
+    if (thread) this.notifyConversationUpdated(thread.parentConversationId);
   }
 
   async getConversationLifecycle(conversationId: string): Promise<EffectiveConversationLifecycle> {
@@ -693,6 +800,7 @@ export class ConversationService {
     input: UpdateConversationLifecycleInput,
   ): Promise<EffectiveConversationLifecycle> {
     const conversation = await this.getConversationMetadata(conversationId);
+    if (conversation.thread) throw new ConversationValidationError("Threads inherit the parent Conversation lifecycle");
     if (!input || !["active", "snoozed", "settled"].includes(input.state)) {
       throw new ConversationValidationError("Conversation lifecycle state must be active, snoozed, or settled");
     }
@@ -765,8 +873,12 @@ export class ConversationService {
     workspaceId: string,
     actorIdentityId: string,
   ): Promise<void> {
-    const actor = await this.storage.getWorkspaceMember(workspaceId, actorIdentityId);
-    if (!actor || actor.status !== "active" || !["owner", "admin"].includes(actor.accessRole)) {
+    const [actor, identity] = await Promise.all([
+      this.storage.getWorkspaceMember(workspaceId, actorIdentityId),
+      this.storage.getIdentity(actorIdentityId),
+    ]);
+    if (!actor || actor.status !== "active" || !["owner", "admin"].includes(actor.accessRole)
+      || identity?.status !== "active" || identity.type !== "human") {
       throw new ConversationValidationError("An active Workspace owner or admin is required");
     }
   }
@@ -804,8 +916,79 @@ export class ConversationService {
     }));
   }
 
+  private async resolveWorkspaceFolder(workspaceId: string, folderId: string): Promise<ConversationFolder> {
+    if (!isResourceId(folderId, "folder")) throw new ConversationValidationError("folderId must be a typed folder id");
+    const folder = await this.storage.getConversationFolder(folderId);
+    if (!folder) throw new ConversationNotFoundError(`Folder not found: ${folderId}`);
+    if (folder.workspaceId !== workspaceId) throw new ConversationValidationError("Folder must belong to this Workspace");
+    return folder;
+  }
+
+  async listWorkspaceFolders(workspaceId: string): Promise<ConversationFolder[]> {
+    await this.getWorkspace(workspaceId);
+    return await this.storage.listWorkspaceConversationFolders(workspaceId);
+  }
+
+  async createWorkspaceFolder(workspaceId: string, input: CreateConversationFolderInput): Promise<ConversationFolder> {
+    const name = folderMutationName(input);
+    const workspace = await this.getWorkspace(workspaceId);
+    if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+    await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+    const timestamp = new Date().toISOString();
+    try {
+      return await this.storage.createConversationFolder({
+        id: createResourceId("folder"), workspaceId, name, createdAt: timestamp, updatedAt: timestamp,
+      });
+    } catch (error) {
+      if (error instanceof ConversationFolderConflictError) throw new ConversationConflictError(error.message);
+      throw error;
+    }
+  }
+
+  async updateWorkspaceFolder(workspaceId: string, folderId: string, input: UpdateConversationFolderInput): Promise<ConversationFolder> {
+    const name = folderMutationName(input);
+    const workspace = await this.getWorkspace(workspaceId);
+    if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+    await this.assertWorkspaceAdministrator(workspaceId, input.actorIdentityId);
+    await this.resolveWorkspaceFolder(workspaceId, folderId);
+    try {
+      const updated = await this.storage.updateConversationFolderName(folderId, name, new Date().toISOString());
+      if (!updated) throw new ConversationNotFoundError(`Folder not found: ${folderId}`);
+      return updated;
+    } catch (error) {
+      if (error instanceof ConversationFolderConflictError) throw new ConversationConflictError(error.message);
+      throw error;
+    }
+  }
+
+  async assignConversationFolder(conversationId: string, input: AssignConversationFolderInput): Promise<ConversationMetadata> {
+    return await this.serializeConversation(conversationId, async () => {
+      if (!input || typeof input !== "object" || Array.isArray(input)
+        || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim()) {
+        throw new ConversationValidationError("actorIdentityId is required");
+      }
+      const folderId = input.folderId;
+      if (folderId !== null && !isResourceId(folderId, "folder")) {
+        throw new ConversationValidationError("folderId must be a typed folder id or null");
+      }
+      const conversation = await this.getConversationMetadata(conversationId);
+      const workspace = await this.getWorkspace(conversation.workspaceId);
+      if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
+      await this.assertConversationMutable(conversationId);
+      await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
+      if (conversation.thread) throw new ConversationValidationError("Threads inherit parent Conversation organization");
+      if (folderId !== null) await this.resolveWorkspaceFolder(conversation.workspaceId, folderId);
+      if ((conversation.folderId ?? null) === folderId) return conversation;
+      const updated = await this.storage.assignConversationFolder(conversationId, folderId);
+      if (!updated) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
+      this.notifyConversationUpdated(conversationId);
+      return updated;
+    });
+  }
+
   async createConversation(input: CreateConversationInput): Promise<Conversation> {
-    if (!input || (input.participantIds === undefined && input.participants === undefined)) {
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || (input.participantIds === undefined && input.participants === undefined)) {
       throw new ConversationValidationError("participantIds must be an array");
     }
     if (input.id !== undefined && !isResourceId(input.id, "conversation")) {
@@ -813,6 +996,15 @@ export class ConversationService {
     }
     if (input.participantIds !== undefined && input.participants !== undefined) {
       throw new ConversationValidationError("participantIds and legacy participants are mutually exclusive");
+    }
+    const folderId = input.folderId ?? null;
+    if (folderId !== null && !isResourceId(folderId, "folder")) {
+      throw new ConversationValidationError("folderId must be a typed folder id or null");
+    }
+    if (folderId !== null && (typeof input.workspaceId !== "string" || !input.workspaceId
+      || !Array.isArray(input.participantIds)
+      || typeof input.actorIdentityId !== "string" || !input.actorIdentityId.trim())) {
+      throw new ConversationValidationError("Filed Conversations require workspaceId, participantIds and actorIdentityId");
     }
     if (input.name !== undefined && (typeof input.name !== "string" || !input.name.trim())) {
       throw new ConversationValidationError("Conversation name must be a non-empty string");
@@ -838,6 +1030,7 @@ export class ConversationService {
           throw new ConversationValidationError("Conversation participants must include the acting human");
         }
       }
+      if (folderId !== null) await this.resolveWorkspaceFolder(workspaceId, folderId);
       participants = await this.resolveActiveParticipants(workspaceId, input.participantIds);
     } else {
       if (input.workspaceId && input.workspaceId !== LEGACY_WORKSPACE_ID) {
@@ -903,7 +1096,8 @@ export class ConversationService {
     return await this.storage.createConversation({
       id: conversationId,
       workspaceId: workspaceId!,
-      name: requestedName ?? `Conversation ${conversationId.slice("conversation_".length, "conversation_".length + 8)}`,
+      name: requestedName ?? `Conversation ${conversationId.slice(-8)}`,
+      folderId,
       participants,
       messages: [],
       rosterRevision: 1,
@@ -934,6 +1128,7 @@ export class ConversationService {
     if (workspace.status !== "active") throw new ConversationValidationError("Workspace is archived");
     await this.assertConversationMutable(conversationId);
     await this.assertWorkspaceAdministrator(conversation.workspaceId, input.actorIdentityId);
+    if (conversation.thread) throw new ConversationValidationError("Threads inherit parent Conversation administration");
     const updated = await this.storage.updateConversationName(conversationId, name);
     if (!updated) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     const event: ConversationEvent = {
@@ -977,6 +1172,7 @@ export class ConversationService {
     if (!input.participantIds.includes(input.actorIdentityId)) {
       throw new ConversationValidationError("Conversation participants must include the acting human");
     }
+    if (conversation.thread) throw new ConversationValidationError("Threads inherit the parent Conversation roster");
     const participants = await this.resolveActiveParticipants(
       conversation.workspaceId,
       input.participantIds,
@@ -1010,6 +1206,15 @@ export class ConversationService {
     const conversation = await this.storage.getConversationMetadata(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     return conversation;
+  }
+
+  /** Public collaboration progress, including the retirement floor after roster removal. */
+  async getCursor(conversationId: string, participantId: string): Promise<number> {
+    const conversation = await this.getConversationMetadata(conversationId);
+    if (!conversation.participants.some((participant) => participant.id === participantId)) {
+      throw new ConversationValidationError("Participant is not in this Conversation");
+    }
+    return this.storage.getCursor(conversationId, participantId);
   }
 
   async listMessages(conversationId: string, options: MessageListOptions = {}): Promise<ConversationMessage[]> {
@@ -1062,6 +1267,22 @@ export class ConversationService {
     idempotencyKey?: string,
   ): Promise<ConversationMessage> {
     const validatedKey = validateIdempotencyKey(idempotencyKey);
+    if (input?.id !== undefined && (!isResourceId(input.id, "message") || validatedKey === undefined)) {
+      throw new ConversationValidationError("A caller-stable message ID requires a valid message ID and idempotency key");
+    }
+    if (input?.authoredInvocationId !== undefined && (typeof input.authoredInvocationId !== "string"
+      || !input.authoredInvocationId.trim() || input.authoredInvocationId.length > 128)) {
+      throw new ConversationValidationError("Invalid authored invocation reference");
+    }
+    if (input?.authoredSkill !== undefined) {
+      const s = input.authoredSkill;
+      if (!input.authoredInvocationId || !s || typeof s.name !== "string" || !s.name.trim() || s.name.length > 1000
+        || typeof s.documentId !== "string" || !s.documentId.trim() || s.documentId.length > 200
+        || (s.source !== "workspace" && s.source !== "channel") || !Number.isSafeInteger(s.revision) || s.revision < 1
+        || Object.keys(s).some(key => !["name", "documentId", "source", "revision"].includes(key))) {
+        throw new ConversationValidationError("Invalid authored skill metadata");
+      }
+    }
     const conversation = await this.storage.getConversation(conversationId);
     if (!conversation) throw new ConversationNotFoundError(`Conversation not found: ${conversationId}`);
     await this.assertConversationMutable(conversationId);
@@ -1084,7 +1305,7 @@ export class ConversationService {
       throw new ConversationValidationError(`Reply message is not in conversation: ${input.replyTo}`);
     }
 
-    const to = messageTargets(conversation, input);
+    const to = resolveMessageTargets(conversation, input);
     await Promise.all(to.filter((target) => target !== "@conversation").map(
       (target) => this.assertActiveWorkspaceIdentity(conversation, target),
     ));
@@ -1098,7 +1319,9 @@ export class ConversationService {
       throw new ConversationPayloadTooLargeError("Combined image attachments are too large");
     }
     const pendingMessage: NewConversationMessage = {
-      id: createResourceId("message"),
+      id: input.id ?? createResourceId("message"),
+      ...(input.authoredInvocationId !== undefined ? { authoredInvocationId: input.authoredInvocationId } : {}),
+      ...(input.authoredSkill !== undefined ? { authoredSkill: { ...input.authoredSkill } } : {}),
       conversationId,
       participantId,
       to,
@@ -1114,10 +1337,13 @@ export class ConversationService {
         : await this.storage.commitMessage(
             pendingMessage,
             validatedKey,
-            requestFingerprint({ participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
+            requestFingerprint({ id: input.id, authoredInvocationId: input.authoredInvocationId, authoredSkill: input.authoredSkill, participantId, body: input.body, to, replyTo: input.replyTo, attachmentIds }),
             attachmentIds,
           );
     } catch (error) {
+      if (error instanceof ConversationMessageIdConflictError) {
+        throw new ConversationConflictError("Message ID is already in use");
+      }
       if (error instanceof ConversationAttachmentUnavailableError) {
         throw new ConversationValidationError("One or more attachments are unavailable");
       }
@@ -1137,6 +1363,7 @@ export class ConversationService {
       };
       for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
     }
+    if (result.outcome === "created") await this.notifyThreadParent(conversationId);
     return { ...message, to: [...message.to] };
   }
 
@@ -1185,7 +1412,7 @@ export class ConversationService {
       throw new ConversationValidationError("trigger message and sequence do not match this conversation");
     }
 
-    const to = messageTargets(conversation, { participantId: input.participantId, body: input.body });
+    const to = resolveMessageTargets(conversation, { participantId: input.participantId, body: input.body });
     await Promise.all(to.filter((target) => target !== "@conversation").map(
       (target) => this.assertActiveWorkspaceIdentity(conversation, target),
     ));
@@ -1200,7 +1427,12 @@ export class ConversationService {
         createdAt: new Date().toISOString(),
       },
       trigger.sequence,
-    );
+    ).catch((error) => {
+      if (error instanceof ConversationResponseRetiredError) {
+        throw new ConversationConflictError("Thread request was retired; a new response cannot be committed");
+      }
+      throw error;
+    });
     if (result.created) {
       const event: ConversationEvent = {
         id: createResourceId("event"),
@@ -1211,6 +1443,7 @@ export class ConversationService {
       };
       for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
     }
+    if (result.created) await this.notifyThreadParent(conversationId);
     return { message: { ...result.message, to: [...result.message.to] }, created: result.created };
   }
 
@@ -1219,13 +1452,13 @@ export class ConversationService {
   }
 
   async subscribeMany(conversationIds: readonly string[], listener: EventListener): Promise<() => void> {
-    const subscriptions: Array<{ conversationId: string; conversationListeners: Set<EventListener> }> = [];
+    const subscriptions: Array<{ conversationId: string; conversationListeners: Set<EventListener>; listener: EventListener }> = [];
     let subscribed = true;
     const unsubscribe = () => {
       if (!subscribed) return;
       subscribed = false;
-      for (const { conversationId, conversationListeners } of subscriptions) {
-        conversationListeners.delete(listener);
+      for (const { conversationId, conversationListeners, listener: subscribedListener } of subscriptions) {
+        conversationListeners.delete(subscribedListener);
         if (conversationListeners.size === 0) this.listeners.delete(conversationId);
       }
     };
@@ -1237,7 +1470,17 @@ export class ConversationService {
         const conversationListeners = this.listeners.get(conversationId) ?? new Set<EventListener>();
         conversationListeners.add(listener);
         this.listeners.set(conversationId, conversationListeners);
-        subscriptions.push({ conversationId, conversationListeners });
+        subscriptions.push({ conversationId, conversationListeners, listener });
+        const origin = (await this.storage.getConversationMetadata(conversationId))?.thread;
+        if (origin) {
+          const parentListener: EventListener = (event) => {
+            if (event.type !== "message.created") listener({ ...event, conversationId });
+          };
+          const parentListeners = this.listeners.get(origin.parentConversationId) ?? new Set<EventListener>();
+          parentListeners.add(parentListener);
+          this.listeners.set(origin.parentConversationId, parentListeners);
+          subscriptions.push({ conversationId: origin.parentConversationId, conversationListeners: parentListeners, listener: parentListener });
+        }
       }
       return unsubscribe;
     } catch (error) {

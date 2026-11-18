@@ -1,8 +1,12 @@
 import type {
   ConversationMetadata,
+  ConversationMessage,
+  CreateMessageInput,
   EffectiveConversationLifecycle,
   UpdateConversationLifecycleInput,
 } from "@minu/channels-core/types";
+import { ConversationClientError, ConversationValidationError, resolveMessageTargets } from "@minu/channels-core";
+import { threadDefaultRecipient } from "@minu/channels-core/mentions";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { agentActionInput, LocalAgentActions } from "./agent-actions.ts";
@@ -62,6 +66,13 @@ import {
   type LocalAgentActionInput, type LocalAgentActionReceipt,
   type LocalAgentOperationHistory, type LocalAgentOperationDetail, type LocalAgentDiagnosticReport,
   type LocalAgentRuntimeOptions,
+  type LocalAuthoredDocument,
+  type LocalAuthoredDocumentRevision,
+  type LocalAuthoredDocumentSummary,
+  type LocalAuthoredSkillInvocationReceipt,
+  type LocalAuthoredSkillInvocationPublicationReceipt,
+  type LocalConversationAuthoredContext,
+  type LocalConversationAuthoredSkillCatalog,
   type LocalBulkAgentLifecycleResponse,
   type LocalBulkAgentLifecycleResult,
   type LocalConversationAgent,
@@ -77,10 +88,17 @@ import {
   type ProvisionLocalWorkspaceResult,
   type LocalWorkspaceAgentConfiguration,
   type LocalWorkspaceConfigurationSummary,
+  type LocalConversationPresets,
+  type ConversationPreset,
+  type LocalConversationCreationSetup,
+  type LocalConversationSettings,
 } from "./contracts.ts";
 
 export interface LocalControlConversationDirectory {
   getConversation(conversationId: string): Promise<ConversationMetadata>;
+  listMessages?(conversationId: string, options?: { limit?: number }): Promise<ConversationMessage[]>;
+  postMessage?(conversationId: string, input: CreateMessageInput, options?: { idempotencyKey?: string }): Promise<ConversationMessage>;
+  listThreads?(conversationId: string): Promise<ConversationMetadata[]>;
   getConversationLifecycle?(conversationId: string): Promise<EffectiveConversationLifecycle>;
   updateConversationLifecycle?(
     conversationId: string,
@@ -116,6 +134,7 @@ export interface LocalControlRuntimePort {
   forceStopManaged?(managedSessionId: string, ownerId: string): Promise<void>;
   status(sessionId: string): Promise<"idle" | "working" | "offline">;
   inspectSessionProfile?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
+  inspectSessionIntegrations?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   sessionCapabilities?(
     sessionId: string,
   ): Promise<LocalControlRuntimeSessionCapabilities>;
@@ -137,6 +156,7 @@ export interface LocalControlAgentLifecyclePort {
     actorIdentityId: string,
     contextMode?: LocalSessionContextMode,
   ): Promise<void>;
+  autoStartConversationAgent?(conversationId: string, agentIdentityId: string, actorIdentityId: string, triggerMessageId: string): Promise<void>;
   replaceConversationAgent(
     conversationId: string,
     agentIdentityId: string,
@@ -185,6 +205,24 @@ export interface LocalControlAgentLifecyclePort {
 }
 
 export interface LocalControlConfigurationPort {
+  listConversationPresets?(workspaceId: string, actor: string): Promise<LocalConversationPresets>;
+  saveConversationPreset?(workspaceId: string, presetId: string, actor: string, input: unknown): Promise<ConversationPreset>;
+  deleteConversationPreset?(workspaceId: string, presetId: string, actor: string, input: unknown): Promise<void>;
+  createConversationWithSetup?(workspaceId: string, actor: string, input: unknown): Promise<ConversationMetadata>;
+  getConversationSettings?(conversationId: string, actor: string): Promise<LocalConversationSettings>;
+  updateConversationSettings?(conversationId: string, actor: string, input: unknown): Promise<LocalConversationSettings>;
+  getConversationCreationSetup?(conversationId: string, actor: string): Promise<LocalConversationCreationSetup>;
+  acceptAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, requestId: string, input: unknown): Promise<LocalAuthoredSkillInvocationReceipt>;
+  getAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt>;
+  getAuthoredSkillInvocationPublication?(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationPublicationReceipt>;
+  publishAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, input: unknown, assertSession?: () => void): Promise<LocalAuthoredSkillInvocationPublicationReceipt>;
+  getConversationAuthoredSkillCatalog?(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredSkillCatalog>;
+  getConversationAuthoredContext?(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredContext>;
+  listAuthoredDocuments?(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]>;
+  getAuthoredDocument?(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocument>;
+  listAuthoredDocumentRevisions?(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentRevision[]>;
+  createAuthoredDocument?(workspaceId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument>;
+  updateAuthoredDocument?(workspaceId: string, documentId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument>;
   provisionWorkspace?(actorIdentityId: string, input: unknown): Promise<ProvisionLocalWorkspaceResult>;
   getWorkspaceConfiguration(
     workspaceId: string,
@@ -245,6 +283,8 @@ export interface LocalControlServiceOptions {
   bindings: LocalControlBindingDirectory;
   runtimes: Readonly<Record<string, LocalControlRuntimePort>>;
   configuration?: LocalControlConfigurationPort;
+  /** Default-disabled until the explicit publication boundary is independently approved. No UI setting. */
+  authoredSkillPublicationEnabled?: boolean;
   lifecycle?: LocalControlAgentLifecyclePort;
   diagnosticReads?: Pick<LocalAgentDiagnosticReads, "history" | "detail" | "report">;
   sessionInspections?: Pick<LocalAgentSessionInspections, "read" | "events">;
@@ -299,6 +339,7 @@ export class LocalControlService {
   private readonly statusTimeoutMs: number;
   private readonly lifecycleTransitions = new Map<string, Promise<EffectiveConversationLifecycle>>();
   private readonly agentActions = new LocalAgentActions();
+  private readonly conversationSends = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: LocalControlServiceOptions) {
     this.statusTimeoutMs = options.statusTimeoutMs ?? 2_000;
@@ -357,6 +398,8 @@ export class LocalControlService {
     )) {
       throw new LocalConfigurationRequestError("Conversation snooze time must be in the future", 400, "invalid");
     }
+    const conversation = await this.options.conversations.getConversation(conversationId);
+    if (conversation.thread) throw new LocalConfigurationRequestError("Threads inherit the parent Conversation lifecycle", 409, "unavailable");
     const current = await this.getConversationLifecycle(conversationId);
     if (current.state === "settled" && input.state !== "active") {
       throw new LocalConfigurationRequestError("A settled Conversation must be reopened first", 409, "unavailable");
@@ -377,8 +420,11 @@ export class LocalControlService {
     let committed = false;
     try {
       return await this.options.withConversationMessageAdmission(conversationId, async () => {
+        let scopeIds = [conversationId];
         try {
-          await this.options.lifecycle?.refreshConversationWorkSnapshot?.(conversationId);
+          const threads = await this.options.conversations.listThreads?.(conversationId) ?? [];
+          scopeIds = [conversationId, ...threads.map(({ id }) => id)];
+          await Promise.all(scopeIds.map((id) => this.options.lifecycle?.refreshConversationWorkSnapshot?.(id)));
         } catch {
           throw new LocalConfigurationRequestError(
             "Conversation agent work could not be verified; retry",
@@ -386,11 +432,13 @@ export class LocalControlService {
             "unavailable",
           );
         }
-        const agents = (await this.listConversationAgents(conversationId)).agents;
+        const agents = (await Promise.all(scopeIds.map(async (id) =>
+          (await this.listConversationAgents(id)).agents.map((agent) => ({ ...agent, scopeId: id })),
+        ))).flat();
         const unsafeAgents = agents.filter(({ state }) => !["unbound", "disabled", "stopped", "idle"].includes(state));
         if (unsafeAgents.length > 0 || agents.some((agent) => {
-          if (agent.state !== "idle" || this.options.lifecycle?.isAttached?.(conversationId, agent.identityId) !== true) return false;
-          const work = this.options.lifecycle.agentWorkSnapshot?.(conversationId, agent.identityId);
+          if (agent.state !== "idle" || this.options.lifecycle?.isAttached?.(agent.scopeId, agent.identityId) !== true) return false;
+          const work = this.options.lifecycle.agentWorkSnapshot?.(agent.scopeId, agent.identityId);
           return !work || work.activeTurns !== 0 || work.queuedTurns !== 0 || !work.queuedTurnsExact;
         })) {
           throw new LocalConfigurationRequestError(
@@ -403,10 +451,10 @@ export class LocalControlService {
           if (!this.options.lifecycle) {
             throw new LocalConfigurationRequestError("Managed agent control is unavailable", 409, "unavailable");
           }
-          await this.options.lifecycle.stopConversationAgent(conversationId, agent.identityId, actorIdentityId);
+          await this.options.lifecycle.stopConversationAgent(agent.scopeId, agent.identityId, actorIdentityId);
         }
-        const afterStop = await this.listConversationAgents(conversationId);
-        if (afterStop.agents.some(({ state }) => !["unbound", "disabled", "stopped"].includes(state))) {
+        const afterStop = (await Promise.all(scopeIds.map((id) => this.listConversationAgents(id)))).flatMap(({ agents }) => agents);
+        if (afterStop.some(({ state }) => !["unbound", "disabled", "stopped"].includes(state))) {
           throw new LocalConfigurationRequestError(
             "Conversation agents changed while lifecycle was being updated; retry",
             409,
@@ -439,6 +487,8 @@ export class LocalControlService {
         agentCreate: false,
         agentRuntimeOptions: Boolean(this.options.configuration),
         agentSkills: Boolean(this.options.configuration),
+        authoredContent: Boolean(this.options.configuration?.getConversationAuthoredContext && this.options.configuration?.createAuthoredDocument),
+        authoredSkillPublication: this.authoredSkillPublicationEnabled,
         agentStart: Boolean(this.options.lifecycle?.available),
         agentReplace: Boolean(this.options.lifecycle?.available),
         agentStop: Boolean(this.options.lifecycle?.available),
@@ -456,6 +506,40 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Workspace provisioning unavailable", 404, "unavailable");
     }
     return this.options.configuration.provisionWorkspace(actorIdentityId, input);
+  }
+
+  async listConversationPresets(workspaceId: string, actor: string) {
+    if (!this.options.configuration?.listConversationPresets) throw new LocalConfigurationRequestError("Conversation presets unavailable", 404, "unavailable");
+    return this.options.configuration.listConversationPresets(workspaceId, actor);
+  }
+
+  async saveConversationPreset(workspaceId: string, presetId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.saveConversationPreset) throw new LocalConfigurationRequestError("Conversation presets unavailable", 404, "unavailable");
+    return this.options.configuration.saveConversationPreset(workspaceId, presetId, actor, input);
+  }
+
+  async deleteConversationPreset(workspaceId: string, presetId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.deleteConversationPreset) throw new LocalConfigurationRequestError("Conversation presets unavailable", 404, "unavailable");
+    return this.options.configuration.deleteConversationPreset(workspaceId, presetId, actor, input);
+  }
+
+  async createConversationWithSetup(workspaceId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.createConversationWithSetup) throw new LocalConfigurationRequestError("Conversation creation unavailable", 404, "unavailable");
+    return this.options.configuration.createConversationWithSetup(workspaceId, actor, input);
+  }
+
+  async getConversationSettings(conversationId: string, actor: string) {
+    if (!this.options.configuration?.getConversationSettings) throw new LocalConfigurationRequestError("Conversation settings unavailable", 404, "unavailable");
+    return this.options.configuration.getConversationSettings(conversationId, actor);
+  }
+  async updateConversationSettings(conversationId: string, actor: string, input: unknown) {
+    if (!this.options.configuration?.updateConversationSettings) throw new LocalConfigurationRequestError("Conversation settings unavailable", 404, "unavailable");
+    return this.options.configuration.updateConversationSettings(conversationId, actor, input);
+  }
+
+  async getConversationCreationSetup(conversationId: string, actor: string) {
+    if (!this.options.configuration?.getConversationCreationSetup) throw new LocalConfigurationRequestError("Conversation setup unavailable", 404, "unavailable");
+    return this.options.configuration.getConversationCreationSetup(conversationId, actor);
   }
 
   async getConversationWorkingFolders(
@@ -488,6 +572,98 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Conversation working folders unavailable", 404, "unavailable");
     }
     return this.options.configuration.updateConversationWorkingFolders(conversationId, actorIdentityId, input);
+  }
+
+  async acceptAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string, input: unknown): Promise<LocalAuthoredSkillInvocationReceipt> {
+    if (!this.options.configuration?.acceptAuthoredSkillInvocation) {
+      throw new LocalConfigurationRequestError("Skill invocation acceptance unavailable", 404, "unavailable");
+    }
+    return this.withConversationSendOrder(conversationId, () =>
+      this.options.configuration!.acceptAuthoredSkillInvocation!(conversationId, actorIdentityId, requestId, input));
+  }
+
+  async getAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationReceipt> {
+    if (!this.options.configuration?.getAuthoredSkillInvocation) {
+      throw new LocalConfigurationRequestError("Skill invocation acceptance unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAuthoredSkillInvocation(conversationId, actorIdentityId, requestId);
+  }
+
+  async getAuthoredSkillInvocationPublication(conversationId: string, actorIdentityId: string, requestId: string): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    if (!this.options.configuration?.getAuthoredSkillInvocationPublication) {
+      throw new LocalConfigurationRequestError("Skill invocation publication is unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAuthoredSkillInvocationPublication(conversationId, actorIdentityId, requestId);
+  }
+
+  get authoredSkillPublicationEnabled(): boolean {
+    return this.options.authoredSkillPublicationEnabled === true && !!this.options.configuration?.publishAuthoredSkillInvocation;
+  }
+
+  async publishAuthoredSkillInvocation(conversationId: string, actorIdentityId: string, input: unknown, assertSession?: () => void): Promise<LocalAuthoredSkillInvocationPublicationReceipt> {
+    if (!this.authoredSkillPublicationEnabled) throw new LocalConfigurationRequestError("Skill invocation publication is unavailable", 404, "unavailable");
+    return this.withConversationSendOrder(conversationId, () => {
+      assertSession?.();
+      return this.options.configuration!.publishAuthoredSkillInvocation!(conversationId, actorIdentityId, input, assertSession);
+    });
+  }
+
+  async getConversationAuthoredSkillCatalog(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredSkillCatalog> {
+    if (!this.options.configuration?.getConversationAuthoredSkillCatalog) {
+      throw new LocalConfigurationRequestError("Skill catalog is unavailable", 404, "unavailable");
+    }
+    const catalog = await this.options.configuration.getConversationAuthoredSkillCatalog(conversationId, actorIdentityId);
+    return { workspaceId: catalog.workspaceId, conversationId: catalog.conversationId, channelId: catalog.channelId,
+      availability: "not_checked", ...(catalog.agents ? { agents: catalog.agents.map(agent => ({
+        identityId: agent.identityId, state: agent.state, supported: agent.supported,
+        skills: agent.skills.map(ref => ({ documentId: ref.documentId, source: ref.source, revision: ref.revision, contentHash: ref.contentHash })),
+        harness: agent.harness.filter(value => /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,199}$/.test(value)),
+      })) } : {}), skills: catalog.skills.map(skill => ({
+        documentId: skill.documentId, source: skill.source, revision: skill.revision, contentHash: skill.contentHash,
+        name: skill.name, description: skill.description,
+      })) };
+  }
+
+  async getConversationAuthoredContext(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredContext> {
+    if (!this.options.configuration?.getConversationAuthoredContext) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getConversationAuthoredContext(conversationId, actorIdentityId);
+  }
+
+  async listAuthoredDocuments(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]> {
+    if (!this.options.configuration?.listAuthoredDocuments) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.listAuthoredDocuments(workspaceId, actorIdentityId);
+  }
+
+  async getAuthoredDocument(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.getAuthoredDocument) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.getAuthoredDocument(workspaceId, documentId, actorIdentityId);
+  }
+
+  async listAuthoredDocumentRevisions(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentRevision[]> {
+    if (!this.options.configuration?.listAuthoredDocumentRevisions) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.listAuthoredDocumentRevisions(workspaceId, documentId, actorIdentityId);
+  }
+
+  async createAuthoredDocument(workspaceId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.createAuthoredDocument) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.createAuthoredDocument(workspaceId, actorIdentityId, input);
+  }
+
+  async updateAuthoredDocument(workspaceId: string, documentId: string, actorIdentityId: string, input: unknown): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.updateAuthoredDocument) {
+      throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
+    }
+    return this.options.configuration.updateAuthoredDocument(workspaceId, documentId, actorIdentityId, input);
   }
 
   async getWorkspaceConfiguration(
@@ -601,6 +777,76 @@ export class LocalControlService {
     }
   }
 
+  async postConversationMessage(conversationId: string, actorIdentityId: string, input: unknown, idempotencyKey?: string): Promise<ConversationMessage> {
+    return this.withConversationSendOrder(conversationId, () => this.postConversationMessageOnce(conversationId, actorIdentityId, input, idempotencyKey));
+  }
+
+  // Manual activation snapshots and saved sends must be ordered together.
+  // Stop/cancellation deliberately remain outside this queue.
+  private async withConversationSendOrder<T>(conversationId: string, execute: () => Promise<T>): Promise<T> {
+    const prior = this.conversationSends.get(conversationId) ?? Promise.resolve();
+    const operation = prior.catch(() => undefined).then(execute);
+    this.conversationSends.set(conversationId, operation);
+    try { return await operation; }
+    finally { if (this.conversationSends.get(conversationId) === operation) this.conversationSends.delete(conversationId); }
+  }
+
+  private async postConversationMessageOnce(conversationId: string, actorIdentityId: string, value: unknown, idempotencyKey?: string): Promise<ConversationMessage> {
+    if (typeof idempotencyKey !== "string" || !idempotencyKey.trim() || Buffer.byteLength(idempotencyKey, "utf8") > 255) {
+      throw new LocalConfigurationRequestError("A valid idempotency key is required", 400, "invalid");
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new LocalConfigurationRequestError("A message is required", 400, "invalid");
+    }
+    const input = value as CreateMessageInput;
+    if (input.authoredInvocationId !== undefined || input.authoredSkill !== undefined) throw new LocalConfigurationRequestError("Skill messages require private publication", 400, "invalid");
+    if (input.participantId !== actorIdentityId) throw new LocalConfigurationRequestError("Message author must match the browser session", 403, "forbidden");
+    if (typeof input.body !== "string") throw new LocalConfigurationRequestError("Message body must be a string", 400, "invalid");
+    const directory = this.options.conversations;
+    if (!directory.listMessages || !directory.postMessage) throw new LocalConfigurationRequestError("Conversation sending is unavailable", 404, "unavailable");
+    try {
+      const conversation = await directory.getConversation(conversationId);
+      if (!conversation.participants.some(({ id, type, status }) => id === actorIdentityId && type === "human" && status !== "disabled")) {
+        throw new LocalConfigurationRequestError("An active human participant is required", 403, "forbidden");
+      }
+      let targets = resolveMessageTargets(conversation, input);
+      // Browser sends always include the displayed targets (even []). Omitted
+      // targets retain human-only API defaults without borrowing anyone else's selection.
+      if (input.to === undefined && !targets.length) {
+        const messages = await directory.listMessages(conversationId);
+        const reply = input.replyTo ? messages.find(({ id }) => id === input.replyTo) : undefined;
+        // Keep omitted-target compatibility deterministic for exact retries:
+        // later sends must not reinterpret an older request's effective payload.
+        const first = messages.find((message) => message.participantId === actorIdentityId);
+        const initial = first?.to.length === 1 && first.to[0] !== "@conversation" ? first.to[0] : undefined;
+        const fallback = reply?.participantId ?? (first ? initial : threadDefaultRecipient(conversation));
+        if (fallback && conversation.participants.some(({ id, status }) => id === fallback && status !== "disabled")) targets = [fallback];
+      }
+      const message = await directory.postMessage(conversationId, { ...input, to: targets }, { idempotencyKey });
+      const agents = message.to.includes("@conversation") ? [] : conversation.participants
+        .filter(({ id, type, status }) => message.to.includes(id) && (type === "agent" || type === "service") && status === "active");
+      const lifecycle = this.options.lifecycle;
+      if (agents.length && lifecycle?.available && lifecycle.autoStartConversationAgent && this.options.configuration) {
+        try { await this.options.configuration.getWorkspaceConfiguration(conversation.workspaceId, actorIdentityId); }
+        catch (error) {
+          if (error instanceof LocalConfigurationRequestError && error.status === 403) return message;
+          throw error;
+        }
+        const results = await Promise.allSettled(agents.map(({ id }) =>
+          lifecycle.autoStartConversationAgent!(conversationId, id, actorIdentityId, message.id)));
+        for (const result of results) if (result.status === "rejected") throw result.reason;
+      }
+      return message;
+    } catch (error) {
+      if (error instanceof ConversationClientError || error instanceof ConversationValidationError) {
+        const status = error instanceof ConversationValidationError ? 400
+          : error.status === 400 ? 400 : error.status === 403 ? 403 : error.status === 404 ? 404 : error.status === 413 ? 413 : 409;
+        throw new LocalConfigurationRequestError(error.message, status, status === 403 ? "forbidden" : status === 400 ? "invalid" : "unavailable");
+      }
+      throw error;
+    }
+  }
+
   async startConversationAgent(
     conversationId: string,
     identityId: string,
@@ -681,9 +927,9 @@ export class LocalControlService {
     return this.options.lifecycle.listConversationTurnFailures(conversationId, actorIdentityId, limit);
   }
 
-  async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string) {
+  async agentSessionInspection(conversationId: string, identityId: string, actorIdentityId: string, signal?: AbortSignal) {
     if (!this.options.sessionInspections) throw new LocalConfigurationRequestError("Not found", 404, "unavailable");
-    return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId);
+    return this.options.sessionInspections.read(conversationId, identityId, actorIdentityId, { signal });
   }
 
   async agentDeliveryTrails(conversationId: string, identityId: string, actorIdentityId: string, options: { cursor?: string; trailId?: string; signal?: AbortSignal }) {
@@ -760,9 +1006,11 @@ export class LocalControlService {
     const id = input.identityId!;
     switch (input.action) {
       case "start": case "start-fresh":
-        await lifecycle.startConversationAgent(conversationId, id, actorIdentityId, input.action === "start-fresh" ? "fresh" : "with_context"); break;
+        await this.withConversationSendOrder(conversationId, () => lifecycle.startConversationAgent(conversationId, id, actorIdentityId,
+          input.action === "start-fresh" ? "fresh" : "with_context")); break;
       case "replace": case "replace-fresh":
-        await lifecycle.replaceConversationAgent(conversationId, id, actorIdentityId, input.action === "replace-fresh" ? "fresh" : "with_context"); break;
+        await this.withConversationSendOrder(conversationId, () => lifecycle.replaceConversationAgent(conversationId, id, actorIdentityId,
+          input.action === "replace-fresh" ? "fresh" : "with_context")); break;
       case "stop":
         // Shared request admission and the host binding fence isolate this target;
         // a Conversation-wide fence would also reject unrelated participants.
@@ -776,7 +1024,7 @@ export class LocalControlService {
         await lifecycle.reconnectConversationAgent(conversationId, id, actorIdentityId); break;
       case "start-all":
         if (!lifecycle.startAllConversationAgents) throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
-        return lifecycle.startAllConversationAgents(conversationId, actorIdentityId);
+        return this.withConversationSendOrder(conversationId, () => lifecycle.startAllConversationAgents!(conversationId, actorIdentityId));
       case "stop-all":
         if (!lifecycle.stopAllConversationAgents) throw new LocalConfigurationRequestError("Bulk agent lifecycle unavailable", 404, "unavailable");
         return this.withStopAdmissionFence(conversationId, () => lifecycle.stopAllConversationAgents!(conversationId, actorIdentityId));
@@ -1264,16 +1512,38 @@ export async function createLocalControlHttpServer(
       return;
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+    const catalogMatch = requestPath.match(/^\/local\/conversations\/([^/]+)\/authored-skill-catalog$/);
+    if (catalogMatch) {
+      response.setHeader("cache-control", "no-store");
+      if (request.method !== "GET") {
+        response.setHeader("allow", "GET");
+        json(response, 405, { error: "Method not allowed" }, origin);
+        return;
+      }
+    }
+    const publicationMatch = requestPath.match(/^\/local\/conversations\/([^/]+)\/skill-invocation-publications$/);
+    if (publicationMatch && request.method !== "GET" && !(request.method === "POST" && options.service.authoredSkillPublicationEnabled)) {
+      response.setHeader("allow", options.service.authoredSkillPublicationEnabled ? "GET, POST" : "GET");
+      json(response, 405, { error: "Method not allowed" }, origin);
+      return;
+    }
     const isAllowedPost = request.method === "POST" && (
       /^\/local\/conversations\/[^/]+\/agents\/[^/]+\/(start|reconnect|replace|stop|cancel-current)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agents\/(start-all|stop-all)$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/agent-actions$/.test(requestPath)
+      || /^\/local\/conversations\/[^/]+\/skill-invocations$/.test(requestPath)
+      || (publicationMatch !== null && options.service.authoredSkillPublicationEnabled)
+      || /^\/local\/conversations\/[^/]+\/messages$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
+      || /^\/local\/workspaces\/[^/]+\/conversations$/.test(requestPath)
+      || /^\/local\/workspaces\/[^/]+\/authored-documents$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
     );
-    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost) {
-      response.setHeader("allow", "GET, PATCH, PUT, POST");
+    const isAllowedDelete = request.method === "DELETE"
+      && /^\/local\/workspaces\/[^/]+\/conversation-presets\/[^/]+$/.test(requestPath);
+    if (request.method !== "GET" && request.method !== "PATCH" && request.method !== "PUT" && !isAllowedPost && !isAllowedDelete) {
+      response.setHeader("allow", "GET, PATCH, PUT, POST, DELETE");
       json(response, 405, { error: "Method not allowed" }, origin);
       return;
     }
@@ -1326,6 +1596,18 @@ export async function createLocalControlHttpServer(
         json(response, 200, options.service.capabilities(), origin);
         return;
       }
+      const threadSendMatch = path.match(/^\/local\/conversations\/([^/]+)\/messages$/);
+      if (threadSendMatch && request.method === "POST" && browserSession) {
+        const message = await options.service.postConversationMessage(decodeURIComponent(threadSendMatch[1]!), browserSession.identityId,
+          await readJson(request), typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : undefined);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        json(response, 201, { message }, origin);
+        return;
+      }
       const actionMatch = path.match(/^\/local\/conversations\/([^/]+)\/agent-actions(?:\/([^/]+))?$/);
       if (actionMatch && browserSession && (request.method === "GET" || (request.method === "POST" && !actionMatch[2]))) {
         const conversationId = decodeURIComponent(actionMatch[1]!);
@@ -1353,6 +1635,7 @@ export async function createLocalControlHttpServer(
         const identityId = decodeURIComponent(diagnosticMatch[2]!);
         const operationId = diagnosticMatch[4] ? decodeURIComponent(diagnosticMatch[4]) : undefined;
         const events = diagnosticMatch[3] === "session-events";
+        const inspection = diagnosticMatch[3] === "session-inspection";
         const trails = diagnosticMatch[3] === "delivery-trails";
         if (trails && [...url.searchParams.keys()].some(key => !["cursor", "trailId"].includes(key) || url.searchParams.getAll(key).length !== 1)) {
           throw new LocalConfigurationRequestError("Invalid trail query", 400, "invalid");
@@ -1360,7 +1643,7 @@ export async function createLocalControlHttpServer(
         if (events && url.search) throw new LocalConfigurationRequestError("Invalid event query", 400, "invalid");
         const controller = new AbortController();
         const disconnected = () => controller.abort();
-        if (events || trails) response.once("close", disconnected);
+        if (events || trails || inspection) response.once("close", disconnected);
         let value;
         try {
           value = trails
@@ -1369,7 +1652,7 @@ export async function createLocalControlHttpServer(
             : events
             ? await options.service.agentSessionEvents(conversationId, identityId, browserSession.identityId, controller.signal)
             : diagnosticMatch[3] === "session-inspection"
-            ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId)
+            ? await options.service.agentSessionInspection(conversationId, identityId, browserSession.identityId, controller.signal)
             : diagnosticMatch[3] === "diagnostic-report"
             ? await options.service.agentDiagnosticReport(conversationId, identityId, browserSession.identityId, url.searchParams.get("operationId") ?? "")
             : operationId
@@ -1435,6 +1718,146 @@ export async function createLocalControlHttpServer(
           browserSession.identityId,
           await readJson(request),
         ), origin);
+        return;
+      }
+      const presetsMatch = path.match(/^\/local\/workspaces\/([^/]+)\/conversation-presets(?:\/([^/]+))?$/);
+      if (presetsMatch && browserSession) {
+        const workspaceId = decodeURIComponent(presetsMatch[1]!);
+        const presetId = presetsMatch[2] && decodeURIComponent(presetsMatch[2]);
+        if (!presetId && request.method === "GET") {
+          json(response, 200, await options.service.listConversationPresets(workspaceId, browserSession.identityId), origin);
+          return;
+        }
+        if (presetId && request.method === "PUT") {
+          json(response, 200, await options.service.saveConversationPreset(workspaceId, presetId, browserSession.identityId, await readJson(request)), origin);
+          return;
+        }
+        if (presetId && request.method === "DELETE") {
+          await options.service.deleteConversationPreset(workspaceId, presetId, browserSession.identityId, await readJson(request));
+          json(response, 200, { deleted: true }, origin);
+          return;
+        }
+      }
+      const createWithSetupMatch = path.match(/^\/local\/workspaces\/([^/]+)\/conversations$/);
+      if (createWithSetupMatch && browserSession && request.method === "POST") {
+        json(response, 201, { conversation: await options.service.createConversationWithSetup(
+          decodeURIComponent(createWithSetupMatch[1]!), browserSession.identityId, await readJson(request),
+        ) }, origin);
+        return;
+      }
+      const conversationSettingsMatch = path.match(/^\/local\/conversations\/([^/]+)\/settings$/);
+      if (conversationSettingsMatch && browserSession && (request.method === "GET" || request.method === "PUT")) {
+        const id = decodeURIComponent(conversationSettingsMatch[1]!);
+        json(response, 200, request.method === "GET"
+          ? await options.service.getConversationSettings(id, browserSession.identityId)
+          : await options.service.updateConversationSettings(id, browserSession.identityId, await readJson(request)), origin);
+        return;
+      }
+      const creationSetupMatch = path.match(/^\/local\/conversations\/([^/]+)\/creation-setup$/);
+      if (creationSetupMatch && browserSession && request.method === "GET") {
+        json(response, 200, await options.service.getConversationCreationSetup(decodeURIComponent(creationSetupMatch[1]!), browserSession.identityId), origin);
+        return;
+      }
+      if (publicationMatch && browserSession) {
+        let conversationId: string;
+        try { conversationId = decodeURIComponent(publicationMatch[1]!); }
+        catch { throw new LocalConfigurationRequestError("Invalid Conversation", 400, "invalid"); }
+        const assertSession = () => {
+          const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+          if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+            throw new LocalConfigurationRequestError("Local browser session required", 401, "forbidden");
+          }
+        };
+        let receipt: LocalAuthoredSkillInvocationPublicationReceipt;
+        if (request.method === "POST") {
+          if (url.searchParams.has("requestId")) throw new LocalConfigurationRequestError("Publication selection must be in the request body", 400, "invalid");
+          receipt = await options.service.publishAuthoredSkillInvocation(conversationId, browserSession.identityId, await readJson(request), assertSession);
+        } else {
+          const keys = url.searchParams.getAll("requestId");
+          if (keys.length !== 1) throw new LocalConfigurationRequestError("One requestId is required", 400, "invalid");
+          receipt = await options.service.getAuthoredSkillInvocationPublication(conversationId, browserSession.identityId, keys[0]!);
+        }
+        assertSession();
+        response.setHeader("cache-control", "no-store");
+        json(response, 200, receipt, origin);
+        return;
+      }
+      const invocationMatch = path.match(/^\/local\/conversations\/([^/]+)\/skill-invocations(?:\/([^/]+))?$/);
+      if (invocationMatch && browserSession) {
+        const conversationId = decodeURIComponent(invocationMatch[1]!);
+        const requestId = invocationMatch[2] ? decodeURIComponent(invocationMatch[2]) : undefined;
+        if ((requestId && request.method !== "GET") || (!requestId && request.method !== "POST")) {
+          response.setHeader("allow", requestId ? "GET" : "POST");
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const receipt = requestId
+          ? await options.service.getAuthoredSkillInvocation(conversationId, browserSession.identityId, requestId)
+          : await options.service.acceptAuthoredSkillInvocation(conversationId, browserSession.identityId,
+            typeof request.headers["idempotency-key"] === "string" ? request.headers["idempotency-key"] : "", await readJson(request));
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, requestId ? 200 : 202, receipt, origin);
+        return;
+      }
+      if (catalogMatch && browserSession) {
+        if (url.search) throw new LocalConfigurationRequestError("Skill catalog does not accept query parameters", 400, "invalid");
+        let conversationId: string;
+        try { conversationId = decodeURIComponent(catalogMatch[1]!); }
+        catch { throw new LocalConfigurationRequestError("Invalid Conversation", 400, "invalid"); }
+        const result = await options.service.getConversationAuthoredSkillCatalog(conversationId, browserSession.identityId);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        json(response, 200, result, origin);
+        return;
+      }
+      const authoredContextMatch = path.match(/^\/local\/conversations\/([^/]+)\/authored-context$/);
+      if (authoredContextMatch && browserSession && request.method === "GET") {
+        const result = await options.service.getConversationAuthoredContext(decodeURIComponent(authoredContextMatch[1]!), browserSession.identityId);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, 200, result, origin);
+        return;
+      }
+      const authoredDocumentsMatch = path.match(/^\/local\/workspaces\/([^/]+)\/authored-documents(?:\/([^/]+)(\/revisions)?)?$/);
+      if (authoredDocumentsMatch && browserSession) {
+        const workspaceId = decodeURIComponent(authoredDocumentsMatch[1]!);
+        const documentId = authoredDocumentsMatch[2] ? decodeURIComponent(authoredDocumentsMatch[2]) : undefined;
+        const history = Boolean(authoredDocumentsMatch[3]);
+        const allowed = history ? ["GET"] : documentId ? ["GET", "PATCH"] : ["GET", "POST"];
+        if (!allowed.includes(request.method ?? "")) {
+          response.setHeader("allow", allowed.join(", "));
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const actorIdentityId = browserSession.identityId;
+        const result = documentId
+          ? history
+            ? await options.service.listAuthoredDocumentRevisions(workspaceId, documentId, actorIdentityId)
+            : request.method === "PATCH"
+              ? await options.service.updateAuthoredDocument(workspaceId, documentId, actorIdentityId, await readJson(request))
+              : await options.service.getAuthoredDocument(workspaceId, documentId, actorIdentityId)
+          : request.method === "POST"
+            ? await options.service.createAuthoredDocument(workspaceId, actorIdentityId, await readJson(request))
+            : await options.service.listAuthoredDocuments(workspaceId, actorIdentityId);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== actorIdentityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, request.method === "POST" ? 201 : 200, result, origin);
         return;
       }
       const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);

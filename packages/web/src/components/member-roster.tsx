@@ -171,7 +171,7 @@ export function MemberRoster({
         <div className="flex shrink-0 items-center gap-1">
           {!minimized ? participantActionsMenu : null}
           {drawer ? <DrawerCloseButton label="Close participants" /> : (
-            <button type="button" className="icon-button inline-flex" aria-label={minimized ? "Expand participants" : "Minimize participants"} title={minimized ? "Expand participants" : "Minimize participants"} aria-expanded={!minimized} onClick={() => setRosterMinimized(!minimized)}>
+            <button type="button" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]" aria-label={minimized ? "Expand participants" : "Minimize participants"} title={minimized ? "Expand participants" : "Minimize participants"} aria-expanded={!minimized} onClick={() => setRosterMinimized(!minimized)}>
               {minimized ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             </button>
           )}

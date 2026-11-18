@@ -6,7 +6,11 @@ export const queryKeys = {
   workspace: (workspaceId: string) => ["workspace", workspaceId] as const,
   workspaceMembers: (workspaceId: string) => ["workspace", workspaceId, "members"] as const,
   workspaceConversations: (workspaceId: string) => ["workspace", workspaceId, "conversations"] as const,
+  workspaceFolders: (workspaceId: string) => ["workspace", workspaceId, "folders"] as const,
   workspaceConfiguration: (workspaceId: string) => ["workspace", workspaceId, "configuration"] as const,
+  conversationSettings: (conversationId: string) => ["local", "conversation", conversationId, "settings"] as const,
+  conversationPresets: (workspaceId: string) => ["workspace", workspaceId, "conversation-presets"] as const,
+  conversationCreationSetup: (conversationId: string) => ["local", "conversation", conversationId, "creation-setup"] as const,
   workspaceAgentConfiguration: (workspaceId: string, identityId: string) =>
     ["workspace", workspaceId, "agent", identityId, "configuration"] as const,
   workspaceRuntimeOptions: (workspaceId: string, runtimeAdapter: string) =>
@@ -14,6 +18,7 @@ export const queryKeys = {
   agentRuntimeOptions: (workspaceId: string, identityId: string) =>
     ["workspace", workspaceId, "agent", identityId, "runtime-options"] as const,
   conversation: (conversationId: string) => ["conversation", conversationId] as const,
+  conversationThreads: (conversationId: string) => ["conversation", conversationId, "threads"] as const,
   conversationMessages: (conversationId: string) => ["conversation", conversationId, "messages"] as const,
   localConversationAgents: (conversationId: string) => ["local", "conversation", conversationId, "agents"] as const,
   localConversationTurnFailures: (conversationId: string, identityId?: string) => ["local", "conversation", conversationId, "turn-failures", identityId] as const,

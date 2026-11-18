@@ -138,7 +138,7 @@ test("keeps the composer focused while Enter sends, on success, and on failure",
   });
   await launch(page, request, workspaceId, primaryId);
   const composer = page.getByRole("combobox", { name: "Conversation message" });
-  const composerSurface = composer.locator("xpath=../../..");
+  const composerSurface = page.locator(".composer").locator("xpath=../..");
   const [composerBackground, timelineBackground, topBorderWidth] = await Promise.all([
     composerSurface.evaluate((element) => getComputedStyle(element).backgroundColor),
     page.locator(".minu-scroll.absolute").first().evaluate((element) => getComputedStyle(element).backgroundColor),
@@ -146,7 +146,7 @@ test("keeps the composer focused while Enter sends, on success, and on failure",
   ]);
   expect(composerBackground).toBe(timelineBackground);
   expect(topBorderWidth).toBe("0px");
-  const composerBox = await composer.locator("xpath=..").boundingBox();
+  const composerBox = await page.locator(".composer").boundingBox();
   expect(page.viewportSize()!.height - composerBox!.y - composerBox!.height).toBeLessThanOrEqual(28);
   await composer.fill("Focused Enter send");
   await composer.press("Enter");

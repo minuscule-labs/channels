@@ -1,6 +1,6 @@
 # Agent Skills
 
-**Status:** Harness discovery, per-agent selection, persistence, and loading for newly started sessions and **New session** replacements are implemented. Explicit invocation, Conversations-authored skills, and dynamic session mutation are fast follows.
+**Status:** Harness discovery, per-agent selection, persistence, and loading for newly started sessions and **New session** replacements are implemented. [Authored workspace/channel instructions and playbooks](authored-content.md) now have private management APIs/UI. Published standing instructions load into newly created sessions with pinned manifests and Applied/Pending reporting. Explicit authored-playbook invocation, `/skills`, and dynamic mutation remain unfinished.
 
 ## BLUF
 
@@ -47,7 +47,7 @@ The following are explicitly outside the MVP:
 
 ### Explicit slash-command invocation
 
-A future composer may discover callable skills and offer commands such as:
+Native slash invocation remains a future adapter feature. Authored playbooks instead use the gated [`/skills` flow](authored-content.md); no production activation is implied. Future callable native skills might offer commands such as:
 
 ```text
 /code-review packages/control
@@ -62,11 +62,11 @@ Adding or removing skills from an already-running session is deferred. It requir
 
 ### Workspace-authored skills
 
-A future Workspace may own reusable instruction-only playbooks. These require stable ids, versions or content hashes, provenance, permission checks, and adapter materialization. The first version should not execute arbitrary bundled scripts.
+Workspaces can now store and publish instruction-only playbooks through authenticated private management APIs, with stable ids, immutable revisions/content hashes, provenance, and owner/admin checks. Authoring UI, guarded private delivery and a gated `/skills` composer flow are implemented. Independent T6 review, separate production activation and T7 intended-use/CI validation remain pending. Launch manifests pin scoped published identities/revisions without injecting full procedures into every prompt. Native adapter materialization is not implied by this contract; no executable bundles or additional permissions are supported.
 
 ### Conversation-derived skills
 
-Conversation-level skills are not planned without evidence that the same agent repeatedly needs a different reusable procedure in different Conversations. Ordinary conversation history, linked documents, and Conversation instructions are context—not automatically skills. If introduced later, Conversation skills should be explicitly attached, versioned, visible to administrators, and snapshotted when a session starts rather than silently changing agent behavior.
+Explicitly authored channel-scoped playbooks are included in the same private management foundation, following the requested channel/workspace feature direction. They are not inferred from messages: ordinary conversation history, linked documents, and Conversation instructions do not become skills automatically. Launch manifests now pin scoped revisions and threads inherit their parent channel's instructions. Operational playbook discovery/invocation remains a later slice; publishing alone changes no running agent.
 
 ### Executable skills and installation
 
@@ -80,7 +80,7 @@ If Conversations later supports multiple skill sources, the durable reference sh
 (runtimeAdapter, source, skillId, version?)
 ```
 
-Possible sources are `harness`, `workspace`, and eventually `conversation`. The MVP only implements `harness`. This shape should not require exposing local skill paths or adopting Pi-specific command names as global identifiers.
+Possible sources are `harness`, `workspace`, and `conversation`. Only `harness` is currently wired to agent execution; private authored documents can already be persisted at workspace/channel scope. This shape should not require exposing local skill paths or adopting Pi-specific command names as global identifiers.
 
 ## Promotion rule
 
