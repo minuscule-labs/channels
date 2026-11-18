@@ -1,3 +1,4 @@
+import { activityBoundary, activityCursor, activityKind, type ActivityPage, type ActivityItem, type ConversationUnreadSummary } from "./inbox.ts";
 import { assertConversationLifecycle, normalizeConversationFolderName } from "./types.ts";
 import type {
   Conversation,
@@ -65,6 +66,9 @@ export interface ConversationRosterUpdateResult {
 }
 
 export interface ConversationStorage extends ConversationCursorStore {
+  listInbox(identityId: string): Promise<ConversationUnreadSummary[]>;
+  listActivity(identityId: string, before?: string): Promise<ActivityPage>;
+  acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number>;
   createIdentity(identity: Identity): Promise<Identity>;
   updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined>;
   getIdentity(identityId: string): Promise<Identity | undefined>;
@@ -156,6 +160,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   private readonly folders = new Map<string, ConversationFolder>();
   private readonly lifecycles = new Map<string, ConversationLifecycle>();
   private readonly cursors = new Map<string, number>();
+  private readonly humanReadCursors = new Map<string, number>();
   private readonly responses = new Map<string, ConversationMessage>();
   private readonly attachments = new Map<string, ConversationAttachmentRecord>();
   private readonly messageRequests = new Map<
@@ -164,6 +169,58 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
   >();
   private readonly pendingMessages = new Map<string, Promise<MessageCommitResult>>();
   private readonly pendingResponses = new Map<string, Promise<ResponseResult>>();
+
+  private inboxConversations(identityId: string): Conversation[] {
+    const identity = this.identities.get(identityId);
+    if (identity?.type !== "human" || identity.status !== "active") return [];
+    return [...this.conversations.values()].filter(conversation =>
+      this.workspaceMembers.get(`${conversation.workspaceId}:${identityId}`)?.status === "active"
+      && (this.conversations.get(conversation.thread?.parentConversationId ?? conversation.id)?.participants ?? [])
+        .some(p => p.id === identityId && p.status !== "disabled"));
+  }
+
+  async listInbox(identityId: string): Promise<ConversationUnreadSummary[]> {
+    return this.inboxConversations(identityId).map(conversation => {
+      const readSequence = this.humanReadCursors.get(`${conversation.id}:${identityId}`);
+      const unread = conversation.messages.filter(message => message.sequence > (readSequence ?? 0) && message.participantId !== identityId);
+      return { conversationId: conversation.id, workspaceId: conversation.workspaceId,
+        parentConversationId: conversation.thread?.parentConversationId, readSequence,
+        latestSequence: conversation.messages.at(-1)?.sequence ?? 0,
+        count: unread.length, mentionCount: unread.filter(m => m.to.includes(identityId)).length,
+        firstUnreadSequence: unread[0]?.sequence };
+    });
+  }
+
+  async listActivity(identityId: string, before?: string): Promise<ActivityPage> {
+    const items: ActivityItem[] = [];
+    for (const conversation of this.inboxConversations(identityId)) {
+      const floor = this.humanReadCursors.get(`${conversation.id}:${identityId}`) ?? 0;
+      for (const message of conversation.messages) {
+        const kind = activityKind(conversation, message, identityId);
+        if (!kind) continue;
+        items.push({ id: message.id, conversationId: conversation.id, workspaceId: conversation.workspaceId,
+          conversationName: conversation.name,
+          channelName: this.conversations.get(conversation.thread?.parentConversationId ?? conversation.id)?.name ?? conversation.name,
+          threadPreview: conversation.thread?.context.find(m => m.id === conversation.thread!.rootMessageId)?.body.slice(0, 256),
+          authorName: this.identities.get(message.participantId)?.displayName ?? message.participantId,
+          preview: message.body.slice(0, 256), sequence: message.sequence, createdAt: message.createdAt,
+          kind, unread: message.sequence > floor,
+          firstUnreadSequence: conversation.messages.find(m => m.sequence > floor && m.participantId !== identityId)?.sequence });
+      }
+    }
+    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    const boundary = activityBoundary(before);
+    const remaining = boundary ? items.filter(item => item.createdAt < boundary.createdAt || (item.createdAt === boundary.createdAt && item.id < boundary.id)) : items;
+    const page = remaining.slice(0, 50);
+    return { items: page, ...(remaining.length > 50 ? { nextCursor: activityCursor(page.at(-1)!) } : {}) };
+  }
+
+  async acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number> {
+    const key = `${conversationId}:${identityId}`;
+    const next = Math.max(this.humanReadCursors.get(key) ?? 0, sequence);
+    this.humanReadCursors.set(key, next);
+    return next;
+  }
 
   async createIdentity(identity: Identity): Promise<Identity> {
     if (this.identities.has(identity.id)) throw new Error(`Identity id already exists: ${identity.id}`);

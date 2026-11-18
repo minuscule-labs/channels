@@ -5,12 +5,16 @@ export const RECENT_CONVERSATION_GRACE_MS = 5 * 60_000;
 
 export type EventHubMessage =
   | { type: "connecting" | "ready" | "disconnected" | "polling" | "paused" }
-  | { type: "event"; event: ConversationEvent };
+  | { type: "event"; event: ConversationEvent }
+  | { type: "inbox" };
 export interface EventStreamOptions {
+  inbox?: boolean;
+  onInboxChange?(): void;
   signal: AbortSignal;
   onReady(): void;
 }
 export interface EventSubscriptionOptions {
+  inbox?: boolean;
   mode?: "active" | "recent" | "observe" | "suspended";
   parentId?: string;
   suspendedIds?: readonly string[];
@@ -18,7 +22,7 @@ export interface EventSubscriptionOptions {
 interface Subscriber extends EventSubscriptionOptions {
   ids: Set<string>;
   send(message: EventHubMessage): void;
-  state?: Exclude<EventHubMessage["type"], "event">;
+  state?: Exclude<EventHubMessage["type"], "event" | "inbox">;
 }
 
 /** One bounded physical stream across tabs. Only viewed/recent topics consume slots. */
@@ -26,6 +30,7 @@ export class ConversationEventHub {
   private subscribers = new Map<object, Subscriber>();
   private recent = new Map<string, { lastUsed: number; parentId?: string }>();
   private selected: string[] = [];
+  private inbox = false;
   private expiry?: ReturnType<typeof setTimeout>;
   private controller?: AbortController;
   private running = false;
@@ -98,8 +103,10 @@ export class ConversationEventHub {
     const nextExpiry = [...this.recent].filter(([id]) => !active.has(id))
       .map(([, recent]) => recent.lastUsed + RECENT_CONVERSATION_GRACE_MS);
     if (this.subscribers.size && nextExpiry.length) this.expiry = setTimeout(() => this.update(), Math.max(1, Math.min(...nextExpiry) - now));
-    if (selected.join("\0") !== this.selected.join("\0")) {
+    const inbox = [...this.subscribers.values()].some(subscriber => subscriber.inbox);
+    if (inbox !== this.inbox || selected.join("\0") !== this.selected.join("\0")) {
       this.selected = selected;
+      this.inbox = inbox;
       this.revision++;
       const established = this.ready;
       this.ready = false;
@@ -121,9 +128,9 @@ export class ConversationEventHub {
         || Boolean(subscriber.parentId && suspended.has(subscriber.parentId));
       const selected = [...subscriber.ids].some((id) => this.selected.includes(id));
       const state: Subscriber["state"] = blocked && subscriber.mode !== "observe" ? "paused"
-        : subscriber.mode !== "observe" && !selected ? subscriber.mode === "recent" ? "paused" : "polling"
+        : !subscriber.inbox && subscriber.mode !== "observe" && !selected ? subscriber.mode === "recent" ? "paused" : "polling"
         : this.permanentFailure ? "polling"
-        : !this.selected.length || this.ready ? "ready"
+        : (!this.selected.length && !this.inbox) || this.ready ? "ready"
         : disconnected ? "disconnected" : "connecting";
       if (subscriber.state !== state) {
         subscriber.state = state;
@@ -133,7 +140,7 @@ export class ConversationEventHub {
   }
 
   private start() {
-    if (this.running || !this.selected.length || this.permanentFailure) return;
+    if (this.running || (!this.selected.length && !this.inbox) || this.permanentFailure) return;
     this.running = true;
     // Coalesce subscriptions registered in the same turn.
     void Promise.resolve().then(() => this.run());
@@ -142,7 +149,7 @@ export class ConversationEventHub {
   private async run() {
     let failures = 0;
     try {
-      while (this.selected.length && !this.permanentFailure) {
+      while ((this.selected.length || this.inbox) && !this.permanentFailure) {
         const revision = this.revision;
         const controller = new AbortController();
         this.controller = controller;
@@ -151,6 +158,11 @@ export class ConversationEventHub {
         try {
           for await (const event of this.events([...this.selected], {
             signal: controller.signal,
+            inbox: this.inbox,
+            onInboxChange: () => {
+              if (controller.signal.aborted) return;
+              for (const subscriber of this.subscribers.values()) if (subscriber.inbox) subscriber.send({ type: "inbox" });
+            },
             onReady: () => {
               if (controller.signal.aborted) return;
               clearTimeout(handshake);
@@ -178,7 +190,7 @@ export class ConversationEventHub {
         }
         if (revision !== this.revision) continue;
         this.status(true);
-        if (!this.selected.length || this.permanentFailure) break;
+        if ((!this.selected.length && !this.inbox) || this.permanentFailure) break;
         const delay = Math.min(1_000 * 2 ** failures++, 10_000);
         await new Promise<void>((resolve) => {
           const finish = () => { clearTimeout(timer); this.wake = undefined; resolve(); };

@@ -4,6 +4,7 @@ const conversationsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
 const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
 const webPort = Number(process.env.MINU_TEST_WEB_PORT ?? 58412);
 const fixturePort = Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413);
+const gatewayPort = Number(process.env.MINU_TEST_GATEWAY_PORT ?? 58414);
 const serviceToken = "browser-fixture-service-token";
 const skillsFixture = process.env.MINU_TEST_SKILLS_FIXTURE === "1";
 
@@ -23,8 +24,9 @@ export default defineConfig({
   webServer: [
     {
       command: skillsFixture ? "node test-browser/skills-fixture-server.mjs" : "node test-browser/fixture-server.mjs",
-      port: conversationsPort,
+      port: gatewayPort,
       env: {
+        MINU_TEST_GATEWAY_PORT: String(gatewayPort),
         MINU_TEST_CHANNELS_PORT: String(conversationsPort),
         MINU_TEST_CONTROL_PORT: String(controlPort),
         MINU_TEST_FIXTURE_PORT: String(fixturePort),
@@ -38,7 +40,7 @@ export default defineConfig({
       command: `pnpm exec vite${process.env.MINU_TEST_WEB_PREVIEW === "1" ? " preview" : ""} --host 127.0.0.1 --port ${webPort} --strictPort`,
       port: webPort,
       env: {
-        VITE_CHANNELS_PROXY_TARGET: `http://127.0.0.1:${conversationsPort}`,
+        VITE_CHANNELS_PROXY_TARGET: `http://127.0.0.1:${gatewayPort}`,
         VITE_CHANNELS_CONTROL_PROXY_TARGET: `http://127.0.0.1:${controlPort}`,
         MINU_CHANNELS_SERVICE_TOKEN: serviceToken,
       },

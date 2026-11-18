@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { activityBoundary } from "./inbox.ts";
 import {
   InMemoryAttachmentContentStore,
   type AttachmentContentStore,
@@ -230,6 +231,60 @@ export function resolveMessageTargets(conversation: Pick<Conversation, "particip
 
 export class ConversationService {
   private readonly listeners = new Map<string, Set<EventListener>>();
+  private readonly inboxListeners = new Map<string, Set<() => void>>();
+
+  private async assertInboxHuman(identityId: string): Promise<void> {
+    const identity = await this.storage.getIdentity(identityId);
+    if (identity?.type !== "human" || identity.status !== "active") throw new ConversationValidationError("An active human identity is required");
+  }
+
+  async listInbox(identityId: string) {
+    await this.assertInboxHuman(identityId);
+    return this.storage.listInbox(identityId);
+  }
+
+  async listActivity(identityId: string, before?: string) {
+    await this.assertInboxHuman(identityId);
+    try {
+      if (before !== undefined && before.length > 512) throw new Error("Cursor too long");
+      activityBoundary(before);
+    } catch { throw new ConversationValidationError("Invalid Activity cursor"); }
+    return this.storage.listActivity(identityId, before);
+  }
+
+  async acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number> {
+    await this.assertInboxHuman(identityId);
+    const conversation = await this.getConversationMetadata(conversationId);
+    const member = await this.storage.getWorkspaceMember(conversation.workspaceId, identityId);
+    if (member?.status !== "active" || !conversation.participants.some(p => p.id === identityId && p.status !== "disabled")) {
+      throw new ConversationNotFoundError("Conversation not found");
+    }
+    if (!Number.isSafeInteger(sequence) || sequence < 0) throw new ConversationValidationError("Invalid read sequence");
+    if (sequence > 0 && (await this.storage.listMessages(conversationId, { afterSequence: sequence - 1, limit: 1 }))?.[0]?.sequence !== sequence) {
+      throw new ConversationValidationError("Read sequence must identify a persisted message");
+    }
+    const readSequence = await this.storage.acknowledgeRead(conversationId, identityId, sequence);
+    for (const listener of this.inboxListeners.get(identityId) ?? []) listener();
+    return readSequence;
+  }
+
+  async subscribeInbox(identityId: string, listener: () => void): Promise<() => void> {
+    await this.assertInboxHuman(identityId);
+    const listeners = this.inboxListeners.get(identityId) ?? new Set();
+    listeners.add(listener);
+    this.inboxListeners.set(identityId, listeners);
+    return () => { listeners.delete(listener); if (!listeners.size) this.inboxListeners.delete(identityId); };
+  }
+
+  private async invalidateInbox(conversationId: string): Promise<void> {
+    if (!this.inboxListeners.size) return;
+    const conversation = await this.getConversationMetadata(conversationId);
+    for (const [identityId, listeners] of this.inboxListeners) {
+      if (!conversation.participants.some(p => p.id === identityId && p.status !== "disabled")) continue;
+      const [identity, member] = await Promise.all([this.storage.getIdentity(identityId), this.storage.getWorkspaceMember(conversation.workspaceId, identityId)]);
+      if (identity?.status === "active" && member?.status === "active") for (const listener of listeners) listener();
+    }
+  }
   private readonly conversationOperations = new Map<string, Promise<unknown>>();
   private readonly messageAdmissions = new Map<string, Promise<unknown>>();
 
@@ -1363,7 +1418,10 @@ export class ConversationService {
       };
       for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
     }
-    if (result.outcome === "created") await this.notifyThreadParent(conversationId);
+    if (result.outcome === "created") {
+      await this.notifyThreadParent(conversationId);
+      await this.invalidateInbox(conversationId).catch(() => undefined);
+    }
     return { ...message, to: [...message.to] };
   }
 
@@ -1443,7 +1501,10 @@ export class ConversationService {
       };
       for (const listener of this.listeners.get(conversationId) ?? []) listener(event);
     }
-    if (result.created) await this.notifyThreadParent(conversationId);
+    if (result.created) {
+      await this.notifyThreadParent(conversationId);
+      await this.invalidateInbox(conversationId).catch(() => undefined);
+    }
     return { message: { ...result.message, to: [...result.message.to] }, created: result.created };
   }
 

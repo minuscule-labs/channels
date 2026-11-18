@@ -129,6 +129,7 @@ export const messages = sqliteTable(
   (table) => [
     uniqueIndex("messages_conversation_sequence_unique").on(table.conversationId, table.sequence),
     index("messages_conversation_sequence").on(table.conversationId, table.sequence),
+    index("messages_activity_order").on(table.createdAt, table.id),
   ],
 );
 
@@ -173,6 +174,12 @@ export const responseDeliveries = sqliteTable(
     uniqueIndex("response_deliveries_response_unique").on(table.responseMessageId),
   ],
 );
+
+export const humanReadCursors = sqliteTable("human_read_cursors", {
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  identityId: text("identity_id").notNull().references(() => identities.id),
+  sequence: integer("sequence").notNull(),
+}, table => [primaryKey({ columns: [table.conversationId, table.identityId] }), check("human_read_sequence_nonnegative", sql`${table.sequence} >= 0`)]);
 
 export const agentCursors = sqliteTable(
   "agent_cursors",

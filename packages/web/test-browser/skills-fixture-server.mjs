@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 import { ConversationService } from "../../core/dist/src/conversation-service.js";
 import { ConversationClient } from "../../core/dist/src/client.js";
 import { createConversationHttpServer } from "../../core/dist/src/http-server.js";
+import { createLocalWebServer } from "../../control/dist/src/local-web-server.js";
+import { fileURLToPath } from "node:url";
 import { DrizzleLibSqlConversationStorage } from "../../storage-drizzle/dist/src/storage.js";
 import { DrizzleLibSqlRelayStorage } from "../../relay-storage-drizzle/dist/src/storage.js";
 import { captureAuthoredContext } from "../../relay/dist/src/authored-context.js";
@@ -51,6 +53,11 @@ const options = { conversations: client, bindings: store, runtimes, configuratio
 const browserSessions = new LocalControlBrowserSessions({ browserUrl: `http://minu-channels.localhost:${process.env.MINU_TEST_WEB_PORT ?? 58412}/`, currentHumanIdentityId: member.id });
 const control = await createLocalControlHttpServer({ service: new LocalControlService(options), browserSessions,
   allowedOrigins: [browserSessions.browserOrigin], port: Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411) });
+const gateway = await createLocalWebServer({
+  conversationsEndpoint: core.endpoint, conversationsServiceToken: core.serviceToken,
+  authenticateBrowser: cookie => browserSessions.authenticate(cookie), controlEndpoint: control.endpoint,
+  webDirectory: fileURLToPath(new URL("../", import.meta.url)), port: Number(process.env.MINU_TEST_GATEWAY_PORT ?? 58414),
+});
 async function setup(enabled) {
   options.authoredSkillPublicationEnabled = enabled;
   const workspace = await client.createWorkspace({ slug: `skills-${Date.now()}`, name: `Skills ${Date.now()}` });
@@ -117,6 +124,6 @@ const fixture = createServer(async (request, response) => {
   } catch (error) { response.writeHead(500, { "content-type": "application/json" }); response.end(JSON.stringify({ error: String(error), stack: error.stack })); }
 });
 await new Promise(resolve => fixture.listen(Number(process.env.MINU_TEST_FIXTURE_PORT ?? 58413), "127.0.0.1", resolve));
-async function close() { fixture.close(); await control.close(); await host.close(); await store.close(); await core.close(); await coreStore.close(); await rm(directory, { recursive: true, force: true }); process.exit(0); }
+async function close() { fixture.close(); await gateway.close(); await control.close(); await host.close(); await store.close(); await core.close(); await coreStore.close(); await rm(directory, { recursive: true, force: true }); process.exit(0); }
 process.on("SIGTERM", () => { void close(); });
 process.on("SIGINT", () => { void close(); });

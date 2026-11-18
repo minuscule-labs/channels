@@ -302,7 +302,7 @@ test("folder storage migration preserves a populated 0010 database and stays usa
   try {
     const after = createClient({ url: legacy.url });
     try {
-      assert.deepEqual(await snapshot(after), before);
+      assert.deepEqual(await snapshot(after), { ...before, human_read_cursors: [] });
       assert.ok((await after.execute("SELECT authored_invocation_id FROM messages")).rows.every(row => row.authored_invocation_id === null));
       const assignment = (await after.execute("PRAGMA table_info(conversations)")).rows.find(row => row.name === "folder_id");
       assert.equal(assignment?.notnull, 0);

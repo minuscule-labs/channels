@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 import { createLocalProductApp } from "./local.ts";
+import { createLocalWebServer } from "./local-web-server.ts";
 import { localConversationsUrl } from "./local-host.ts";
 import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
 
@@ -182,6 +183,11 @@ async function main(): Promise<void> {
       managedRuntime,
       onAudit,
     });
+  const gateway = await createLocalWebServer({
+    conversationsEndpoint: app.conversationsEndpoint, conversationsServiceToken: app.conversationsServiceToken,
+    authenticateBrowser: app.authenticateBrowser, controlEndpoint: app.controlEndpoint,
+    webDirectory: resolve(repositoryRoot(), "packages/web"), port: 0,
+  }).catch(async error => { await app.close(); throw error; });
   const vite = spawn(
     process.platform === "win32" ? "pnpm.cmd" : "pnpm",
     ["--filter", "@minu/channels-web", "exec", "vite", "--host", "127.0.0.1", "--port", String(webPort), "--strictPort"],
@@ -190,7 +196,7 @@ async function main(): Promise<void> {
       detached: process.platform !== "win32",
       env: {
         ...process.env,
-        VITE_CHANNELS_PROXY_TARGET: app.conversationsEndpoint,
+        VITE_CHANNELS_PROXY_TARGET: gateway.endpoint,
         MINU_CHANNELS_SERVICE_TOKEN: app.conversationsServiceToken,
         VITE_CHANNELS_CONTROL_PROXY_TARGET: app.controlEndpoint,
       },
@@ -207,6 +213,7 @@ async function main(): Promise<void> {
     if (closing) return;
     closing = true;
     await stopProcessGroup(vite).catch(() => undefined);
+    await gateway.close();
     await app.close();
   };
   process.on("SIGINT", () => void close().then(() => process.exit(0)));

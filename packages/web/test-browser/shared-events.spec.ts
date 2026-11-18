@@ -129,8 +129,9 @@ test("101 remembered conversations and an open thread stay within one bounded li
     } });
     expect(response.ok()).toBe(true);
     await expect(page.getByLabel("Live updates paused")).toHaveCount(2);
-    await expect.poll(topics).toEqual([]);
-    // The sleeping browser misses these events, then explicitly catches up on reopen.
+    // Keep exactly one inbox-only stream, with no channel or thread topics.
+    await expect.poll(topics).toEqual([[]]);
+    // Conversation payloads are missed while paused and explicitly caught up on reopen.
     expect((await request.patch(`${api}/conversations/${current.id}/lifecycle`, { data: {
       actorIdentityId: human.id, state: "active",
     } })).ok()).toBe(true);

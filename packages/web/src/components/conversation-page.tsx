@@ -12,7 +12,7 @@ import { queryKeys } from "../lib/query-keys";
 import { agentStatusRequestError, pendingAgentInspection, type AgentDiagnosticsSnapshot, type PendingAgentActions, type AgentSessionAction } from "../lib/agent-diagnostics";
 import { useAgentActions } from "../lib/use-agent-actions";
 import { actionIsPending } from "../lib/agent-actions";
-import { readSequence, resetReadSequence, writeReadSequence } from "../lib/conversation-notifications";
+import { writeReadSequence } from "../lib/conversation-notifications";
 import { isNearTimelineEnd } from "../lib/timeline";
 import { readThreadSelection, threadSelectionStorageKey, writeThreadSelection } from "../lib/thread-selection";
 import { ConversationActivityStrip } from "./conversation-activity-strip";
@@ -56,13 +56,15 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const issueNoticeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const drawerMessageFocus = useRef<number | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const nearEndRef = useRef(true);
+  const nearEndRef = useRef(!/^#?message-\d+$/.test(location.hash));
+  const requestedReadSequence = useRef(0);
+  const focusedHash = useRef<string | undefined>(undefined);
   const scrollLayoutRef = useRef({ scrollHeight: 0, clientHeight: 0 });
   const scrollToLatest = useCallback((scroll: HTMLDivElement) => {
     scroll.scrollTo({ top: scroll.scrollHeight });
     scrollLayoutRef.current = { scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight };
   }, []);
-  const previousMessageCountRef = useRef(0);
+  const previousMessageCountRef = useRef<number | undefined>(undefined);
   const workspace = useQuery({
     queryKey: queryKeys.workspace(workspaceId),
     queryFn: () => conversations.getWorkspace(workspaceId),
@@ -352,6 +354,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     const target = scrollRef.current?.querySelector<HTMLElement>(`[data-message-sequence="${sequence}"]`);
     target?.scrollIntoView({ block: "center" });
     target?.focus({ preventScroll: true });
+    return Boolean(target);
   };
   const viewMessage = (sequence: number) => {
     // Called by the details dialog after its focus scope has closed. On mobile,
@@ -380,11 +383,11 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const timelineReady = !metadata.isLoading && !messages.isLoading && !metadata.error && !messages.error && Boolean(metadata.data);
 
   useLayoutEffect(() => {
-    nearEndRef.current = true;
-    previousMessageCountRef.current = 0;
+    nearEndRef.current = !/^#?message-\d+$/.test(location.hash);
+    previousMessageCountRef.current = undefined;
     setUnseenMessages(0);
     window.dispatchEvent(new CustomEvent("minu-conversation-view", {
-      detail: { conversationId, nearEnd: true },
+      detail: { conversationId, nearEnd: nearEndRef.current },
     }));
   }, [conversationId]);
 
@@ -394,10 +397,21 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     }));
     const identityId = currentSession.data?.identityId;
     const sequence = messages.data?.at(-1)?.sequence;
-    if (!scrollRef.current || !identityId || sequence === undefined || document.visibilityState !== "visible" || !nearEndRef.current) return;
-    if (readSequence(localStorage, identityId, conversationId) > sequence) resetReadSequence(localStorage, identityId, conversationId);
-    writeReadSequence(localStorage, identityId, conversationId, sequence);
-    window.dispatchEvent(new Event("minu-read-state"));
+    if (!scrollRef.current || !identityId || sequence === undefined || document.visibilityState !== "visible"
+      || !document.hasFocus() || !nearEndRef.current || sequence <= requestedReadSequence.current) return;
+    const last = scrollRef.current.querySelector<HTMLElement>(`[data-message-sequence="${sequence}"]`);
+    if (!last) return;
+    const rect = last.getBoundingClientRect();
+    const viewport = scrollRef.current.getBoundingClientRect();
+    const top = Math.max(rect.top, viewport.top, 0), bottom = Math.min(rect.bottom, viewport.bottom, window.innerHeight);
+    if (bottom <= top || rect.width <= 0) return;
+    const hit = document.elementFromPoint(Math.min(rect.right, window.innerWidth) - Math.min(rect.width / 2, 20), (top + bottom) / 2);
+    if (!hit || !last.contains(hit)) return;
+    requestedReadSequence.current = sequence;
+    void conversations.acknowledgeRead(conversationId, sequence).then(acknowledged => {
+      writeReadSequence(localStorage, identityId, conversationId, acknowledged);
+      window.dispatchEvent(new Event("minu-read-state"));
+    }).catch(() => { if (requestedReadSequence.current === sequence) requestedReadSequence.current = 0; });
   }, [conversationId, currentSession.data?.identityId, messages.data]);
 
   useLayoutEffect(() => {
@@ -411,7 +425,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       scrollToLatest(scroll);
       setUnseenMessages(0);
       markRead();
-    } else if (count > previousCount) {
+    } else if (previousCount !== undefined && count > previousCount) {
       setUnseenMessages((current) => current + count - previousCount);
     }
   }, [conversationId, markRead, messages.data?.length, scrollToLatest, timelineReady]);
@@ -422,32 +436,43 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     if (!timelineReady || !scroll || !content) return;
     // Diagrams, syntax highlighting, composer resizing, and viewport changes can all move the end.
     const observer = new ResizeObserver(() => {
-      if (nearEndRef.current) scrollToLatest(scroll);
+      if (nearEndRef.current) { scrollToLatest(scroll); markRead(); }
     });
     observer.observe(scroll);
     observer.observe(content);
     return () => observer.disconnect();
-  }, [conversationId, scrollToLatest, timelineReady]);
+  }, [conversationId, markRead, scrollToLatest, timelineReady]);
   useEffect(() => {
     const visible = () => markRead();
     document.addEventListener("visibilitychange", visible);
-    return () => document.removeEventListener("visibilitychange", visible);
+    window.addEventListener("focus", visible);
+    window.addEventListener("online", visible);
+    return () => {
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("focus", visible);
+      window.removeEventListener("online", visible);
+    };
   }, [markRead]);
 
   useLayoutEffect(() => {
-    if (!timelineReady) return;
+    if (!timelineReady || messages.isFetching || focusedHash.current === location.hash) return;
     const match = /^message-(\d+)$/.exec(location.hash);
     if (match) {
       nearEndRef.current = false;
-      focusMessage(Number(match[1]));
+      if (!focusMessage(Number(match[1]))) return;
+      focusedHash.current = location.hash;
+      if (scrollRef.current) nearEndRef.current = isNearTimelineEnd(scrollRef.current);
+      if (nearEndRef.current) setUnseenMessages(0);
+      markRead();
     } else if (location.hash.startsWith("participant-")) {
+      focusedHash.current = location.hash;
       const id = location.hash.slice("participant-".length);
       const triggers = document.querySelectorAll<HTMLElement>(`[data-participant-id="${CSS.escape(id)}"] button[aria-label^="Open actions for"]`);
       const trigger = [...triggers].find(node => node.getClientRects().length > 0)
         ?? document.querySelector<HTMLElement>('button[aria-label="Show participants"]');
       trigger?.focus();
-    }
-  }, [location.hash, timelineReady, messages.data]);
+    } else focusedHash.current = undefined;
+  }, [location.hash, timelineReady, messages.data, messages.isFetching, markRead]);
 
   if (metadata.isLoading || messages.isLoading) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Conversation…</div>;

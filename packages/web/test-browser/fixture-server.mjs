@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { createLocalWebServer } from "../../control/dist/src/local-web-server.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -265,6 +267,12 @@ const localControl = await createLocalControlHttpServer({
   }),
 });
 
+const gateway = await createLocalWebServer({
+  conversationsEndpoint: conversationServer.endpoint, conversationsServiceToken: serviceToken,
+  authenticateBrowser: cookie => browserSessions.authenticate(cookie), controlEndpoint: localControl.endpoint,
+  webDirectory: fileURLToPath(new URL("../", import.meta.url)),
+  port: Number(process.env.MINU_TEST_GATEWAY_PORT ?? 58414),
+});
 const controlServer = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${fixturePort}`);
   if (request.method === "GET" && url.pathname === "/stream-metrics") {
@@ -382,6 +390,7 @@ controlServer.listen(fixturePort, "127.0.0.1");
 console.log(JSON.stringify({ workspaceId: workspace.id, conversationId: conversation.id }));
 
 const close = async () => {
+  await gateway.close();
   await conversationServer.close().catch(() => undefined);
   await localControl.close().catch(() => undefined);
   await privateStore.close().catch(() => undefined);

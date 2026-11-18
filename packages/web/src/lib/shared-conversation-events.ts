@@ -4,6 +4,7 @@ import type { EventHubMessage, EventSubscriptionOptions } from "./conversation-e
 export interface SharedEventOptions extends EventSubscriptionOptions {
   signal: AbortSignal;
   onReady(): void;
+  onInboxChange?(): void;
   onConnecting?(): void;
   onDisconnected?(): void;
   onPolling?(): void;
@@ -33,7 +34,7 @@ export async function* sharedConversationEvents(
   let polling: ReturnType<typeof setInterval> | undefined;
   let startup: ReturnType<typeof setTimeout> | undefined;
   const visibility = () => worker?.port.postMessage({
-    type: "subscribe", ids: [...ids],
+    type: "subscribe", ids: [...ids], inbox: options.inbox,
     mode: options.mode ?? (typeof document !== "undefined" && document.visibilityState === "hidden" ? "recent" : "active"),
     parentId: options.parentId, suspendedIds: options.suspendedIds,
   });
@@ -54,6 +55,9 @@ export async function* sharedConversationEvents(
             queue.push(data.event);
             worker!.port.postMessage({ type: "ack" });
             wake?.();
+          } else if (data.type === "inbox") {
+            options.onInboxChange?.();
+            worker!.port.postMessage({ type: "ack" });
           } else if (data.type === "polling") {
             clearInterval(polling);
             options.onPolling?.();

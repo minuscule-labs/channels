@@ -11,7 +11,8 @@ import { runBackgroundConversationsConnection } from "../lib/background-conversa
 import { sharedConversationEvents } from "../lib/shared-conversation-events";
 import { announceLifecycleChange, listenForLifecycleChanges, snoozeRefetchInterval } from "../lib/conversation-lifecycle";
 import { playNotificationSound } from "../lib/notification-sound";
-import { readSequence, readSound, unreadFor, writeSound, type NotificationSound } from "../lib/conversation-notifications";
+import { readSequence, readSound, writeSound, type NotificationSound } from "../lib/conversation-notifications";
+import { inboxKey, activityKey, useInbox } from "../lib/inbox";
 import { Drawer } from "./ui/drawer";
 import { NavigationSidebar, type WorkspaceNavigationItem } from "./navigation-sidebar";
 import { NotificationPreferencesContext } from "./notification-preferences";
@@ -24,7 +25,7 @@ export function AppShell() {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   useEffect(() => { setNavigationOpen(false); }, [pathname]);
-  const [readRevision, setReadRevision] = useState(0);
+  const importedReadCursors = useRef(new Set<string>());
   const [sound, setSound] = useState<NotificationSound>("off");
   const soundedMessages = useRef(new Set<string>());
   const viewingActiveConversationEnd = useRef(false);
@@ -137,7 +138,8 @@ export function AppShell() {
   // readiness refetches can feed back into another unsubscribe/ready cycle.
   // Include the current view so the observer port survives navigation and preserves grace.
   const backgroundConversationIdsKey = JSON.stringify(observedConversations.map(({ id }) => id).sort());
-  const conversationMessageQueries = useQueries({
+  // Retain the existing background observer's cache; unread counts come from the server.
+  useQueries({
     queries: observedConversations.map((conversation) => ({
       queryKey: queryKeys.conversationMessages(conversation.id),
       queryFn: () => conversations.listMessages(conversation.id, { limit: 100 }),
@@ -146,18 +148,23 @@ export function AppShell() {
     })),
   });
   const activeAgentsWorkspaceId = pathname.match(/\/workspaces\/([^/]+)\/agents(?:\/|$)/)?.[1];
-  const allUnread = useMemo(() => {
-    const result = new Map<string, { count: number; mentionCount: number }>();
+  const inbox = useInbox(currentSession.data?.identityId);
+  const allUnread = useMemo(() => new Map((inbox.data ?? []).map(summary => [summary.conversationId, summary])), [inbox.data]);
+  useEffect(() => {
     const identityId = currentSession.data?.identityId;
-    if (!identityId) return result;
-    for (const [index, conversation] of observedConversations.entries()) {
-      const messages = conversationMessageQueries[index]?.data ?? [];
-      result.set(conversation.id, unreadFor(messages, identityId, readSequence(localStorage, identityId, conversation.id)));
+    if (!identityId) return;
+    // Preserve existing browser read marks once, without overwriting server state.
+    for (const summary of inbox.data ?? []) {
+      const key = `${identityId}:${summary.conversationId}`;
+      const sequence = readSequence(localStorage, identityId, summary.conversationId);
+      if (sequence <= (summary.readSequence ?? 0) || sequence > summary.latestSequence || importedReadCursors.current.has(key)) continue;
+      importedReadCursors.current.add(key);
+      void conversations.acknowledgeRead(summary.conversationId, sequence).then(() => {
+        void queryClient.invalidateQueries({ queryKey: inboxKey(identityId) });
+        void queryClient.invalidateQueries({ queryKey: activityKey(identityId) });
+      }).catch(() => { importedReadCursors.current.delete(key); });
     }
-    return result;
-  // readRevision is incremented when a visible timeline advances its durable read cursor.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationMessageQueries.map(({ data }) => data), currentSession.data?.identityId, observedConversations, readRevision]);
+  }, [inbox.data, currentSession.data?.identityId, queryClient]);
   const unread = useMemo(() => new Map((selectedConversations.data ?? []).map((conversation) => [
     conversation.id,
     allUnread.get(conversation.id) ?? { count: 0, mentionCount: 0 },
@@ -165,10 +172,10 @@ export function AppShell() {
   const unreadTotal = [...allUnread.values()].reduce((sum, value) => sum + value.count, 0);
   const workspaceUnread = useMemo(() => new Map((workspaces.data ?? []).map((workspace) => [
     workspace.id,
-    observedConversations
-      .filter((conversation) => conversation.workspaceId === workspace.id)
-      .reduce((sum, conversation) => sum + (allUnread.get(conversation.id)?.count ?? 0), 0),
-  ])), [allUnread, observedConversations, workspaces.data]);
+    [...allUnread.values()]
+      .filter(summary => summary.workspaceId === workspace.id)
+      .reduce((sum, summary) => sum + summary.count, 0),
+  ])), [allUnread, workspaces.data]);
   const conversationLifecycles = useMemo(() => new Map((selectedConversations.data ?? []).map((conversation, index) => [
     conversation.id,
     conversationLifecycleQueries[index]?.data?.state ?? "active",
@@ -364,7 +371,10 @@ export function AppShell() {
   }, [activeConversationId, currentSession.data?.identityId, sound]);
   useEffect(() => {
     viewingActiveConversationEnd.current = Boolean(activeConversationId);
-    const changed = () => setReadRevision((value) => value + 1);
+    const changed = () => {
+      void queryClient.invalidateQueries({ queryKey: inboxKey(currentSession.data?.identityId) });
+      void queryClient.invalidateQueries({ queryKey: activityKey(currentSession.data?.identityId) });
+    };
     const viewing = (event: Event) => {
       const detail = (event as CustomEvent<{ conversationId: string; nearEnd: boolean }>).detail;
       if (detail.conversationId === activeConversationId) viewingActiveConversationEnd.current = detail.nearEnd;
@@ -375,7 +385,7 @@ export function AppShell() {
       window.removeEventListener("minu-read-state", changed);
       window.removeEventListener("minu-conversation-view", viewing);
     };
-  }, [activeConversationId]);
+  }, [activeConversationId, currentSession.data?.identityId, queryClient]);
   useEffect(() => {
     document.title = unreadTotal ? `(${unreadTotal}) MinuChannels` : "MinuChannels";
   }, [unreadTotal]);

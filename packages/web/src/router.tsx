@@ -4,6 +4,7 @@ import { MessageSquare } from "lucide-react";
 import type * as AgentManagementModule from "./components/agent-management-page";
 import { AppShell } from "./components/app-shell";
 import { ConversationPage } from "./components/conversation-page";
+import { ActivityPage } from "./components/activity-page";
 
 const rootRoute = createRootRoute({ component: AppShell });
 type AgentPageExport = "AgentManagementPage" | "AgentCreatePage" | "AgentDetailPage";
@@ -113,6 +114,8 @@ const participantDiagnosticsRoute = createRoute({
   component: () => <Suspense fallback={<div role="status" className="p-5 text-sm">Loading diagnostics…</div>}><ParticipantDiagnosticsPage /></Suspense>,
 });
 
+const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/activity", component: ActivityPage });
+
 const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/conversations/$conversationId",
@@ -163,7 +166,7 @@ const settingsRoutes = [
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/conversations/$conversationId/settings", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationSettingsPage /></Suspense> }),
 ];
 
-const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
+const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, activityRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
 export const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {
