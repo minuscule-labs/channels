@@ -16,7 +16,7 @@ export function ActivityPage() {
   });
   const items = [...new Map((activity.data?.pages.flatMap(page => page.items) ?? []).map(item => [item.id, item])).values()];
   return <section className="minu-scroll h-full overflow-y-auto p-5" aria-labelledby="activity-heading">
-    <h1 id="activity-heading" className="mb-5 text-xl font-semibold">Activity</h1>
+    <h1 id="activity-heading" className="mb-5 pl-9 text-xl font-semibold md:pl-0">Activity</h1>
     {session.isError || activity.isError ? <div role="alert">
       <p>Unable to load Activity.</p>
       <button className="button-secondary" onClick={() => void (session.isError ? session.refetch() : activity.refetch())}>Retry</button>

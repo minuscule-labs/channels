@@ -42,6 +42,8 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
 }) {
   const queryClient = useQueryClient();
   const location = useLocation();
+  // Nested threads have independent message sequences; only the route's view owns its hash.
+  const viewHash = onCloseThread ? "" : location.hash;
   const [rosterOpen, setRosterOpen] = useState(false);
   const [threadSelection, setThreadSelection] = useState<{ key: string; thread: ConversationThread }>();
   const restoredThreadSelectionKey = useRef<string | undefined>(undefined);
@@ -56,7 +58,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const issueNoticeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const drawerMessageFocus = useRef<number | undefined>(undefined);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const nearEndRef = useRef(!/^#?message-\d+$/.test(location.hash));
+  const nearEndRef = useRef(!/^#?message-\d+$/.test(viewHash));
   const requestedReadSequence = useRef(0);
   const focusedHash = useRef<string | undefined>(undefined);
   const scrollLayoutRef = useRef({ scrollHeight: 0, clientHeight: 0 });
@@ -383,7 +385,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const timelineReady = !metadata.isLoading && !messages.isLoading && !metadata.error && !messages.error && Boolean(metadata.data);
 
   useLayoutEffect(() => {
-    nearEndRef.current = !/^#?message-\d+$/.test(location.hash);
+    nearEndRef.current = !/^#?message-\d+$/.test(viewHash);
     previousMessageCountRef.current = undefined;
     setUnseenMessages(0);
     window.dispatchEvent(new CustomEvent("minu-conversation-view", {
@@ -455,24 +457,24 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   }, [markRead]);
 
   useLayoutEffect(() => {
-    if (!timelineReady || messages.isFetching || focusedHash.current === location.hash) return;
-    const match = /^message-(\d+)$/.exec(location.hash);
+    if (!timelineReady || messages.isFetching || focusedHash.current === viewHash) return;
+    const match = /^message-(\d+)$/.exec(viewHash);
     if (match) {
       nearEndRef.current = false;
       if (!focusMessage(Number(match[1]))) return;
-      focusedHash.current = location.hash;
+      focusedHash.current = viewHash;
       if (scrollRef.current) nearEndRef.current = isNearTimelineEnd(scrollRef.current);
       if (nearEndRef.current) setUnseenMessages(0);
       markRead();
-    } else if (location.hash.startsWith("participant-")) {
-      focusedHash.current = location.hash;
-      const id = location.hash.slice("participant-".length);
+    } else if (viewHash.startsWith("participant-")) {
+      focusedHash.current = viewHash;
+      const id = viewHash.slice("participant-".length);
       const triggers = document.querySelectorAll<HTMLElement>(`[data-participant-id="${CSS.escape(id)}"] button[aria-label^="Open actions for"]`);
       const trigger = [...triggers].find(node => node.getClientRects().length > 0)
         ?? document.querySelector<HTMLElement>('button[aria-label="Show participants"]');
       trigger?.focus();
     } else focusedHash.current = undefined;
-  }, [location.hash, timelineReady, messages.data, messages.isFetching, markRead]);
+  }, [viewHash, timelineReady, messages.data, messages.isFetching, markRead]);
 
   if (metadata.isLoading || messages.isLoading) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Conversation…</div>;

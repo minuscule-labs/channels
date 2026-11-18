@@ -59,6 +59,7 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
     await page.bringToFront();
     await row.getByRole("link").click();
     await expect(page).toHaveURL(new RegExp(`/conversations/${thread.id}#message-1$`));
+    await expect(page.getByRole("log").locator('[data-message-sequence="1"]')).toBeFocused();
     await expect(page.getByText("Activity arrived without a thread subscription", { exact: true })).toBeVisible();
     await expect.poll(() => count(thread.id)).toBe(0);
     expect(await count(conversation.id)).toBe(101);
@@ -163,4 +164,65 @@ test("Activity badge counts only unread notifications, works on mobile, and hide
   await page.getByRole("link", { name: /^Badge scope/ }).click();
   await expect(page.getByRole("log").getByText("Badge mention", { exact: true })).toBeVisible();
   await expect(badge()).toHaveCount(0);
+});
+
+test("a side thread opened from a parent Activity link ignores the parent's message hash when marking read", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${api}/workspaces`)).json();
+  const workspace = workspaces.find((item: { name: string }) => item.name === "Browser Test");
+  const { conversations } = await (await request.get(`${api}/workspaces/${workspace.id}/conversations`)).json() as { conversations: ConversationMetadata[] };
+  const primary = conversations.find(item => item.name === "browser-collaboration")!;
+  const human = primary.participants.find(p => p.type === "human")!;
+  const agent = primary.participants.find(p => p.type === "agent")!;
+  const { conversation } = await (await request.post(`${api}/conversations`, { data: {
+    workspaceId: workspace.id, name: "Activity parent hash", participantIds: [human.id, agent.id],
+  } })).json();
+  const { message: root } = await (await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: human.id, body: "Root for the side thread", to: [],
+  } })).json();
+  const { message: mention } = await (await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: agent.id, body: "Parent mention for Activity", to: [human.id],
+  } })).json();
+  const { thread } = await (await request.post(`${api}/conversations/${conversation.id}/threads`, { data: {
+    actorIdentityId: human.id, rootMessageId: root.id,
+  } })).json();
+  await request.post(`${api}/conversations/${thread.id}/messages`, { data: {
+    participantId: agent.id, body: "The visible side-thread reply", to: [],
+  } });
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent("/app/activity")}`)).json();
+  await page.goto(launchUrl);
+  await page.locator(`[data-activity-id="${mention.id}"]`).getByRole("link").click();
+  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}#message-2$`));
+  const threadUnread = () => page.evaluate(async id => {
+    const { summaries } = await (await fetch("/identities/me/inbox")).json();
+    return summaries.find((item: { conversationId: string }) => item.conversationId === id)?.count;
+  }, thread.id);
+  expect(await threadUnread()).toBe(1);
+  await page.getByRole("button", { name: "Open actions for message 1", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Open thread", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "Thread", exact: true });
+  await expect(panel.getByText("The visible side-thread reply", { exact: true })).toBeInViewport();
+  await panel.getByRole("combobox", { name: "Thread reply", exact: true }).focus();
+  await expect.poll(threadUnread).toBe(0);
+  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}#message-2$`));
+});
+
+test("mobile Activity title stays clear of the navigation button", async ({ page, request }) => {
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent("/app/activity")}`)).json();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(launchUrl);
+  const title = page.getByRole("heading", { name: "Activity", exact: true });
+  await expect(title).toBeVisible();
+  // Measure the text itself: padding can clear the button without moving the heading's box.
+  const text = await title.evaluate(element => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const rect = range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+  const menu = page.getByRole("button", { name: "Open navigation", exact: true });
+  await expect(menu).toBeVisible();
+  const button = (await menu.boundingBox())!;
+  const overlap = Math.max(0, Math.min(text.x + text.width, button.x + button.width) - Math.max(text.x, button.x))
+    * Math.max(0, Math.min(text.y + text.height, button.y + button.height) - Math.max(text.y, button.y));
+  expect(overlap).toBe(0);
 });
