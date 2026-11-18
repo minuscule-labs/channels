@@ -9,6 +9,7 @@ export interface ConversationUnreadSummary {
   latestSequence: number;
   count: number;
   mentionCount: number;
+  activityCount: number;
   firstUnreadSequence?: number;
 }
 

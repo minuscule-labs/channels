@@ -118,3 +118,49 @@ test("existing browser read marks migrate monotonically without resetting server
   expect((await summary()).readSequence).toBe(6);
   expect((await summary()).count).toBe(0);
 });
+
+test("Activity badge counts only unread notifications, works on mobile, and hides at zero", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${api}/workspaces`)).json();
+  const workspace = workspaces.find((item: { name: string }) => item.name === "Browser Test");
+  const { identities } = await (await request.get(`${api}/identities`)).json();
+  const member = identities.find((item: { displayName: string }) => item.displayName === "Workspace Member");
+  const owner = identities.find((item: { displayName: string }) => item.displayName === "David Kennedy");
+  const { conversation } = await (await request.post(`${api}/conversations`, { data: {
+    workspaceId: workspace.id, name: "Badge scope", participantIds: [member.id, owner.id],
+  } })).json();
+  const { message: root } = await (await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: member.id, body: "Badge thread root", to: [],
+  } })).json();
+  const { thread } = await (await request.post(`${api}/conversations/${conversation.id}/threads`, { data: {
+    actorIdentityId: member.id, rootMessageId: root.id,
+  } })).json();
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?actor=member&destination=${encodeURIComponent("/app/activity")}`)).json();
+  await page.goto(launchUrl);
+  const activityLink = () => page.getByRole("navigation", { name: "Workspaces and Conversations" }).locator('a[href="/app/activity"]');
+  const badge = () => activityLink().getByLabel(/unread Activity notification/);
+  await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
+  await expect(badge()).toHaveCount(0);
+  for (let index = 0; index < 10; index++) await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: owner.id, body: `Ordinary unread ${index}`, to: [],
+  } });
+  await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+    participantId: owner.id, body: "Badge mention", to: [member.id],
+  } });
+  const { message: reply } = await (await request.post(`${api}/conversations/${thread.id}/messages`, { data: {
+    participantId: owner.id, body: "A mentioned thread reply counts once", to: [member.id],
+  } })).json();
+  await expect(badge()).toHaveText("2");
+  await page.reload();
+  await expect(badge()).toHaveText("2"); // browsing Activity does not clear it
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await expect(badge()).toHaveText("2");
+  await page.getByRole("button", { name: "Close navigation", exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.locator(`[data-activity-id="${reply.id}"]`).getByRole("link").click();
+  await expect(page.getByText("A mentioned thread reply counts once", { exact: true })).toBeVisible();
+  await expect(badge()).toHaveText("1");
+  await page.getByRole("link", { name: /^Badge scope/ }).click();
+  await expect(page.getByRole("log").getByText("Badge mention", { exact: true })).toBeVisible();
+  await expect(badge()).toHaveCount(0);
+});

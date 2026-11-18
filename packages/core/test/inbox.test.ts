@@ -33,11 +33,14 @@ test("authenticated inbox updates arrive with no conversation topics; read state
     assert.equal((await client.listInbox())[0]?.count, 1);
     assert.equal((await client.listActivity()).items[0]?.id, message.id);
     assert.equal((await client.listInbox())[0]?.count, 1, "fetching Activity does not mark anything read");
+    assert.equal((await client.listInbox())[0]?.activityCount, 1);
     await client.acknowledgeRead(conversation.id, message.sequence);
     await client.acknowledgeRead(conversation.id, 0);
     assert.equal((await client.listInbox())[0]?.count, 0);
+    assert.equal((await client.listInbox())[0]?.activityCount, 0);
     const otherClient = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken, actorIdentityId: other.id });
     assert.equal((await otherClient.listInbox())[0]?.readSequence, undefined);
+    assert.equal((await otherClient.listInbox())[0]?.activityCount, 0, "own messages are not Activity notifications");
     await service.createMessage(conversation.id, { participantId: other.id, body: "Arrived after acknowledgement", to: [human.id] });
     assert.equal((await client.listInbox())[0]?.count, 1);
     const fetched = await fetch(`${server.endpoint}/identities/me/inbox?identityId=${other.id}`, { headers: {

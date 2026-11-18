@@ -347,6 +347,7 @@ export function NavigationSidebar({
   sound = "off",
   onSoundChange,
   workspaceUnread = new Map(),
+  activityUnread = 0,
   onLifecycleChange,
   pendingLifecycleConversationId,
 }: {
@@ -365,6 +366,7 @@ export function NavigationSidebar({
   sound?: NotificationSound;
   onSoundChange?(sound: NotificationSound): void;
   workspaceUnread?: ReadonlyMap<string, number>;
+  activityUnread?: number;
   onLifecycleChange?(
     conversationId: string,
     input: { state: ConversationLifecycleState; snoozedUntil?: string },
@@ -404,6 +406,10 @@ export function NavigationSidebar({
       <nav className="minu-scroll min-h-0 flex-1 overflow-y-auto p-3" aria-label="Workspaces and Conversations">
         <Link to="/app/activity" onClick={onNavigate} className="mb-3 flex items-center gap-2 rounded px-2 py-2 text-sm hover:bg-[var(--hover)]" activeProps={{ className: "bg-[var(--hover)] font-semibold" }}>
           <Bell className="h-4 w-4" aria-hidden="true" />Activity
+          {activityUnread > 0 ? <span
+            className="ml-auto min-w-5 rounded-full bg-[var(--accent)] px-1.5 text-center text-[10px] font-semibold text-white"
+            aria-label={`${activityUnread} unread Activity notification${activityUnread === 1 ? "" : "s"}`}
+          >{activityUnread}</span> : null}
         </Link>
         {items.length === 0 ? (
           <p className="px-2 py-6 text-sm text-[var(--muted)]">No Workspaces yet.</p>

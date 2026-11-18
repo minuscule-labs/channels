@@ -6,6 +6,8 @@ The first version is one Activity list, authoritative unread counts, and links t
 
 `/app/activity` lists incoming direct mentions, channel broadcasts, and replies in threads where the human authored the root or had already participated. Own messages are excluded. Participating later does not retroactively turn earlier unmentioned replies into notifications.
 
+The Activity navigation badge counts all unread Activity notifications, including those beyond the loaded page—not all unread messages. A reply that is also a mention counts once. The badge appears in desktop and mobile navigation and is hidden at zero; browsing Activity does not clear it.
+
 Each item shows its author, channel, thread-root preview where applicable, message preview and unread state. Opening it navigates to the exact Conversation/thread and its first unread message. The URL target is focused once, not again on every live update. The list has bounded, 50-item keyset pagination.
 
 Activity is projected from already-persisted messages, current membership/roster access and human read cursors. There is no separate notification queue or message fanout store. Reopening the database retains Activity without depending on successful SSE delivery. Revoked membership/roster access removes items at the next authorized read.

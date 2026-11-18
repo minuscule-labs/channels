@@ -28,7 +28,9 @@ test("durable inbox counts all messages, keeps read scopes monotonic and project
     for (let index = 0; index < 110; index++) messages.push(await service.createMessage(parent.id, {
       participantId: other.id, body: `Mention ${index}`, to: [human.id],
     }));
+    const activityCount = async () => (await service.listInbox(human.id)).reduce((sum, summary) => sum + summary.activityCount, 0);
     assert.equal((await service.listInbox(human.id)).find(s => s.conversationId === parent.id)?.count, 110);
+    assert.equal(await activityCount(), 111, "badge includes notifications beyond the first Activity page");
     const first = await service.listActivity(human.id);
     const second = await service.listActivity(human.id, first.nextCursor);
     assert.equal(first.items.length, 50);
@@ -42,6 +44,7 @@ test("durable inbox counts all messages, keeps read scopes monotonic and project
     await service.acknowledgeRead(parent.id, human.id, root.sequence); // stale tab cannot rewind
     assert.equal((await service.listInbox(human.id)).find(s => s.conversationId === parent.id)?.count, 1);
     assert.equal((await service.listInbox(human.id)).find(s => s.conversationId === thread.id)?.count, 1);
+    assert.equal(await activityCount(), 2);
     assert.equal(await storage.getCursor(parent.id, human.id), 0, "human read state must not change agent processing cursors");
     await storage.close();
     storage = await DrizzleLibSqlConversationStorage.open({ url });
@@ -50,15 +53,22 @@ test("durable inbox counts all messages, keeps read scopes monotonic and project
     assert.equal((await service.listActivity(human.id)).items[0]?.unread, true);
     await service.acknowledgeRead(thread.id, human.id, reply.sequence);
     assert.equal((await service.listInbox(human.id)).find(s => s.conversationId === thread.id)?.count, 0);
+    assert.equal(await activityCount(), 1);
     const otherRoot = await service.createMessage(parent.id, { participantId: other.id, body: "Someone else's root", to: [] });
     const joined = await service.createThread(parent.id, { actorIdentityId: human.id, rootMessageId: otherRoot.id });
     const early = await service.createMessage(joined.id, { participantId: other.id, body: "Before participation", to: [] });
+    assert.equal(await activityCount(), 1, "ordinary unread messages and unparticipated thread replies do not count");
     assert.ok(!(await service.listActivity(human.id)).items.some(item => item.id === early.id));
     await service.createMessage(joined.id, { participantId: human.id, body: "Joining", to: [] });
     const later = await service.createMessage(joined.id, { participantId: other.id, body: "After participation", to: [] });
     assert.equal((await service.listActivity(human.id)).items.find(item => item.id === later.id)?.kind, "thread-reply");
     const broadcast = await service.createMessage(parent.id, { participantId: other.id, body: "@channel Update", to: ["@conversation"] });
     assert.equal((await service.listActivity(human.id)).items.find(item => item.id === broadcast.id)?.kind, "mention");
+    const mentionedReply = await service.createMessage(joined.id, { participantId: other.id, body: "Mentioned thread reply", to: [human.id] });
+    assert.equal(await activityCount(), 4, "a reply matching both rules is counted once");
+    await service.acknowledgeRead(joined.id, human.id, mentionedReply.sequence);
+    await service.acknowledgeRead(parent.id, human.id, broadcast.sequence);
+    assert.equal(await activityCount(), 0);
     await assert.rejects(service.listActivity(human.id, "malformed"), /Invalid Activity cursor/);
     assert.equal((await service.listActivity(human.id, JSON.stringify(["9999-01-01T00:00:00.000Z", "removed-boundary"])) ).items.length, 50);
     await service.updateConversationParticipants(parent.id, { actorIdentityId: other.id, expectedRosterRevision: 1, participantIds: [other.id] });

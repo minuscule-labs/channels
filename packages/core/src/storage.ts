@@ -187,6 +187,7 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
         parentConversationId: conversation.thread?.parentConversationId, readSequence,
         latestSequence: conversation.messages.at(-1)?.sequence ?? 0,
         count: unread.length, mentionCount: unread.filter(m => m.to.includes(identityId)).length,
+        activityCount: unread.filter(message => activityKind(conversation, message, identityId)).length,
         firstUnreadSequence: unread[0]?.sequence };
     });
   }

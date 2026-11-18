@@ -170,6 +170,7 @@ export function AppShell() {
     allUnread.get(conversation.id) ?? { count: 0, mentionCount: 0 },
   ])), [allUnread, selectedConversations.data]);
   const unreadTotal = [...allUnread.values()].reduce((sum, value) => sum + value.count, 0);
+  const activityUnread = [...allUnread.values()].reduce((sum, value) => sum + (value.activityCount ?? 0), 0);
   const workspaceUnread = useMemo(() => new Map((workspaces.data ?? []).map((workspace) => [
     workspace.id,
     [...allUnread.values()]
@@ -461,6 +462,7 @@ export function AppShell() {
           selectedWorkspaceId={selectedWorkspaceId}
           onSelectWorkspace={(workspaceId) => void selectWorkspace(workspaceId)}
           workspaceUnread={workspaceUnread}
+          activityUnread={activityUnread}
           sound={sound}
           onSoundChange={currentSession.isSuccess ? changeSound : undefined}
           onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}
@@ -503,6 +505,7 @@ export function AppShell() {
             selectedWorkspaceId={selectedWorkspaceId}
             onSelectWorkspace={(workspaceId) => { void selectWorkspace(workspaceId); setNavigationOpen(false); }}
             workspaceUnread={workspaceUnread}
+            activityUnread={activityUnread}
             sound={sound}
             onSoundChange={currentSession.isSuccess ? changeSound : undefined}
             onLifecycleChange={canAdministerLifecycle ? runLifecycleChange : undefined}

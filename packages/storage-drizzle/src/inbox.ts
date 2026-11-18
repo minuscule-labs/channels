@@ -25,14 +25,16 @@ export async function listInbox(client: Client, identityId: string): Promise<Con
     r.sequence AS read_sequence, c.next_sequence - 1 AS latest_sequence,
     sum(CASE WHEN ${unread} THEN 1 ELSE 0 END) AS count,
     sum(CASE WHEN ${unread} AND ${mention} THEN 1 ELSE 0 END) AS mention_count,
+    sum(CASE WHEN ${unread} AND ${relevant} THEN 1 ELSE 0 END) AS activity_count,
     min(CASE WHEN ${unread} THEN m.sequence END) AS first_unread
     FROM conversations c ${access} LEFT JOIN messages m ON m.conversation_id = c.id
-    AND m.sequence > coalesce(r.sequence, 0) AND m.participant_id != :identity GROUP BY c.id`,
+    AND m.sequence > coalesce(r.sequence, 0) AND m.participant_id != :identity
+    LEFT JOIN messages root ON root.id = c.root_message_id GROUP BY c.id`,
     args: { identity: identityId } });
   return rows.map(row => ({ conversationId: String(row.id), workspaceId: String(row.workspace_id),
     parentConversationId: row.parent_conversation_id == null ? undefined : String(row.parent_conversation_id),
     readSequence: row.read_sequence == null ? undefined : Number(row.read_sequence),
-    latestSequence: Number(row.latest_sequence), count: Number(row.count), mentionCount: Number(row.mention_count),
+    latestSequence: Number(row.latest_sequence), count: Number(row.count), mentionCount: Number(row.mention_count), activityCount: Number(row.activity_count),
     firstUnreadSequence: row.first_unread == null ? undefined : Number(row.first_unread) }));
 }
 
