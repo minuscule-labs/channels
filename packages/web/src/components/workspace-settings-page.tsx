@@ -24,7 +24,7 @@ export function WorkspaceSettingsLayout({ children }: { children: ReactNode }) {
   const { workspaceId } = useParams({ strict: false });
   const pathname = useRouterState({ select: state => state.location.pathname.replace(/\/$/, "") });
   const selected = workspaceSettingsSections.find(({ to, suffix }) => {
-    const target = to.replace("$workspaceId", workspaceId ?? "");
+    const target = to.replace("$workspaceId", encodeURIComponent(workspaceId ?? ""));
     return pathname === target || (suffix !== "" && pathname.startsWith(`${target}/`));
   }) ?? workspaceSettingsSections[0];
   return <div className="workspace-settings flex min-h-0 min-w-0 flex-1 flex-col pt-9 md:pt-0">

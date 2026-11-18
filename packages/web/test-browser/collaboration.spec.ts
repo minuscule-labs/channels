@@ -1,3 +1,4 @@
+import { canonicalBrowserPath, encodeBrowserId, decodeBrowserId } from "@minu/channels-core/browser-urls";
 import { openParticipantSection } from "./participant-menu";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { mockActionRequests } from "./agent-action-fixtures";
@@ -79,7 +80,7 @@ test("redirects an authenticated legacy Channel link to its Conversation", async
 
   await launchAuthenticated(page, request, `/app/workspaces/${workspaceId}/channels/${conversationId}`);
 
-  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${conversationId}$`));
+  await expect(page).toHaveURL(new RegExp(`${canonicalBrowserPath(`/app/workspaces/${workspaceId}/conversations/${conversationId}`)}$`));
   await expect(page.getByLabel("Live updates live")).toBeVisible();
 });
 
@@ -1076,7 +1077,7 @@ test("creates and renames a Workspace with a private source path", async ({ page
 
   await expect(page.getByRole("heading", { name: "#General", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Browser Workspace", exact: true })).toBeVisible();
-  const createdWorkspaceId = new URL(page.url()).pathname.match(/\/workspaces\/([^/]+)/)?.[1];
+  const createdWorkspaceId = decodeBrowserId(new URL(page.url()).pathname.match(/\/workspaces\/([^/]+)/)?.[1] ?? "", "workspace");
   expect(createdWorkspaceId).toBeTruthy();
   await expect.poll(() => page.evaluate(async (workspaceId) => {
     const response = await fetch(`/local/workspaces/${workspaceId}/config`);
@@ -1127,7 +1128,7 @@ test("creates named Conversations and revisioned participant rosters", async ({ 
   const createResponse = await createResponsePromise;
   expect(createResponse.ok()).toBe(true);
   const { conversation } = await createResponse.json() as { conversation: { id: string } };
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(conversation.id, "conversation")}$`));
   await expect(page.getByRole("heading", { name: "#roster-administration" })).toBeVisible();
   const startResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "POST"
@@ -1336,7 +1337,7 @@ test("uses accessible mobile navigation and participant drawers", async ({ page,
   await expect(navigation).toBeVisible();
   await navigation.getByRole("link", { name: /browser-collaboration/ }).click();
   await expect(navigation).toBeHidden();
-  await expect(page).toHaveURL(new RegExp(`/app/workspaces/${workspaceId}/conversations/${conversationId}$`));
+  await expect(page).toHaveURL(new RegExp(`${canonicalBrowserPath(`/app/workspaces/${workspaceId}/conversations/${conversationId}`)}$`));
 
   await page.getByRole("button", { name: "Show participants" }).click();
   const participants = page.getByRole("dialog", { name: "Participants" });
@@ -1358,7 +1359,7 @@ test("moves a Conversation through Snoozed, Archive, and Reopen navigation", asy
   await dialog.getByLabel("Conversation name").fill(name);
   await dialog.getByRole("button", { name: "Create Conversation" }).click();
   await expect(page.getByRole("heading", { name: `#${name}` })).toBeVisible();
-  const conversationId = new URL(page.url()).pathname.match(/\/conversations\/([^/]+)$/)?.[1];
+  const conversationId = decodeBrowserId(new URL(page.url()).pathname.match(/\/conversations\/([^/]+)$/)?.[1] ?? "", "conversation");
   expect(conversationId).toBeTruthy();
 
   const row = page.getByRole("listitem").filter({ has: page.getByRole("link", { name, exact: true }) });
@@ -1427,7 +1428,7 @@ test("preloads agent pages on intent before navigation", async ({ page, request 
   const agentsLink = page.getByRole("link", { name: "Agents", exact: true });
   await agentsLink.hover();
   await expect.poll(() => moduleRequests.length).toBeGreaterThan(0);
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(conversation.id, "conversation")}$`));
   await agentsLink.click();
   await expect(page.getByRole("heading", { name: "Workspace agents", exact: true })).toBeVisible();
 });

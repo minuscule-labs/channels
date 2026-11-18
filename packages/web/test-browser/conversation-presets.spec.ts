@@ -1,3 +1,4 @@
+import { canonicalBrowserPath, encodeBrowserId } from "@minu/channels-core/browser-urls";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
 const conversationsBase = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
@@ -16,7 +17,7 @@ async function presetFixture(page: Page, request: APIRequestContext) {
   }, { path, method, body });
   expect((await local(`/local/workspaces/${workspace.id}/config`, "PATCH", { rootUri: "/tmp" })).status).toBe(200);
   expect((await local(`/local/workspaces/${workspace.id}/agents/${agent.identityId}/config`, "PATCH", { runtimeAdapter: "pi", status: "active" })).status).toBe(200);
-  const root = `/app/workspaces/${workspace.id}/settings/presets`;
+  const root = canonicalBrowserPath(`/app/workspaces/${workspace.id}/settings/presets`);
   return { workspace, local, agent, root, owner: members.find(({ mentionHandle }: { mentionHandle: string }) => mentionHandle === "david") };
 }
 
@@ -121,7 +122,7 @@ test("workspace sidebar, page-scoped Conversation tabs, preset editor and creati
   const { conversation } = await response.json();
   expect(conversation.id).toMatch(/^conversation_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
   expect(conversation.folderId).toBe(filingFolder.id);
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(conversation.id, "conversation")}$`));
   const original = (await local(`/local/conversations/${conversation.id}/creation-setup`)).body.setup;
   expect(original).toMatchObject({ participants: [{ identityId: agent.identityId }], workingFolder: { relativePath: "." }, guidance: "Check in after discovery." });
   for (const field of ["model", "reasoningLevel", "turnTimeoutMs", "idleSleepTimeoutMs"]) expect(original).not.toHaveProperty(field);
@@ -180,7 +181,7 @@ test("Conversation drafts use UUIDv7, retain ids across retries, and reset only 
   expect(submittedIds[2]).toMatch(/^conversation_[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}$/);
   expect(submittedIds[2]).not.toBe(submittedIds[0]);
   expect(conversation.id).toBe(submittedIds[2]);
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(conversation.id, "conversation")}$`));
   expect((await local(`/local/conversations/${conversation.id}/creation-setup`)).status).toBe(200);
   const after = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json();
   expect(after.conversations).toHaveLength(before + 1);
@@ -342,7 +343,7 @@ test("creation preset selection copies participants and instructions without aut
   page.on("request", request => {
     if (request.url().includes(path) && request.method() !== "GET") writes.push(request.method());
   });
-  const destination = `/app/workspaces/${workspace.id}/conversations/new`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/conversations/new`);
   await page.goto(destination);
   const creation = page.getByRole("main", { name: "Create a Conversation", exact: true });
   const picker = creation.getByLabel("Preset (optional)", { exact: true });
@@ -366,7 +367,7 @@ test("creation preset selection copies participants and instructions without aut
   const response = await created;
   expect(response.ok()).toBe(true);
   const { conversation } = await response.json();
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(conversation.id, "conversation")}$`));
   expect((await local(`/local/conversations/${conversation.id}/creation-setup`)).body.setup).toMatchObject(setup);
   expect((await local(path)).body).toEqual(before);
   expect(writes).toEqual([]);

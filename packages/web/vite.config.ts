@@ -1,3 +1,4 @@
+import { isBrowserNavigation } from "@minu/channels-core/browser-urls";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, loadEnv } from "vite";
@@ -9,6 +10,10 @@ export default defineConfig(({ mode }) => {
   const serviceToken = env.MINU_CHANNELS_SERVICE_TOKEN;
   const conversationProxy = {
     target,
+    bypass(request: { url?: string; method?: string; headers: { accept?: string; "sec-fetch-dest"?: string | string[] } }) {
+      const pathname = new URL(request.url ?? "/", "http://vite.local").pathname;
+      return isBrowserNavigation(pathname, request.method, request.headers.accept, String(request.headers["sec-fetch-dest"] ?? "")) ? "/index.html" : undefined;
+    },
     changeOrigin: true,
     headers: serviceToken ? { authorization: `Bearer ${serviceToken}` } : undefined,
     configure(proxy: { on(event: "proxyReq", listener: (request: { removeHeader(name: string): void }) => void): void }) {

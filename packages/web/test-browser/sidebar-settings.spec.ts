@@ -1,3 +1,4 @@
+import { canonicalBrowserPath, encodeBrowserId } from "@minu/channels-core/browser-urls";
 import type { ConversationMetadata } from "@minu/channels-core/types";
 import { expect, test } from "@playwright/test";
 
@@ -7,7 +8,7 @@ const fixtureBase = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58
 test("notification sound remains editable without Workspace configuration access", async ({ page, request }) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json();
   const workspace = workspaces.find(({ name }: { name: string }) => name === "Browser Test")!;
-  const destination = `/app/workspaces/${workspace.id}/settings`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/settings`);
   const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}&actor=member`)).json();
   await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
   const settings = page.getByRole("main", { name: "Workspace Settings" });
@@ -25,7 +26,7 @@ for (const mobile of [false, true]) {
     const workspace = workspaces.find(({ name }: { name: string }) => name === "Browser Test")!;
     const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json() as { conversations: ConversationMetadata[] };
     const primary = conversations.find(({ name }) => name === "browser-collaboration")!;
-    const destination = `/app/workspaces/${workspace.id}/conversations/${primary.id}`;
+    const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/conversations/${primary.id}`);
     const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}`)).json();
     await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
     if (!mobile) {
@@ -113,7 +114,7 @@ for (const mobile of [false, true]) {
       await page.getByRole("button", { name: "Open navigation" }).click();
     }
     await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
-    await expect(page).toHaveURL(new RegExp(`${destination}$`));
+    await expect(page).toHaveURL(new RegExp(`${canonicalBrowserPath(destination)}$`));
     await expect(page.getByRole("heading", { name: `#${primary.name}`, exact: true })).toBeVisible();
     if (mobile) await page.getByRole("button", { name: "Open navigation" }).click();
     await page.getByRole("button", { name: `Conversation actions for ${primary.name}`, exact: true }).click();
@@ -125,7 +126,7 @@ for (const mobile of [false, true]) {
 test("workspace navigation supports all sections, deep links and browser history", async ({ page, request }, info) => {
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json();
   const workspace = workspaces.find(({ name }: { name: string }) => name === "Browser Test")!;
-  const root = `/app/workspaces/${workspace.id}/settings`;
+  const root = canonicalBrowserPath(`/app/workspaces/${workspace.id}/settings`);
   const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(`${root}/skills`)}`)).json();
   await page.goto(launchUrl);
   const navigation = page.getByRole("navigation", { name: "Workspace settings", exact: true });
@@ -134,7 +135,7 @@ test("workspace navigation supports all sections, deep links and browser history
   for (const [label, target] of [["General", root], ["Agents", `/app/workspaces/${workspace.id}/agents`], ["Conversation presets", `${root}/presets`], ["Defaults & timeouts", `${root}/defaults`], ["Instructions", `${root}/instructions`], ["Skills", `${root}/skills`]]) {
     const link = navigation.getByRole("link", { name: label === "Conversation presets" ? /Conversation presets/ : label, exact: true });
     await link.click();
-    await expect(page).toHaveURL(new RegExp(`${target}$`));
+    await expect(page).toHaveURL(new RegExp(`${canonicalBrowserPath(target)}$`));
     await expect(link).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("main", { name: "Workspace Settings", exact: true }).locator(":scope > div > header > div > p")).toHaveText(label);
     await expect(navigation.locator('[aria-current="page"]')).toHaveCount(1);
@@ -159,7 +160,7 @@ test("Back to workspace uses valid conversation fallbacks and retains settings o
   const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json();
   const workspace = workspaces.find(({ name }: { name: string }) => name === "Browser Test")!;
   const { conversations } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/conversations`)).json() as { conversations: ConversationMetadata[] };
-  const destination = `/app/workspaces/${workspace.id}/settings`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/settings`);
   const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}`)).json();
   await page.goto(launchUrl);
   await expect(page.getByRole("button", { name: "Back to workspace", exact: true })).toBeEnabled();
@@ -168,10 +169,10 @@ test("Back to workspace uses valid conversation fallbacks and retains settings o
   await page.route(lookup, route => route.fulfill({ status: 503, json: { error: "Conversation lookup unavailable" } }));
   await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Conversation lookup unavailable");
-  await expect(page).toHaveURL(new RegExp(`${destination}$`));
+  await expect(page).toHaveURL(new RegExp(`${canonicalBrowserPath(destination)}$`));
   await page.unroute(lookup);
   await page.getByRole("button", { name: "Back to workspace", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversations[0]!.id}$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(conversations[0]!.id, "conversation")}$`));
   await expect(page.getByRole("navigation", { name: "Workspace settings", exact: true })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Workspaces and Conversations", exact: true })).toBeVisible();
 
@@ -195,7 +196,7 @@ test("Workspace access-role controls are limited to owners editing humans", asyn
   const { members } = await (await request.get(`${conversationsBase}/workspaces/${workspace.id}/members`)).json();
   const owner = members.find(({ mentionHandle }: { mentionHandle: string }) => mentionHandle === "david")!;
   const member = members.find(({ mentionHandle }: { mentionHandle: string }) => mentionHandle === "member")!;
-  const destination = `/app/workspaces/${workspace.id}/settings/people`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/settings/people`);
   const launch = async (actor: "owner" | "member") => {
     const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}&actor=${actor}`)).json();
     await page.goto(launchUrl, { waitUntil: "domcontentloaded" });

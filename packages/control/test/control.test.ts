@@ -1507,6 +1507,22 @@ test("local production web server serves the SPA and proxies product APIs", asyn
     const spa = await fetch(`${web.endpoint}/app/workspaces/workspace/conversations/conversation`);
     assert.equal(spa.status, 200);
     assert.match(await spa.text(), /MinuChannels production/);
+    const pagePath = "/workspaces/550e8400e29b41d4a716446655440000/conversations/01900000000070008000000000000001";
+    for (const path of [pagePath, `${pagePath}/settings`, "/workspaces/workspace_legacy/settings/skills/new"]) {
+      const html = await fetch(`${web.endpoint}${path}`, { headers: { accept: "text/html", "sec-fetch-dest": "document" } });
+      assert.match(html.headers.get("content-type") ?? "", /text\/html/);
+      assert.match(await html.text(), /MinuChannels production/);
+      // The same URL remains API traffic for non-navigation reads and writes.
+      for (const method of ["GET", "POST"]) {
+        const api = await fetch(`${web.endpoint}${path}`, { method, headers: { accept: "application/json" } });
+        assert.equal(api.status, 200);
+        assert.deepEqual(await api.json(), { source: "conversations", path });
+      }
+    }
+    for (const path of ["/workspaces", "/workspaces/workspace_legacy/conversations", "/conversations/channel_legacy/events", "/conversations/channel_legacy/attachments/image"]) {
+      const api = await fetch(`${web.endpoint}${path}`, { headers: { accept: "text/html" } });
+      assert.deepEqual(await api.json(), { source: "conversations", path });
+    }
     const asset = await fetch(`${web.endpoint}/assets/app.js`);
     assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
     assert.match(await asset.text(), /console\.log/);

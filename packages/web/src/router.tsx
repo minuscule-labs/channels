@@ -1,4 +1,5 @@
-import { createRootRoute, createRoute, createRouter, useNavigate, useParams } from "@tanstack/react-router";
+import { canonicalBrowserPath, toInternalBrowserPath, toPublicBrowserPath } from "@minu/channels-core/browser-urls";
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect, useState, type ComponentType } from "react";
 import { MessageSquare } from "lucide-react";
 import type * as AgentManagementModule from "./components/agent-management-page";
@@ -119,25 +120,6 @@ const conversationRoute = createRoute({
   component: ConversationPage,
 });
 
-function LegacyConversationRedirect() {
-  const { workspaceId, conversationId } = useParams({ from: "/app/workspaces/$workspaceId/channels/$conversationId" });
-  const navigate = useNavigate();
-  useEffect(() => {
-    void navigate({
-      to: "/app/workspaces/$workspaceId/conversations/$conversationId",
-      params: { workspaceId, conversationId },
-      replace: true,
-    });
-  }, [conversationId, navigate, workspaceId]);
-  return null;
-}
-
-const legacyConversationRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/app/workspaces/$workspaceId/channels/$conversationId",
-  component: LegacyConversationRedirect,
-});
-
 const WorkspaceSettingsPage = lazy(() => import("./components/workspace-settings-page").then((module) => ({ default: module.WorkspaceSettingsPage })));
 const WorkspaceSkillPage = lazy(() => import("./components/workspace-skill-page").then(module => ({ default: module.WorkspaceSkillPage })));
 const ConversationPresetsPage = lazy(() => import("./components/conversation-presets-page").then((module) => ({ default: module.ConversationPresetsPage })));
@@ -163,8 +145,22 @@ const settingsRoutes = [
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/conversations/$conversationId/settings", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationSettingsPage /></Suspense> }),
 ];
 
-const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
-export const router = createRouter({ routeTree });
+const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute]);
+// Replace old copied/bookmarked URLs before the first route load, retaining the
+// exact query, fragment and history state. Router rewrites handle all later links.
+if (typeof window !== "undefined") {
+  const path = canonicalBrowserPath(window.location.pathname);
+  if (path !== window.location.pathname) {
+    window.history.replaceState(window.history.state, "", path + window.location.search + window.location.hash);
+  }
+}
+export const router = createRouter({
+  routeTree,
+  rewrite: {
+    input: ({ url }) => { url.pathname = toInternalBrowserPath(url.pathname); return url; },
+    output: ({ url }) => { url.pathname = toPublicBrowserPath(url.pathname); return url; },
+  },
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

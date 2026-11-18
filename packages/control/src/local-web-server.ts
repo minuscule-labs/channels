@@ -1,3 +1,4 @@
+import { isBrowserNavigation } from "@minu/channels-core/browser-urls";
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage, type ServerResponse } from "node:http";
@@ -216,7 +217,8 @@ export async function createLocalWebServer(
         response.end(`${JSON.stringify({ error: "MinuChannels is restarting" })}\n`);
         return;
       }
-      const target = targetFor(url.pathname, options);
+      const target = isBrowserNavigation(url.pathname, request.method, request.headers.accept, request.headers["sec-fetch-dest"] as string | undefined)
+        ? undefined : targetFor(url.pathname, options);
       if (target === options.conversationsEndpoint) {
         const session = options.authenticateBrowser(request.headers.cookie);
         if (!session) {

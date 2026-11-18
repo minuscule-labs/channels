@@ -1,3 +1,4 @@
+import { canonicalBrowserPath } from "@minu/channels-core/browser-urls";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import type { LocalAuthoredDocument } from "@minu/channels-control/contracts";
 
@@ -18,7 +19,7 @@ async function setup(page: Page, request: APIRequestContext, suffix: string) {
     expect((await request.post(`${api}/workspaces/${workspace.id}/members`, { data: { identityId, mentionHandle, accessRole } })).ok()).toBe(true);
   }
   const { conversation } = await (await request.post(`${api}/conversations`, { data: { workspaceId: workspace.id, name: `authored-${suffix}`, actorIdentityId: owner, participantIds: [owner, agent] } })).json() as { conversation: { id: string; name: string } };
-  const destination = `/app/workspaces/${workspace.id}/conversations/${conversation.id}`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/conversations/${conversation.id}`);
   const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(destination)}`)).json() as { launchUrl: string };
   await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
   async function call(path: string, method = "GET", body?: unknown) {
@@ -177,7 +178,7 @@ test("Workspace Skills opens a separate editor and removes through archive on mo
   const created = await f.call(f.library, "POST", { action: "commit", kind: "skill", name: "Summarize", description, content: "PRIVATE_TABLE_BODY" });
   expect(created.status).toBe(201);
   const id = created.body.id;
-  const root = `/app/workspaces/${f.workspace.id}/settings/skills`;
+  const root = canonicalBrowserPath(`/app/workspaces/${f.workspace.id}/settings/skills`);
   await page.goto(root);
   const panel = page.getByRole("region", { name: "Authored skills", exact: true });
   const table = page.getByRole("table", { name: "Skills", exact: true });
@@ -228,7 +229,7 @@ for (const action of ["create", "save", "archive"] as const) {
     const original = action === "create" ? undefined : (await f.call(f.library, "POST", {
       action: "commit", kind: "skill", name: "Original", description: "Original description", content: "Original body",
     })).body as LocalAuthoredDocument | undefined;
-    const list = `/app/workspaces/${f.workspace.id}/settings/skills`;
+    const list = canonicalBrowserPath(`/app/workspaces/${f.workspace.id}/settings/skills`);
     await page.goto(`${list}/${original?.id ?? "new"}`);
     const editor = page.getByLabel("Skill editor", { exact: true });
     await expect(editor).toBeVisible();

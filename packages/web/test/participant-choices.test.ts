@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isConversationParticipantChoice } from "../src/lib/participants";
+import { isConversationParticipantChoice, participantDiagnosticsHref } from "../src/lib/participants";
 
 const identities = [
   { id: "current-human", type: "human" },
@@ -7,6 +7,17 @@ const identities = [
   { id: "agent", type: "agent" },
   { id: "service", type: "service" },
 ] as const;
+
+describe("participant diagnostic URLs", () => {
+  it("uses compact browser IDs and preserves issue context and legacy channel IDs", () => {
+    const payload = "550e8400e29b41d4a716446655440000";
+    expect(participantDiagnosticsHref(`workspace_${payload}`, `conversation_${payload}`, "identity_legacy", {
+      triggerSequence: 42, failedAt: "2026-11-11T12:00:00Z",
+    })).toBe(`/workspaces/${payload}/conversations/${payload}/participants/identity_legacy/diagnostics?triggerSequence=42&failedAt=2026-11-11T12%3A00%3A00Z`);
+    expect(participantDiagnosticsHref("workspace_legacy", `channel_${payload}`, "identity_legacy"))
+      .toBe(`/workspaces/workspace_legacy/conversations/channel_${payload}/participants/identity_legacy/diagnostics`);
+  });
+});
 
 describe("agent-first Conversation participant choices", () => {
   it("offers agents and the current human for new Conversations", () => {

@@ -43,7 +43,7 @@ export function WorkspaceSettingsSidebar({ workspaceId, pathname, onBack, mobile
     </div>
     <nav aria-label="Workspace settings" className="minu-scroll min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
       {workspaceSettingsSections.filter(entry => !("hidden" in entry && entry.hidden)).map(({ label, icon: Icon, to, suffix }) => {
-        const target = to.replace("$workspaceId", workspaceId);
+        const target = to.replace("$workspaceId", encodeURIComponent(workspaceId));
         const active = path === target || (suffix !== "" && path.startsWith(`${target}/`));
         return <Link key={to} to={to} params={{ workspaceId }} activeOptions={{ exact: true }} aria-current={active ? "page" : undefined} onClick={onNavigate}
           className={`flex min-h-10 items-center gap-2 rounded-md px-3 py-2 text-sm ${active ? "bg-[var(--selected)] font-semibold text-[var(--text)]" : "text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)]"}`}>

@@ -1,3 +1,4 @@
+import { conversationBrowserPath } from "@minu/channels-core/browser-urls";
 import {
   ConversationClient,
   ConversationService,
@@ -262,7 +263,7 @@ export async function createLocalReviewApp(
       conversationId: conversation.id,
       humanIdentityId: human.id,
       issueBrowserLaunchUrl: () => controlDaemon!.issueBrowserLaunchUrl(
-        `/app/workspaces/${workspace.id}/conversations/${conversation.id}`,
+        conversationBrowserPath(workspace.id, conversation.id),
       ),
       authenticateBrowser: (cookieHeader) => controlDaemon!.authenticateBrowser(cookieHeader),
       async close() {

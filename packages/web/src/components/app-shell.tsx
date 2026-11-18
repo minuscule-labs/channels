@@ -1,6 +1,6 @@
 import type { ConversationMessage, ConversationMetadata, EffectiveConversationLifecycle } from "@minu/channels-core/types";
 import { useMutation, useQueries, useQuery, useQueryClient, type Query } from "@tanstack/react-query";
-import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
 import { Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
@@ -20,6 +20,7 @@ import { WorkspaceSettingsSidebar } from "./workspace-settings-sidebar";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const routeParams = useParams({ strict: false });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -36,8 +37,8 @@ export function AppShell() {
     setCollapsedFolders(current => current[key] === collapsed ? current : { ...current, [key]: collapsed });
   }, []);
   const workspaces = useQuery({ queryKey: queryKeys.workspaces(), queryFn: () => conversations.listWorkspaces() });
-  const routeWorkspaceId = pathname.match(/\/app\/workspaces\/([^/]+)/)?.[1];
-  const settingsWorkspaceId = pathname.match(/^\/app\/workspaces\/([^/]+)\/(?:settings|agents)(?:\/|$)/)?.[1];
+  const routeWorkspaceId = routeParams.workspaceId;
+  const settingsWorkspaceId = /^\/app\/workspaces\/[^/]+\/(?:settings|agents)(?:\/|$)/.test(pathname) ? routeWorkspaceId : undefined;
   const selectedWorkspaceId = routeWorkspaceId
     ?? (workspaces.data ?? []).find((workspace) => workspace.id === localStorage.getItem("minu-channels:last-workspace"))?.id
     ?? workspaces.data?.[0]?.id;
@@ -123,7 +124,7 @@ export function AppShell() {
     lifecycleAction.reset();
     lifecycleAction.mutate({ conversationId, ...input });
   };
-  const routeConversationId = pathname.match(/\/conversations\/([^/]+)/)?.[1];
+  const routeConversationId = routeParams.conversationId;
   const selectedConversationId = routeConversationId === "new" ? undefined : routeConversationId;
   const activeConversationId = /\/conversations\/[^/]+\/?$/.test(pathname) ? selectedConversationId : undefined;
   const observedConversations = useMemo(() => {
@@ -145,7 +146,7 @@ export function AppShell() {
       staleTime: Infinity,
     })),
   });
-  const activeAgentsWorkspaceId = pathname.match(/\/workspaces\/([^/]+)\/agents(?:\/|$)/)?.[1];
+  const activeAgentsWorkspaceId = /\/workspaces\/[^/]+\/agents(?:\/|$)/.test(pathname) ? routeWorkspaceId : undefined;
   const allUnread = useMemo(() => {
     const result = new Map<string, { count: number; mentionCount: number }>();
     const identityId = currentSession.data?.identityId;

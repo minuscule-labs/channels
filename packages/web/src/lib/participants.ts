@@ -1,3 +1,4 @@
+import { conversationBrowserPath } from "@minu/channels-core/browser-urls";
 import type { Identity, Participant } from "@minu/channels-core/types";
 import { shortId } from "./messages";
 
@@ -19,7 +20,7 @@ export function participantLabel(participant: Participant | undefined, identityI
 
 export function participantDiagnosticsHref(workspaceId: string, conversationId: string, identityId: string, issue?: { triggerSequence: number; failedAt: string }): string {
   const search = issue ? `?triggerSequence=${issue.triggerSequence}&failedAt=${encodeURIComponent(issue.failedAt)}` : "";
-  return `/app/workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(conversationId)}/participants/${encodeURIComponent(identityId)}/diagnostics${search}`;
+  return `${conversationBrowserPath(workspaceId, conversationId)}/participants/${encodeURIComponent(identityId)}/diagnostics${search}`;
 }
 
 export function participantHandle(participant: Participant | undefined, identityId: string): string {

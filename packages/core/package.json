@@ -12,6 +12,10 @@
       "types": "./dist/src/client.d.ts",
       "default": "./dist/src/client.js"
     },
+    "./browser-urls": {
+      "types": "./dist/src/browser-urls.d.ts",
+      "default": "./dist/src/browser-urls.js"
+    },
     "./ids": {
       "types": "./dist/src/ids.d.ts",
       "default": "./dist/src/ids.js"

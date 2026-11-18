@@ -1,3 +1,4 @@
+import { canonicalBrowserPath, encodeBrowserId } from "@minu/channels-core/browser-urls";
 import { openParticipantSection } from "./participant-menu";
 import type { LocalConversationAgent } from "@minu/channels-control/contracts";
 import type { ConversationMetadata } from "@minu/channels-core/types";
@@ -30,7 +31,7 @@ function agentView(data: Fixture, state: LocalConversationAgent["state"] = "idle
   };
 }
 async function launch(page: Page, request: APIRequestContext, data: Fixture, actor = "owner") {
-  const destination = `/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${data.workspaceId}/conversations/${data.primary.id}`);
   const { launchUrl } = await (await request.get(`${fixtureBase}/control-launch?destination=${encodeURIComponent(destination)}&actor=${actor}`)).json() as { launchUrl: string };
   await page.goto(launchUrl, { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: `#${data.primary.name}`, exact: true })).toBeVisible();
@@ -291,8 +292,8 @@ test("participant rail minimizes, keeps avatar popups usable, and remembers its 
   await expect(avatar).toBeFocused();
   await page.reload();
   await expect(sidebar).toHaveAttribute("data-minimized", "true");
-  await page.locator(`a[href="/app/workspaces/${data.workspaceId}/conversations/${data.alternate.id}"]`).first().click();
-  await expect(page).toHaveURL(new RegExp(`/conversations/${data.alternate.id}$`));
+  await page.locator(`a[href="${canonicalBrowserPath(`/app/workspaces/${data.workspaceId}/conversations/${data.alternate.id}`)}"]`).first().click();
+  await expect(page).toHaveURL(new RegExp(`/conversations/${encodeBrowserId(data.alternate.id, "conversation")}$`));
   await expect(sidebar).toHaveAttribute("data-minimized", "true");
   await page.getByRole("button", { name: "Expand participants" }).click();
   await expect(sidebar).toHaveAttribute("data-minimized", "false");

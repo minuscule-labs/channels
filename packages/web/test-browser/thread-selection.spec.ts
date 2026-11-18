@@ -1,3 +1,4 @@
+import { canonicalBrowserPath, encodeBrowserId } from "@minu/channels-core/browser-urls";
 import type { ConversationMetadata, ConversationThread } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type APIResponse, type Page } from "@playwright/test";
 
@@ -29,7 +30,7 @@ async function setup(request: APIRequestContext, page: Page) {
     channels.push(conversation);
   }
   const [a, b] = channels as [ConversationMetadata, ConversationMetadata];
-  const path = (channel: ConversationMetadata) => `/app/workspaces/${workspace.id}/conversations/${channel.id}`;
+  const path = (channel: ConversationMetadata) => canonicalBrowserPath(`/app/workspaces/${workspace.id}/conversations/${channel.id}`);
   const key = (channel: ConversationMetadata, identityId = owner.id) => `minu.conversations.open-thread.${workspace.id}.${channel.id}.${identityId}`;
   const destination = path(a);
   const { launchUrl } = await json<{ launchUrl: string }>(request.get(`${fixture}/control-launch?destination=${encodeURIComponent(destination)}`));
@@ -39,7 +40,7 @@ async function setup(request: APIRequestContext, page: Page) {
     a, b, owner, path, key,
     async navigate(channel: ConversationMetadata) {
       await page.locator(`a[href="${path(channel)}"]:visible`).first().click();
-      await expect(page).toHaveURL(new RegExp(`${channel.id}$`));
+      await expect(page).toHaveURL(new RegExp(`${encodeBrowserId(channel.id, "conversation")}$`));
       await expect(page.getByRole("heading", { name: `#${channel.name}`, exact: true })).toBeVisible();
     },
     async open(channel: ConversationMetadata) {

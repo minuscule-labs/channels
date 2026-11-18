@@ -1,3 +1,4 @@
+import { canonicalBrowserPath, decodeBrowserId, encodeBrowserId } from "@minu/channels-core/browser-urls";
 import type { ConversationFolder, ConversationMetadata, Workspace, WorkspaceMember } from "@minu/channels-core/types";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
@@ -22,7 +23,7 @@ async function seed(request: APIRequestContext, name: string) {
     const response = await request.patch(`${api}/conversations/${id}/folder`, { data: { actorIdentityId: ownerId, folderId } });
     expect(response.ok()).toBe(true);
   };
-  const destination = `/app/workspaces/${workspace.id}/conversations/${conversation.id}`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/conversations/${conversation.id}`);
   return { workspace, ownerId, agentId, conversation, folder, assign, destination };
 }
 
@@ -73,7 +74,7 @@ test("folder create/rename/create-in-folder/move/unfile persist, retain failures
   await expect(page.getByRole("heading", { name: "#folder-flow-created", exact: true })).toBeVisible();
   await expect(group(page, "Folder delivery").getByRole("link", { name: "folder-flow-created", exact: true })).toBeVisible();
   const url = page.url();
-  const id = new URL(url).pathname.split("/").at(-1)!;
+  const id = decodeBrowserId(new URL(url).pathname.split("/").at(-1)!, "conversation");
   const actions = page.getByRole("button", { name: "Conversation actions for folder-flow-created", exact: true });
   const failed = await move(page, "folder-flow-created", "");
   const pattern = `**/conversations/${id}/folder`;
@@ -147,13 +148,13 @@ test("active/background moves discover unknown folders, preserve unread activity
   for (const [body, to] of [["Folder unread mention", [f.ownerId]], ["Folder unread message", []]] as const) {
     expect((await request.post(`${api}/conversations/${background.id}/messages`, { data: { participantId: f.agentId, body, to } })).ok()).toBe(true);
   }
-  const backgroundLink = page.locator(`nav a[href$="/conversations/${background.id}"]`);
+  const backgroundLink = page.locator(`nav a[href$="/conversations/${encodeBrowserId(background.id, "conversation")}"]`);
   await expect(backgroundLink.getByLabel(/2 unread messages/)).toBeVisible();
   const titleBefore = await page.title();
   const unknown = await f.folder("Sync unknown background");
   const openedBeforeMove = (await (await request.get(`${fixture}/stream-metrics`)).json()).opened as number;
   await f.assign(background.id, unknown.id);
-  await expect(group(page, unknown.name).locator(`a[href$="/conversations/${background.id}"]`)).toBeVisible();
+  await expect(group(page, unknown.name).locator(`a[href$="/conversations/${encodeBrowserId(background.id, "conversation")}"]`)).toBeVisible();
   expect((await (await request.get(`${fixture}/stream-metrics`)).json()).opened).toBe(openedBeforeMove);
   const backgroundToggle = page.getByRole("button", { name: `Toggle folder ${unknown.name}`, exact: true });
   await backgroundToggle.click();
@@ -162,7 +163,7 @@ test("active/background moves discover unknown folders, preserve unread activity
   const activeFolder = await f.folder("Sync unknown active");
   await page.evaluate(({ ownerId, workspaceId, folderId }) => localStorage.setItem(`minu-channels:folder-collapsed:${ownerId}:${workspaceId}:${folderId}`, "true"), { ownerId: f.ownerId, workspaceId: f.workspace.id, folderId: activeFolder.id });
   await f.assign(f.conversation.id, activeFolder.id);
-  await expect(group(page, activeFolder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toBeVisible();
+  await expect(group(page, activeFolder.name).locator(`a[href$="/conversations/${encodeBrowserId(f.conversation.id, "conversation")}"]`)).toBeVisible();
   expect(new URL(page.url()).pathname).toBe(f.destination);
   const peer = await context.newPage();
   try {
@@ -228,7 +229,7 @@ test("delayed background metadata cannot revert a newer assignment or notificati
     }
     await route.fulfill({ response, json: payload });
   });
-  const link = `a[href$="/conversations/${background.id}"]`;
+  const link = `a[href$="/conversations/${encodeBrowserId(background.id, "conversation")}"]`;
   const openedBefore = (await (await request.get(`${fixture}/stream-metrics`)).json()).opened;
   try {
     await f.assign(background.id, first.id);
@@ -290,7 +291,7 @@ test("compact folder row menus preselect filing and focus Workspace rename on mo
   await create.getByLabel("Conversation name").fill("folder-menu-created");
   await create.getByRole("button", { name: "Create Conversation", exact: true }).click();
   await expect(page.getByRole("heading", { name: "#folder-menu-created", exact: true })).toBeVisible();
-  const id = new URL(page.url()).pathname.split("/").at(-1)!;
+  const id = decodeBrowserId(new URL(page.url()).pathname.split("/").at(-1)!, "conversation");
   expect((await (await request.get(`${api}/conversations/${id}`)).json()).conversation.folderId).toBe(folder.id);
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   const child = group(page, folder.name).getByRole("link", { name: "folder-menu-created", exact: true });
@@ -322,7 +323,7 @@ test("the mobile drawer shares folder moves, collapse preferences and focus reco
   const dialog = await move(page, f.conversation.name, folder.id);
   await dialog.getByRole("button", { name: "Move Conversation", exact: true }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toBeVisible();
+  await expect(group(page, folder.name).locator(`a[href$="/conversations/${encodeBrowserId(f.conversation.id, "conversation")}"]`)).toBeVisible();
   await expect(page.getByRole("button", { name: `Conversation actions for ${f.conversation.name}`, exact: true })).toBeFocused();
   await page.getByRole("button", { name: `Toggle folder ${folder.name}`, exact: true }).click();
   await expect(page.getByRole("button", { name: `Toggle folder ${folder.name}`, exact: true })).toHaveAttribute("aria-expanded", "false");
@@ -345,23 +346,23 @@ test("filed lifecycle transitions and thread navigation retain their parent fold
   await actions.click();
   await page.getByRole("button", { name: /^Snooze/ }).click();
   await page.getByRole("button", { name: "In 1 hour", exact: true }).click();
-  await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toHaveCount(0);
+  await expect(group(page, folder.name).locator(`a[href$="/conversations/${encodeBrowserId(f.conversation.id, "conversation")}"]`)).toHaveCount(0);
   await page.getByRole("button", { name: "Snoozed", exact: true }).click();
   await actions.click();
   await page.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
-  await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toBeVisible();
+  await expect(group(page, folder.name).locator(`a[href$="/conversations/${encodeBrowserId(f.conversation.id, "conversation")}"]`)).toBeVisible();
   await page.getByRole("button", { name: "Open thread for message 1: 1 replies", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "Thread", exact: true });
   await expect(panel.getByText("Filed thread reply", { exact: true })).toBeVisible();
   await panel.getByRole("button", { name: "Close thread", exact: true }).click();
   await actions.click();
   await page.getByRole("button", { name: "Settled", exact: true }).click();
-  await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toHaveCount(0);
+  await expect(group(page, folder.name).locator(`a[href$="/conversations/${encodeBrowserId(f.conversation.id, "conversation")}"]`)).toHaveCount(0);
   await page.getByRole("button", { name: "Settled", exact: true }).click();
   await actions.click();
   await expect(page.getByRole("button", { name: "Move", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Reopen Conversation", exact: true }).click();
-  await expect(group(page, folder.name).locator(`a[href$="/conversations/${f.conversation.id}"]`)).toBeVisible();
+  await expect(group(page, folder.name).locator(`a[href$="/conversations/${encodeBrowserId(f.conversation.id, "conversation")}"]`)).toBeVisible();
 });
 
 test("representative related work remains findable after leaving and returning to its Workspace", async ({ page, request }, info) => {
@@ -401,7 +402,7 @@ test("representative related work remains findable after leaving and returning t
   const { message } = await (await request.post(`${api}/conversations/${apiWork.id}/messages`, { data: { participantId: f.ownerId, body: "Release API decision" } })).json();
   const { thread } = await (await request.post(`${api}/conversations/${apiWork.id}/threads`, { data: { actorIdentityId: f.ownerId, rootMessageId: message.id } })).json();
   await request.post(`${api}/conversations/${thread.id}/messages`, { data: { participantId: f.ownerId, body: "API follow-up stays with this work" } });
-  const destination = `/app/workspaces/${workspace.id}/conversations/${apiWork.id}`;
+  const destination = canonicalBrowserPath(`/app/workspaces/${workspace.id}/conversations/${apiWork.id}`);
   await launch(page, request, destination);
   const related = group(page, delivery.name);
   await expect(related.getByRole("link")).toHaveCount(2);
