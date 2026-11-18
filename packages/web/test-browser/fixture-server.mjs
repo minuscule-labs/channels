@@ -143,6 +143,7 @@ const fixtureRuntimes = {
   "browser-test": fixtureRuntime,
   "pi-private-browser": fixtureRuntime,
   pi: fixtureRuntime,
+  codex: fixtureRuntime,
 };
 const localControl = await createLocalControlHttpServer({
   port: controlPort,

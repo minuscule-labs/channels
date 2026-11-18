@@ -90,6 +90,18 @@ Model names, reasoning levels, provider options, and effective launch defaults m
 
 ### Runtime and harness extensibility
 
+The source product now registers Pi and native Codex in the existing per-agent
+**Private launch profile → Runtime → Harness** field. Pi remains the default for
+new installations. There is no global or per-Conversation adapter selector. Changing
+an agent's adapter affects future sessions, not existing bindings; omitted old model,
+reasoning and skill choices are cleared rather than interpreted by another adapter.
+Explicit replacements are validated against the selected adapter. Persisted bindings
+keep their adapter and exact owner/session identity across controller restarts.
+
+Codex installation/authentication is separate. Source and controlled-fixture checks
+are not production deployment: the reviewed Runtime commit still needs release
+pinning and exact-artifact acceptance. See [Codex agent integration](codex-agent-integration.md).
+
 Model management is scoped to a Runtime adapter, not to Pi or to one global model catalog. The durable identity of a selectable model is the tuple `(runtimeAdapter, provider, modelId)`, so identical provider/model labels exposed by different harnesses cannot collide. Each registered adapter owns:
 
 - capability discovery and user-facing model labels;

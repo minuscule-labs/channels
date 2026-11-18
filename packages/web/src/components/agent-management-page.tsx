@@ -419,6 +419,7 @@ function AgentLaunchProfileForm({
           Harness
           <input
             value={runtimeAdapter}
+            list="agent-runtime-adapters"
             onChange={(event) => {
               const nextAdapter = event.target.value;
               setRuntimeAdapter(nextAdapter);
@@ -440,6 +441,10 @@ function AgentLaunchProfileForm({
             className="settings-input mt-1.5 font-mono"
             disabled={agent.configured && !configurationReady}
           />
+          <datalist id="agent-runtime-adapters">
+            <option value="pi" />
+            <option value="codex" />
+          </datalist>
         </label>
         <label className="block text-xs font-medium">
           Provider

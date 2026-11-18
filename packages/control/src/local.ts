@@ -67,6 +67,7 @@ export interface LocalProductAppOptions {
   relayMigrationsFolder?: string;
   runtimeAdapter: string;
   runtime: LocalManagedRuntimePort;
+  runtimes?: Record<string, LocalManagedRuntimePort>;
   personaPrompt?: string;
   onAudit?(event: LocalControlAuditEvent): void;
   onDiagnostic?(event: LocalAgentHostDiagnosticEvent): void;
@@ -515,7 +516,7 @@ export async function createLocalProductApp(
       sessionKeyPath: join(dataDirectory, "browser-session.key"),
       webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
-      runtimes: { [options.runtimeAdapter]: options.runtime },
+      runtimes: { ...options.runtimes, [options.runtimeAdapter]: options.runtime },
       autoResumeOfflineAgents: true,
       onAudit: options.onAudit,
       onDiagnostic: options.onDiagnostic,

@@ -660,10 +660,11 @@ export class LocalAgentHostConfiguration {
       const resolvedAdapter = runtimeAdapter === undefined
         ? existingConfig?.runtimeAdapter
         : runtimeAdapter ?? undefined;
+      const launchDefaults = resolvedAdapter === existingConfig?.runtimeAdapter ? existingConfig : undefined;
       const resolvedProvider = modelProvider === undefined
-        ? existingConfig?.modelProvider
+        ? launchDefaults?.modelProvider
         : modelProvider ?? undefined;
-      const resolvedModelId = modelId === undefined ? existingConfig?.modelId : modelId ?? undefined;
+      const resolvedModelId = modelId === undefined ? launchDefaults?.modelId : modelId ?? undefined;
       const workspaceConfig = await this.options.store.getWorkspaceConfig(workspaceId);
       const modelPolicy = resolvedAdapter
         ? workspaceConfig?.runtimeModelPolicies?.[resolvedAdapter]
@@ -706,7 +707,7 @@ export class LocalAgentHostConfiguration {
         1,
         MAX_RECENT_CONTEXT_MESSAGES,
       );
-      const resolvedSkillIds = skillIds ?? existingConfig?.skillIds;
+      const resolvedSkillIds = skillIds ?? launchDefaults?.skillIds;
       if (resolvedSkillIds !== undefined) {
         if (!resolvedAdapter) {
           throw new LocalConfigurationRequestError("A Runtime is required to configure skills", 409, "unavailable");

@@ -4659,6 +4659,39 @@ test("agent lifecycle changes remain isolated within one shared Conversation Rel
   }
 });
 
+test("per-agent Pi and Codex setup preserves existing bindings and routing across product reopen", {timeout:30000}, async () => {
+  const directory=await realpath(await mkdtemp(join(tmpdir(),"channels-two-runtimes-"))),source=await realpath(await mkdtemp(join(tmpdir(),"channels-two-sources-")));
+  const pi=new OwnerScopedRuntimeFake(),codex=new OwnerScopedRuntimeFake();
+  const options={dataDirectory:directory,workspaceRoot:source,conversationsPort:0,controlPort:0,webUrl:"http://127.0.0.1:5199/",runtimeAdapter:"pi",runtime:pi,runtimes:{pi,codex}};
+  let app:Awaited<ReturnType<typeof createLocalProductApp>>|undefined;
+  try {
+    app=await createLocalProductApp(options);
+    const client=new ConversationClient(app.conversationsEndpoint,{serviceToken:app.conversationsServiceToken}),workspace=app.workspaceId!,first=app.conversationId!,human=app.humanIdentityId!;
+    const agent=(await client.listIdentities()).find(i=>i.type==="agent")!.id;
+    const authenticate=async()=>{const response=await fetch(app!.issueBrowserLaunchUrl(),{redirect:"manual"});return response.headers.get("set-cookie")!.split(";",1)[0]!;};
+    let cookie=await authenticate();
+    const request=async(path:string,body?:unknown)=>{const response=await fetch(app!.controlEndpoint+path,{method:body===undefined?"GET":"POST",headers:{cookie,origin:"http://127.0.0.1:5199","content-type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)})});assert.equal(response.status,body===undefined?200:201,await response.clone().text());return response.json();};
+    const configure=async(body:unknown)=>{const response=await fetch(`${app!.controlEndpoint}/local/workspaces/${workspace}/agents/${agent}/config`,{method:"PATCH",headers:{cookie,origin:"http://127.0.0.1:5199","content-type":"application/json"},body:JSON.stringify(body)});assert.equal(response.status,200,await response.clone().text());};
+    await configure({modelProvider:"openai",modelId:"gpt-managed",reasoningLevel:"high",skillIds:["skill:review"]});
+    await request(`/local/conversations/${first}/agents/${agent}/start`,{});
+    await configure({runtimeAdapter:"codex"});
+    const config=await request(`/local/workspaces/${workspace}/agents/${agent}/config`);
+    assert.equal(config.runtimeAdapter,"codex");for(const field of ["modelProvider","modelId","reasoningLevel","skillIds"])assert.equal(config[field],undefined);
+    const second=await client.createConversation({workspaceId:workspace,name:"Codex selection",participantIds:[human,agent]});
+    await request(`/local/conversations/${second.id}/agents/${agent}/start`,{});
+    assert.equal(pi.starts.length,1);assert.equal(codex.starts.length,1);assert.equal(codex.starts[0]!.config.model,undefined);
+    // Equal opaque IDs deliberately prove adapter-aware routing, not prefix guessing.
+    assert.equal(pi.starts[0]!.sessionId,codex.starts[0]!.sessionId);
+    const verifyBindings=async()=>{const store=await DrizzleLibSqlRelayStorage.open({url:localRelayLibSqlUrl(join(directory,"relay.db"))});try{assert.equal((await store.listConversationBindings(first))[0]!.runtimeAdapter,"pi");assert.equal((await store.listConversationBindings(second.id))[0]!.runtimeAdapter,"codex");}finally{await store.close();}};
+    await verifyBindings();await app.close();app=await createLocalProductApp(options);cookie=await authenticate();await verifyBindings();
+    const reopened=new ConversationClient(app.conversationsEndpoint,{serviceToken:app.conversationsServiceToken});
+    await reopened.postMessage(first,{participantId:human,body:"@builder pi routing marker"});await reopened.postMessage(second.id,{participantId:human,body:"@builder codex routing marker"});
+    await waitUntil(async()=>Boolean(pi.prompts.get("managed-session-1")?.some(p=>p.includes("pi routing marker"))&&codex.prompts.get("managed-session-1")?.some(p=>p.includes("codex routing marker"))));
+    assert.doesNotMatch(JSON.stringify(pi.prompts.get("managed-session-1")),/codex routing marker/);assert.doesNotMatch(JSON.stringify(codex.prompts.get("managed-session-1")),/pi routing marker/);
+    assert.equal(pi.starts.length,1);assert.equal(codex.starts.length,1);
+  } finally {await app?.close();await rm(directory,{recursive:true,force:true});await rm(source,{recursive:true,force:true});}
+});
+
 test("daemon composes public Conversations, private Relay storage, Runtime status, and browser auth", async () => {
   const directory = await mkdtemp(join(tmpdir(), "minu-control-daemon-"));
   const databasePath = join(directory, "relay.db");
