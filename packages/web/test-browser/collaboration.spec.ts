@@ -851,10 +851,11 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   await expect(identityForm.getByLabel("Mention handle")).toHaveValue("builder");
 
   const agentForm = agentCard.locator("form").filter({ hasText: "Private launch profile" });
-  const runtimeValue = "pi-private-browser";
+  const runtimeValue = "codex";
   const personaValue = "SECRET BROWSER PERSONA";
   await agentForm.getByLabel("Agent instructions", { exact: true }).fill(personaValue);
   await agentForm.getByRole("tab", { name: "Runtime" }).click();
+  expect(await agentForm.locator("#agent-runtime-adapters option").evaluateAll(options => options.map(option => option.getAttribute("value")))).toEqual(["pi", "codex"]);
   await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
   const agentResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"

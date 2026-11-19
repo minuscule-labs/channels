@@ -3,9 +3,9 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { Command, InvalidArgumentError } from "commander";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import type { LocalManagedRuntimePort } from "./agent-host.ts";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadLocalRuntimes } from "./local-runtimes.ts";
 import { coordinateConversationsUpdate } from "./coordinated-update.ts";
 import { createLocalProductApp } from "./local.ts";
 import { DEFAULT_CHANNELS_PORT, DEFAULT_CONTROL_PORT, DEFAULT_WEB_PORT, localConversationsUrl } from "./local-host.ts";
@@ -30,6 +30,7 @@ interface LocalCliOptions {
   workspaceName?: string;
   webDir?: string;
   runtimeModule?: string;
+  codexRuntimeModule?: string;
   open: boolean;
   serviceMode: boolean;
 }
@@ -58,34 +59,6 @@ function defaultWebDirectory(): string {
 function defaultMigrationsFolder(kind: "channels" | "agent-host"): string | undefined {
   const packaged = packagedPath("assets", "migrations", kind);
   return existsSync(packaged) ? packaged : undefined;
-}
-
-function moduleSpecifier(value: string): string {
-  if (value.startsWith(".") || value.startsWith("/") || isAbsolute(value)) {
-    return pathToFileURL(resolve(value)).href;
-  }
-  return value;
-}
-
-async function loadPiRuntime(specifier?: string): Promise<LocalManagedRuntimePort> {
-  const packagedModule = packagedPath("bin", "runtime-pi.js");
-  const developmentModule = resolve(repositoryRoot(), "../runtime/packages/pi/dist/src/index.js");
-  const defaultModule = existsSync(packagedModule) ? packagedModule : developmentModule;
-  const loaded = await import(moduleSpecifier(specifier ?? defaultModule)) as Record<string, unknown>;
-  const Constructor = loaded.PiAgentRuntime;
-  if (typeof Constructor !== "function") {
-    throw new Error("Pi Runtime module does not export PiAgentRuntime");
-  }
-  const runtime = new (Constructor as new () => LocalManagedRuntimePort)();
-  if (typeof runtime.start !== "function" || typeof runtime.send !== "function"
-    || typeof runtime.messages !== "function" || typeof runtime.status !== "function") {
-    throw new Error("Pi Runtime module does not provide managed execution capabilities");
-  }
-  if (typeof runtime.startManaged !== "function" || typeof runtime.listManagedSessions !== "function"
-    || typeof runtime.resume !== "function" || typeof runtime.suspend !== "function" || typeof runtime.destroy !== "function") {
-    throw new Error("Pi Runtime module does not provide owner-scoped managed-session lifecycle capabilities");
-  }
-  return runtime;
 }
 
 async function openBrowser(url: string): Promise<void> {
@@ -255,6 +228,7 @@ async function main(): Promise<void> {
     .option("--workspace-name <name>", "name for a newly created Workspace")
     .option("--web-dir <path>", "production web asset directory")
     .option("--runtime-module <module>", "Pi Runtime module")
+    .option("--codex-runtime-module <module>", "Codex Runtime module")
     .option("--no-open", "print the one-time launch URL instead of opening a browser")
     .option("--service-mode", "run under the product-owned background supervisor")
     .addHelpText("after", `
@@ -298,7 +272,7 @@ Other commands:
     throw new Error("Conversations, control, and web ports must be distinct");
   }
   const webUrl = localConversationsUrl(options.webPort);
-  const runtime = await loadPiRuntime(options.runtimeModule);
+  const runtimes = await loadLocalRuntimes({ pi: options.runtimeModule, codex: options.codexRuntimeModule });
   const installationInstance = await registerInstallationInstance({
     kind: options.serviceMode ? "service" : "foreground",
     dataDirectory,
@@ -314,7 +288,8 @@ Other commands:
       workspaceName,
       selectWorkspaceRoot: !freshInstallation && directoryArgumentProvided,
       runtimeAdapter: "pi",
-      runtime,
+      runtime: runtimes.pi,
+      runtimes,
       conversationsMigrationsFolder: defaultMigrationsFolder("channels"),
       relayMigrationsFolder: defaultMigrationsFolder("agent-host"),
       onAudit(event) {
@@ -380,7 +355,7 @@ Other commands:
       ? (app.workspaceId ? "created a fresh local Workspace" : "ready for browser Workspace setup")
       : "reopened existing local data"}`);
     if (app.workspaceId) {
-      output("  Agent:    click Start for @builder, then send a message for a live Pi response");
+      output("  Agent:    click Start for @builder, then send a message for an agent response");
     }
     if (!options.serviceMode) {
       const launchUrl = app.issueBrowserLaunchUrl();

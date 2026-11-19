@@ -65,6 +65,15 @@ await Promise.all([
     resolve(runtimeRoot, "packages/pi/dist/src/owned-worker.js"),
     join(binDirectory, "owned-worker.js"),
   ),
+  // Keep each adapter beside its own worker; both resolve worker URLs relative to import.meta.url.
+  bundle(
+    resolve(runtimeRoot, "packages/codex/dist/src/index.js"),
+    join(binDirectory, "codex/runtime-codex.js"),
+  ),
+  bundle(
+    resolve(runtimeRoot, "packages/codex/dist/src/owned-worker.js"),
+    join(binDirectory, "codex/owned-worker.js"),
+  ),
 ]);
 
 await Promise.all([

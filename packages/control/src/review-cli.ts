@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalManagedRuntimePort } from "./agent-host.ts";
 import type { LocalControlAuditEvent } from "./session.ts";
 import { createLocalProductApp } from "./local.ts";
+import { loadLocalRuntimes } from "./local-runtimes.ts";
 import { localConversationsUrl } from "./local-host.ts";
 import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.ts";
 
@@ -13,6 +14,7 @@ import { createLocalReviewApp, type LocalReviewManagedRuntime } from "./review.t
 const DEFAULT_DEVELOPMENT_CHANNELS_PORT = 47_510;
 const DEFAULT_DEVELOPMENT_CONTROL_PORT = 47_511;
 const DEFAULT_DEVELOPMENT_WEB_PORT = 47_512;
+const PERSONA = "You are the implementation agent for this MinuChannels Workspace. Follow the human's Conversation requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Conversation responses.";
 
 function port(value: string | undefined, fallback: number, name: string): number {
   const parsed = value === undefined ? fallback : Number(value);
@@ -52,7 +54,7 @@ async function loadPiRuntime(specifier?: string): Promise<LocalReviewManagedRunt
   return {
     adapter: "pi",
     runtime,
-    personaPrompt: "You are the implementation agent for this MinuChannels Workspace. Follow the human's Conversation requests, inspect the configured repository carefully, make only requested changes, verify your work, and report concise concrete results. Never expose private Runtime configuration or credentials in Conversation responses.",
+    personaPrompt: PERSONA,
   };
 }
 
@@ -139,12 +141,13 @@ async function main(): Promise<void> {
       local: { type: "boolean", default: false },
       "data-dir": { type: "string" },
       "pi-module": { type: "string" },
+      "codex-module": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
   });
   if (values.help) {
-    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --conversations-port <port>  Conversations API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and live Pi\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
+    console.log(`Usage: pnpm dev [-- options]\n       pnpm local [-- options]\n\nOptions:\n  --conversations-port <port>  Conversations API port (default 47510)\n  --control-port <port>   local control port (default 47511)\n  --web-port <port>       web client port (default 47512)\n  --cwd <path>            private Workspace root\n  --local                  use persistent local data and per-agent runtimes\n  --data-dir <path>        persistent local data directory (default ~/.minu/channels)\n  --live-pi               enable startable live Pi execution in disposable review mode\n  --pi-module <module>    Pi Runtime module (defaults to sibling runtime build)\n  --codex-module <module> Codex Runtime module for persistent local mode\n  --no-open               print launch URL instead of opening a browser\n  -h, --help              show help`);
     return;
   }
 
@@ -156,9 +159,10 @@ async function main(): Promise<void> {
   }
   const webUrl = localConversationsUrl(webPort);
   const persistent = values.local;
-  const managedRuntime = values["live-pi"] || persistent
-    ? await loadPiRuntime(values["pi-module"])
-    : undefined;
+  const runtimes = persistent ? await loadLocalRuntimes({ pi: values["pi-module"], codex: values["codex-module"] }) : undefined;
+  const managedRuntime: LocalReviewManagedRuntime | undefined = persistent
+    ? { adapter: "pi", runtime: runtimes!.pi, personaPrompt: PERSONA }
+    : values["live-pi"] ? await loadPiRuntime(values["pi-module"]) : undefined;
   const onAudit = (event: LocalControlAuditEvent) => {
     process.stderr.write(`${JSON.stringify({ source: persistent ? "minu-channels-local" : "minu-channels-review", ...event })}\n`);
   };
@@ -171,6 +175,7 @@ async function main(): Promise<void> {
       dataDirectory: values["data-dir"],
       runtimeAdapter: managedRuntime!.adapter,
       runtime: managedRuntime!.runtime,
+      runtimes,
       personaPrompt: managedRuntime!.personaPrompt,
       onAudit,
     })
@@ -232,7 +237,7 @@ async function main(): Promise<void> {
     console.log(`  Handles:  ${persistent ? "@you, @builder" : "@you, @builder, @reviewer"}`);
     console.log(managedRuntime
       ? persistent
-        ? "  Agent:    previously active agents resume idle; click Start for a new agent, then mention it for a live Pi response"
+        ? "  Agent:    previously active agents resume idle; click Start for a new agent, then mention it for a response"
         : "  Agent:    click Start for @builder, then mention it for a live Pi response"
       : "  Agent:    @mention @builder for a simulated Relay response");
     console.log("  Context:  unaddressed messages do not wake agents");
@@ -243,7 +248,7 @@ async function main(): Promise<void> {
       console.log(`  Setup:    ${app.initialized ? "created a fresh local Workspace" : "reopened existing local data"}`);
     }
     console.log(`  Runtime:  ${managedRuntime
-      ? persistent ? "live Pi (resumes previously active sessions on startup)" : "live Pi (starts only on explicit click)"
+      ? persistent ? "Pi/Codex (resumes previously active sessions on startup)" : "live Pi (starts only on explicit click)"
       : "deterministic simulation"}`);
     if (values["no-open"]) {
       console.log("\nOpen this one-time URL within 60 seconds:");

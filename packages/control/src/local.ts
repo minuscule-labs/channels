@@ -67,6 +67,7 @@ export interface LocalProductAppOptions {
   relayMigrationsFolder?: string;
   runtimeAdapter: string;
   runtime: LocalManagedRuntimePort;
+  runtimes?: Record<string, LocalManagedRuntimePort>;
   personaPrompt?: string;
   /** Authored Skill sending is enabled by default; false explicitly disables publication. */
   authoredSkillPublicationEnabled?: boolean;
@@ -517,7 +518,7 @@ export async function createLocalProductApp(
       sessionKeyPath: join(dataDirectory, "browser-session.key"),
       webUrl: options.webUrl ?? localConversationsUrl(DEFAULT_WEB_PORT),
       port: options.controlPort ?? DEFAULT_CONTROL_PORT,
-      runtimes: { [options.runtimeAdapter]: options.runtime },
+      runtimes: { ...options.runtimes, [options.runtimeAdapter]: options.runtime },
       autoResumeOfflineAgents: true,
       authoredSkillPublicationEnabled: options.authoredSkillPublicationEnabled,
       onAudit: options.onAudit,

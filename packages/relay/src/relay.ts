@@ -50,6 +50,8 @@ export interface AgentRuntimePort {
   getManagedSession?(managedSessionId: string, ownerId: string, options?: { signal?: AbortSignal }): Promise<ManagedRuntimeSessionSummary | undefined>;
   /** Owner-scoped operations for Runtime-managed sessions; absent on legacy adapters. */
   listManagedSessions?(ownerId: string, options?: { signal?: AbortSignal }): Promise<ManagedRuntimeSessionSummary[]>;
+  /** Authenticate an already-living worker only; never cold-resume or allocate. */
+  connectManaged?(managedSessionId: string, ownerId: string): Promise<ManagedRuntimeSessionRef>;
   resume?(managedSessionId: string, ownerId: string, options?: { allowStopped?: boolean }): Promise<ManagedRuntimeSessionRef>;
   send(sessionId: string, input: string, images?: RuntimePortImage[]): Promise<void>;
   startTurn?(sessionId: string, turnId: string, input: string, images?: RuntimePortImage[]): Promise<RuntimePortTurn>;
