@@ -1212,14 +1212,16 @@ export class LocalRelayDirectory {
     const runtimeAdapter = input.runtimeAdapter === undefined
       ? existing?.runtimeAdapter
       : input.runtimeAdapter ?? undefined;
+    // Launch choices belong to their adapter; existing session bindings do not change.
+    const launchDefaults = runtimeAdapter === existing?.runtimeAdapter ? existing : undefined;
     const modelProvider = input.modelProvider === undefined
-      ? existing?.modelProvider
+      ? launchDefaults?.modelProvider
       : input.modelProvider ?? undefined;
-    const modelId = input.modelId === undefined ? existing?.modelId : input.modelId ?? undefined;
+    const modelId = input.modelId === undefined ? launchDefaults?.modelId : input.modelId ?? undefined;
     const reasoningLevel = input.reasoningLevel === undefined
-      ? existing?.reasoningLevel
+      ? launchDefaults?.reasoningLevel
       : input.reasoningLevel ?? undefined;
-    const skillIds = input.skillIds === undefined ? existing?.skillIds : [...input.skillIds];
+    const skillIds = input.skillIds === undefined ? launchDefaults?.skillIds : [...input.skillIds];
     const handoffSummaryTokens = input.handoffSummaryTokens === undefined
       ? existing?.handoffSummaryTokens
       : input.handoffSummaryTokens ?? undefined;
@@ -1695,6 +1697,20 @@ export async function restoreConversationBindings(
         outcomes.set(leased.id, reason === "session_metadata_unavailable" || reason === "session_transcript_invalid" ? reason : "runtime_uncertain");
         await release();
         continue;
+      }
+      if (managedSessionState === "active" && runtime.connectManaged) {
+        try {
+          const connected = await withRuntimeTimeout(
+            runtime.connectManaged(leased.runtimeSessionId, leased.runtimeOwnerId),
+            statusTimeoutMs,
+            "Runtime living-worker connection",
+          );
+          if (connected.id !== leased.runtimeSessionId || connected.ownerId !== leased.runtimeOwnerId) throw new Error("Runtime connected a different identity");
+        } catch {
+          outcomes.set(leased.id, "runtime_uncertain");
+          await release();
+          continue;
+        }
       }
       if (leased.state === "paused" && options.resumePaused && managedSessionState === "suspended") {
         if (!runtime.resume) {
