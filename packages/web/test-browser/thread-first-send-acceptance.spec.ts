@@ -16,6 +16,7 @@ import { join } from "node:path";
 // own real control daemon/Relay and temporary SQLite; only the model is controlled.
 const api = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const webOrigin = `http://minu-channels.localhost:${process.env.MINU_TEST_WEB_PORT ?? 58412}`;
+const fixture = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
 const serviceToken = "browser-fixture-service-token";
 const panel = (page: Page) => page.getByRole("dialog", { name: "Thread", exact: true });
 const composer = (page: Page) => panel(page).getByRole("combobox", { name: "Thread reply", exact: true });
@@ -93,7 +94,13 @@ async function application(page: Page, context: BrowserContext) {
     expect(exchange.status).toBe(303);
     const cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0]!;
     await exchange.arrayBuffer();
-    const [cookieName, cookieValue] = cookie.split("=");
+    // Authenticate the same human at the shared conversation gateway as well.
+    const { launchUrl } = await (await fetch(`${fixture}/control-launch?identityId=${owner.id}`)).json();
+    const gatewayUrl = new URL(launchUrl); gatewayUrl.hostname = "127.0.0.1";
+    const gatewayExchange = await fetch(gatewayUrl, { redirect: "manual" }); expect(gatewayExchange.status).toBe(303);
+    const gatewayCookie = gatewayExchange.headers.get("set-cookie")!.split(";", 1)[0]!;
+    await gatewayExchange.arrayBuffer();
+    const [cookieName, cookieValue] = gatewayCookie.split("=");
     await context.addCookies([{ name: cookieName!, value: cookieValue!, url: webOrigin,
       httpOnly: true, sameSite: "Strict" }]);
 
@@ -116,7 +123,7 @@ async function application(page: Page, context: BrowserContext) {
     await page.route("**/local/**", async (route) => {
       const original = new URL(route.request().url());
       const destination = new URL(original.pathname + original.search, daemon!.endpoint);
-      const headers = { ...route.request().headers(), host: destination.host };
+      const headers = { ...route.request().headers(), host: destination.host, cookie };
       try {
         const response = await route.fetch({ url: destination.href, headers, maxRedirects: 0, timeout: 5_000 });
         await route.fulfill({ response });
@@ -125,7 +132,7 @@ async function application(page: Page, context: BrowserContext) {
 
     const agentPath = (id: string, name: Agent) => `/conversations/${id}/agents/${identities[name].id}`;
     return {
-      client, parent, workspace, identities, runtime, control, agentPath, controlEndpoint: daemon.endpoint,
+      client, parent, workspace, identities, runtime, control, agentPath, controlEndpoint: daemon.endpoint, controlCookie: cookie,
       root(author: Author, body: string) { return client.postMessage(parent.id, { participantId: identities[author].id, body }); },
       async open(root: ConversationMessage, connection: "live" | "paused" = "live") {
         await page.goto(`${webOrigin}/app/workspaces/${workspace.id}/conversations/${parent.id}`, { waitUntil: "domcontentloaded" });
@@ -274,7 +281,10 @@ test("first-Send acceptance: lost send acknowledgement retries without a duplica
     // route.fetch bypasses the registered /local proxy; preserve its actual-daemon destination.
     if (target.pathname.startsWith("/local/")) target.host = new URL(app.controlEndpoint).host;
     target.hostname = "127.0.0.1";
-    const response = await route.fetch({ url: target.href, headers: { ...original.headers(), host: target.host } });
+    const response = await route.fetch({ url: target.href, headers: {
+      ...original.headers(), host: target.host,
+      ...(target.pathname.startsWith("/local/") ? { cookie: app.controlCookie } : {}),
+    } });
     expect(response.ok()).toBe(true);
     await route.abort("failed");
   });

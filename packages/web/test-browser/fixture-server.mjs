@@ -282,7 +282,11 @@ const controlServer = createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/control-launch") {
-    browserSessions.currentHumanIdentityId = url.searchParams.get("actor") === "member" ? member.id : human.id;
+    const identityId = url.searchParams.get("identityId")
+      ?? (url.searchParams.get("actor") === "member" ? member.id : human.id);
+    const identity = await service.getIdentity(identityId).catch(() => undefined);
+    if (identity?.type !== "human") { response.writeHead(400).end(); return; }
+    browserSessions.currentHumanIdentityId = identityId;
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     response.end(JSON.stringify({ launchUrl: browserSessions.issueLaunchUrl(
       localControl.endpoint,
@@ -377,10 +381,12 @@ const controlServer = createServer(async (request, response) => {
   }
   await conversationServer.close();
   const disconnectedConversation = url.searchParams.get("workspace") === "inactive" ? secondaryConversation : conversation;
-  await service.createMessage(disconnectedConversation.id, {
-    participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
-    body: "Message created while the browser was offline.",
-  });
+  if (url.searchParams.get("createMessage") !== "false") {
+    await service.createMessage(disconnectedConversation.id, {
+      participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
+      body: "Message created while the browser was offline.",
+    });
+  }
   response.writeHead(202).end();
   setTimeout(async () => {
     conversationServer = await createConversationHttpServer({ service, port: conversationsPort, serviceToken });

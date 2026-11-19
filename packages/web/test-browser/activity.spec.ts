@@ -85,7 +85,13 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
     await expect.poll(() => count(thread.id)).toBe(0);
     await page.reload();
     await expect.poll(() => count(conversation.id)).toBe(101);
-  } finally { await other.close(); }
+  } finally {
+    await other.close();
+    // Leave the assertion above unread, but do not leak this test's data into other files.
+    expect((await request.post(`${api}/conversations/${conversation.id}/read`, {
+      headers: { "x-minu-actor-id": human.id }, data: { sequence: root.sequence + 101 },
+    })).ok()).toBe(true);
+  }
 });
 
 test("existing browser read marks migrate monotonically without resetting server state", async ({ page, request }) => {
@@ -164,6 +170,10 @@ test("Activity badge counts only unread notifications, works on mobile, and hide
   await page.getByRole("link", { name: /^Badge scope/ }).click();
   await expect(page.getByRole("log").getByText("Badge mention", { exact: true })).toBeVisible();
   await expect(badge()).toHaveCount(0);
+  // The other fixture human still has the member-authored root unread.
+  expect((await request.post(`${api}/conversations/${conversation.id}/read`, {
+    headers: { "x-minu-actor-id": owner.id }, data: { sequence: root.sequence },
+  })).ok()).toBe(true);
 });
 
 test("a side thread opened from a parent Activity link ignores the parent's message hash when marking read", async ({ page, request }) => {
@@ -280,7 +290,7 @@ for (const recovery of ["stream", "polling"] as const) {
     expect(attempts).toBe(1);
     const badge = page.getByRole("navigation", { name: "Workspaces and Conversations" })
       .locator('a[href="/app/activity"]').getByLabel(/unread Activity notification/);
-    if (recovery === "stream") expect((await request.post(`${fixture}/disconnect`)).ok()).toBe(true);
+    if (recovery === "stream") expect((await request.post(`${fixture}/disconnect?createMessage=false`)).ok()).toBe(true);
     // No browser online/focus/scroll event or new message in this scope triggers the retry.
     await expect.poll(async () => (await summary())?.count, { timeout: 15_000 }).toBe(0);
     expect((await summary())?.readSequence).toBe(root.sequence + 1);
