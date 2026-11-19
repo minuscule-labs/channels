@@ -122,6 +122,25 @@ test("all CI jobs skip draft PRs and retain full verification for ready PRs and 
   }
 });
 
+test("verification prepares the pinned sibling Runtime before testing Channels", () => {
+  const verify = ciJob("verify");
+  assert.match(verify, /defaults:\n      run:\n        working-directory: channels/);
+  assert.match(verify, /uses: actions\/checkout@v4\n        with:\n          path: channels/);
+  assert.match(verify, /repository="\$\(node -p 'require\("\.\/runtime-source\.json"\)\.repository'\)"/);
+  assert.match(verify, /commit="\$\(node -p 'require\("\.\/runtime-source\.json"\)\.commit'\)"/);
+  assert.match(verify, /repository: \$\{\{ steps\.runtime_source\.outputs\.repository \}\}\n          ref: \$\{\{ steps\.runtime_source\.outputs\.commit \}\}\n          path: runtime/);
+  assert.match(verify, /cache-dependency-path: \|\n            channels\/pnpm-lock\.yaml\n            runtime\/pnpm-lock\.yaml/);
+  assert.match(verify, /run: pnpm install --frozen-lockfile\n        working-directory: runtime/);
+  const build = verify.indexOf("- name: Build pinned Runtime\n        run: pnpm check\n        working-directory: runtime");
+  assert.ok(build >= 0 && build < verify.indexOf("- run: pnpm test\n"));
+  assert.doesNotMatch(verify, /continue-on-error:/);
+});
+
+test("verification lets Linux and macOS report independent results", () => {
+  const verify = ciJob("verify");
+  assert.match(verify, /strategy:\n      fail-fast: false\n      matrix:\n        os: \[ubuntu-latest, macos-latest\]/);
+});
+
 test("web type and unit checks run on Linux only during full verification", () => {
   for (const command of ["web:check", "web:test"]) {
     const condition = ciJob("verify").match(new RegExp(`- run: pnpm ${command}\\n        if: \\$\\{\\{ (.+) \\}\\}`))?.[1];
