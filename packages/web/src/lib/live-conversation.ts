@@ -16,6 +16,7 @@ export function useLiveConversation(conversationId: string, identityId: string |
   const { suspended = false, parentId } = options;
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [reconciliationVersion, setReconciliationVersion] = useState(0);
   const [attempt, setAttempt] = useState(0);
   const reconnectStreak = useRef(0);
 
@@ -65,6 +66,8 @@ export function useLiveConversation(conversationId: string, identityId: string |
             if (currentGeneration === generation) {
               reconnectStreak.current = 0;
               setConnection(polling ? "polling" : "live");
+              // Successful snapshots can preserve the message array and connection state.
+              setReconciliationVersion(version => version + 1);
             }
           }
         } catch { failed(); }
@@ -130,6 +133,7 @@ export function useLiveConversation(conversationId: string, identityId: string |
 
   return {
     connection,
+    reconciliationVersion,
     retry: () => {
       reconnectStreak.current = 0;
       setAttempt((current) => current + 1);

@@ -226,3 +226,68 @@ test("mobile Activity title stays clear of the navigation button", async ({ page
     * Math.max(0, Math.min(text.y + text.height, button.y + button.height) - Math.max(text.y, button.y));
   expect(overlap).toBe(0);
 });
+
+for (const recovery of ["stream", "polling"] as const) {
+  test(`failed read acknowledgement retries after ${recovery} reconciliation with unchanged messages`, async ({ page, request }) => {
+    test.setTimeout(45_000); // Polling uses the existing five-second snapshot interval.
+    if (recovery === "polling") await page.addInitScript(() => {
+      Object.defineProperty(window, "SharedWorker", { configurable: true, value: undefined });
+    });
+    const { workspaces } = await (await request.get(`${api}/workspaces`)).json();
+    const workspace = workspaces.find((item: { name: string }) => item.name === "Browser Test");
+    const { conversations } = await (await request.get(`${api}/workspaces/${workspace.id}/conversations`)).json() as { conversations: ConversationMetadata[] };
+    const primary = conversations.find(item => item.name === "browser-collaboration")!;
+    const human = primary.participants.find(p => p.type === "human")!;
+    const agent = primary.participants.find(p => p.type === "agent")!;
+    const { conversation } = await (await request.post(`${api}/conversations`, { data: {
+      workspaceId: workspace.id, name: `Read retry ${recovery}`, participantIds: [human.id, agent.id],
+    } })).json();
+    const { message: root } = await (await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+      participantId: human.id, body: "Initial read position", to: [],
+    } })).json();
+    const destination = `/app/workspaces/${workspace.id}/conversations/${conversation.id}`;
+    const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(destination)}`)).json();
+    await page.goto(launchUrl);
+    await expect(page.getByLabel(`Live updates ${recovery === "stream" ? "live" : "polling"}`)).toBeVisible();
+    const summary = () => page.evaluate(async id => {
+      const response = await fetch("/identities/me/inbox");
+      if (!response.ok) return undefined;
+      const { summaries } = await response.json();
+      return summaries.find((item: { conversationId: string }) => item.conversationId === id);
+    }, conversation.id);
+    await expect.poll(async () => (await summary())?.readSequence).toBe(root.sequence);
+    const baseline = await page.evaluate(async () => {
+      const { summaries } = await (await fetch("/identities/me/inbox")).json();
+      return summaries.reduce((sum: number, item: { activityCount: number }) => sum + item.activityCount, 0);
+    });
+    const readPath = `/conversations/${conversation.id}/read`;
+    let attempts = 0;
+    await page.route(`**${readPath}`, async route => {
+      if (++attempts === 1) {
+        // Let the new message finish layout before failing its acknowledgement.
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporarily unavailable" }) });
+      } else await route.continue();
+    });
+    const failed = page.waitForResponse(response => response.url().endsWith(readPath) && response.status() === 503);
+    const body = `Visible message before ${recovery} recovery`;
+    expect((await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
+      participantId: agent.id, body, to: [human.id],
+    } })).ok()).toBe(true);
+    await expect(page.getByRole("log").getByText(body, { exact: true })).toBeInViewport({ timeout: 15_000 });
+    await (await failed).finished();
+    expect((await summary())?.count).toBe(1);
+    expect(attempts).toBe(1);
+    const badge = page.getByRole("navigation", { name: "Workspaces and Conversations" })
+      .locator('a[href="/app/activity"]').getByLabel(/unread Activity notification/);
+    if (recovery === "stream") expect((await request.post(`${fixture}/disconnect`)).ok()).toBe(true);
+    // No browser online/focus/scroll event or new message in this scope triggers the retry.
+    await expect.poll(async () => (await summary())?.count, { timeout: 15_000 }).toBe(0);
+    expect((await summary())?.readSequence).toBe(root.sequence + 1);
+    // Legacy cursor migration can also send an idempotent acknowledgement.
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    await expect(page.getByLabel(`Live updates ${recovery === "stream" ? "live" : "polling"}`)).toBeVisible();
+    if (baseline) await expect(badge).toHaveText(String(baseline));
+    else await expect(badge).toHaveCount(0);
+  });
+}

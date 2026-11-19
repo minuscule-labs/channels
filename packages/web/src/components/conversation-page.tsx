@@ -158,7 +158,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     retry: false,
     refetchInterval: (query) => query.state.status === "error" ? 30_000 : 5_000,
   });
-  const { connection, retry } = useLiveConversation(conversationId, currentSession.data?.identityId, {
+  const { connection, retry, reconciliationVersion } = useLiveConversation(conversationId, currentSession.data?.identityId, {
     suspended: Boolean(lifecycle.data && lifecycle.data.state !== "active"),
     parentId: metadata.data?.thread?.parentConversationId,
   });
@@ -415,6 +415,10 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       window.dispatchEvent(new Event("minu-read-state"));
     }).catch(() => { if (requestedReadSequence.current === sequence) requestedReadSequence.current = 0; });
   }, [conversationId, currentSession.data?.identityId, messages.data]);
+
+  useEffect(() => {
+    if (timelineReady && reconciliationVersion > 0) markRead();
+  }, [markRead, reconciliationVersion, timelineReady]);
 
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
