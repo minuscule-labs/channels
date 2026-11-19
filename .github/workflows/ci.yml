@@ -17,11 +17,29 @@ jobs:
   verify:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: channels
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: channels
+      - name: Read pinned Runtime source
+        id: runtime_source
+        run: |
+          repository="$(node -p 'require("./runtime-source.json").repository')"
+          commit="$(node -p 'require("./runtime-source.json").commit')"
+          echo "repository=$repository" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.runtime_source.outputs.repository }}
+          ref: ${{ steps.runtime_source.outputs.commit }}
+          path: runtime
       - uses: pnpm/action-setup@v4
         with:
           version: 8.15.5
@@ -29,7 +47,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: |
+            channels/pnpm-lock.yaml
+            runtime/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+        working-directory: runtime
+      - run: pnpm install --frozen-lockfile
+      - name: Build pinned Runtime
+        run: pnpm check
+        working-directory: runtime
       - name: Verify release guards
         run: node --test scripts/release*.test.mjs
       - run: pnpm check
