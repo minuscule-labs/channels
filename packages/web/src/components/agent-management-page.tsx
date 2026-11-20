@@ -1,4 +1,5 @@
 import { harnessDiscoveryMessage } from "../lib/harness-errors";
+import { HarnessSelect } from "./harness-select";
 import type {
   LocalWorkspaceAgentConfigurationSummary,
   UpdateLocalWorkspaceAgentConfigurationInput,
@@ -420,11 +421,9 @@ function AgentLaunchProfileForm({
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className="block text-xs font-medium">
           Harness
-          <input
+          <HarnessSelect
             value={runtimeAdapter}
-            list="agent-runtime-adapters"
-            onChange={(event) => {
-              const nextAdapter = event.target.value;
+            onChange={(nextAdapter) => {
               setRuntimeAdapter(nextAdapter);
               if (!nextAdapter.trim()
                 || nextAdapter.trim() === (savedConfiguration?.runtimeAdapter ?? "")) {
@@ -438,17 +437,8 @@ function AgentLaunchProfileForm({
               }
               setSkillIds(null);
             }}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="pi"
-            className="settings-input mt-1.5 font-mono"
             disabled={agent.configured && !configurationReady}
           />
-          <datalist id="agent-runtime-adapters">
-            <option value="pi" />
-            <option value="codex" />
-            <option value="claude-code" />
-          </datalist>
         </label>
         <label className="block text-xs font-medium">
           Provider
