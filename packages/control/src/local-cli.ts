@@ -31,6 +31,7 @@ interface LocalCliOptions {
   webDir?: string;
   runtimeModule?: string;
   codexRuntimeModule?: string;
+  claudeCodeRuntimeModule?: string;
   open: boolean;
   serviceMode: boolean;
 }
@@ -229,6 +230,7 @@ async function main(): Promise<void> {
     .option("--web-dir <path>", "production web asset directory")
     .option("--runtime-module <module>", "Pi Runtime module")
     .option("--codex-runtime-module <module>", "Codex Runtime module")
+    .option("--claude-code-runtime-module <module>", "Claude Code Runtime module")
     .option("--no-open", "print the one-time launch URL instead of opening a browser")
     .option("--service-mode", "run under the product-owned background supervisor")
     .addHelpText("after", `
@@ -272,7 +274,7 @@ Other commands:
     throw new Error("Conversations, control, and web ports must be distinct");
   }
   const webUrl = localConversationsUrl(options.webPort);
-  const runtimes = await loadLocalRuntimes({ pi: options.runtimeModule, codex: options.codexRuntimeModule });
+  const runtimes = await loadLocalRuntimes({ pi: options.runtimeModule, codex: options.codexRuntimeModule, claudeCode: options.claudeCodeRuntimeModule });
   const installationInstance = await registerInstallationInstance({
     kind: options.serviceMode ? "service" : "foreground",
     dataDirectory,

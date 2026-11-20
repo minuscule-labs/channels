@@ -1,3 +1,5 @@
+import { harnessDiscoveryMessage } from "../lib/harness-errors";
+import { HarnessSelect } from "./harness-select";
 import type { Identity, WorkspaceMember } from "@minu/channels-core/types";
 import { isReservedMentionHandle } from "@minu/channels-core/mentions";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -264,19 +266,15 @@ export function AddWorkspaceParticipantForm({
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
             Harness
-            <input
+            <HarnessSelect
               value={runtimeAdapter}
-              onChange={(event) => {
-                setRuntimeAdapter(event.target.value);
+              onChange={(next) => {
+                setRuntimeAdapter(next);
                 setSelectedProvider("");
                 setSelectedModelKey("");
                 setReasoningLevel("");
                 setSelectedSkillIds(null);
               }}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="pi"
-              className="settings-input mt-1.5 font-mono"
             />
           </label>
           <label className={`${agentMode && activeTab !== "runtime" ? "hidden " : ""}block text-xs font-medium`}>
@@ -354,7 +352,7 @@ export function AddWorkspaceParticipantForm({
             <p className="text-xs text-[var(--muted)] sm:col-span-2">No skills were discovered for this harness.</p>
           ) : null}
           {runtimeOptions.isPending ? <p className="text-[10px] text-[var(--muted)] sm:col-span-2">Discovering harness providers, models, and skills…</p> : null}
-          {runtimeOptions.error ? <p className="text-[10px] text-[var(--danger)] sm:col-span-2">Harness model discovery unavailable.</p> : null}
+          {runtimeOptions.error ? <p className="text-[10px] text-[var(--danger)] sm:col-span-2">{harnessDiscoveryMessage(runtimeOptions.error, "Harness model discovery unavailable.")}</p> : null}
           {!agentMode ? (
             <label className="block text-xs font-medium sm:col-span-2">
               Agent instructions <span className="font-normal text-[var(--muted)]">(optional)</span>

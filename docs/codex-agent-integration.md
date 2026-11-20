@@ -28,8 +28,10 @@ pnpm local -- --no-open --data-dir /absolute/disposable/channels-data --cwd /abs
 Open the printed local URL, select Codex in agent setup, save the profile and start
 a new agent session explicitly. Codex must be installed and authenticated in the
 actual service environment. Sending a message can invoke configured models, tools,
-hooks and MCP integrations and may persist native history. Runtime uses a read-only
-sandbox and approval-never by default; that is not blanket permission for external
+hooks and MCP integrations and may persist native history. Channels starts Codex with its
+`workspace-write` sandbox and approval-never (it can edit inside the workspace and run sandboxed commands, like Pi and Claude
+Code agents can do real work; unrestricted execution stays excluded). Sessions created earlier keep the sandbox they were
+created with. This is not blanket permission for external
 integrations. Interactive approval/answer handling and explicit recovery remain
 unfinished. Cold suspend/resume/destroy eligibility is still macOS/v5-limited.
 
@@ -44,9 +46,9 @@ The packager now includes `dist/bin/runtime-pi.js` beside its existing
 Separate directories preserve each adapter's worker-relative URL and avoid worker
 name collisions.
 
-Channels now pins Runtime release-backport commit
-`f4fb65a9dda31fd7433ca35774af56ddacf00db8`, retaining the Pi/Codex adapters and fixing
-the Pi worker PID-publication race without importing later Runtime-main features.
+Channels now pins Runtime commit
+`9978e466b3f6b60f88075f4dc9b929fc9909c9b7`, combining the current Pi/Codex/Claude Code
+baseline with the Pi worker PID-publication fix and its regression tests.
 That source pin does not establish installed-artifact acceptance or authorize
 publication/deployment. Before shipping, satisfy required CI and exact-artifact
 acceptance through the normal release workflow. No pin, clean-tree requirement or

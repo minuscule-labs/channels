@@ -7,22 +7,30 @@ function moduleSpecifier(value: string): string {
   return value.startsWith(".") || isAbsolute(value) ? pathToFileURL(resolve(value)).href : value;
 }
 
-/** Load both installed adapters; selecting one remains an existing per-agent choice. */
-export async function loadLocalRuntimes(overrides: { pi?: string; codex?: string } = {}): Promise<Record<"pi" | "codex", LocalManagedRuntimePort>> {
+type LocalAdapter = "pi" | "codex" | "claude-code";
+const CLASSES: Record<LocalAdapter, string> = { pi: "PiAgentRuntime", codex: "CodexAgentRuntime", "claude-code": "ClaudeCodeAgentRuntime" };
+
+/** Load all installed adapters; selecting one remains an existing per-agent choice. */
+export async function loadLocalRuntimes(overrides: { pi?: string; codex?: string; claudeCode?: string } = {}): Promise<Record<LocalAdapter, LocalManagedRuntimePort>> {
   const directory = dirname(fileURLToPath(import.meta.url));
-  const entries = await Promise.all((["pi", "codex"] as const).map(async adapter => {
-    const packaged = resolve(directory, "..", "bin", ...(adapter === "codex" ? ["codex"] : []), `runtime-${adapter}.js`);
+  const entries = await Promise.all((["pi", "codex", "claude-code"] as const).map(async adapter => {
+    const packaged = resolve(directory, "..", "bin", ...(adapter === "pi" ? [] : [adapter]), `runtime-${adapter}.js`);
     const development = resolve(directory, "../../../../../runtime/packages", adapter, "dist/src/index.js");
-    const specifier = overrides[adapter] ?? (existsSync(packaged) ? packaged : development);
+    const specifier = (adapter === "claude-code" ? overrides.claudeCode : overrides[adapter]) ?? (existsSync(packaged) ? packaged : development);
     const loaded = await import(moduleSpecifier(specifier)) as Record<string, unknown>;
-    const name = adapter === "pi" ? "PiAgentRuntime" : "CodexAgentRuntime";
+    const name = CLASSES[adapter];
     const Constructor = loaded[name];
     if (typeof Constructor !== "function") throw new Error(`${adapter} Runtime module does not export ${name}`);
-    const runtime = new (Constructor as new () => LocalManagedRuntimePort)();
+    // Agents can do real work: Claude Code runs with full native tools (Pi parity); Codex may write inside its workspace under
+    // the sandbox (its adapter deliberately excludes unrestricted execution). Both use the installed CLI, its login and its
+    // default managed root. Pi keeps its own native defaults.
+    const Runtime = Constructor as new (options?: object) => LocalManagedRuntimePort;
+    const runtime = adapter === "claude-code" ? new Runtime({ permissions: "full" })
+      : adapter === "codex" ? new Runtime({ sandbox: "workspace-write" }) : new Runtime();
     for (const method of ["start", "send", "messages", "status", "startManaged", "listManagedSessions", "resume", "suspend", "destroy"] as const) {
       if (typeof runtime[method] !== "function") throw new Error(`${adapter} Runtime module is missing ${method}`);
     }
     return [adapter, runtime] as const;
   }));
-  return Object.fromEntries(entries) as Record<"pi" | "codex", LocalManagedRuntimePort>;
+  return Object.fromEntries(entries) as Record<LocalAdapter, LocalManagedRuntimePort>;
 }

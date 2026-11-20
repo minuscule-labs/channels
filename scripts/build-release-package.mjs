@@ -74,6 +74,15 @@ await Promise.all([
     resolve(runtimeRoot, "packages/codex/dist/src/owned-worker.js"),
     join(binDirectory, "codex/owned-worker.js"),
   ),
+  // Claude Code drives the user's installed `claude` (no native binary ships); its worker entry sits beside it.
+  bundle(
+    resolve(runtimeRoot, "packages/claude-code/dist/src/index.js"),
+    join(binDirectory, "claude-code/runtime-claude-code.js"),
+  ),
+  bundle(
+    resolve(runtimeRoot, "packages/claude-code/dist/src/worker-entry.js"),
+    join(binDirectory, "claude-code/worker-entry.js"),
+  ),
 ]);
 
 await Promise.all([

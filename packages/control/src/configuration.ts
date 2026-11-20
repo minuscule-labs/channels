@@ -1554,6 +1554,10 @@ export class LocalAgentHostConfiguration {
       };
     } catch (error) {
       if (error instanceof LocalConfigurationRequestError) throw error;
+      // The one non-generic Runtime error: a harness that needs its own sign-in says so (fixed, non-secret text).
+      if (error instanceof Error && error.name === "ClaudeCodeAuthRequiredError") {
+        throw new LocalConfigurationRequestError("Claude Code is not logged in; run `claude` to sign in", 409, "unavailable");
+      }
       throw new LocalConfigurationRequestError("Runtime options are unavailable", 409, "unavailable");
     }
   }

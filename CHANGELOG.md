@@ -4,15 +4,17 @@
 
 ## 0.0.41
 
-Release overview: [Activity inbox, durable unread state and per-agent Codex](docs/releases/v0.0.41.md).
+Release overview: [Activity inbox, durable unread state and per-agent harnesses](docs/releases/v0.0.41.md).
 
 - Add one Activity list for incoming mentions, channel broadcasts and replies in already-participated threads, with contextual previews, exact-source links and a desktop/mobile badge counting all unread notifications rather than loaded rows or all unread messages.
 - Calculate unread totals from persisted messages and store independent, monotonic human read cursors. Import valid browser read marks without rewinding server state; keep parent/thread scopes independent and exclude hidden, unfocused or covered timelines from acknowledgement.
 - Restore background Activity/unread reconciliation through body-free inbox hints on the existing shared SSE connection, without subscribing to every Conversation or consuming extra slots in the 100-topic limit. Keep snapshot recovery after disconnect and polling fallback.
 - Retry failed read acknowledgements after successful stream or polling reconciliation even when messages are unchanged. Keep parent Activity hashes out of nested thread views and clear the mobile navigation button from the Activity heading.
 - Offer Codex through existing per-agent Runtime setup while retaining Pi as the default and preserving existing bindings. Bundle separate adapter worker resources and authenticate living Codex workers during controller restoration without silently starting or cold-resuming them.
+- Start new Codex sessions with the `workspace-write` sandbox instead of read-only, allowing workspace edits and sandboxed commands. Unrestricted execution stays excluded and approvals stay off; existing sessions retain their original sandbox.
+- Add Claude Code as a third per-agent harness, using the installed `claude` and its service-environment login with full native tools, harness-provided choices and image support. Bundle its adapter/worker without a native engine, report missing login, and support `--claude-code-runtime-module`. Channels does not read or store credentials.
 - Fix the Pi resume/PID-publication race: wait for the controller to authorize the new worker within the existing five-second budget, retaining exact PID, owner and launch-state checks. This does not claim to resolve every Runtime recovery or native-database limitation.
-- Pin Runtime release-backport `f4fb65a9dda31fd7433ca35774af56ddacf00db8`, without importing later Runtime-main features. Add public migration `0014_human_read_cursors` and a chronological message index without rewriting messages or agent processing cursors; retain the existing local-control protocol and Runtime sleep/dispatch behavior.
+- Pin Runtime `9978e466b3f6b60f88075f4dc9b929fc9909c9b7`, combining the current three-harness baseline with the Pi fix and regression tests. Add public migration `0014_human_read_cursors` and a chronological message index without rewriting messages or agent processing cursors; retain the existing local-control protocol and Runtime sleep/dispatch behavior.
 - Prepare the pinned sibling Runtime in Linux/macOS CI and let both verification jobs finish independently, preserving all required checks and release gates.
 
 ## 0.0.40
