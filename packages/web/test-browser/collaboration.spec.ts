@@ -855,7 +855,7 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   const personaValue = "SECRET BROWSER PERSONA";
   await agentForm.getByLabel("Agent instructions", { exact: true }).fill(personaValue);
   await agentForm.getByRole("tab", { name: "Runtime" }).click();
-  expect(await agentForm.locator("#agent-runtime-adapters option").evaluateAll(options => options.map(option => option.getAttribute("value")))).toEqual(["pi", "codex"]);
+  expect(await agentForm.locator("#agent-runtime-adapters option").evaluateAll(options => options.map(option => option.getAttribute("value")))).toEqual(["pi", "codex", "claude-code"]);
   await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
   const agentResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
