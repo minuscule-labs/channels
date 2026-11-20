@@ -1,3 +1,4 @@
+import { harnessDiscoveryMessage } from "../lib/harness-errors";
 import type {
   LocalWorkspaceAgentConfigurationSummary,
   UpdateLocalWorkspaceAgentConfigurationInput,
@@ -446,6 +447,7 @@ function AgentLaunchProfileForm({
           <datalist id="agent-runtime-adapters">
             <option value="pi" />
             <option value="codex" />
+            <option value="claude-code" />
           </datalist>
         </label>
         <label className="block text-xs font-medium">
@@ -500,7 +502,7 @@ function AgentLaunchProfileForm({
         </label>
       </div>
         {runtimeOptions.isPending ? <p className="mt-2 text-[10px] text-[var(--muted)]">Discovering harness providers and models…</p> : null}
-        {runtimeOptions.error ? <p className="mt-2 text-[10px] text-[var(--danger)]">Harness discovery unavailable.</p> : null}
+        {runtimeOptions.error ? <p className="mt-2 text-[10px] text-[var(--danger)]">{harnessDiscoveryMessage(runtimeOptions.error, "Harness discovery unavailable.")}</p> : null}
       </div> : null}
       {activeTab === "skills" ? (
         <div className="mt-4" role="tabpanel">
@@ -534,7 +536,7 @@ function AgentLaunchProfileForm({
         </fieldset>
         ) : <p className="text-xs text-[var(--muted)]">No skills were discovered for this harness.</p>}
         {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness skills…</p> : null}
-        {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">Harness skill discovery unavailable.</p> : null}
+        {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">{harnessDiscoveryMessage(runtimeOptions.error, "Harness skill discovery unavailable.")}</p> : null}
         </div>
       ) : null}
       {activeTab === "runtime" && configuredRuntimeOptions.data ? (

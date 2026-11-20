@@ -1876,6 +1876,26 @@ test("Workspace provisioning validates first and resumes idempotently", async ()
   } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test("a harness that needs its own sign-in surfaces its fixed instruction; other discovery errors stay generic", async () => {
+  const server = await createConversationHttpServer();
+  const root = await mkdtemp(join(tmpdir(), "minu-runtime-auth-"));
+  try {
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    const owner = await client.createIdentity({ type: "human" });
+    const workspace = await client.createWorkspace({ slug: "runtime-auth", name: "Auth" });
+    await client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" });
+    const signedOut = Object.assign(new Error("PRIVATE account detail"), { name: "ClaudeCodeAuthRequiredError" });
+    const failures: Record<string, Error> = { "claude-code": signedOut, broken: new Error("PRIVATE native failure") };
+    const configuration = new LocalAgentHostConfiguration({ client, store: new InMemoryRelayBindingStore(), runtimeOptionsCacheTtlMs: 1,
+      runtimes: Object.fromEntries(Object.entries(failures).map(([name, error]) => [name, { async capabilities() { throw error; } }])) });
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
+    await assert.rejects(configuration.getWorkspaceRuntimeOptions(workspace.id, "claude-code", owner.id),
+      (error: Error & { status?: number }) => error.message === "Claude Code is not logged in; run `claude` to sign in" && error.status === 409);
+    await assert.rejects(configuration.getWorkspaceRuntimeOptions(workspace.id, "broken", owner.id),
+      (error: Error) => error.message === "Runtime options are unavailable" && !/PRIVATE/.test(error.message));
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("Runtime discovery is scoped by canonical Workspace source root", async () => {
   const server = await createConversationHttpServer();
   const firstRoot = await mkdtemp(join(tmpdir(), "minu-runtime-root-a-"));
