@@ -21,9 +21,12 @@ export async function loadLocalRuntimes(overrides: { pi?: string; codex?: string
     const name = CLASSES[adapter];
     const Constructor = loaded[name];
     if (typeof Constructor !== "function") throw new Error(`${adapter} Runtime module does not export ${name}`);
-    // Claude Code is opted into full native tools (Pi parity); it uses the installed `claude`, its login and its default managed root.
+    // Agents can do real work: Claude Code runs with full native tools (Pi parity); Codex may write inside its workspace under
+    // the sandbox (its adapter deliberately excludes unrestricted execution). Both use the installed CLI, its login and its
+    // default managed root. Pi keeps its own native defaults.
     const Runtime = Constructor as new (options?: object) => LocalManagedRuntimePort;
-    const runtime = adapter === "claude-code" ? new Runtime({ permissions: "full" }) : new Runtime();
+    const runtime = adapter === "claude-code" ? new Runtime({ permissions: "full" })
+      : adapter === "codex" ? new Runtime({ sandbox: "workspace-write" }) : new Runtime();
     for (const method of ["start", "send", "messages", "status", "startManaged", "listManagedSessions", "resume", "suspend", "destroy"] as const) {
       if (typeof runtime[method] !== "function") throw new Error(`${adapter} Runtime module is missing ${method}`);
     }

@@ -21,12 +21,12 @@ test("local runtime loading exposes all per-agent adapters without starting work
   assert.notEqual(runtimes.codex, runtimes["claude-code"]);
 });
 
-test("Claude Code is constructed with full native tools and no owner; Pi and Codex keep their no-argument construction", async () => {
+test("Claude Code gets full native tools and Codex workspace-write; Pi keeps its no-argument construction", async () => {
   const recording = (name: string) => `data:text/javascript,${encodeURIComponent(`export class ${name} { constructor(...args) { this.args = args; } ${methods} }`)}`;
   const runtimes = await loadLocalRuntimes({ pi: recording("PiAgentRuntime"), codex: recording("CodexAgentRuntime"), claudeCode: recording("ClaudeCodeAgentRuntime") });
   assert.deepEqual((runtimes["claude-code"] as unknown as { args: unknown[] }).args, [{ permissions: "full" }]);
   assert.deepEqual((runtimes.pi as unknown as { args: unknown[] }).args, []);
-  assert.deepEqual((runtimes.codex as unknown as { args: unknown[] }).args, []);
+  assert.deepEqual((runtimes.codex as unknown as { args: unknown[] }).args, [{ sandbox: "workspace-write" }]);
   await assert.rejects(loadLocalRuntimes({ pi: recording("PiAgentRuntime"), codex: recording("CodexAgentRuntime"), claudeCode: recording("PiAgentRuntime") }), /claude-code.*ClaudeCodeAgentRuntime/);
 });
 
