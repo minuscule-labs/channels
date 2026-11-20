@@ -44,11 +44,12 @@ The packager now includes `dist/bin/runtime-pi.js` beside its existing
 Separate directories preserve each adapter's worker-relative URL and avoid worker
 name collisions.
 
-The source Runtime work is still uncommitted relative to the currently pinned
-release baseline. Before shipping, select a reviewed Runtime commit containing
-Codex, update `runtime-source.json` through the normal release workflow, satisfy
-required CI and exact-artifact acceptance, and explicitly install/deploy it. No pin,
-clean-tree requirement or release gate was bypassed. See [releasing](releasing.md).
+Channels now pins merged Runtime commit
+`52160fd8d875b6f9ab42684feceeeb1d1984db32`, which contains the Pi and Codex adapters.
+That source pin does not establish installed-artifact acceptance or authorize
+publication/deployment. Before shipping, satisfy required CI and exact-artifact
+acceptance through the normal release workflow. No pin, clean-tree requirement or
+release gate is bypassed. See [releasing](releasing.md).
 The isolated bundle/worker test is not an installed release or production-channel
 acceptance test.
 
