@@ -44,8 +44,9 @@ The packager now includes `dist/bin/runtime-pi.js` beside its existing
 Separate directories preserve each adapter's worker-relative URL and avoid worker
 name collisions.
 
-Channels now pins merged Runtime commit
-`52160fd8d875b6f9ab42684feceeeb1d1984db32`, which contains the Pi and Codex adapters.
+Channels now pins Runtime release-backport commit
+`f4fb65a9dda31fd7433ca35774af56ddacf00db8`, retaining the Pi/Codex adapters and fixing
+the Pi worker PID-publication race without importing later Runtime-main features.
 That source pin does not establish installed-artifact acceptance or authorize
 publication/deployment. Before shipping, satisfy required CI and exact-artifact
 acceptance through the normal release workflow. No pin, clean-tree requirement or

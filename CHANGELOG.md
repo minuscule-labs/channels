@@ -11,7 +11,8 @@ Release overview: [Activity inbox, durable unread state and per-agent Codex](doc
 - Restore background Activity/unread reconciliation through body-free inbox hints on the existing shared SSE connection, without subscribing to every Conversation or consuming extra slots in the 100-topic limit. Keep snapshot recovery after disconnect and polling fallback.
 - Retry failed read acknowledgements after successful stream or polling reconciliation even when messages are unchanged. Keep parent Activity hashes out of nested thread views and clear the mobile navigation button from the Activity heading.
 - Offer Codex through existing per-agent Runtime setup while retaining Pi as the default and preserving existing bindings. Bundle separate adapter worker resources and authenticate living Codex workers during controller restoration without silently starting or cold-resuming them.
-- Pin merged Runtime `52160fd8d875b6f9ab42684feceeeb1d1984db32`. Add public migration `0014_human_read_cursors` and a chronological message index without rewriting messages or agent processing cursors; retain the existing local-control protocol and Runtime sleep/dispatch behavior.
+- Fix the Pi resume/PID-publication race: wait for the controller to authorize the new worker within the existing five-second budget, retaining exact PID, owner and launch-state checks. This does not claim to resolve every Runtime recovery or native-database limitation.
+- Pin Runtime release-backport `f4fb65a9dda31fd7433ca35774af56ddacf00db8`, without importing later Runtime-main features. Add public migration `0014_human_read_cursors` and a chronological message index without rewriting messages or agent processing cursors; retain the existing local-control protocol and Runtime sleep/dispatch behavior.
 - Prepare the pinned sibling Runtime in Linux/macOS CI and let both verification jobs finish independently, preserving all required checks and release gates.
 
 ## 0.0.40
