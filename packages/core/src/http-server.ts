@@ -104,7 +104,9 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(`${JSON.stringify(body)}\n`);
 }
 
-function sendEvent(response: ServerResponse, event: ConversationEvent): void {
+type StreamEvent = ConversationEvent | "inbox.updated";
+function sendEvent(response: ServerResponse, event: StreamEvent): void {
+  if (event === "inbox.updated") { response.write("event: inbox.updated\ndata: {}\n\n"); return; }
   response.write(`id: ${event.id}\n`);
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -152,14 +154,14 @@ export async function createConversationHttpServer(
 
   async function openEventStream(
     response: ServerResponse,
-    subscribe: (listener: (event: ConversationEvent) => void) => Promise<() => void>,
+    subscribe: (listener: (event: StreamEvent) => void) => Promise<() => void>,
     readiness: { conversationId: string } | { conversationIds: string[] },
   ): Promise<void> {
     let closed = false;
     let ready = false;
     let unsubscribe: (() => void) | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
-    const pending: ConversationEvent[] = [];
+    const pending: StreamEvent[] = [];
     const cleanup = () => {
       closed = true;
       streams.delete(response);
@@ -177,7 +179,7 @@ export async function createConversationHttpServer(
       unsubscribe = await subscribe((event) => {
         if (closed || closing || response.destroyed) return;
         if (ready) sendEvent(response, event);
-        else pending.push(event);
+        else if (event !== "inbox.updated" || !pending.includes(event)) pending.push(event);
       });
       if (closed || closing || response.destroyed) {
         cleanup();
@@ -219,6 +221,26 @@ export async function createConversationHttpServer(
       }
       const actor = authenticatedActor(request);
       const url = new URL(request.url ?? "/", "http://conversations.local");
+
+      if (url.pathname === "/identities/me/inbox" && request.method === "GET") {
+        response.setHeader("cache-control", "private, no-store");
+        if (!actor) { json(response, 403, { error: "Authenticated identity required" }); return; }
+        json(response, 200, { summaries: await service.listInbox(actor) });
+        return;
+      }
+      if (url.pathname === "/identities/me/activity" && request.method === "GET") {
+        response.setHeader("cache-control", "private, no-store");
+        if (!actor) { json(response, 403, { error: "Authenticated identity required" }); return; }
+        json(response, 200, await service.listActivity(actor, url.searchParams.get("before") ?? undefined));
+        return;
+      }
+      const readMatch = url.pathname.match(/^\/conversations\/([^/]+)\/read$/);
+      if (readMatch && request.method === "POST") {
+        if (!actor) { json(response, 403, { error: "Authenticated identity required" }); return; }
+        const input = await readJsonObject(request);
+        json(response, 200, { readSequence: await service.acknowledgeRead(readMatch[1]!, actor, input.sequence as number) });
+        return;
+      }
 
       if (url.pathname === "/identities" && request.method === "POST") {
         const identity = await service.createIdentity((await readJson(request)) as CreateIdentityInput);
@@ -345,10 +367,18 @@ export async function createConversationHttpServer(
 
       if (url.pathname === "/conversations/events" && request.method === "GET") {
         const conversationIds = [...new Set(url.searchParams.getAll("conversationId"))];
-        if (conversationIds.length === 0 || conversationIds.length > 100 || conversationIds.some((conversationId) => !conversationId)) {
-          throw new ConversationValidationError("conversationId must identify between 1 and 100 Conversations");
+        const inbox = url.searchParams.get("inbox") === "1";
+        if ((!conversationIds.length && !inbox) || conversationIds.length > 100 || conversationIds.some(id => !id)) {
+          throw new ConversationValidationError("conversationId must identify between 1 and 100 Conversations, or request inbox updates");
         }
-        await openEventStream(response, (listener) => service.subscribeMany(conversationIds, listener), { conversationIds });
+        if (inbox && !actor) { json(response, 403, { error: "Authenticated identity required" }); return; }
+        await openEventStream(response, async (listener) => {
+          const stopInbox = inbox ? await service.subscribeInbox(actor!, () => listener("inbox.updated")) : () => undefined;
+          try {
+            const stopConversations = await service.subscribeMany(conversationIds, listener);
+            return () => { stopInbox(); stopConversations(); };
+          } catch (error) { stopInbox(); throw error; }
+        }, { conversationIds });
         return;
       }
 

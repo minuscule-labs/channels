@@ -1,3 +1,4 @@
+import { listInbox, listActivity } from "./inbox.ts";
 import { createClient, LibsqlError, type Client } from "@libsql/client";
 import { assertConversationLifecycle, ConversationMessageIdConflictError, ConversationAttachmentUnavailableError, ConversationFolderConflictError, ConversationResponseRetiredError, normalizeConversationFolderName } from "@minu/channels-core";
 import { chmod, mkdir } from "node:fs/promises";
@@ -158,6 +159,15 @@ function messageAttachment(attachment: ConversationAttachmentRecord): MessageAtt
 }
 
 export class DrizzleLibSqlConversationStorage implements ConversationStorage, ConversationCursorStore {
+  listInbox(identityId: string) { return listInbox(this.client, identityId); }
+  listActivity(identityId: string, before?: string) { return listActivity(this.client, identityId, before); }
+  async acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number> {
+    const rows = await this.database.insert(schema.humanReadCursors).values({ conversationId, identityId, sequence })
+      .onConflictDoUpdate({ target: [schema.humanReadCursors.conversationId, schema.humanReadCursors.identityId],
+        set: { sequence: sql`max(${schema.humanReadCursors.sequence}, ${sequence})` } }).returning();
+    return rows[0]!.sequence;
+  }
+
   private constructor(
     private readonly client: Client,
     private readonly database: LibSQLDatabase<typeof schema>,

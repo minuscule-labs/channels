@@ -38,6 +38,32 @@ const event = (conversationId: string): ConversationEvent => ({
 });
 
 describe("shared physical event connection", () => {
+  it("keeps inbox hints on the same stream without consuming conversation slots", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const inbox = {}, view = {};
+    const received: EventHubMessage[] = [];
+    h.hub.subscribe(inbox, [], message => received.push(message), { mode: "observe", inbox: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.streams[0]!.ids).toEqual([]);
+    expect(h.streams[0]!.options.inbox).toBe(true);
+    const ids = Array.from({ length: 100 }, (_, index) => `conversation-${index}`);
+    h.hub.subscribe(view, ids, () => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.streams.at(-1)!.ids).toHaveLength(100);
+    h.streams.at(-1)!.options.onInboxChange!();
+    expect(received.at(-1)).toEqual({ type: "inbox" });
+    h.hub.unsubscribe(view);
+    await vi.advanceTimersByTimeAsync(RECENT_CONVERSATION_GRACE_MS);
+    expect(h.streams.at(-1)!.ids).toEqual([]);
+    expect(h.active()).toBe(1);
+    expect(h.peak()).toBe(1);
+    h.hub.unsubscribe(inbox);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.active()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("coalesces topic changes during a handshake without cancelling before headers arrive", async () => {
     const h = harness(false);
     const a = {}, b = {};

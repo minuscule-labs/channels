@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { createLocalWebServer } from "../../control/dist/src/local-web-server.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -266,6 +268,12 @@ const localControl = await createLocalControlHttpServer({
   }),
 });
 
+const gateway = await createLocalWebServer({
+  conversationsEndpoint: conversationServer.endpoint, conversationsServiceToken: serviceToken,
+  authenticateBrowser: cookie => browserSessions.authenticate(cookie), controlEndpoint: localControl.endpoint,
+  webDirectory: fileURLToPath(new URL("../", import.meta.url)),
+  port: Number(process.env.MINU_TEST_GATEWAY_PORT ?? 58414),
+});
 const controlServer = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://127.0.0.1:${fixturePort}`);
   if (request.method === "GET" && url.pathname === "/stream-metrics") {
@@ -274,7 +282,11 @@ const controlServer = createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && url.pathname === "/control-launch") {
-    browserSessions.currentHumanIdentityId = url.searchParams.get("actor") === "member" ? member.id : human.id;
+    const identityId = url.searchParams.get("identityId")
+      ?? (url.searchParams.get("actor") === "member" ? member.id : human.id);
+    const identity = await service.getIdentity(identityId).catch(() => undefined);
+    if (identity?.type !== "human") { response.writeHead(400).end(); return; }
+    browserSessions.currentHumanIdentityId = identityId;
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
     response.end(JSON.stringify({ launchUrl: browserSessions.issueLaunchUrl(
       localControl.endpoint,
@@ -369,10 +381,12 @@ const controlServer = createServer(async (request, response) => {
   }
   await conversationServer.close();
   const disconnectedConversation = url.searchParams.get("workspace") === "inactive" ? secondaryConversation : conversation;
-  await service.createMessage(disconnectedConversation.id, {
-    participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
-    body: "Message created while the browser was offline.",
-  });
+  if (url.searchParams.get("createMessage") !== "false") {
+    await service.createMessage(disconnectedConversation.id, {
+      participantId: url.searchParams.get("workspace") === "inactive" ? agent.id : human.id,
+      body: "Message created while the browser was offline.",
+    });
+  }
   response.writeHead(202).end();
   setTimeout(async () => {
     conversationServer = await createConversationHttpServer({ service, port: conversationsPort, serviceToken });
@@ -383,6 +397,7 @@ controlServer.listen(fixturePort, "127.0.0.1");
 console.log(JSON.stringify({ workspaceId: workspace.id, conversationId: conversation.id }));
 
 const close = async () => {
+  await gateway.close();
   await conversationServer.close().catch(() => undefined);
   await localControl.close().catch(() => undefined);
   await privateStore.close().catch(() => undefined);

@@ -11,6 +11,7 @@ import { join } from "node:path";
 // state implementation is imported; real mentions drive the observed boundaries.
 const api = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const web = `http://minu-channels.localhost:${process.env.MINU_TEST_WEB_PORT ?? 58412}`;
+const fixture = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
 const serviceToken = "browser-fixture-service-token";
 type Agent = "alpha" | "beta" | "gamma";
 type Actor = "owner" | "peer";
@@ -82,8 +83,14 @@ async function application(page: Page, context: BrowserContext) {
         const url = new URL(daemon.issueBrowserLaunchUrl()); url.hostname = "127.0.0.1";
         const exchange = await fetch(url, { redirect: "manual" }); expect(exchange.status).toBe(303);
         cookie = exchange.headers.get("set-cookie")!.split(";", 1)[0]!; await exchange.arrayBuffer();
-        const split = cookie.indexOf("=");
-        await context.addCookies([{ name: cookie.slice(0, split), value: cookie.slice(split + 1), url: web, httpOnly: true, sameSite: "Strict" }]);
+        // Authenticate the same human at the shared conversation gateway as well.
+        const { launchUrl } = await (await fetch(`${fixture}/control-launch?identityId=${identities[name].id}`)).json();
+        const gatewayUrl = new URL(launchUrl); gatewayUrl.hostname = "127.0.0.1";
+        const gatewayExchange = await fetch(gatewayUrl, { redirect: "manual" }); expect(gatewayExchange.status).toBe(303);
+        const gatewayCookie = gatewayExchange.headers.get("set-cookie")!.split(";", 1)[0]!;
+        await gatewayExchange.arrayBuffer();
+        const split = gatewayCookie.indexOf("=");
+        await context.addCookies([{ name: gatewayCookie.slice(0, split), value: gatewayCookie.slice(split + 1), url: web, httpOnly: true, sameSite: "Strict" }]);
         actor = name;
       } finally { await previous?.close(); }
     }
@@ -101,7 +108,7 @@ async function application(page: Page, context: BrowserContext) {
       const original = new URL(route.request().url());
       const destination = new URL(original.pathname + original.search, daemon!.endpoint);
       try {
-        const response = await route.fetch({ url: destination.href, headers: { ...route.request().headers(), host: destination.host }, timeout: 5_000 });
+        const response = await route.fetch({ url: destination.href, headers: { ...route.request().headers(), host: destination.host, cookie }, timeout: 5_000 });
         await route.fulfill({ response });
       } catch (error) { if (!page.isClosed()) throw error; }
     });

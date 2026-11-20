@@ -29,9 +29,12 @@ import type {
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 import type { MessageListOptions } from "./storage.ts";
+import type { ActivityPage, ConversationUnreadSummary } from "./inbox.ts";
 import { MAX_IMAGE_BYTES } from "./image-validation.ts";
 
 export interface ConversationEventOptions {
+  inbox?: boolean;
+  onInboxChange?(): void;
   signal?: AbortSignal;
   onReady?(): void;
 }
@@ -350,13 +353,29 @@ export class ConversationClient {
     return ((await response.json()) as { messages: ConversationMessage[] }).messages;
   }
 
+  async listInbox(): Promise<ConversationUnreadSummary[]> {
+    return ((await (await this.request("/identities/me/inbox")).json()) as { summaries: ConversationUnreadSummary[] }).summaries;
+  }
+
+  async listActivity(before?: string): Promise<ActivityPage> {
+    return (await (await this.request(`/identities/me/activity${before ? `?before=${encodeURIComponent(before)}` : ""}`)).json()) as ActivityPage;
+  }
+
+  async acknowledgeRead(conversationId: string, sequence: number): Promise<number> {
+    const response = await this.request(`/conversations/${conversationId}/read`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sequence }),
+    });
+    return ((await response.json()) as { readSequence: number }).readSequence;
+  }
+
   events(conversationId: string, options: ConversationEventOptions = {}): AsyncIterable<ConversationEvent> {
     return this.eventStream(`/conversations/${conversationId}/events`, options);
   }
 
   eventsMany(conversationIds: readonly string[], options: ConversationEventOptions = {}): AsyncIterable<ConversationEvent> {
-    if (conversationIds.length === 0) throw new RangeError("eventsMany requires at least one Conversation");
+    if (conversationIds.length === 0 && !options.inbox) throw new RangeError("eventsMany requires at least one Conversation or inbox updates");
     const query = new URLSearchParams();
+    if (options.inbox) query.set("inbox", "1");
     for (const conversationId of [...new Set(conversationIds)]) query.append("conversationId", conversationId);
     return this.eventStream(`/conversations/events?${query}`, options);
   }
@@ -377,6 +396,7 @@ export class ConversationClient {
           .split("\n")
           .find((line) => line.startsWith("event: "))
           ?.slice(7);
+        if (eventName === "inbox.updated") { options.onInboxChange?.(); continue; }
         if (eventName === "ready") {
           options.onReady?.();
           continue;

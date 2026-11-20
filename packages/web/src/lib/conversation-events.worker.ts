@@ -43,7 +43,8 @@ setInterval(() => {
     if (data?.type !== "subscribe") return;
     const ids: unknown = data.ids;
     const validId = (id: unknown): id is string => typeof id === "string" && id.length > 0 && id.length <= 256 && !id.includes("\0");
-    if (!Array.isArray(ids) || !ids.length || ids.length > 1_000 || !ids.every(validId)
+    if (!Array.isArray(ids) || (!ids.length && data.inbox !== true) || ids.length > 1_000 || !ids.every(validId)
+      || (data.inbox !== undefined && typeof data.inbox !== "boolean")
       || (data.mode !== undefined && !["active", "recent", "observe", "suspended"].includes(data.mode))
       || (data.parentId !== undefined && !validId(data.parentId))
       || (data.suspendedIds !== undefined && (!Array.isArray(data.suspendedIds) || data.suspendedIds.length > 1_000 || !data.suspendedIds.every(validId)))) {
@@ -51,7 +52,7 @@ setInterval(() => {
       return remove(port);
     }
     hub.subscribe(port, ids, (message) => {
-      if (message.type === "event") {
+      if (message.type === "event" || message.type === "inbox") {
         if (state.inFlight >= MAX_IN_FLIGHT || state.resync) { state.resync = true; return; }
         state.inFlight++;
       } else {
@@ -59,7 +60,7 @@ setInterval(() => {
         if (message.type === "ready" && state.inFlight === 0) state.resync = false;
       }
       port.postMessage(message);
-    }, { mode: data.mode, parentId: data.parentId, suspendedIds: data.suspendedIds } as EventSubscriptionOptions);
+    }, { inbox: data.inbox, mode: data.mode, parentId: data.parentId, suspendedIds: data.suspendedIds } as EventSubscriptionOptions);
   };
   port.onmessageerror = () => remove(port);
   port.start();
