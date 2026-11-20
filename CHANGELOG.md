@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Codex agents now run with the `workspace-write` sandbox (previously read-only) so they can edit files in the workspace, matching what Pi and Claude Code agents can do. Unrestricted execution stays excluded and approvals stay off. Existing Codex sessions keep the sandbox they were created with; new sessions pick up the change.
+- Add Claude Code as a third per-agent harness next to Pi and Codex. It uses the installed `claude` and its existing login (no credentials are read or stored by Channels), runs with full native tools like Pi, and supports model, reasoning and skill selection from the harness, images, and the same durable stop/resume/recovery as the other adapters. Agent setup shows "Claude Code is not logged in; run `claude` to sign in" when the harness needs a login.
+- Pin Runtime to the revision that adds the Claude Code adapter; the package bundles it with its worker entry in `dist/bin/claude-code/`. No native binary ships, so Claude Code must be installed where Channels runs. New `--claude-code-runtime-module` override; no schema or protocol changes.
+
 ## 0.0.40
 
 Release overview: [Bounded live-update subscriptions](docs/releases/v0.0.40.md).

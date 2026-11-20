@@ -855,8 +855,8 @@ test("shows saved instructions and Runtime selections only on authenticated agen
   const personaValue = "SECRET BROWSER PERSONA";
   await agentForm.getByLabel("Agent instructions", { exact: true }).fill(personaValue);
   await agentForm.getByRole("tab", { name: "Runtime" }).click();
-  expect(await agentForm.locator("#agent-runtime-adapters option").evaluateAll(options => options.map(option => option.getAttribute("value")))).toEqual(["pi", "codex"]);
-  await agentForm.getByLabel("Harness", { exact: true }).fill(runtimeValue);
+  expect(await agentForm.getByLabel("Harness", { exact: true }).locator("option").evaluateAll(options => options.map(option => option.getAttribute("value")))).toEqual(["pi", "codex", "claude-code"]);
+  await agentForm.getByLabel("Harness", { exact: true }).selectOption(runtimeValue);
   const agentResponsePromise = page.waitForResponse((response) =>
     response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
@@ -1056,7 +1056,7 @@ test("repairs a failed initial agent launch profile without creating a duplicate
   await expect(page.getByRole("alert")).toContainText("Harness unavailable");
 
   await launchProfile.getByRole("tab", { name: "Runtime" }).click();
-  await launchProfile.getByLabel("Harness", { exact: true }).fill("pi");
+  await launchProfile.getByLabel("Harness", { exact: true }).selectOption("pi");
   const repairResponse = page.waitForResponse((response) => response.request().method() === "PATCH"
     && response.url().includes(`/local/workspaces/${workspace.id}/agents/`));
   await launchProfile.getByRole("button", { name: "Save launch profile" }).click();

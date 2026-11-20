@@ -12,33 +12,45 @@ import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-r
 const methods = "start(){} send(){} messages(){} status(){} startManaged(){} listManagedSessions(){} resume(){} suspend(){} destroy(){}";
 const moduleOf = (name: string) => `data:text/javascript,${encodeURIComponent(`export class ${name} { ${methods} }`)}`;
 
-test("local runtime loading exposes both per-agent adapters without starting work", async () => {
+test("local runtime loading exposes all per-agent adapters without starting work", async () => {
   const runtimes = await loadLocalRuntimes();
   assert.equal(runtimes.pi.constructor.name, "PiAgentRuntime");
   assert.equal(runtimes.codex.constructor.name, "CodexAgentRuntime");
+  assert.equal(runtimes["claude-code"].constructor.name, "ClaudeCodeAgentRuntime");
   assert.notEqual(runtimes.pi, runtimes.codex);
+  assert.notEqual(runtimes.codex, runtimes["claude-code"]);
+});
+
+test("Claude Code gets full native tools and Codex workspace-write; Pi keeps its no-argument construction", async () => {
+  const recording = (name: string) => `data:text/javascript,${encodeURIComponent(`export class ${name} { constructor(...args) { this.args = args; } ${methods} }`)}`;
+  const runtimes = await loadLocalRuntimes({ pi: recording("PiAgentRuntime"), codex: recording("CodexAgentRuntime"), claudeCode: recording("ClaudeCodeAgentRuntime") });
+  assert.deepEqual((runtimes["claude-code"] as unknown as { args: unknown[] }).args, [{ permissions: "full" }]);
+  assert.deepEqual((runtimes.pi as unknown as { args: unknown[] }).args, []);
+  assert.deepEqual((runtimes.codex as unknown as { args: unknown[] }).args, [{ sandbox: "workspace-write" }]);
+  await assert.rejects(loadLocalRuntimes({ pi: recording("PiAgentRuntime"), codex: recording("CodexAgentRuntime"), claudeCode: recording("PiAgentRuntime") }), /claude-code.*ClaudeCodeAgentRuntime/);
 });
 
 test("explicit module overrides stay adapter-specific and never silently fall back", async () => {
-  const runtimes = await loadLocalRuntimes({ pi: moduleOf("PiAgentRuntime"), codex: moduleOf("CodexAgentRuntime") });
+  const runtimes = await loadLocalRuntimes({ pi: moduleOf("PiAgentRuntime"), codex: moduleOf("CodexAgentRuntime"), claudeCode: moduleOf("ClaudeCodeAgentRuntime") });
   assert.equal(runtimes.codex.constructor.name, "CodexAgentRuntime");
-  await assert.rejects(loadLocalRuntimes({ pi: moduleOf("PiAgentRuntime"), codex: moduleOf("PiAgentRuntime") }), /codex.*CodexAgentRuntime/);
-  await assert.rejects(loadLocalRuntimes({ pi: moduleOf("CodexAgentRuntime"), codex: moduleOf("CodexAgentRuntime") }), /pi.*PiAgentRuntime/);
+  const claude = moduleOf("ClaudeCodeAgentRuntime");
+  await assert.rejects(loadLocalRuntimes({ pi: moduleOf("PiAgentRuntime"), codex: moduleOf("PiAgentRuntime"), claudeCode: claude }), /codex.*CodexAgentRuntime/);
+  await assert.rejects(loadLocalRuntimes({ pi: moduleOf("CodexAgentRuntime"), codex: moduleOf("CodexAgentRuntime"), claudeCode: claude }), /pi.*PiAgentRuntime/);
 });
 
 test("bundled adapters keep isolated worker resources and Codex resumes the same history", { timeout:30000 }, async t => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-runtime-bundle-"))), bin = join(directory, "bin");
   const runtimeRoot = resolve(process.cwd(), "../runtime"), log = join(directory, "native.log");
   const { build } = await import("esbuild");
-  await mkdir(join(bin, "codex"), { recursive:true });
-  const targets = [["pi", "index", "runtime-pi.js"], ["pi", "owned-worker", "owned-worker.js"], ["codex", "index", "codex/runtime-codex.js"], ["codex", "owned-worker", "codex/owned-worker.js"]];
+  await mkdir(join(bin, "codex"), { recursive:true }); await mkdir(join(bin, "claude-code"), { recursive:true });
+  const targets = [["pi", "index", "runtime-pi.js"], ["pi", "owned-worker", "owned-worker.js"], ["codex", "index", "codex/runtime-codex.js"], ["codex", "owned-worker", "codex/owned-worker.js"], ["claude-code", "index", "claude-code/runtime-claude-code.js"], ["claude-code", "worker-entry", "claude-code/worker-entry.js"]];
   await Promise.all(targets.map(([adapter, entry, output]) => build({ entryPoints:[join(runtimeRoot, `packages/${adapter}/dist/src/${entry}.js`)], outfile:join(bin, output!), bundle:true, platform:"node", format:"esm", target:"node22" })));
   // The output directory must be ESM just like the shipped package.
   const { writeFile } = await import("node:fs/promises"); await writeFile(join(directory,"package.json"), '{"type":"module"}');
   await build({ entryPoints:[resolve(process.cwd(),"packages/control/dist/src/local-runtimes.js")], outfile:join(bin,"runtime-loader.js"), bundle:true, platform:"node", format:"esm", target:"node22" });
   const packagedLoader = await import(pathToFileURL(join(bin,"runtime-loader.js")).href);
   const loaded = await packagedLoader.loadLocalRuntimes();
-  assert.equal(loaded.pi.constructor.name,"PiAgentRuntime");assert.equal(loaded.codex.constructor.name,"CodexAgentRuntime");
+  assert.equal(loaded.pi.constructor.name,"PiAgentRuntime");assert.equal(loaded.codex.constructor.name,"CodexAgentRuntime");assert.equal(loaded["claude-code"].constructor.name,"ClaudeCodeAgentRuntime");
   const { CodexAgentRuntime } = await import(pathToFileURL(join(bin,"codex/runtime-codex.js")).href);
   const options = { managedRoot:join(directory,"managed"), command:process.execPath, args:[join(runtimeRoot,"packages/codex/dist/test/fixtures/app-server.js"),"lifecycle",log] };
   let runtime = new CodexAgentRuntime(options), session: {id:string;ownerId:string}|undefined;
