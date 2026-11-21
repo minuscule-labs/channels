@@ -47,8 +47,9 @@ Separate directories preserve each adapter's worker-relative URL and avoid worke
 name collisions.
 
 Channels now pins Runtime commit
-`b2ace47bc418beae699034e3e50ab85dd848d147`, combining the current Pi/Codex/Claude Code
-baseline with the Pi worker PID-publication and Claude stream-cancellation fixes.
+`f111a7981b8788fc101df064e148221caca4f102`, combining the current Pi/Codex/Claude Code
+baseline with the Pi PID-publication, Claude stream-cancellation, Codex cleanup
+and transient process-group exit-proof fixes.
 That source pin does not establish installed-artifact acceptance or authorize
 publication/deployment. Before shipping, satisfy required CI and exact-artifact
 acceptance through the normal release workflow. No pin, clean-tree requirement or
