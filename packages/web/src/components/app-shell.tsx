@@ -418,7 +418,7 @@ export function AppShell() {
       </div>
     );
   }
-  if (workspaces.data?.length === 0) {
+  if (workspaces.data?.length === 0 && !pathname.startsWith("/app/account/settings")) {
     return (
       <div className="grid min-h-screen place-items-center bg-[var(--bg)] p-6">
         <div className="empty-state max-w-lg text-center">

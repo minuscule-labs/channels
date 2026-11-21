@@ -126,6 +126,86 @@ async function fixture(diagnostics?: LifecycleDiagnostics, store: InMemoryRelayB
   };
 }
 
+for (const backend of ["memory", "sqlite"] as const) {
+  test(`${backend}: selected shared skills refresh only for newly created and replacement Runtime sessions`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "channels-account-skill-session-"));
+    const url = localRelayLibSqlUrl(join(directory, "relay.db"));
+    const store = backend === "memory" ? new InMemoryRelayBindingStore() : await DrizzleLibSqlRelayStorage.open({ url });
+    const f = await fixture(undefined, store);
+    try {
+      const configuration = new LocalAgentHostConfiguration({ client: f.client, store });
+      const content = { kind: "skill" as const, name: "Review", description: "Selected account procedure", content: "SHARED_SKILL_V1" };
+      const skill = await configuration.createAccountLibraryItem(f.owner.id, content);
+      const instructions = await configuration.createAuthoredDocument(f.workspace.id, f.owner.id, { action: "commit", kind: "instructions", content: "WORKSPACE_PIN_V1" });
+      await configuration.updateWorkspaceAgentConfiguration(f.workspace.id, f.agent.id, f.owner.id, { accountSkillIds: [skill.id] });
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      const original = (await store.listSessionHistory(f.conversation.id))[0]!;
+      assert.equal(original.authoredContext?.accountSkills?.[0]?.revision, 1);
+      assert.match(f.runtime.startConfigs[0]!.appendSystemPrompt!, /SHARED_SKILL_V1/);
+      await configuration.updateAccountLibraryItem(skill.id, f.owner.id, { action: "save", expectedVersion: 1, content: { ...content, content: "SHARED_SKILL_V2" } });
+      assert.equal(f.runtime.starts, 1);
+      assert.match(f.runtime.startConfigs[0]!.appendSystemPrompt!, /SHARED_SKILL_V1/);
+      assert.deepEqual((await store.listSessionHistory(f.conversation.id))[0]!.authoredContext, original.authoredContext);
+      await f.host.stopConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+      assert.equal(f.runtime.starts, 1, "Resuming the same session cannot adopt shared edits");
+      const sibling = await f.client.createConversation({ workspaceId: f.workspace.id, participantIds: [f.owner.id, f.agent.id] });
+      await f.host.startConversationAgent(sibling.id, f.agent.id, f.owner.id);
+      assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /SHARED_SKILL_V2/);
+      await f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+      assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /SHARED_SKILL_V2/);
+      const replacement = (await store.getSessionInspectionRecords(f.workspace.id, f.conversation.id, f.agent.id)).activation!;
+      assert.equal(replacement.authoredContext?.accountSkills?.[0]?.revision, 2);
+      await configuration.updateAccountLibraryItem(skill.id, f.owner.id, { action: "save", expectedVersion: 2, content: { ...content, content: "SHARED_SKILL_V3" } });
+      await configuration.updateAuthoredDocument(f.workspace.id, instructions.id, f.owner.id, { action: "commit", expectedVersion: 1, content: "WORKSPACE_PENDING_V2" });
+      const oldBinding = (await store.listConversationBindings(f.conversation.id))[0]!;
+      const inventory = f.runtime.listManagedSessions.bind(f.runtime);
+      f.runtime.getManagedSession = async (id, ownerId) => id === oldBinding.runtimeSessionId
+        ? { id, ownerId, state: "unavailable", unavailableReason: "session_transcript_invalid" }
+        : (await inventory(ownerId)).find(session => session.id === id);
+      await f.host.recoverConversationAgent(f.conversation.id, f.agent.id, f.owner.id, true);
+      assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /SHARED_SKILL_V3/);
+      assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /WORKSPACE_PIN_V1/);
+      assert.doesNotMatch(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /WORKSPACE_PENDING_V2/);
+      if (backend === "sqlite") {
+        const reopened = await DrizzleLibSqlRelayStorage.open({ url });
+        try { assert.deepEqual(await reopened.listSessionHistory(f.conversation.id), await store.listSessionHistory(f.conversation.id)); }
+        finally { await reopened.close(); }
+      }
+      await configuration.updateAccountLibraryItem(skill.id, f.owner.id, { action: "archive", expectedVersion: 3 });
+      const starts = f.runtime.starts;
+      await assert.rejects(f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh"), /Published instruction context is unavailable/);
+      assert.equal(f.runtime.starts, starts);
+      assert.equal((await store.listSessionHistory(sibling.id))[0]!.authoredContext?.accountSkills?.[0]?.revision, 2);
+      assert.doesNotMatch(JSON.stringify(await f.client.getConversation(f.conversation.id)), /SHARED_SKILL|WORKSPACE_PIN/);
+    } finally { await f.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+}
+
+test("independent account skill copies remain selectable workspace procedures without changing their shared source", async () => {
+  const f = await fixture();
+  try {
+    const configuration = new LocalAgentHostConfiguration({ client: f.client, store: f.store });
+    const content = { kind: "skill" as const, name: "Shared review", description: "Review procedure", content: "SHARED_SOURCE_V1" };
+    const source = await configuration.createAccountLibraryItem(f.owner.id, content);
+    const copy = await configuration.copyAccountSkillToWorkspace(f.workspace.id, source.id, f.owner.id, { expectedVersion: 1 });
+    assert.notEqual(copy.id, source.id);
+    await configuration.updateAuthoredDocument(f.workspace.id, copy.id, f.owner.id, { action: "commit", expectedVersion: 1, name: "Local review", description: "Local procedure", content: "LOCAL_COPY_V2" });
+    assert.deepEqual(await configuration.getAccountLibraryItem(source.id, f.owner.id), source);
+    await configuration.updateWorkspaceAgentConfiguration(f.workspace.id, f.agent.id, f.owner.id, { accountSkillIds: [], workspaceSkillIds: [copy.id] });
+    await f.host.startConversationAgent(f.conversation.id, f.agent.id, f.owner.id);
+    assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /LOCAL_COPY_V2/);
+    assert.doesNotMatch(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /SHARED_SOURCE_V1/);
+    await configuration.updateAccountLibraryItem(source.id, f.owner.id, { action: "save", expectedVersion: 1, content: { ...content, content: "SHARED_SOURCE_V2" } });
+    assert.equal((await configuration.getAuthoredDocument(f.workspace.id, copy.id, f.owner.id)).content, "LOCAL_COPY_V2");
+    await configuration.updateAuthoredDocument(f.workspace.id, copy.id, f.owner.id, { action: "commit", expectedVersion: 2, name: "Local review", description: "Local procedure", content: "LOCAL_COPY_V3" });
+    assert.match(f.runtime.startConfigs[0]!.appendSystemPrompt!, /LOCAL_COPY_V2/);
+    await f.host.replaceConversationAgent(f.conversation.id, f.agent.id, f.owner.id, "fresh");
+    assert.match(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /LOCAL_COPY_V3/);
+    assert.doesNotMatch(f.runtime.startConfigs.at(-1)!.appendSystemPrompt!, /SHARED_SOURCE_V2/);
+  } finally { await f.close(); }
+});
+
 test("authored launch instructions inherit workspace/channel scope and pin through resume and New session", async () => {
   const f = await fixture();
   try {

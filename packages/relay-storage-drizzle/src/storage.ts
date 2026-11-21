@@ -4,6 +4,9 @@ import type {
   ConversationSettings,
   ConversationPreset,
   ConversationCreationSetup,
+  WorkspaceComposition,
+  AccountLibraryItem,
+  AccountLibraryMutation,
   AuthoredDocument,
   AuthoredDocumentMutation,
   AuthoredDocumentRevision,
@@ -29,7 +32,7 @@ import type {
   RuntimeSessionRetirementReason,
   WorkspaceAgentConfig,
 } from "@minu/channels-relay";
-import { AuthoredContextUnavailableError, validateAuthoredContext, invocationDocumentMatches, invocationTargetMatches, reviseAuthoredDocument, prepareAuthoredDocumentCreation, validateConversationWorkingFolders } from "@minu/channels-relay";
+import { reviseAccountLibraryItem, AuthoredContextUnavailableError, validateAuthoredContext, invocationDocumentMatches, invocationTargetMatches, reviseAuthoredDocument, prepareAuthoredDocumentCreation, validateConversationWorkingFolders } from "@minu/channels-relay";
 import { and, asc, desc, eq, gt, isNull, lte, lt, ne, or, sql, type ExtractTablesWithRelations } from "drizzle-orm";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -89,6 +92,8 @@ function agentConfig(row: typeof schema.workspaceAgentConfigs.$inferSelect): Wor
     modelId: row.modelId ?? undefined,
     reasoningLevel: row.reasoningLevel ?? undefined,
     skillIds: parsedSkillIds as string[] | undefined,
+    accountSkills: row.accountSkills ?? undefined,
+    workspaceSkillIds: row.workspaceSkillIds ?? undefined,
     handoffSummaryTokens: row.handoffSummaryTokens ?? undefined,
     recentContextTokens: row.recentContextTokens ?? undefined,
     recentContextMessages: row.recentContextMessages ?? undefined,
@@ -425,6 +430,81 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     }
   }
 
+  async reserveWorkspaceComposition(record: WorkspaceComposition): Promise<WorkspaceComposition> {
+    await this.database.insert(schema.workspaceCompositions).values({ ownerIdentityId: record.ownerIdentityId, requestId: record.requestId,
+      state: record.state, definition: record }).onConflictDoNothing();
+    return (await this.getWorkspaceComposition(record.ownerIdentityId, record.requestId))!;
+  }
+  async getWorkspaceComposition(owner: string, requestId: string): Promise<WorkspaceComposition | undefined> {
+    const [row] = await this.database.select().from(schema.workspaceCompositions).where(and(eq(schema.workspaceCompositions.ownerIdentityId, owner), eq(schema.workspaceCompositions.requestId, requestId)));
+    return row ? { ...row.definition, state: row.state } : undefined;
+  }
+  async listWorkspaceCompositions(owner: string): Promise<WorkspaceComposition[]> {
+    const rows = await this.database.select().from(schema.workspaceCompositions).where(eq(schema.workspaceCompositions.ownerIdentityId, owner));
+    return rows.map(row => ({ ...row.definition, state: row.state }));
+  }
+  async completeWorkspaceComposition(owner: string, requestId: string): Promise<void> {
+    await this.database.update(schema.workspaceCompositions).set({ state: "complete" }).where(and(eq(schema.workspaceCompositions.ownerIdentityId, owner), eq(schema.workspaceCompositions.requestId, requestId)));
+  }
+
+  async createAccountLibraryItem(item: AccountLibraryItem): Promise<AccountLibraryItem | undefined> {
+    return this.database.transaction(async transaction => {
+      const rows = await transaction.insert(schema.accountLibraryItems).values({
+        id: item.id, ownerIdentityId: item.ownerIdentityId, version: item.version, definition: item,
+      }).onConflictDoNothing().returning();
+      if (!rows[0]) return undefined;
+      await transaction.insert(schema.accountLibraryVersions).values({
+        itemId: item.id, ownerIdentityId: item.ownerIdentityId, version: item.version, definition: item,
+      });
+      return rows[0].definition;
+    });
+  }
+
+  async getAccountLibraryItem(ownerIdentityId: string, itemId: string): Promise<AccountLibraryItem | undefined> {
+    const [row] = await this.database.select().from(schema.accountLibraryItems).where(and(
+      eq(schema.accountLibraryItems.ownerIdentityId, ownerIdentityId), eq(schema.accountLibraryItems.id, itemId),
+    )).limit(1);
+    return row?.definition;
+  }
+
+  async listAccountLibraryItems(ownerIdentityId: string): Promise<AccountLibraryItem[]> {
+    const rows = await this.database.select().from(schema.accountLibraryItems)
+      .where(eq(schema.accountLibraryItems.ownerIdentityId, ownerIdentityId)).orderBy(asc(schema.accountLibraryItems.id));
+    return rows.map(row => row.definition);
+  }
+
+  async mutateAccountLibraryItem(ownerIdentityId: string, itemId: string, mutation: AccountLibraryMutation): Promise<AccountLibraryItem | undefined> {
+    try {
+      return await this.database.transaction(async transaction => {
+        const [row] = await transaction.select().from(schema.accountLibraryItems).where(and(
+          eq(schema.accountLibraryItems.ownerIdentityId, ownerIdentityId), eq(schema.accountLibraryItems.id, itemId),
+        )).limit(1);
+        if (!row) return undefined;
+        const next = reviseAccountLibraryItem(row.definition, mutation);
+        if (!next) return undefined;
+        const updated = await transaction.update(schema.accountLibraryItems).set({ version: next.version, definition: next })
+          .where(and(eq(schema.accountLibraryItems.id, itemId), eq(schema.accountLibraryItems.ownerIdentityId, ownerIdentityId),
+            eq(schema.accountLibraryItems.version, mutation.expectedVersion))).returning();
+        if (!updated[0]) return undefined;
+        await transaction.insert(schema.accountLibraryVersions).values({
+          itemId, ownerIdentityId, version: next.version, definition: next,
+        });
+        return updated[0].definition;
+      });
+    } catch (error) {
+      const failure = error as { code?: string; cause?: { code?: string } };
+      if (failure.code === "SQLITE_BUSY" || failure.cause?.code === "SQLITE_BUSY") return undefined;
+      throw error;
+    }
+  }
+
+  async listAccountLibraryVersions(ownerIdentityId: string, itemId: string): Promise<AccountLibraryItem[]> {
+    const rows = await this.database.select().from(schema.accountLibraryVersions).where(and(
+      eq(schema.accountLibraryVersions.ownerIdentityId, ownerIdentityId), eq(schema.accountLibraryVersions.itemId, itemId),
+    )).orderBy(asc(schema.accountLibraryVersions.version));
+    return rows.map(row => row.definition);
+  }
+
   async createAuthoredDocument(document: AuthoredDocument, commit = false): Promise<AuthoredDocument | undefined> {
     const next = prepareAuthoredDocumentCreation(document, commit);
     return this.database.transaction(async transaction => {
@@ -592,6 +672,14 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     }
   }
 
+  async createWorkspaceConfig(config: LocalWorkspaceConfig): Promise<boolean> {
+    const rows = await this.database.insert(schema.localWorkspaceConfigs).values({ ...config, runtimeModelPolicies: config.runtimeModelPolicies ? JSON.stringify(config.runtimeModelPolicies) : null }).onConflictDoNothing().returning();
+    return rows.length > 0;
+  }
+  async createAgentConfig(config: WorkspaceAgentConfig): Promise<boolean> {
+    const rows = await this.database.insert(schema.workspaceAgentConfigs).values({ ...config, skillIds: config.skillIds ? JSON.stringify(config.skillIds) : null }).onConflictDoNothing().returning();
+    return rows.length > 0;
+  }
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {
     const values = { ...config, skillIds: config.skillIds ? JSON.stringify(config.skillIds) : null };
     await this.database.insert(schema.workspaceAgentConfigs).values(values).onConflictDoUpdate({
@@ -607,6 +695,8 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
         modelId: config.modelId ?? null,
         reasoningLevel: config.reasoningLevel ?? null,
         skillIds: config.skillIds ? JSON.stringify(config.skillIds) : null,
+        accountSkills: config.accountSkills ?? null,
+        workspaceSkillIds: config.workspaceSkillIds ?? null,
         handoffSummaryTokens: config.handoffSummaryTokens ?? null,
         recentContextTokens: config.recentContextTokens ?? null,
         recentContextMessages: config.recentContextMessages ?? null,

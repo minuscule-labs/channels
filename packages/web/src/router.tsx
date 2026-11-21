@@ -141,6 +141,7 @@ const legacyConversationRoute = createRoute({
   component: LegacyConversationRedirect,
 });
 
+const AccountLibraryPage = lazy(() => import("./components/account-library-page").then(module => ({ default: module.AccountLibraryPage })));
 const WorkspaceSettingsPage = lazy(() => import("./components/workspace-settings-page").then((module) => ({ default: module.WorkspaceSettingsPage })));
 const WorkspaceSkillPage = lazy(() => import("./components/workspace-skill-page").then(module => ({ default: module.WorkspaceSkillPage })));
 const ConversationPresetsPage = lazy(() => import("./components/conversation-presets-page").then((module) => ({ default: module.ConversationPresetsPage })));
@@ -152,6 +153,13 @@ function ContentRoutePending() {
 }
 
 const settingsRoutes = [
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings/presets", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage kind="workspace-preset" /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings/presets/$itemId", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage kind="workspace-preset" /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings/skills", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings/skills/$itemId", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings/agents", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage kind="agent-template" /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/account/settings/agents/$itemId", component: () => <Suspense fallback={<ContentRoutePending />}><AccountLibraryPage kind="agent-template" /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings", validateSearch: (search): { focusName?: boolean } => search.focusName === true ? { focusName: true } : {}, component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/people", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage section="people" /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/defaults", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage section="defaults" /></Suspense> }),

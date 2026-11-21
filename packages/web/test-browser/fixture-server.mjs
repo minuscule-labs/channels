@@ -96,6 +96,16 @@ const secondaryConversation = await service.createConversation({
 });
 
 const privateStore = new InMemoryRelayBindingStore();
+let failCompositionConfig = false;
+let releaseCompositionReservation;
+let compositionReservationGate;
+const reserveComposition = privateStore.reserveWorkspaceComposition.bind(privateStore);
+privateStore.reserveWorkspaceComposition = async record => { await compositionReservationGate; return reserveComposition(record); };
+const createCompositionAgentConfig = privateStore.createAgentConfig.bind(privateStore);
+privateStore.createAgentConfig = async config => {
+  if (failCompositionConfig) { failCompositionConfig = false; throw new Error("Injected composition config failure"); }
+  return createCompositionAgentConfig(config);
+};
 const conversationClient = new ConversationClient(conversationServer.endpoint, { serviceToken });
 const browserSessions = new LocalControlBrowserSessions({
   browserUrl: `http://minu-channels.localhost:${webPort}/`,
@@ -367,6 +377,19 @@ const controlServer = createServer(async (request, response) => {
   }
   if (request.method === "POST" && url.pathname === "/runtime-capabilities") {
     runtimeCapabilityMode = url.searchParams.get("mode") ?? "available";
+    response.writeHead(204).end();
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/hold-composition-reservation") {
+    compositionReservationGate ??= new Promise(resolve => { releaseCompositionReservation = resolve; });
+    response.writeHead(204).end(); return;
+  }
+  if (request.method === "POST" && url.pathname === "/release-composition-reservation") {
+    releaseCompositionReservation?.(); compositionReservationGate = undefined; releaseCompositionReservation = undefined;
+    response.writeHead(204).end(); return;
+  }
+  if (request.method === "POST" && url.pathname === "/fail-composition-config") {
+    failCompositionConfig = true;
     response.writeHead(204).end();
     return;
   }

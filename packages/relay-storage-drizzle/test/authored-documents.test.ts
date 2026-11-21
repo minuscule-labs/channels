@@ -208,7 +208,13 @@ test("authored-content migration preserves existing private Workspace, agent con
     await writeFile(journalPath, JSON.stringify(journal));
     store = await DrizzleLibSqlRelayStorage.open({ url, migrationsFolder });
     await store.putWorkspaceConfig({ workspaceId: "workspace-1", rootUri: "file:///private/source", notesFolderId: "notes-base", createdAt: timestamp, updatedAt: timestamp });
-    await store.putAgentConfig({ id: "agent-config", workspaceId: "workspace-1", agentIdentityId: "agent-1", personaPrompt: "Existing persona", skillIds: ["native-review"], status: "active", createdAt: timestamp, updatedAt: timestamp });
+    // Seed the historical schema directly: the current writer now includes columns
+    // intentionally absent from this pre-authored-content migration fixture.
+    const oldClient = createClient({ url });
+    try {
+      await oldClient.execute({ sql: "INSERT INTO workspace_agent_configs (id, workspace_id, agent_identity_id, persona_prompt, skill_ids, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        args: ["agent-config", "workspace-1", "agent-1", "Existing persona", JSON.stringify(["native-review"]), "active", timestamp, timestamp] });
+    } finally { oldClient.close(); }
     const preset = { id: "preset-1", workspaceId: "workspace-1", name: "Existing preset", revision: 1, participants: [], createdAt: timestamp, updatedAt: timestamp };
     const setup = { workspaceId: "workspace-1", conversationId: "channel-1", actorIdentityId: "owner", name: "Existing setup", participants: [] };
     assert.equal(await store.putConversationPreset(preset, null), true);
@@ -216,11 +222,22 @@ test("authored-content migration preserves existing private Workspace, agent con
     const settings = { workspaceId: "workspace-1", conversationId: "channel-1", revision: 1, participants: [], guidance: "Existing guidance", turnTimeoutMs: 60_000 };
     assert.equal(await store.putConversationSettings(settings, 0), true);
     const workspace = await store.getWorkspaceConfig("workspace-1");
-    const agent = await store.getAgentConfig("agent-config");
+    const oldRead = createClient({ url });
+    const agentColumns = "id, workspace_id, agent_identity_id, persona_ref, persona_prompt, runtime_adapter, model_provider, model_id, reasoning_level, skill_ids, handoff_summary_tokens, recent_context_tokens, recent_context_messages, status, created_at, updated_at";
+    let agent;
+    try { agent = (await oldRead.execute(`SELECT ${agentColumns} FROM workspace_agent_configs WHERE id = 'agent-config'`)).rows[0]; }
+    finally { oldRead.close(); }
     await store.close();
     store = await DrizzleLibSqlRelayStorage.open({ url });
     assert.deepEqual(await store.getWorkspaceConfig("workspace-1"), workspace);
-    assert.deepEqual(await store.getAgentConfig("agent-config"), agent);
+    const migratedRead = createClient({ url });
+    try { assert.deepEqual((await migratedRead.execute(`SELECT ${agentColumns} FROM workspace_agent_configs WHERE id = 'agent-config'`)).rows[0], agent); }
+    finally { migratedRead.close(); }
+    const migratedAgent = await store.getAgentConfig("agent-config");
+    assert.equal(migratedAgent?.personaPrompt, "Existing persona");
+    assert.deepEqual(migratedAgent?.skillIds, ["native-review"]);
+    assert.equal(migratedAgent?.accountSkills, undefined);
+    assert.equal(migratedAgent?.workspaceSkillIds, undefined);
     assert.deepEqual(await store.listConversationPresets("workspace-1"), [preset]);
     assert.deepEqual(await store.getConversationCreationSetup("workspace-1", "channel-1"), setup);
     const { turnTimeoutMs: removedTimeout, ...retainedSettings } = settings;

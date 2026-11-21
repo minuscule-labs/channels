@@ -65,7 +65,10 @@ import {
   type LocalAgentActivity,
   type LocalAgentActionInput, type LocalAgentActionReceipt,
   type LocalAgentOperationHistory, type LocalAgentOperationDetail, type LocalAgentDiagnosticReport,
+  type WorkspaceCompositionPlan, type WorkspaceComposition, type WorkspaceCompositionSummary,
+  type CreateWorkspaceAgentFromAccountTemplateResult,
   type LocalAgentRuntimeOptions,
+  type LocalAccountLibraryItem,
   type LocalAuthoredDocument,
   type LocalAuthoredDocumentRevision,
   type LocalAuthoredDocumentSummary,
@@ -218,6 +221,17 @@ export interface LocalControlConfigurationPort {
   publishAuthoredSkillInvocation?(conversationId: string, actorIdentityId: string, input: unknown, assertSession?: () => void): Promise<LocalAuthoredSkillInvocationPublicationReceipt>;
   getConversationAuthoredSkillCatalog?(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredSkillCatalog>;
   getConversationAuthoredContext?(conversationId: string, actorIdentityId: string): Promise<LocalConversationAuthoredContext>;
+  previewWorkspacePreset?(presetId: string, actor: string): Promise<WorkspaceCompositionPlan>;
+  composeWorkspace?(actor: string, input: unknown): Promise<ProvisionLocalWorkspaceResult>;
+  listWorkspaceCompositions?(actor: string): Promise<WorkspaceCompositionSummary[]>;
+  getWorkspaceComposition?(requestId: string, actor: string): Promise<WorkspaceComposition>;
+  copyAccountSkillToWorkspace?(workspaceId: string, skillId: string, actor: string, input: unknown): Promise<LocalAuthoredDocument>;
+  createWorkspaceAgentFromAccountTemplate?(workspaceId: string, actor: string, input: unknown): Promise<CreateWorkspaceAgentFromAccountTemplateResult>;
+  listAccountLibraryItems?(actor: string): Promise<LocalAccountLibraryItem[]>;
+  getAccountLibraryItem?(itemId: string, actor: string): Promise<LocalAccountLibraryItem>;
+  listAccountLibraryVersions?(itemId: string, actor: string): Promise<LocalAccountLibraryItem[]>;
+  createAccountLibraryItem?(actor: string, input: unknown): Promise<LocalAccountLibraryItem>;
+  updateAccountLibraryItem?(itemId: string, actor: string, input: unknown): Promise<LocalAccountLibraryItem>;
   listAuthoredDocuments?(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]>;
   getAuthoredDocument?(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocument>;
   listAuthoredDocumentRevisions?(workspaceId: string, documentId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentRevision[]>;
@@ -629,6 +643,58 @@ export class LocalControlService {
       throw new LocalConfigurationRequestError("Authored content unavailable", 404, "unavailable");
     }
     return this.options.configuration.getConversationAuthoredContext(conversationId, actorIdentityId);
+  }
+
+  async previewWorkspacePreset(id: string, actor: string): Promise<WorkspaceCompositionPlan> {
+    if (!this.options.configuration?.previewWorkspacePreset) throw new LocalConfigurationRequestError("Workspace presets unavailable", 404, "unavailable");
+    return this.options.configuration.previewWorkspacePreset(id, actor);
+  }
+  async composeWorkspace(actor: string, input: unknown): Promise<ProvisionLocalWorkspaceResult> {
+    if (!this.options.configuration?.composeWorkspace) throw new LocalConfigurationRequestError("Workspace composition unavailable", 404, "unavailable");
+    return this.options.configuration.composeWorkspace(actor, input);
+  }
+  async listWorkspaceCompositions(actor: string): Promise<WorkspaceCompositionSummary[]> {
+    if (!this.options.configuration?.listWorkspaceCompositions) throw new LocalConfigurationRequestError("Workspace composition unavailable", 404, "unavailable");
+    return this.options.configuration.listWorkspaceCompositions(actor);
+  }
+  async getWorkspaceComposition(id: string, actor: string): Promise<WorkspaceComposition> {
+    if (!this.options.configuration?.getWorkspaceComposition) throw new LocalConfigurationRequestError("Workspace composition unavailable", 404, "unavailable");
+    return this.options.configuration.getWorkspaceComposition(id, actor);
+  }
+
+  async copyAccountSkillToWorkspace(workspaceId: string, skillId: string, actor: string, input: unknown): Promise<LocalAuthoredDocument> {
+    if (!this.options.configuration?.copyAccountSkillToWorkspace) throw new LocalConfigurationRequestError("Account skill copying unavailable", 404, "unavailable");
+    return this.options.configuration.copyAccountSkillToWorkspace(workspaceId, skillId, actor, input);
+  }
+
+  async createWorkspaceAgentFromAccountTemplate(workspaceId: string, actor: string, input: unknown): Promise<CreateWorkspaceAgentFromAccountTemplateResult> {
+    if (!this.options.configuration?.createWorkspaceAgentFromAccountTemplate) throw new LocalConfigurationRequestError("Account agent creation unavailable", 404, "unavailable");
+    return this.options.configuration.createWorkspaceAgentFromAccountTemplate(workspaceId, actor, input);
+  }
+
+  async listAccountLibraryItems(actor: string): Promise<LocalAccountLibraryItem[]> {
+    if (!this.options.configuration?.listAccountLibraryItems) throw new LocalConfigurationRequestError("Account library unavailable", 404, "unavailable");
+    return this.options.configuration.listAccountLibraryItems(actor);
+  }
+
+  async getAccountLibraryItem(itemId: string, actor: string): Promise<LocalAccountLibraryItem> {
+    if (!this.options.configuration?.getAccountLibraryItem) throw new LocalConfigurationRequestError("Account library unavailable", 404, "unavailable");
+    return this.options.configuration.getAccountLibraryItem(itemId, actor);
+  }
+
+  async listAccountLibraryVersions(itemId: string, actor: string): Promise<LocalAccountLibraryItem[]> {
+    if (!this.options.configuration?.listAccountLibraryVersions) throw new LocalConfigurationRequestError("Account library unavailable", 404, "unavailable");
+    return this.options.configuration.listAccountLibraryVersions(itemId, actor);
+  }
+
+  async createAccountLibraryItem(actor: string, input: unknown): Promise<LocalAccountLibraryItem> {
+    if (!this.options.configuration?.createAccountLibraryItem) throw new LocalConfigurationRequestError("Account library unavailable", 404, "unavailable");
+    return this.options.configuration.createAccountLibraryItem(actor, input);
+  }
+
+  async updateAccountLibraryItem(itemId: string, actor: string, input: unknown): Promise<LocalAccountLibraryItem> {
+    if (!this.options.configuration?.updateAccountLibraryItem) throw new LocalConfigurationRequestError("Account library unavailable", 404, "unavailable");
+    return this.options.configuration.updateAccountLibraryItem(itemId, actor, input);
   }
 
   async listAuthoredDocuments(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]> {
@@ -1536,6 +1602,10 @@ export async function createLocalControlHttpServer(
       || /^\/local\/conversations\/[^/]+\/messages$/.test(requestPath)
       || requestPath === "/local/folders/select"
       || requestPath === "/local/workspaces"
+      || requestPath === "/local/account/library"
+      || requestPath === "/local/workspace-compositions"
+      || /^\/local\/workspaces\/[^/]+\/account-skills\/[^/]+\/copy$/.test(requestPath)
+      || /^\/local\/workspaces\/[^/]+\/agents\/from-account-template$/.test(requestPath)
       || /^\/local\/workspaces\/[^/]+\/conversations$/.test(requestPath)
       || /^\/local\/workspaces\/[^/]+\/authored-documents$/.test(requestPath)
       || /^\/local\/conversations\/[^/]+\/working-folders\/preview$/.test(requestPath)
@@ -1830,6 +1900,63 @@ export async function createLocalControlHttpServer(
         json(response, 200, result, origin);
         return;
       }
+      const presetPreviewMatch = path.match(/^\/local\/account\/library\/([^/]+)\/preview$/);
+      const compositionMatch = path.match(/^\/local\/workspace-compositions(?:\/([^/]+))?$/);
+      if ((presetPreviewMatch || compositionMatch) && browserSession) {
+        const allowed = presetPreviewMatch || compositionMatch?.[1] ? ["GET"] : ["GET", "POST"];
+        if (!allowed.includes(request.method ?? "")) {
+          response.setHeader("allow", allowed.join(", "));
+          json(response, 405, { error: "Method not allowed" }, origin); return;
+        }
+        const actor = browserSession.identityId;
+        const compose = async () => {
+          let input: unknown;
+          try { input = await readJson(request); }
+          catch (error) {
+            if (error instanceof LocalConfigurationRequestError && [400, 413].includes(error.status)) {
+              throw new LocalConfigurationRequestError(error.message, error.status, error.reason, error.actionOutcome, "rejected-before-reservation");
+            }
+            throw error;
+          }
+          return options.service.composeWorkspace(actor, input);
+        };
+        const result = presetPreviewMatch ? await options.service.previewWorkspacePreset(decodeURIComponent(presetPreviewMatch[1]!), actor)
+          : compositionMatch?.[1] ? await options.service.getWorkspaceComposition(decodeURIComponent(compositionMatch[1]), actor)
+          : request.method === "POST" ? await compose()
+          : await options.service.listWorkspaceCompositions(actor);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== actor) {
+          json(response, 401, { error: "Local browser session required" }, origin); return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, request.method === "POST" ? 201 : 200, result, origin); return;
+      }
+      const accountLibraryMatch = path.match(/^\/local\/account\/library(?:\/([^/]+)(\/versions)?)?$/);
+      if (accountLibraryMatch && browserSession) {
+        const itemId = accountLibraryMatch[1] ? decodeURIComponent(accountLibraryMatch[1]) : undefined;
+        const history = Boolean(accountLibraryMatch[2]);
+        const allowed = history ? ["GET"] : itemId ? ["GET", "PATCH"] : ["GET", "POST"];
+        if (!allowed.includes(request.method ?? "")) {
+          response.setHeader("allow", allowed.join(", "));
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const actor = browserSession.identityId;
+        const result = itemId
+          ? history ? await options.service.listAccountLibraryVersions(itemId, actor)
+            : request.method === "PATCH" ? await options.service.updateAccountLibraryItem(itemId, actor, await readJson(request))
+            : await options.service.getAccountLibraryItem(itemId, actor)
+          : request.method === "POST" ? await options.service.createAccountLibraryItem(actor, await readJson(request))
+          : await options.service.listAccountLibraryItems(actor);
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== actor) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, request.method === "POST" ? 201 : 200, result, origin);
+        return;
+      }
       const authoredDocumentsMatch = path.match(/^\/local\/workspaces\/([^/]+)\/authored-documents(?:\/([^/]+)(\/revisions)?)?$/);
       if (authoredDocumentsMatch && browserSession) {
         const workspaceId = decodeURIComponent(authoredDocumentsMatch[1]!);
@@ -1858,6 +1985,44 @@ export async function createLocalControlHttpServer(
         }
         response.setHeader("cache-control", "no-store");
         json(response, request.method === "POST" ? 201 : 200, result, origin);
+        return;
+      }
+      const accountSkillCopyMatch = path.match(/^\/local\/workspaces\/([^/]+)\/account-skills\/([^/]+)\/copy$/);
+      if (accountSkillCopyMatch && browserSession) {
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const result = await options.service.copyAccountSkillToWorkspace(
+          decodeURIComponent(accountSkillCopyMatch[1]!), decodeURIComponent(accountSkillCopyMatch[2]!), browserSession.identityId, await readJson(request),
+        );
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, 201, result, origin);
+        return;
+      }
+      const accountAgentMatch = path.match(/^\/local\/workspaces\/([^/]+)\/agents\/from-account-template$/);
+      if (accountAgentMatch && browserSession) {
+        if (request.method !== "POST") {
+          response.setHeader("allow", "POST");
+          json(response, 405, { error: "Method not allowed" }, origin);
+          return;
+        }
+        const result = await options.service.createWorkspaceAgentFromAccountTemplate(
+          decodeURIComponent(accountAgentMatch[1]!), browserSession.identityId, await readJson(request),
+        );
+        const fresh = options.browserSessions?.authenticate(request.headers.cookie);
+        if (!fresh || fresh.scope !== browserSession.scope || fresh.identityId !== browserSession.identityId) {
+          json(response, 401, { error: "Local browser session required" }, origin);
+          return;
+        }
+        response.setHeader("cache-control", "no-store");
+        json(response, 201, result, origin);
         return;
       }
       const workspaceConfigMatch = path.match(/^\/local\/workspaces\/([^/]+)\/config$/);
@@ -2029,7 +2194,7 @@ export async function createLocalControlHttpServer(
       json(response, 404, { error: "Not found" }, origin);
     })().catch((error: unknown) => {
       if (!response.headersSent && error instanceof LocalConfigurationRequestError) {
-        json(response, error.status, { error: error.message }, origin);
+        json(response, error.status, { error: error.message, ...(error.compositionOutcome ? { compositionOutcome: error.compositionOutcome } : {}) }, origin);
       } else if (!response.headersSent) {
         json(response, 502, { error: "Local control status unavailable" }, origin);
       } else {

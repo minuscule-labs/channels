@@ -491,6 +491,9 @@ export function NavigationSidebar({
           </div>
         </div>
       </nav>
+      {identityId ? <Link to="/app/account/settings" onClick={onNavigate} className="flex min-h-12 items-center gap-2 border-t border-[var(--border)] px-5 py-3 text-sm text-[var(--muted)] hover:bg-[var(--hover)]">
+        <Settings className="h-4 w-4" aria-hidden="true" />Account settings
+      </Link> : null}
       {movingConversation && actorIdentityId ? <MoveConversationFolderDialog conversation={movingConversation} actorIdentityId={actorIdentityId} onClose={() => setMovingConversation(undefined)} onMoved={updated => {
         if (identityId) onFolderCollapseChange(folderCollapseKey(identityId, updated.workspaceId, updated.folderId), false);
       }} onCloseAutoFocus={event => {

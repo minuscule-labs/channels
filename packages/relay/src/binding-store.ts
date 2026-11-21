@@ -5,6 +5,8 @@ import type { ConversationPreset, ConversationCreationSetup, ConversationSetting
 import type { AuthoredContextSnapshot } from "./authored-context.ts";
 import { prepareLinkedAuthoredInvocationTurn } from "./authored-invocation-delivery.ts";
 import { invocationDocumentMatches, invocationTargetMatches, type AuthoredInvocationMessageLink, type AuthoredSkillInvocation } from "./authored-invocations.ts";
+import type { WorkspaceComposition } from "./workspace-presets.ts";
+import { reviseAccountLibraryItem, type AccountLibraryItem, type AccountLibraryMutation } from "./account-library.ts";
 import { reviseAuthoredDocument, prepareAuthoredDocumentCreation, type AuthoredDocument, type AuthoredDocumentMutation, type AuthoredDocumentRevision } from "./authored-documents.ts";
 import type {
   AgentConversationBinding,
@@ -68,6 +70,9 @@ export interface WorkspaceAgentConfig {
   modelId?: string;
   reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   skillIds?: string[];
+  /** Account references retained from a template; session resolution is a separate capability. */
+  accountSkills?: { ownerIdentityId: string; skillIds: string[] };
+  workspaceSkillIds?: string[];
   /** Maximum ephemeral Conversation-derived handoff brief for a newly created Runtime session. */
   handoffSummaryTokens?: number;
   /** Maximum recent Conversation context sent on each Runtime turn. */
@@ -213,6 +218,15 @@ export interface ConversationWorkingFolder {
 }
 
 export interface RelayBindingStore extends RelayCursorStore {
+  reserveWorkspaceComposition(record: WorkspaceComposition): Promise<WorkspaceComposition>;
+  getWorkspaceComposition(owner: string, requestId: string): Promise<WorkspaceComposition | undefined>;
+  listWorkspaceCompositions(owner: string): Promise<WorkspaceComposition[]>;
+  completeWorkspaceComposition(owner: string, requestId: string): Promise<void>;
+  createAccountLibraryItem(item: AccountLibraryItem): Promise<AccountLibraryItem | undefined>;
+  getAccountLibraryItem(ownerIdentityId: string, itemId: string): Promise<AccountLibraryItem | undefined>;
+  listAccountLibraryItems(ownerIdentityId: string): Promise<AccountLibraryItem[]>;
+  mutateAccountLibraryItem(ownerIdentityId: string, itemId: string, mutation: AccountLibraryMutation): Promise<AccountLibraryItem | undefined>;
+  listAccountLibraryVersions(ownerIdentityId: string, itemId: string): Promise<AccountLibraryItem[]>;
   getConversationSettings(workspaceId: string, conversationId: string): Promise<ConversationSettings | undefined>;
   putConversationSettings(settings: ConversationSettings, expectedRevision: number): Promise<boolean>;
   listConversationPresets(workspaceId: string): Promise<ConversationPreset[]>;
@@ -231,6 +245,8 @@ export interface RelayBindingStore extends RelayCursorStore {
   listAuthoredDocuments(workspaceId: string): Promise<AuthoredDocument[]>;
   mutateAuthoredDocument(workspaceId: string, documentId: string, mutation: AuthoredDocumentMutation): Promise<AuthoredDocument | undefined>;
   listAuthoredDocumentRevisions(workspaceId: string, documentId: string): Promise<AuthoredDocumentRevision[]>;
+  createWorkspaceConfig(config: LocalWorkspaceConfig): Promise<boolean>;
+  createAgentConfig(config: WorkspaceAgentConfig): Promise<boolean>;
   putWorkspaceConfig(config: LocalWorkspaceConfig): Promise<LocalWorkspaceConfig>;
   getWorkspaceConfig(workspaceId: string): Promise<LocalWorkspaceConfig | undefined>;
   getConversationWorkingFolders(workspaceId: string, conversationId: string): Promise<ConversationWorkingFolder[]>;
@@ -460,6 +476,57 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     const invocation = link && [...this.authoredInvocations.values()].find(row => row.id === link.invocationId && row.conversationId === conversationId);
     return invocation ? structuredClone(invocation) : undefined;
   }
+  private readonly workspaceCompositions = new Map<string, WorkspaceComposition>();
+  async reserveWorkspaceComposition(record: WorkspaceComposition): Promise<WorkspaceComposition> {
+    const key = JSON.stringify([record.ownerIdentityId, record.requestId]);
+    if (!this.workspaceCompositions.has(key)) this.workspaceCompositions.set(key, structuredClone(record));
+    return structuredClone(this.workspaceCompositions.get(key)!);
+  }
+  async getWorkspaceComposition(owner: string, requestId: string): Promise<WorkspaceComposition | undefined> {
+    return structuredClone(this.workspaceCompositions.get(JSON.stringify([owner, requestId])));
+  }
+  async listWorkspaceCompositions(owner: string): Promise<WorkspaceComposition[]> {
+    return structuredClone([...this.workspaceCompositions.values()].filter(record => record.ownerIdentityId === owner));
+  }
+  async completeWorkspaceComposition(owner: string, requestId: string): Promise<void> {
+    const record = this.workspaceCompositions.get(JSON.stringify([owner, requestId]));
+    if (record) record.state = "complete";
+  }
+  private readonly accountLibrary = new Map<string, AccountLibraryItem>();
+  private readonly accountLibraryVersions = new Map<string, AccountLibraryItem[]>();
+
+  async createAccountLibraryItem(item: AccountLibraryItem): Promise<AccountLibraryItem | undefined> {
+    if (this.accountLibrary.has(item.id)) return undefined;
+    this.accountLibrary.set(item.id, structuredClone(item));
+    this.accountLibraryVersions.set(item.id, [structuredClone(item)]);
+    return structuredClone(item);
+  }
+
+  async getAccountLibraryItem(ownerIdentityId: string, itemId: string): Promise<AccountLibraryItem | undefined> {
+    const item = this.accountLibrary.get(itemId);
+    return item?.ownerIdentityId === ownerIdentityId ? structuredClone(item) : undefined;
+  }
+
+  async listAccountLibraryItems(ownerIdentityId: string): Promise<AccountLibraryItem[]> {
+    return structuredClone([...this.accountLibrary.values()].filter(item => item.ownerIdentityId === ownerIdentityId)
+      .sort((a, b) => a.id.localeCompare(b.id)));
+  }
+
+  async mutateAccountLibraryItem(ownerIdentityId: string, itemId: string, mutation: AccountLibraryMutation): Promise<AccountLibraryItem | undefined> {
+    const current = this.accountLibrary.get(itemId);
+    if (current?.ownerIdentityId !== ownerIdentityId) return undefined;
+    const next = reviseAccountLibraryItem(current, mutation);
+    if (!next) return undefined;
+    this.accountLibrary.set(itemId, structuredClone(next));
+    this.accountLibraryVersions.get(itemId)!.push(structuredClone(next));
+    return structuredClone(next);
+  }
+
+  async listAccountLibraryVersions(ownerIdentityId: string, itemId: string): Promise<AccountLibraryItem[]> {
+    if (this.accountLibrary.get(itemId)?.ownerIdentityId !== ownerIdentityId) return [];
+    return structuredClone(this.accountLibraryVersions.get(itemId) ?? []);
+  }
+
   private readonly authoredDocuments = new Map<string, AuthoredDocument>();
   private readonly authoredRevisions = new Map<string, AuthoredDocumentRevision[]>();
   private readonly workspaceConfigs = new Map<string, LocalWorkspaceConfig>();
@@ -589,6 +656,14 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
     return replacement.map(copyConversationWorkingFolder);
   }
 
+  async createWorkspaceConfig(config: LocalWorkspaceConfig): Promise<boolean> {
+    if (this.workspaceConfigs.has(config.workspaceId)) return false;
+    this.workspaceConfigs.set(config.workspaceId, structuredClone(config)); return true;
+  }
+  async createAgentConfig(config: WorkspaceAgentConfig): Promise<boolean> {
+    if (this.agentConfigs.has(config.id) || [...this.agentConfigs.values()].some(item => item.workspaceId === config.workspaceId && item.agentIdentityId === config.agentIdentityId)) return false;
+    this.agentConfigs.set(config.id, structuredClone(config)); return true;
+  }
   async putAgentConfig(config: WorkspaceAgentConfig): Promise<WorkspaceAgentConfig> {
     const duplicate = [...this.agentConfigs.values()].find(
       (candidate) => candidate.id !== config.id
@@ -596,14 +671,14 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
         && candidate.agentIdentityId === config.agentIdentityId,
     );
     if (duplicate) throw new Error("Workspace agent configuration already exists");
-    const stored = { ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined };
+    const stored = structuredClone(config);
     this.agentConfigs.set(config.id, stored);
-    return { ...stored, skillIds: stored.skillIds ? [...stored.skillIds] : undefined };
+    return structuredClone(stored);
   }
 
   async getAgentConfig(configId: string): Promise<WorkspaceAgentConfig | undefined> {
     const config = this.agentConfigs.get(configId);
-    return config ? { ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined } : undefined;
+    return config ? structuredClone(config) : undefined;
   }
 
   async getWorkspaceAgentConfig(
@@ -614,13 +689,13 @@ export class InMemoryRelayBindingStore implements RelayBindingStore {
       (candidate) => candidate.workspaceId === workspaceId
         && candidate.agentIdentityId === agentIdentityId,
     );
-    return config ? { ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined } : undefined;
+    return config ? structuredClone(config) : undefined;
   }
 
   async listWorkspaceAgentConfigs(workspaceId: string): Promise<WorkspaceAgentConfig[]> {
     return [...this.agentConfigs.values()]
       .filter((config) => config.workspaceId === workspaceId)
-      .map((config) => ({ ...config, skillIds: config.skillIds ? [...config.skillIds] : undefined }));
+      .map((config) => structuredClone(config));
   }
 
   async getOrCreateRuntimeOwnerId(): Promise<string> {
@@ -1186,6 +1261,8 @@ export class LocalRelayDirectory {
     modelId?: string | null;
     reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
     skillIds?: string[];
+    accountSkills?: WorkspaceAgentConfig["accountSkills"] | null;
+    workspaceSkillIds?: string[];
     handoffSummaryTokens?: number | null;
     recentContextTokens?: number | null;
     recentContextMessages?: number | null;
@@ -1254,6 +1331,8 @@ export class LocalRelayDirectory {
       modelId,
       reasoningLevel,
       skillIds,
+      accountSkills: structuredClone(input.accountSkills === undefined ? existing?.accountSkills : input.accountSkills ?? undefined),
+      workspaceSkillIds: structuredClone(input.workspaceSkillIds ?? existing?.workspaceSkillIds),
       handoffSummaryTokens,
       recentContextTokens,
       recentContextMessages,

@@ -176,6 +176,34 @@
       "when": 1799539200011,
       "tag": "0024_invocation_message_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1799539200012,
+      "tag": "0025_account_library",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1799539200013,
+      "tag": "0026_agent_account_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1799539200014,
+      "tag": "0027_workspace_skill_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1799539200015,
+      "tag": "0028_workspace_compositions",
+      "breakpoints": true
     }
   ]
 }

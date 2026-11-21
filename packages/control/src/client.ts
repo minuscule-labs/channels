@@ -6,8 +6,14 @@ import type {
   CreateMessageInput,
 } from "@minu/channels-core/types";
 import type {
+  WorkspaceCompositionPlan, WorkspaceCompositionRequest, WorkspaceComposition, WorkspaceCompositionSummary,
+  CreateWorkspaceAgentFromAccountTemplateInput,
+  CreateWorkspaceAgentFromAccountTemplateResult,
   LocalAgentRuntimeOptions,
   CreateLocalAuthoredDocumentInput,
+  LocalAccountLibraryItem,
+  LocalAccountLibraryContent,
+  UpdateLocalAccountLibraryItemInput,
   LocalAuthoredDocument,
   LocalAuthoredDocumentRevision,
   LocalAuthoredDocumentSummary,
@@ -51,6 +57,7 @@ export class LocalControlClientError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly compositionOutcome?: "rejected-before-reservation",
   ) {
     super(message);
     this.name = "LocalControlClientError";
@@ -336,6 +343,51 @@ export class LocalControlClient {
     return this.get(`/local/conversations/${encodeURIComponent(conversationId)}/authored-context`);
   }
 
+  async previewWorkspacePreset(id: string): Promise<WorkspaceCompositionPlan> {
+    return this.get(`/local/account/library/${encodeURIComponent(id)}/preview`);
+  }
+  async composeWorkspace(input: WorkspaceCompositionRequest): Promise<ProvisionLocalWorkspaceResult> {
+    return this.request("/local/workspace-compositions", { method: "POST", body: JSON.stringify(input) });
+  }
+  async listWorkspaceCompositions(): Promise<WorkspaceCompositionSummary[]> {
+    return this.get("/local/workspace-compositions");
+  }
+  async getWorkspaceComposition(id: string): Promise<WorkspaceComposition> {
+    return this.get(`/local/workspace-compositions/${encodeURIComponent(id)}`);
+  }
+
+  async copyAccountSkillToWorkspace(workspaceId: string, skillId: string, expectedVersion: number): Promise<LocalAuthoredDocument> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/account-skills/${encodeURIComponent(skillId)}/copy`, {
+      method: "POST", body: JSON.stringify({ expectedVersion }),
+    });
+  }
+
+  async createWorkspaceAgentFromAccountTemplate(workspaceId: string, input: CreateWorkspaceAgentFromAccountTemplateInput): Promise<CreateWorkspaceAgentFromAccountTemplateResult> {
+    return this.request(`/local/workspaces/${encodeURIComponent(workspaceId)}/agents/from-account-template`, {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async listAccountLibraryItems(): Promise<LocalAccountLibraryItem[]> {
+    return this.get("/local/account/library");
+  }
+
+  async getAccountLibraryItem(itemId: string): Promise<LocalAccountLibraryItem> {
+    return this.get(`/local/account/library/${encodeURIComponent(itemId)}`);
+  }
+
+  async listAccountLibraryVersions(itemId: string): Promise<LocalAccountLibraryItem[]> {
+    return this.get(`/local/account/library/${encodeURIComponent(itemId)}/versions`);
+  }
+
+  async createAccountLibraryItem(input: LocalAccountLibraryContent): Promise<LocalAccountLibraryItem> {
+    return this.request("/local/account/library", { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async updateAccountLibraryItem(itemId: string, input: UpdateLocalAccountLibraryItemInput): Promise<LocalAccountLibraryItem> {
+    return this.request(`/local/account/library/${encodeURIComponent(itemId)}`, { method: "PATCH", body: JSON.stringify(input) });
+  }
+
   async listAuthoredDocuments(workspaceId: string): Promise<LocalAuthoredDocumentSummary[]> {
     return this.get(`/local/workspaces/${encodeURIComponent(workspaceId)}/authored-documents`);
   }
@@ -451,8 +503,9 @@ export class LocalControlClient {
         signal: controller.signal,
       });
       if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new LocalControlClientError(body.error ?? `Local control request failed (${response.status})`, response.status);
+        const body = (await response.json().catch(() => ({}))) as { error?: string; compositionOutcome?: string };
+        throw new LocalControlClientError(body.error ?? `Local control request failed (${response.status})`, response.status,
+          body.compositionOutcome === "rejected-before-reservation" ? body.compositionOutcome : undefined);
       }
       if (response.status === 204) return undefined as T;
       return await response.json() as T;
