@@ -2,9 +2,23 @@
 
 ## Unreleased
 
-- Codex agents now run with the `workspace-write` sandbox (previously read-only) so they can edit files in the workspace, matching what Pi and Claude Code agents can do. Unrestricted execution stays excluded and approvals stay off. Existing Codex sessions keep the sandbox they were created with; new sessions pick up the change.
-- Add Claude Code as a third per-agent harness next to Pi and Codex. It uses the installed `claude` and its existing login (no credentials are read or stored by Channels), runs with full native tools like Pi, and supports model, reasoning and skill selection from the harness, images, and the same durable stop/resume/recovery as the other adapters. Agent setup shows "Claude Code is not logged in; run `claude` to sign in" when the harness needs a login.
-- Pin Runtime to the revision that adds the Claude Code adapter; the package bundles it with its worker entry in `dist/bin/claude-code/`. No native binary ships, so Claude Code must be installed where Channels runs. New `--claude-code-runtime-module` override; no schema or protocol changes.
+## 0.0.41
+
+Release overview: [Activity inbox, durable unread state and per-agent harnesses](docs/releases/v0.0.41.md).
+
+- Add one Activity list for incoming mentions, channel broadcasts and replies in already-participated threads, with contextual previews, exact-source links and a desktop/mobile badge counting all unread notifications rather than loaded rows or all unread messages.
+- Calculate unread totals from persisted messages and store independent, monotonic human read cursors. Import valid browser read marks without rewinding server state; keep parent/thread scopes independent and exclude hidden, unfocused or covered timelines from acknowledgement.
+- Restore background Activity/unread reconciliation through body-free inbox hints on the existing shared SSE connection, without subscribing to every Conversation or consuming extra slots in the 100-topic limit. Keep snapshot recovery after disconnect and polling fallback.
+- Retry failed read acknowledgements after successful stream or polling reconciliation even when messages are unchanged. Keep parent Activity hashes out of nested thread views and clear the mobile navigation button from the Activity heading.
+- Offer Codex through existing per-agent Runtime setup while retaining Pi as the default and preserving existing bindings. Bundle separate adapter worker resources and authenticate living Codex workers during controller restoration without silently starting or cold-resuming them.
+- Start new Codex sessions with the `workspace-write` sandbox instead of read-only, allowing workspace edits and sandboxed commands. Unrestricted execution stays excluded and approvals stay off; existing sessions retain their original sandbox.
+- Add Claude Code as a third per-agent harness, using the installed `claude` and its service-environment login with full native tools, harness-provided choices and image support. Bundle its adapter/worker without a native engine, report missing login, and support `--claude-code-runtime-module`. Channels does not read or store credentials.
+- Fix the Pi resume/PID-publication race: wait for the controller to authorize the new worker within the existing five-second budget, retaining exact PID, owner and launch-state checks. This does not claim to resolve every Runtime recovery or native-database limitation.
+- Fix Claude event-reader cancellation after garbage collection by directly cancelling the consumer's HTTP reader, without stopping its worker or increasing deadlines.
+- Avoid a Codex post-start cleanup lock race that could prevent recovery from applying its fence. Actual cleanup still requires fresh locked authorization; existing process-identity and absence-proof checks remain unchanged.
+- Wait through transient macOS `EPERM` after verified worker termination within the existing exit-proof budget. Require `ESRCH` to prove absence and refuse further escalation if the group remains uninspectable; keep identity checks and deadlines intact.
+- Pin Runtime `f111a7981b8788fc101df064e148221caca4f102`, combining the current three-harness baseline with the Pi startup, Claude cancellation, Codex cleanup and process-group exit-proof fixes and regression tests. Add public migration `0014_human_read_cursors` and a chronological message index without rewriting messages or agent processing cursors; retain the existing local-control protocol and Runtime sleep/dispatch behavior.
+- Prepare the pinned sibling Runtime in Linux/macOS CI and let both verification jobs finish independently, preserving all required checks and release gates.
 
 ## 0.0.40
 
