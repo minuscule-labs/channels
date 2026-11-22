@@ -18,6 +18,9 @@ import {
   initialLaunchReasoning,
 } from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
+import { LocalControlClientError } from "@minu/channels-control/client";
+import { WorkspaceAgentSkills } from "./workspace-agent-skills";
+import { AddAccountAgentForm } from "./add-account-agent-form";
 import { AddWorkspaceParticipantForm } from "./add-workspace-participant-form";
 import { useAppToast } from "./ui/toast";
 import { ErrorNotice } from "./ui/error-notice";
@@ -668,9 +671,11 @@ export function AgentCreatePage() {
   const { workspaceId } = useParams({ from: "/app/workspaces/$workspaceId/agents/new" });
   const navigate = useNavigate();
   const { showToast } = useAppToast();
+  const [source, setSource] = useState<"new" | "account">("new");
   const data = useAgentManagementData(workspaceId);
   if (data.pending) return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading agent editor…</div>;
-  if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
+  if (!data.workspace.data || !data.session.data || !data.configuration.data
+    || (data.error instanceof LocalControlClientError && [401, 403].includes(data.error.status))) return <AgentPageError error={data.error} />;
 
   return (
     <WorkspaceSettingsLayout>
@@ -681,8 +686,15 @@ export function AgentCreatePage() {
               <h2 className="text-lg font-semibold">New Workspace agent</h2>
               <p className="mt-1 text-sm leading-6 text-[var(--muted)]">Configure the agent using the same settings available after creation.</p>
             </div>
+            {data.error ? <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{data.error.message}</p> : null}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button type="button" className={source === "new" ? "button-primary" : "button-secondary"} aria-pressed={source === "new"} onClick={() => setSource("new")}>New agent</button>
+              <button type="button" className={source === "account" ? "button-primary" : "button-secondary"} aria-pressed={source === "account"} onClick={() => setSource("account")}>Add from account agents</button>
+            </div>
             <div className="mt-4 rounded-lg border border-[var(--border)] bg-[var(--bg)] p-4">
-              <AddWorkspaceParticipantForm
+              {source === "account" ? <AddAccountAgentForm key={data.session.data.identityId} workspaceId={workspaceId} actorIdentityId={data.session.data.identityId} existingMembers={data.members.data ?? []} onCreated={identity => {
+                void navigate({ to: "/app/workspaces/$workspaceId/agents/$agentId", params: { workspaceId, agentId: identity.id } });
+              }} /> : <AddWorkspaceParticipantForm
                 workspaceId={workspaceId}
                 existingMembers={data.members.data ?? []}
                 mode="agent"
@@ -708,7 +720,7 @@ export function AgentCreatePage() {
                     }),
                   });
                 }}
-              />
+              />}
             </div>
             <div className="mt-4 flex justify-end"><Link to="/app/workspaces/$workspaceId/agents" params={{ workspaceId }} className="button-secondary">Cancel</Link></div>
           </article>
@@ -725,7 +737,8 @@ export function AgentDetailPage() {
   if (data.pending || (!data.agents.some(({ identity }) => identity.id === agentId) && data.configuration.isFetching)) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading agent…</div>;
   }
-  if (data.error || !data.workspace.data || !data.session.data || !data.configuration.data) return <AgentPageError error={data.error} />;
+  if (!data.workspace.data || !data.session.data || !data.configuration.data
+    || (data.error instanceof LocalControlClientError && [401, 403].includes(data.error.status))) return <AgentPageError error={data.error} />;
   const agent = data.agents.find(({ identity }) => identity.id === agentId);
   if (!agent) return <AgentPageError error={new Error("Agent does not belong to this Workspace.")} />;
   const assignedConversations = (data.workspaceConversations.data ?? []).filter((conversation) =>
@@ -756,6 +769,7 @@ export function AgentDetailPage() {
                 Agent created, but its launch profile needs attention: {configurationWarning}
               </div>
             ) : null}
+            {data.error ? <p role="alert" className="mt-3 text-sm text-[var(--danger)]">{data.error.message}</p> : null}
             <AgentIdentityForm workspaceId={workspaceId} actorIdentityId={data.session.data.identityId} identity={agent.identity} member={agent.member} />
             <AgentLaunchProfileForm
               workspaceId={workspaceId}
@@ -765,6 +779,7 @@ export function AgentDetailPage() {
                 setConfigurationWarning(null);
               }}
             />
+            {agent.config.configured ? <WorkspaceAgentSkills key={`${data.session.data.identityId}:${agentId}`} workspaceId={workspaceId} agentId={agentId} actorIdentityId={data.session.data.identityId} /> : null}
           </article>
       </div>
     </WorkspaceSettingsLayout>

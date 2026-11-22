@@ -1,6 +1,27 @@
 import { sql } from "drizzle-orm";
-import type { AuthoredInvocationTarget } from "@minu/channels-relay";
+import type { WorkspaceComposition, WorkspaceAgentConfig, AccountLibraryItem, AuthoredInvocationTarget } from "@minu/channels-relay";
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+export const workspaceCompositions = sqliteTable("workspace_compositions", {
+  ownerIdentityId: text("owner_identity_id").notNull(),
+  requestId: text("request_id").notNull(),
+  state: text("state", { enum: ["pending", "complete"] }).notNull(),
+  definition: text("definition", { mode: "json" }).$type<WorkspaceComposition>().notNull(),
+}, table => [primaryKey({ columns: [table.ownerIdentityId, table.requestId] })]);
+
+export const accountLibraryItems = sqliteTable("account_library_items", {
+  id: text("id").primaryKey(),
+  ownerIdentityId: text("owner_identity_id").notNull(),
+  version: integer("version").notNull(),
+  definition: text("definition", { mode: "json" }).$type<AccountLibraryItem>().notNull(),
+}, table => [index("account_library_owner_idx").on(table.ownerIdentityId)]);
+
+export const accountLibraryVersions = sqliteTable("account_library_versions", {
+  itemId: text("item_id").notNull().references(() => accountLibraryItems.id),
+  ownerIdentityId: text("owner_identity_id").notNull(),
+  version: integer("version").notNull(),
+  definition: text("definition", { mode: "json" }).$type<AccountLibraryItem>().notNull(),
+}, table => [primaryKey({ columns: [table.itemId, table.version] })]);
 
 export const conversationPresets = sqliteTable("conversation_presets", {
   workspaceId: text("workspace_id").notNull(),
@@ -133,6 +154,8 @@ export const workspaceAgentConfigs = sqliteTable("workspace_agent_configs", {
     enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
   }),
   skillIds: text("skill_ids"),
+  accountSkills: text("account_skills", { mode: "json" }).$type<WorkspaceAgentConfig["accountSkills"]>(),
+  workspaceSkillIds: text("workspace_skill_ids", { mode: "json" }).$type<string[]>(),
   handoffSummaryTokens: integer("handoff_summary_tokens"),
   recentContextTokens: integer("recent_context_tokens"),
   recentContextMessages: integer("recent_context_messages"),

@@ -1,5 +1,6 @@
 import { ConversationClient, ConversationClientError } from "@minu/channels-core/client";
-import { isResourceId } from "@minu/channels-core";
+import { isReservedMentionHandle } from "@minu/channels-core/mentions";
+import { createResourceId, isResourceId } from "@minu/channels-core";
 import type { ConversationMetadata } from "@minu/channels-core/types";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -16,6 +17,9 @@ import {
   type AuthoredSkillInvocation,
   type AgentRuntimePort,
   validateAuthoredContext,
+  type AccountLibraryItem,
+  type AccountLibraryContent,
+  type AccountAgentTemplateConfiguration,
   type AuthoredDocument,
   type AuthoredDocumentRevision,
   type ConversationWorkingFolder,
@@ -24,8 +28,10 @@ import {
   type ConversationPreset,
   type ConversationCreationSetup,
   type ConversationSettings,
+  type WorkspacePresetDefinition, type WorkspaceCompositionPlan, type WorkspaceCompositionRequest, type WorkspaceComposition,
 } from "@minu/channels-relay";
 import type {
+  CreateWorkspaceAgentFromAccountTemplateResult,
   LocalAgentRuntimeOptions,
   LocalAuthoredDocumentSummary,
   LocalAuthoredSkillInvocationInput,
@@ -47,6 +53,7 @@ import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { LocalControlAuditEvent } from "./session.ts";
+import { compositionJson, executeWorkspaceComposition } from "./workspace-composition.ts";
 
 const MAX_ROOT_URI_BYTES = 8 * 1024;
 const MAX_NOTES_FOLDER_ID_BYTES = 255;
@@ -66,6 +73,7 @@ export class LocalConfigurationRequestError extends Error {
     readonly status: 400 | 401 | 403 | 404 | 409 | 413,
     readonly reason: "invalid" | "forbidden" | "unavailable",
     readonly actionOutcome: "failed" | "unconfirmed" = "failed",
+    readonly compositionOutcome?: "rejected-before-reservation",
   ) {
     super(message);
     this.name = "LocalConfigurationRequestError";
@@ -515,6 +523,72 @@ export class LocalAgentHostConfiguration {
     this.directory = new LocalRelayDirectory(options.client, options.store, this.now);
   }
 
+  private readonly compositionFlights = new Map<string, Promise<ProvisionLocalWorkspaceResult>>();
+
+  async listWorkspaceCompositions(actor: string) {
+    await this.authorizeAccount(actor);
+    return (await this.options.store.listWorkspaceCompositions(actor)).map(record => ({ requestId: record.requestId, name: record.request.name, workspaceId: record.workspaceId, state: record.state, createdAt: record.createdAt }));
+  }
+
+  async getWorkspaceComposition(requestId: string, actor: string): Promise<WorkspaceComposition> {
+    await this.authorizeAccount(actor);
+    const record = await this.options.store.getWorkspaceComposition(actor, requestId);
+    if (!record) throw new LocalConfigurationRequestError("Workspace creation receipt unavailable", 404, "unavailable");
+    return record;
+  }
+
+  async composeWorkspace(actor: string, value: unknown): Promise<ProvisionLocalWorkspaceResult> {
+    let reservationMayExist = false;
+    try {
+    await this.authorizeAccount(actor);
+    const identity = await this.options.client.getIdentity(actor);
+    if (identity.status !== "active") throw new LocalConfigurationRequestError("Active account required", 403, "forbidden");
+    const input = object(value, "Workspace composition");
+    rejectUnknown(input, ["requestId", "slug", "name", "rootUri", "plan"]);
+    const requestId = requiredString(input.requestId, "requestId", 128);
+    if (!/^[a-zA-Z0-9_-]{16,128}$/.test(requestId)) throw new LocalConfigurationRequestError("Invalid creation request id", 400, "invalid");
+    const slug = requiredString(input.slug, "slug", 63);
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) throw new LocalConfigurationRequestError("Invalid workspace slug", 400, "invalid");
+    const name = requiredString(input.name, "Workspace name", 200).trim();
+    const rootUri = await canonicalWorkspaceRoot(requiredString(input.rootUri, "rootUri", MAX_ROOT_URI_BYTES));
+    const request = { requestId, slug, name, rootUri, plan: input.plan } as WorkspaceCompositionRequest;
+    const requestHash = createHash("sha256").update(compositionJson(request)).digest("hex");
+    let record = await this.options.store.getWorkspaceComposition(actor, requestId);
+    reservationMayExist = record !== undefined;
+    if (!record) {
+      const planInput = object(input.plan, "Workspace plan");
+      const preset = await this.getAccountLibraryItem(requiredString(planInput.presetId, "Preset id", 100), actor);
+      if (preset.kind !== "workspace-preset" || preset.state !== "active") throw new LocalConfigurationRequestError("Workspace preset unavailable", 404, "unavailable");
+      if (preset.version !== planInput.presetVersion) throw new LocalConfigurationRequestError("Workspace preset changed; review again", 409, "unavailable");
+      const plan = await this.parseWorkspacePreset(input.plan, actor, true) as WorkspaceCompositionPlan;
+      // A failed reservation dispatch can still have committed: never label it rejected.
+      reservationMayExist = true;
+      record = await this.options.store.reserveWorkspaceComposition({ ownerIdentityId: actor, requestId, requestHash, request, plan,
+        workspaceId: createResourceId("workspace"), conversationId: createResourceId("conversation"), instructionsId: randomUUID(),
+        agents: plan.agents.map(agent => ({ key: agent.key, identityId: createResourceId("identity"), configId: createResourceId("config") })),
+        conversationPresetIds: plan.conversationPresets.map(() => `preset_${randomUUID().replaceAll("-", "")}`), createdAt: this.now().toISOString(), state: "pending" });
+    }
+    if (record.requestHash !== requestHash) throw new LocalConfigurationRequestError("Creation request changed; inspect the original receipt", 409, "unavailable");
+    const key = JSON.stringify([actor, requestId]);
+    let flight = this.compositionFlights.get(key);
+    if (!flight) {
+      const frozen = record;
+      flight = executeWorkspaceComposition(this.options.client, this.options.store, frozen, (workspaceId, identityId) => this.authorize(workspaceId, identityId))
+        .catch(error => {
+          if (error instanceof LocalConfigurationRequestError && [401, 403, 404].includes(error.status)) throw error;
+          throw new LocalConfigurationRequestError("Workspace creation is incomplete; inspect its receipt and retry the same request", 409, "unavailable", "unconfirmed");
+        });
+      this.compositionFlights.set(key, flight);
+    }
+    try { return await flight; } finally { if (this.compositionFlights.get(key) === flight) this.compositionFlights.delete(key); }
+    } catch (error) {
+      if (!reservationMayExist && error instanceof LocalConfigurationRequestError && [400, 404, 409, 413].includes(error.status)) {
+        throw new LocalConfigurationRequestError(error.message, error.status, error.reason, error.actionOutcome, "rejected-before-reservation");
+      }
+      throw error;
+    }
+  }
+
   async provisionWorkspace(
     actorIdentityId: string,
     value: unknown,
@@ -869,6 +943,241 @@ export class LocalAgentHostConfiguration {
     }
   }
 
+  // The local authenticated human identity is the account boundary until login/sync exists.
+  private async authorizeAccount(actorIdentityId: string): Promise<void> {
+    const actor = await this.options.client.getIdentity(actorIdentityId).catch(() => undefined);
+    if (actor?.type !== "human") throw new LocalConfigurationRequestError("Account library requires a human account", 403, "forbidden");
+  }
+
+  async listAccountLibraryItems(actorIdentityId: string): Promise<AccountLibraryItem[]> {
+    await this.authorizeAccount(actorIdentityId);
+    return this.options.store.listAccountLibraryItems(actorIdentityId);
+  }
+
+  async getAccountLibraryItem(itemId: string, actorIdentityId: string): Promise<AccountLibraryItem> {
+    await this.authorizeAccount(actorIdentityId);
+    const item = await this.options.store.getAccountLibraryItem(actorIdentityId, itemId);
+    if (!item) throw new LocalConfigurationRequestError("Library item unavailable", 404, "unavailable");
+    return item;
+  }
+
+  async listAccountLibraryVersions(itemId: string, actorIdentityId: string): Promise<AccountLibraryItem[]> {
+    await this.getAccountLibraryItem(itemId, actorIdentityId);
+    return this.options.store.listAccountLibraryVersions(actorIdentityId, itemId);
+  }
+
+  private async accountLibraryContent(input: Record<string, unknown>, actorIdentityId: string): Promise<AccountLibraryContent> {
+    const name = requiredString(input.name, "name", 200).trim();
+    const description = requiredString(input.description, "description", 2_000);
+    if (input.kind === "skill") {
+      rejectUnknown(input, ["kind", "name", "description", "content"]);
+      return { kind: "skill", name, description, content: requiredString(input.content, "content", MAX_PERSONA_PROMPT_BYTES) };
+    }
+    if (input.kind === "workspace-preset") {
+      rejectUnknown(input, ["kind", "name", "description", "definition"]);
+      const definition = await this.parseWorkspacePreset(input.definition, actorIdentityId) as WorkspacePresetDefinition;
+      return { kind: "workspace-preset", name, description, definition };
+    }
+    if (input.kind !== "agent-template") throw new LocalConfigurationRequestError("Library kind is invalid", 400, "invalid");
+    rejectUnknown(input, ["kind", "name", "description", "configuration"]);
+    const fields = object(input.configuration, "Template configuration");
+    rejectUnknown(fields, ["personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "accountSkillIds"]);
+    const configuration: AccountAgentTemplateConfiguration = {};
+    for (const [key, max] of [["personaPrompt", MAX_PERSONA_PROMPT_BYTES], ["runtimeAdapter", MAX_RUNTIME_ADAPTER_BYTES],
+      ["modelProvider", MAX_MODEL_PROVIDER_BYTES], ["modelId", MAX_MODEL_ID_BYTES]] as const) {
+      if (fields[key] !== undefined) configuration[key] = requiredString(fields[key], key, max);
+    }
+    if ((configuration.modelProvider === undefined) !== (configuration.modelId === undefined)) {
+      throw new LocalConfigurationRequestError("Model provider and id must be supplied together", 400, "invalid");
+    }
+    if (fields.reasoningLevel !== undefined) {
+      if (typeof fields.reasoningLevel !== "string" || !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(fields.reasoningLevel)) {
+        throw new LocalConfigurationRequestError("Invalid reasoning level", 400, "invalid");
+      }
+      configuration.reasoningLevel = fields.reasoningLevel as AccountAgentTemplateConfiguration["reasoningLevel"];
+    }
+    if (fields.accountSkillIds !== undefined) {
+      if (!Array.isArray(fields.accountSkillIds) || fields.accountSkillIds.length > 100
+        || fields.accountSkillIds.some(id => typeof id !== "string" || !id.trim() || bytes(id) > MAX_SKILL_ID_BYTES)
+        || new Set(fields.accountSkillIds).size !== fields.accountSkillIds.length) {
+        throw new LocalConfigurationRequestError("Invalid account skill references", 400, "invalid");
+      }
+      for (const id of fields.accountSkillIds as string[]) {
+        const skill = await this.options.store.getAccountLibraryItem(actorIdentityId, id);
+        if (skill?.kind !== "skill" || skill.state !== "active") throw new LocalConfigurationRequestError("Account skill unavailable", 400, "invalid");
+      }
+      configuration.accountSkillIds = [...fields.accountSkillIds] as string[];
+    }
+    return { kind: "agent-template", name, description, configuration };
+  }
+
+  async createAccountLibraryItem(actorIdentityId: string, value: unknown): Promise<AccountLibraryItem> {
+    await this.authorizeAccount(actorIdentityId);
+    const content = await this.accountLibraryContent(object(value, "Library item"), actorIdentityId);
+    const timestamp = this.now().toISOString();
+    const item = await this.options.store.createAccountLibraryItem({
+      ...content, id: randomUUID(), ownerIdentityId: actorIdentityId, version: 1,
+      state: "active", createdAt: timestamp, updatedAt: timestamp,
+    });
+    if (!item) throw new LocalConfigurationRequestError("Library item creation conflict", 409, "unavailable");
+    return item;
+  }
+
+  async updateAccountLibraryItem(itemId: string, actorIdentityId: string, value: unknown): Promise<AccountLibraryItem> {
+    const current = await this.getAccountLibraryItem(itemId, actorIdentityId);
+    const input = object(value, "Library update");
+    rejectUnknown(input, input.action === "archive" ? ["action", "expectedVersion"] : ["action", "expectedVersion", "content"]);
+    const expectedVersion = optionalNullableInteger(input.expectedVersion, "expectedVersion", 1, Number.MAX_SAFE_INTEGER - 1);
+    if (expectedVersion == null) throw new LocalConfigurationRequestError("expectedVersion is required", 400, "invalid");
+    if (input.action !== "save" && input.action !== "archive") throw new LocalConfigurationRequestError("Invalid library action", 400, "invalid");
+    const mutation = input.action === "archive" ? { action: "archive" as const } : {
+      action: "save" as const, content: await this.accountLibraryContent(object(input.content, "Library content"), actorIdentityId),
+    };
+    if (mutation.action === "save" && mutation.content.kind !== current.kind) throw new LocalConfigurationRequestError("Library kind cannot change", 400, "invalid");
+    const item = await this.options.store.mutateAccountLibraryItem(actorIdentityId, itemId, {
+      ...mutation, expectedVersion, timestamp: this.now().toISOString(),
+    });
+    if (!item) throw new LocalConfigurationRequestError("Library item changed or retired; reload before retrying", 409, "unavailable");
+    return item;
+  }
+
+  private async parseWorkspacePreset(value: unknown, actor: string, resolved = false): Promise<WorkspacePresetDefinition | WorkspaceCompositionPlan> {
+    const input = object(value, "Workspace preset");
+    rejectUnknown(input, ["agents", "conversationPresets", "instructions", "idleSleepTimeoutMs", "turnTimeoutMs", ...(resolved ? ["presetId", "presetVersion"] : [])]);
+    if (!Array.isArray(input.agents) || input.agents.length > 16 || !Array.isArray(input.conversationPresets) || input.conversationPresets.length > 16) throw new LocalConfigurationRequestError("Choose at most 16 agents and conversation presets", 400, "invalid");
+    if (typeof input.instructions !== "string" || bytes(input.instructions) > MAX_PERSONA_PROMPT_BYTES) throw new LocalConfigurationRequestError("Invalid workspace instructions", 400, "invalid");
+    const agents: Array<WorkspacePresetDefinition["agents"][number] | WorkspaceCompositionPlan["agents"][number]> = [];
+    for (const candidate of input.agents) {
+      const agent = object(candidate, "Preset agent");
+      rejectUnknown(agent, ["key", "templateId", "displayName", "mentionHandle", ...(resolved ? ["templateVersion", "configuration"] : ["accountSkillIds"])]);
+      const key = requiredString(agent.key, "Agent key", 100);
+      const templateId = requiredString(agent.templateId, "Template id", 100);
+      const displayName = requiredString(agent.displayName, "Agent name", 200).trim();
+      const mentionHandle = requiredString(agent.mentionHandle, "Mention handle", 63).trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(mentionHandle) || isReservedMentionHandle(mentionHandle) || mentionHandle === "you") throw new LocalConfigurationRequestError("Invalid or reserved preset handle", 400, "invalid");
+      const template = await this.getAccountLibraryItem(templateId, actor);
+      if (template.kind !== "agent-template" || template.state !== "active") throw new LocalConfigurationRequestError("Account agent template unavailable", 404, "unavailable");
+      if (resolved && agent.templateVersion !== template.version) throw new LocalConfigurationRequestError("Agent template changed; review preset again", 409, "unavailable");
+      const configuration = resolved ? agent.configuration : { ...template.configuration, ...(agent.accountSkillIds !== undefined ? { accountSkillIds: agent.accountSkillIds } : {}) };
+      const validated = await this.accountLibraryContent({ kind: "agent-template", name: displayName, description: "Workspace starter", configuration }, actor);
+      if (validated.kind !== "agent-template" || (validated.configuration.runtimeAdapter && !/^[a-zA-Z0-9._-]+$/.test(validated.configuration.runtimeAdapter))) throw new LocalConfigurationRequestError("Invalid starter configuration", 400, "invalid");
+      agents.push(resolved ? { key, templateId, displayName, mentionHandle, templateVersion: template.version, configuration: validated.configuration }
+        : { key, templateId, displayName, mentionHandle, ...(agent.accountSkillIds !== undefined ? { accountSkillIds: validated.configuration.accountSkillIds ?? [] } : {}) });
+    }
+    if (new Set(agents.map(a => a.key)).size !== agents.length || new Set(agents.map(a => a.mentionHandle)).size !== agents.length) throw new LocalConfigurationRequestError("Preset agents must have unique keys and handles", 400, "invalid");
+    const conversationPresets = input.conversationPresets.map(candidate => {
+      const preset = object(candidate, "Conversation preset");
+      rejectUnknown(preset, ["name", "agentKeys", "guidance"]);
+      const name = conversationLabel(preset.name, "Conversation preset name");
+      if (!Array.isArray(preset.agentKeys) || preset.agentKeys.length > 16 || new Set(preset.agentKeys).size !== preset.agentKeys.length
+        || preset.agentKeys.some(key => typeof key !== "string" || !agents.some(agent => agent.key === key))) throw new LocalConfigurationRequestError("Conversation preset references an unavailable starter", 400, "invalid");
+      if (preset.guidance !== undefined && (typeof preset.guidance !== "string" || bytes(preset.guidance) > 16 * 1024)) throw new LocalConfigurationRequestError("Invalid conversation guidance", 400, "invalid");
+      return { name, agentKeys: preset.agentKeys as string[], ...(preset.guidance ? { guidance: preset.guidance as string } : {}) };
+    });
+    const idleSleepTimeoutMs = input.idleSleepTimeoutMs;
+    const turnTimeoutMs = input.turnTimeoutMs;
+    if (idleSleepTimeoutMs !== undefined && (typeof idleSleepTimeoutMs !== "number" || ![15, 30, 60, 240, 1440].includes(idleSleepTimeoutMs / 60_000))) throw new LocalConfigurationRequestError("Invalid idle sleep default", 400, "invalid");
+    if (turnTimeoutMs !== undefined && (typeof turnTimeoutMs !== "number" || ![30, 60, 120].includes(turnTimeoutMs / 60_000))) throw new LocalConfigurationRequestError("Invalid turn timeout default", 400, "invalid");
+    const definition = { agents, conversationPresets, instructions: input.instructions,
+      ...(idleSleepTimeoutMs !== undefined ? { idleSleepTimeoutMs: idleSleepTimeoutMs as number } : {}), ...(turnTimeoutMs !== undefined ? { turnTimeoutMs: turnTimeoutMs as number } : {}) };
+    if (resolved) return { ...definition, presetId: requiredString(input.presetId, "Preset id", 100), presetVersion: input.presetVersion as number } as WorkspaceCompositionPlan;
+    return definition as WorkspacePresetDefinition;
+  }
+
+  async previewWorkspacePreset(presetId: string, actor: string): Promise<WorkspaceCompositionPlan> {
+    const preset = await this.getAccountLibraryItem(presetId, actor);
+    if (preset.kind !== "workspace-preset" || preset.state !== "active") throw new LocalConfigurationRequestError("Workspace preset unavailable", 404, "unavailable");
+    const definition = await this.parseWorkspacePreset(preset.definition, actor) as WorkspacePresetDefinition;
+    const agents: WorkspaceCompositionPlan["agents"] = [];
+    for (const agent of definition.agents) {
+      const template = await this.getAccountLibraryItem(agent.templateId, actor);
+      if (template.kind !== "agent-template" || template.state !== "active") throw new LocalConfigurationRequestError("Agent template unavailable", 404, "unavailable");
+      agents.push({ key: agent.key, templateId: agent.templateId, displayName: agent.displayName, mentionHandle: agent.mentionHandle, templateVersion: template.version,
+        configuration: { ...template.configuration, ...(agent.accountSkillIds !== undefined ? { accountSkillIds: [...agent.accountSkillIds] } : {}) } });
+    }
+    return { ...definition, agents, presetId, presetVersion: preset.version };
+  }
+
+  async copyAccountSkillToWorkspace(workspaceId: string, skillId: string, actorIdentityId: string, value: unknown): Promise<AuthoredDocument> {
+    await this.authorize(workspaceId, actorIdentityId);
+    const input = object(value, "Skill copy");
+    rejectUnknown(input, ["expectedVersion"]);
+    const version = optionalNullableInteger(input.expectedVersion, "expectedVersion", 1, Number.MAX_SAFE_INTEGER - 1);
+    if (version == null) throw new LocalConfigurationRequestError("expectedVersion is required", 400, "invalid");
+    const source = await this.getAccountLibraryItem(skillId, actorIdentityId);
+    if (source.kind !== "skill" || source.state !== "active") throw new LocalConfigurationRequestError("Account skill unavailable", 404, "unavailable");
+    if (source.version !== version) throw new LocalConfigurationRequestError("Account skill changed; reload before copying", 409, "unavailable");
+    return this.createAuthoredDocument(workspaceId, actorIdentityId, {
+      action: "commit", kind: "skill", name: source.name, description: source.description, content: source.content,
+    });
+  }
+
+  async createWorkspaceAgentFromAccountTemplate(
+    workspaceId: string, actorIdentityId: string, value: unknown,
+  ): Promise<CreateWorkspaceAgentFromAccountTemplateResult> {
+    const members = await this.authorize(workspaceId, actorIdentityId);
+    const input = object(value, "Account template addition");
+    rejectUnknown(input, ["templateId", "expectedTemplateVersion", "displayName", "mentionHandle"]);
+    const templateId = requiredString(input.templateId, "templateId", 200);
+    const displayName = requiredString(input.displayName, "displayName", 200).trim();
+    const mentionHandle = requiredString(input.mentionHandle, "mentionHandle", 63).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(mentionHandle) || isReservedMentionHandle(mentionHandle)) {
+      throw new LocalConfigurationRequestError("Invalid mention handle", 400, "invalid");
+    }
+    if (members.some(member => member.mentionHandle.toLowerCase() === mentionHandle)) {
+      throw new LocalConfigurationRequestError("Mention handle is already in use", 409, "unavailable");
+    }
+    const version = optionalNullableInteger(input.expectedTemplateVersion, "expectedTemplateVersion", 1, Number.MAX_SAFE_INTEGER - 1);
+    if (version == null) throw new LocalConfigurationRequestError("expectedTemplateVersion is required", 400, "invalid");
+    const template = await this.getAccountLibraryItem(templateId, actorIdentityId);
+    if (template.kind !== "agent-template" || template.state !== "active") {
+      throw new LocalConfigurationRequestError("Account agent template unavailable", 404, "unavailable");
+    }
+    if (template.version !== version) throw new LocalConfigurationRequestError("Template changed; reload account agents before adding", 409, "unavailable");
+    // Revalidate the reusable allowlist/references before creating any public resources.
+    const validated = await this.accountLibraryContent({ kind: template.kind, name: template.name,
+      description: template.description, configuration: template.configuration }, actorIdentityId);
+    if (validated.kind !== "agent-template") throw new LocalConfigurationRequestError("Account agent template unavailable", 404, "unavailable");
+    const config = validated.configuration;
+    if (config.runtimeAdapter && !/^[a-zA-Z0-9._-]+$/.test(config.runtimeAdapter)) {
+      throw new LocalConfigurationRequestError("Runtime adapter is invalid", 400, "invalid");
+    }
+    const workspace = await this.options.store.getWorkspaceConfig(workspaceId);
+    if (!workspace) throw new LocalConfigurationRequestError("Workspace configuration unavailable", 409, "unavailable");
+    const policy = config.runtimeAdapter ? workspace.runtimeModelPolicies?.[config.runtimeAdapter] : undefined;
+    if (policy && config.modelProvider && config.modelId && !policy.some(model =>
+      model.provider === config.modelProvider && model.id === config.modelId)) {
+      throw new LocalConfigurationRequestError("Selected model is disabled for this Runtime", 409, "unavailable");
+    }
+    await this.authorize(workspaceId, actorIdentityId);
+    try {
+      const identity = await this.options.client.createIdentity({ type: "agent", displayName });
+      await this.authorize(workspaceId, actorIdentityId);
+      const member = await this.options.client.addWorkspaceMember(workspaceId, {
+        identityId: identity.id, mentionHandle, accessRole: "member",
+      });
+      await this.authorize(workspaceId, actorIdentityId);
+      await this.directory.configureAgent({
+        workspaceId, agentIdentityId: identity.id,
+        personaPrompt: config.personaPrompt, runtimeAdapter: config.runtimeAdapter,
+        modelProvider: config.modelProvider, modelId: config.modelId, reasoningLevel: config.reasoningLevel,
+        // Account selections are private references, not harness skill IDs or runtime grants.
+        accountSkills: config.accountSkillIds?.length
+          ? { ownerIdentityId: actorIdentityId, skillIds: [...config.accountSkillIds] } : undefined,
+        skillIds: config.runtimeAdapter ? [] : undefined,
+        status: "active",
+      });
+      this.audit({ action: "agent.config.updated", outcome: "accepted", actorIdentityId, workspaceId, targetIdentityId: identity.id });
+      await this.authorize(workspaceId, actorIdentityId);
+      return { identity, member, templateVersion: template.version };
+    } catch (error) {
+      if (error instanceof LocalConfigurationRequestError && [401, 403, 404].includes(error.status)) throw error;
+      // Core identity/membership and private Relay storage do not share a transaction.
+      // Never retry automatically or imply that an uncertain addition had no effect.
+      throw new LocalConfigurationRequestError("Agent addition may be incomplete; inspect workspace agents before adding again", 409, "unavailable", "unconfirmed");
+    }
+  }
+
   async listAuthoredDocuments(workspaceId: string, actorIdentityId: string): Promise<LocalAuthoredDocumentSummary[]> {
     await this.authorize(workspaceId, actorIdentityId);
     const documents = await this.options.store.listAuthoredDocuments(workspaceId);
@@ -1039,8 +1348,8 @@ export class LocalAgentHostConfiguration {
           ...(config?.runtimeAdapter ? { runtimeAdapter: config.runtimeAdapter } : {}),
           modelConfigured: Boolean(config?.modelProvider && config?.modelId),
           reasoningConfigured: Boolean(config?.reasoningLevel),
-          skillsConfigured: config?.skillIds !== undefined,
-          selectedSkillCount: config?.skillIds?.length ?? 0,
+          skillsConfigured: config?.skillIds !== undefined || config?.accountSkills !== undefined || config?.workspaceSkillIds !== undefined,
+          selectedSkillCount: (config?.skillIds?.length ?? 0) + (config?.accountSkills?.skillIds.length ?? 0) + (config?.workspaceSkillIds?.length ?? 0),
           status: config?.status ?? "unconfigured",
           boundConversationCount: boundConversations.size,
           changesApplyToNewSessions: true,
@@ -1087,6 +1396,8 @@ export class LocalAgentHostConfiguration {
       ...(config.modelId ? { modelId: config.modelId } : {}),
       ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel } : {}),
       ...(config.skillIds ? { skillIds: [...config.skillIds] } : {}),
+      ...(config.accountSkills ? { accountSkills: structuredClone(config.accountSkills) } : {}),
+      ...(config.workspaceSkillIds ? { workspaceSkillIds: [...config.workspaceSkillIds] } : {}),
       handoffSummaryTokens: config.handoffSummaryTokens ?? DEFAULT_HANDOFF_SUMMARY_TOKENS,
       recentContextTokens: config.recentContextTokens ?? DEFAULT_RECENT_CONTEXT_TOKENS,
       recentContextMessages: config.recentContextMessages ?? DEFAULT_RECENT_CONTEXT_MESSAGES,
@@ -1372,7 +1683,7 @@ export class LocalAgentHostConfiguration {
       const input = object(value, "Agent configuration");
       rejectUnknown(input, [
         "personaPrompt", "runtimeAdapter", "modelProvider", "modelId", "reasoningLevel", "skillIds",
-        "handoffSummaryTokens", "recentContextTokens", "recentContextMessages", "status",
+        "handoffSummaryTokens", "recentContextTokens", "recentContextMessages", "status", "accountSkillIds", "workspaceSkillIds",
       ]);
       if (Object.keys(input).length === 0) {
         throw new LocalConfigurationRequestError("Agent configuration update is empty", 400, "invalid");
@@ -1437,6 +1748,23 @@ export class LocalAgentHostConfiguration {
           throw new LocalConfigurationRequestError("skillIds must be unique", 400, "invalid");
         }
       }
+      const selected = new Map<string, string[]>();
+      for (const key of ["accountSkillIds", "workspaceSkillIds"] as const) {
+        if (input[key] === undefined) continue;
+        if (!Array.isArray(input[key]) || input[key].length > 100) throw new LocalConfigurationRequestError("Invalid skill selection", 400, "invalid");
+        const ids = input[key].map(id => requiredString(id, "Skill id", MAX_SKILL_ID_BYTES));
+        if (new Set(ids).size !== ids.length) throw new LocalConfigurationRequestError("Duplicate skill selection", 400, "invalid");
+        for (const id of ids) {
+          const skill = key === "accountSkillIds" ? await this.options.store.getAccountLibraryItem(actorIdentityId, id)
+            : await this.options.store.getAuthoredDocument(workspaceId, id);
+          if (!skill || skill.kind !== "skill" || skill.state !== "active"
+            || (key === "workspaceSkillIds" && ("conversationId" in skill && skill.conversationId !== undefined
+              || !("publishedRevision" in skill) || skill.publishedRevision === undefined))) {
+            throw new LocalConfigurationRequestError("Selected skill unavailable", 400, "invalid");
+          }
+        }
+        selected.set(key, ids);
+      }
       const handoffSummaryTokens = optionalNullableInteger(
         input.handoffSummaryTokens,
         "handoffSummaryTokens",
@@ -1456,7 +1784,8 @@ export class LocalAgentHostConfiguration {
         MAX_RECENT_CONTEXT_MESSAGES,
       );
       const resolvedSkillIds = skillIds ?? launchDefaults?.skillIds;
-      if (resolvedSkillIds !== undefined) {
+      const authoredSelectionOnly = Object.keys(input).every(key => key === "accountSkillIds" || key === "workspaceSkillIds");
+      if (resolvedSkillIds !== undefined && !authoredSelectionOnly) {
         if (!resolvedAdapter) {
           throw new LocalConfigurationRequestError("A Runtime is required to configure skills", 409, "unavailable");
         }
@@ -1470,6 +1799,7 @@ export class LocalAgentHostConfiguration {
       if (status !== undefined && status !== "active" && status !== "disabled") {
         throw new LocalConfigurationRequestError("status must be active or disabled", 400, "invalid");
       }
+      await this.authorize(workspaceId, actorIdentityId);
       await this.directory.configureAgent({
         workspaceId,
         agentIdentityId,
@@ -1479,6 +1809,8 @@ export class LocalAgentHostConfiguration {
         modelId,
         reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null | undefined,
         skillIds,
+        ...(selected.has("accountSkillIds") ? { accountSkills: { ownerIdentityId: actorIdentityId, skillIds: selected.get("accountSkillIds")! } } : {}),
+        workspaceSkillIds: selected.get("workspaceSkillIds"),
         handoffSummaryTokens,
         recentContextTokens,
         recentContextMessages,

@@ -81,6 +81,9 @@ export interface LocalCurrentSession {
   identityId: string;
 }
 
+export type { WorkspacePresetDefinition, WorkspaceCompositionPlan, WorkspaceCompositionRequest, WorkspaceComposition } from "@minu/channels-relay";
+export interface WorkspaceCompositionSummary { requestId: string; name: string; workspaceId: string; state: "pending" | "complete"; createdAt: string }
+
 export interface ProvisionLocalWorkspaceInput {
   slug: string;
   name: string;
@@ -98,6 +101,19 @@ export interface LocalControlHealth {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
 }
 
+export interface CreateWorkspaceAgentFromAccountTemplateInput {
+  templateId: string;
+  expectedTemplateVersion: number;
+  displayName: string;
+  mentionHandle: string;
+}
+
+export interface CreateWorkspaceAgentFromAccountTemplateResult {
+  identity: import("@minu/channels-core/types").Identity;
+  member: import("@minu/channels-core/types").WorkspaceMember;
+  templateVersion: number;
+}
+
 export interface LocalWorkspaceAgentConfigurationSummary {
   identityId: string;
   configured: boolean;
@@ -113,6 +129,13 @@ export interface LocalWorkspaceAgentConfigurationSummary {
   boundConversationCount: number;
   changesApplyToNewSessions: true;
 }
+
+export type LocalAccountLibraryItem = import("@minu/channels-relay").AccountLibraryItem;
+export type LocalAccountLibraryContent = import("@minu/channels-relay").AccountLibraryContent;
+export type UpdateLocalAccountLibraryItemInput = { expectedVersion: number } & (
+  | { action: "save"; content: LocalAccountLibraryContent }
+  | { action: "archive" }
+);
 
 export type LocalAuthoredDocument = import("@minu/channels-relay").AuthoredDocument;
 export type LocalAuthoredDocumentRevision = import("@minu/channels-relay").AuthoredDocumentRevision;
@@ -230,6 +253,8 @@ export interface LocalWorkspaceAgentConfiguration {
   modelId?: string;
   reasoningLevel?: LocalReasoningLevel;
   skillIds?: string[];
+  accountSkills?: { ownerIdentityId: string; skillIds: string[] };
+  workspaceSkillIds?: string[];
   /** Maximum ephemeral, Conversation-derived handoff brief included when a fresh Runtime session starts. */
   handoffSummaryTokens: number;
   /** Maximum recent Conversation context included on each Runtime turn. */
@@ -279,6 +304,9 @@ export interface UpdateLocalConversationWorkingFoldersInput {
 }
 
 export interface UpdateLocalWorkspaceAgentConfigurationInput {
+  /** Complete replacement selection from the authenticated account. Empty clears. */
+  accountSkillIds?: string[];
+  workspaceSkillIds?: string[];
   personaPrompt?: string | null;
   runtimeAdapter?: string | null;
   modelProvider?: string | null;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { InMemoryRelayBindingStore } from "../src/binding-store.ts";
-import { captureAuthoredContext, resolveAuthoredInstructions, validateAuthoredContext, AuthoredContextUnavailableError } from "../src/authored-context.ts";
+import { captureSelectedSkills, captureAuthoredContext, resolveAuthoredInstructions, validateAuthoredContext, AuthoredContextUnavailableError } from "../src/authored-context.ts";
 import type { AuthoredDocument } from "../src/authored-documents.ts";
 
 const now = "2026-11-03T12:00:00.000Z";
@@ -61,5 +61,32 @@ test("missing, foreign, corrupt, or ambiguous pinned context fails rather than r
   assert.throws(() => validateAuthoredContext(duplicate, "W1", "C1"), AuthoredContextUnavailableError);
   const history = store.listAuthoredDocumentRevisions.bind(store);
   store.listAuthoredDocumentRevisions = async (...args) => (await history(...args)).map((record) => ({ ...record, content: "CORRUPTED" }));
+  await assert.rejects(resolveAuthoredInstructions(store, snapshot), AuthoredContextUnavailableError);
+});
+
+test("selected account procedures pin immutable versions and fail closed on missing, corrupt or foreign references", async () => {
+  const store = new InMemoryRelayBindingStore();
+  await store.createAccountLibraryItem({ id: "shared", ownerIdentityId: "owner", kind: "skill", name: "Review", description: "Procedure", content: "ACCOUNT_V1", version: 1, state: "active", createdAt: now, updatedAt: now });
+  const empty = await captureAuthoredContext(store, "W1", "C1");
+  const config = { accountSkills: { ownerIdentityId: "owner", skillIds: ["shared"] } };
+  const snapshot = await captureSelectedSkills(store, empty, config);
+  assert.match((await resolveAuthoredInstructions(store, snapshot))!, /ACCOUNT_V1/);
+  await store.mutateAccountLibraryItem("owner", "shared", { action: "save", expectedVersion: 1, timestamp: now,
+    content: { kind: "skill", name: "Review", description: "Procedure", content: "ACCOUNT_V2" } });
+  assert.match((await resolveAuthoredInstructions(store, snapshot))!, /ACCOUNT_V1/);
+  assert.match((await resolveAuthoredInstructions(store, await captureSelectedSkills(store, empty, config)))!, /ACCOUNT_V2/);
+  for (const change of [{ ownerIdentityId: "foreign" }, { revision: 99 }, { contentHash: "0".repeat(64) }]) {
+    const bad = structuredClone(snapshot);
+    Object.assign(bad.accountSkills![0]!, change);
+    await assert.rejects(resolveAuthoredInstructions(store, bad), AuthoredContextUnavailableError);
+  }
+  const duplicate = structuredClone(snapshot);
+  duplicate.accountSkills!.push({ ...duplicate.accountSkills![0]! });
+  assert.throws(() => validateAuthoredContext(duplicate, "W1", "C1"), AuthoredContextUnavailableError);
+  await store.mutateAccountLibraryItem("owner", "shared", { action: "archive", expectedVersion: 2, timestamp: now });
+  assert.match((await resolveAuthoredInstructions(store, snapshot))!, /ACCOUNT_V1/);
+  await assert.rejects(captureSelectedSkills(store, empty, config), AuthoredContextUnavailableError);
+  const history = store.listAccountLibraryVersions.bind(store);
+  store.listAccountLibraryVersions = async (...args) => (await history(...args)).map(item => item.kind === "skill" ? { ...item, content: "CORRUPTED" } : item);
   await assert.rejects(resolveAuthoredInstructions(store, snapshot), AuthoredContextUnavailableError);
 });

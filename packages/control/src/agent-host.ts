@@ -4,6 +4,7 @@ import {
   ConversationRuntimeRelay,
   conversationAgentConfiguration,
   captureAuthoredContext,
+  captureSelectedSkills,
   AuthoredContextUnavailableError,
   resolveAuthoredInstructions,
   validateAuthoredContext,
@@ -903,7 +904,7 @@ export class LocalAgentHost {
           );
         }
         const launch = await this.resolveWorkingFolderLaunch(workspaceConfig, conversationId);
-        const authored = await this.authoredLaunchContext(conversation);
+        const authored = await this.authoredLaunchContext(conversation, agentConfig);
         const runtimeOwnerId = await this.options.store.getOrCreateRuntimeOwnerId();
         observation = this.observeLifecycle(conversation.workspaceId, conversationId, agentIdentityId, "start", undefined, undefined, diagnostic);
         let session: ManagedRuntimeSession | undefined;
@@ -1079,7 +1080,7 @@ export class LocalAgentHost {
         previousRuntime = this.options.runtimes[previous.runtimeAdapter];
         previousSessionId = previous.runtimeSessionId;
         await this.assertBindingsIdle([previous], previous.id);
-        const authored = await this.authoredLaunchContext(context.conversation);
+        const authored = await this.authoredLaunchContext(context.conversation, context.agentConfig);
         observation = this.observeLifecycle(workspaceId, conversationId, agentIdentityId, contextMode === "fresh" ? "replace_fresh" : "replace", previous);
         mutationStarted = true;
         // Fence the old route durably before selecting the activation boundary. A
@@ -1676,7 +1677,7 @@ export class LocalAgentHost {
       || (activation.contextMode === "fresh" && activation.conversationSequenceAtActivation === undefined)) {
       throw new LocalConfigurationRequestError("Session context boundary is unavailable", 409, "unavailable");
     }
-    const authored = await this.authoredLaunchContext(context.conversation, { snapshot: activation.authoredContext });
+    const authored = await this.authoredLaunchContext(context.conversation, context.agentConfig, { snapshot: activation.authoredContext });
     const messages = await this.options.client.listMessages(conversationId);
     const sequence = messages.at(-1)?.sequence ?? 0;
     const floor = activation.contextMode === "fresh" ? activation.conversationSequenceAtActivation! : 0;
@@ -2238,15 +2239,25 @@ export class LocalAgentHost {
 
   private async authoredLaunchContext(
     conversation: ConversationMetadata,
+    agentConfig: WorkspaceAgentConfig,
     pinned?: { snapshot?: AuthoredContextSnapshot },
   ): Promise<{ snapshot?: AuthoredContextSnapshot; guidance?: string }> {
     try {
       const channelId = conversation.thread?.parentConversationId ?? conversation.id;
-      const snapshot = pinned ? pinned.snapshot
+      let snapshot = pinned ? structuredClone(pinned.snapshot)
         : await captureAuthoredContext(this.options.store, conversation.workspaceId, channelId);
-      // Legacy sessions have no manifest; recovery must not adopt newly published guidance.
-      if (snapshot === undefined) return {};
+      // New recovery workers keep pinned workspace/channel instructions, but resolve selected
+      // skill procedures at their new-session boundary, just like explicit replacements.
+      if (snapshot === undefined) {
+        if (!agentConfig.accountSkills?.skillIds.length && !agentConfig.workspaceSkillIds?.length) return {};
+        snapshot = { schemaVersion: 1, workspaceId: conversation.workspaceId, channelId, documents: [] };
+      }
       validateAuthoredContext(snapshot, conversation.workspaceId, channelId);
+      if (pinned && (agentConfig.workspaceSkillIds !== undefined || snapshot.selectedWorkspaceSkills !== undefined)) {
+        const current = await captureAuthoredContext(this.options.store, conversation.workspaceId, channelId);
+        snapshot.documents = [...snapshot.documents.filter(ref => ref.kind === "instructions"), ...current.documents.filter(ref => ref.kind === "skill")];
+      }
+      snapshot = await captureSelectedSkills(this.options.store, snapshot, agentConfig);
       return { snapshot, guidance: await resolveAuthoredInstructions(this.options.store, snapshot) };
     } catch {
       throw new LocalConfigurationRequestError("Published instruction context is unavailable", 409, "unavailable");
