@@ -651,12 +651,14 @@ test("pending history polling is bounded to one minute and stops when closed", a
   const data = await fixture(request);
   const counts = await mocks(page, data);
   await page.route(`**/agents/${data.agent.id}/operations`, (route) => { counts.history++; return route.fulfill({ json: { ...history(data), operations: [{ ...history(data).operations[0], outcome: "pending" }] } }); });
+  // Install before mounting: the polling deadline and its timers must share the same clock.
+  await page.clock.install();
   await launch(page, request, data);
   const modal = await open(page, data);
   await expect(modal).toContainText("Pending inspection refreshes every five seconds");
   const before = counts.history;
+  await page.clock.fastForward(5_000);
   await expect.poll(() => counts.history, { timeout: 10_000 }).toBeGreaterThan(before);
-  await page.clock.install();
   await page.clock.fastForward(65_000);
   await expect(modal).toContainText("Automatic pending refresh paused");
   const stopped = counts.history;
