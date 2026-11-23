@@ -114,7 +114,9 @@ const participantDiagnosticsRoute = createRoute({
   component: () => <Suspense fallback={<div role="status" className="p-5 text-sm">Loading diagnostics…</div>}><ParticipantDiagnosticsPage /></Suspense>,
 });
 
-const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/activity", component: ActivityPage });
+const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/activity", component: ActivityPage });
+// AppShell resolves old bookmarks using its existing workspace selection.
+const legacyActivityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/activity", component: () => null });
 
 const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -174,7 +176,7 @@ const settingsRoutes = [
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/conversations/$conversationId/settings", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationSettingsPage /></Suspense> }),
 ];
 
-const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, activityRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
+const routeTree = rootRoute.addChildren([...settingsRoutes, indexRoute, activityRoute, legacyActivityRoute, agentManagementRoute, agentCreateRoute, agentDetailRoute, conversationRoute, participantDiagnosticsRoute, legacyConversationRoute]);
 export const router = createRouter({ routeTree });
 
 declare module "@tanstack/react-router" {

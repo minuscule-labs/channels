@@ -43,6 +43,11 @@ export function AppShell() {
     ?? (workspaces.data ?? []).find((workspace) => workspace.id === localStorage.getItem("minu-channels:last-workspace"))?.id
     ?? workspaces.data?.[0]?.id;
   const selectedWorkspace = (workspaces.data ?? []).find((workspace) => workspace.id === selectedWorkspaceId);
+  useEffect(() => {
+    if (pathname === "/app/activity" && selectedWorkspace) {
+      void navigate({ to: "/app/workspaces/$workspaceId/activity", params: { workspaceId: selectedWorkspace.id }, replace: true });
+    }
+  }, [pathname, selectedWorkspace, navigate]);
   const selectedConversations = useQuery({
     queryKey: selectedWorkspace ? queryKeys.workspaceConversations(selectedWorkspace.id) : ["workspace", "none", "conversations"],
     queryFn: () => conversations.listWorkspaceConversations(selectedWorkspace!.id),
@@ -170,7 +175,8 @@ export function AppShell() {
     allUnread.get(conversation.id) ?? { count: 0, mentionCount: 0 },
   ])), [allUnread, selectedConversations.data]);
   const unreadTotal = [...allUnread.values()].reduce((sum, value) => sum + value.count, 0);
-  const activityUnread = [...allUnread.values()].reduce((sum, value) => sum + (value.activityCount ?? 0), 0);
+  const activityUnread = [...allUnread.values()].filter(value => value.workspaceId === selectedWorkspaceId)
+    .reduce((sum, value) => sum + (value.activityCount ?? 0), 0);
   const workspaceUnread = useMemo(() => new Map((workspaces.data ?? []).map((workspace) => [
     workspace.id,
     [...allUnread.values()]
@@ -194,6 +200,10 @@ export function AppShell() {
     const workspace = (workspaces.data ?? []).find((candidate) => candidate.id === workspaceId);
     if (!workspace) return;
     localStorage.setItem("minu-channels:last-workspace", workspaceId);
+    if (pathname.endsWith("/activity")) {
+      void navigate({ to: "/app/workspaces/$workspaceId/activity", params: { workspaceId } });
+      return;
+    }
     const conversationList = await conversations.listWorkspaceConversations(workspaceId);
     const rememberedConversationId = localStorage.getItem(`minu-channels:last-conversation:${workspaceId}`);
     const conversation = conversationList.find(({ id }) => id === rememberedConversationId) ?? conversationList[0];

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Scope Activity and its navigation badge to the selected Workspace. Keep Workspace selection in the Activity URL/cache, filter before pagination, retain Activity when switching Workspaces, and redirect existing `/app/activity` bookmarks without changing read acknowledgement or live-connection behavior.
+
 ## 0.0.41
 
 Release overview: [Activity inbox, durable unread state and per-agent harnesses](docs/releases/v0.0.41.md).

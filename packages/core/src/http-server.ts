@@ -231,7 +231,7 @@ export async function createConversationHttpServer(
       if (url.pathname === "/identities/me/activity" && request.method === "GET") {
         response.setHeader("cache-control", "private, no-store");
         if (!actor) { json(response, 403, { error: "Authenticated identity required" }); return; }
-        json(response, 200, await service.listActivity(actor, url.searchParams.get("before") ?? undefined));
+        json(response, 200, await service.listActivity(actor, url.searchParams.get("before") ?? undefined, url.searchParams.get("workspaceId") ?? undefined));
         return;
       }
       const readMatch = url.pathname.match(/^\/conversations\/([^/]+)\/read$/);

@@ -67,7 +67,7 @@ export interface ConversationRosterUpdateResult {
 
 export interface ConversationStorage extends ConversationCursorStore {
   listInbox(identityId: string): Promise<ConversationUnreadSummary[]>;
-  listActivity(identityId: string, before?: string): Promise<ActivityPage>;
+  listActivity(identityId: string, before?: string, workspaceId?: string): Promise<ActivityPage>;
   acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number>;
   createIdentity(identity: Identity): Promise<Identity>;
   updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined>;
@@ -192,9 +192,10 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     });
   }
 
-  async listActivity(identityId: string, before?: string): Promise<ActivityPage> {
+  async listActivity(identityId: string, before?: string, workspaceId?: string): Promise<ActivityPage> {
     const items: ActivityItem[] = [];
     for (const conversation of this.inboxConversations(identityId)) {
+      if (workspaceId !== undefined && conversation.workspaceId !== workspaceId) continue;
       const floor = this.humanReadCursors.get(`${conversation.id}:${identityId}`) ?? 0;
       for (const message of conversation.messages) {
         const kind = activityKind(conversation, message, identityId);

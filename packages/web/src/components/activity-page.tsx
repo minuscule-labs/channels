@@ -1,16 +1,17 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { conversations, localControl } from "../lib/api";
 import { activityKey } from "../lib/inbox";
 import { queryKeys } from "../lib/query-keys";
 
 export function ActivityPage() {
+  const { workspaceId } = useParams({ from: "/app/workspaces/$workspaceId/activity" });
   const session = useQuery({ queryKey: queryKeys.localCurrentSession(), queryFn: () => localControl.currentSession(), retry: false });
   const identityId = session.data?.identityId;
   const activity = useInfiniteQuery({
-    queryKey: activityKey(identityId), enabled: Boolean(identityId),
+    queryKey: [...activityKey(identityId), workspaceId], enabled: Boolean(identityId),
     initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => conversations.listActivity(pageParam),
+    queryFn: ({ pageParam }) => conversations.listActivity(pageParam, workspaceId),
     getNextPageParam: page => page.nextCursor,
     refetchOnWindowFocus: "always", refetchOnReconnect: "always", refetchInterval: 30_000, retry: false,
   });
