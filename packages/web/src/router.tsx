@@ -5,6 +5,7 @@ import type * as AgentManagementModule from "./components/agent-management-page"
 import { AppShell } from "./components/app-shell";
 import { ConversationPage } from "./components/conversation-page";
 import { ActivityPage } from "./components/activity-page";
+import { conversationThreadSearch } from "./lib/thread-selection";
 
 const rootRoute = createRootRoute({ component: AppShell });
 type AgentPageExport = "AgentManagementPage" | "AgentCreatePage" | "AgentDetailPage";
@@ -121,11 +122,7 @@ const legacyActivityRoute = createRoute({ getParentRoute: () => rootRoute, path:
 const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/conversations/$conversationId",
-  validateSearch: (search): { threadId?: string | null; threadMessage?: number } => ({
-    ...(search.threadId === null || typeof search.threadId === "string" ? { threadId: search.threadId || null } : {}),
-    ...(typeof search.threadMessage === "number" && Number.isSafeInteger(search.threadMessage) && search.threadMessage > 0
-      ? { threadMessage: search.threadMessage } : {}),
-  }),
+  validateSearch: conversationThreadSearch,
   component: ConversationPage,
 });
 

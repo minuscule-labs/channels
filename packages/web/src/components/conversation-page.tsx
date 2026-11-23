@@ -413,13 +413,13 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     previousMessageCountRef.current = undefined;
     setUnseenMessages(0);
     window.dispatchEvent(new CustomEvent("minu-conversation-view", {
-      detail: { conversationId, nearEnd: nearEndRef.current },
+      detail: { conversationId, nearEnd: nearEndRef.current && !readBlocked },
     }));
   }, [conversationId]);
 
   const markRead = useCallback(() => {
     window.dispatchEvent(new CustomEvent("minu-conversation-view", {
-      detail: { conversationId, nearEnd: nearEndRef.current },
+      detail: { conversationId, nearEnd: nearEndRef.current && !readBlocked },
     }));
     const identityId = currentSession.data?.identityId;
     const sequence = messages.data?.at(-1)?.sequence;
@@ -630,7 +630,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
               else nearEndRef.current = isNearTimelineEnd(scroll);
               scrollLayoutRef.current = { scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight };
               window.dispatchEvent(new CustomEvent("minu-conversation-view", {
-                detail: { conversationId, nearEnd: nearEndRef.current },
+                detail: { conversationId, nearEnd: nearEndRef.current && !readBlocked },
               }));
               if (nearEndRef.current) {
                 setUnseenMessages(0);
