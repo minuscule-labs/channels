@@ -243,13 +243,13 @@ export class ConversationService {
     return this.storage.listInbox(identityId);
   }
 
-  async listActivity(identityId: string, before?: string) {
+  async listActivity(identityId: string, before?: string, workspaceId?: string) {
     await this.assertInboxHuman(identityId);
     try {
       if (before !== undefined && before.length > 512) throw new Error("Cursor too long");
       activityBoundary(before);
     } catch { throw new ConversationValidationError("Invalid Activity cursor"); }
-    return this.storage.listActivity(identityId, before);
+    return this.storage.listActivity(identityId, before, workspaceId);
   }
 
   async acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number> {

@@ -4,6 +4,52 @@ import { ConversationClient } from "../src/client.ts";
 import { ConversationService } from "../src/conversation-service.ts";
 import { createConversationHttpServer } from "../src/http-server.ts";
 
+test("Activity workspace filtering precedes pagination and preserves current access and read state", async () => {
+  const service = new ConversationService();
+  const server = await createConversationHttpServer({ service });
+  try {
+    const human = await service.createIdentity({ type: "human" });
+    const other = await service.createIdentity({ type: "human" });
+    const workspaces = await Promise.all(["a", "b"].map(slug => service.createWorkspace({ slug, name: slug })));
+    const conversations = [];
+    for (const workspace of workspaces) {
+      for (const identity of [human, other]) await service.addWorkspaceMember(workspace.id, {
+        identityId: identity.id, mentionHandle: identity.id === human.id ? "you" : "other", accessRole: "owner",
+      });
+      conversations.push(await service.createConversation({ workspaceId: workspace.id, participantIds: [human.id, other.id] }));
+    }
+    for (let index = 0; index < 53; index++) await service.createMessage(conversations[0]!.id, {
+      participantId: other.id, body: `A ${index}`, to: [human.id],
+    });
+    for (let index = 0; index < 3; index++) await service.createMessage(conversations[1]!.id, {
+      participantId: other.id, body: `B ${index}`, to: [human.id],
+    });
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken, actorIdentityId: human.id });
+    const page = async (workspaceId: string, before?: string) => {
+      const query = new URLSearchParams({ workspaceId, ...(before ? { before } : {}) });
+      const response = await fetch(`${server.endpoint}/identities/me/activity?${query}`, { headers: {
+        authorization: `Bearer ${server.serviceToken}`, "x-minu-actor-id": human.id,
+      } });
+      assert.equal(response.status, 200);
+      return await response.json() as Awaited<ReturnType<typeof client.listActivity>>;
+    };
+    const first = await page(workspaces[0]!.id);
+    assert.equal(first.items.length, 50);
+    assert.ok(first.items.every(item => item.workspaceId === workspaces[0]!.id));
+    const second = await page(workspaces[0]!.id, first.nextCursor);
+    assert.equal(second.items.length, 3);
+    assert.equal(second.nextCursor, undefined);
+    assert.equal(new Set([...first.items, ...second.items].map(item => item.id)).size, 53);
+    assert.equal((await page(workspaces[1]!.id)).items.length, 3);
+    assert.deepEqual(await page(""), { items: [] });
+    assert.deepEqual(await page("missing"), { items: [] });
+    assert.deepEqual((await client.listInbox()).map(item => item.activityCount), [53, 3]);
+    await service.updateWorkspaceMember(workspaces[0]!.id, human.id, { actorIdentityId: other.id, status: "disabled" });
+    assert.deepEqual(await page(workspaces[0]!.id), { items: [] });
+    assert.equal((await page(workspaces[1]!.id)).items.length, 3);
+  } finally { await server.close(); }
+});
+
 test("authenticated inbox updates arrive with no conversation topics; read state belongs only to the actor", { timeout: 10_000 }, async () => {
   const service = new ConversationService();
   const server = await createConversationHttpServer({ service });

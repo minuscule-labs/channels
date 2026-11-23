@@ -4,6 +4,79 @@ import type { ConversationMetadata } from "@minu/channels-core/types";
 const api = `http://127.0.0.1:${process.env.MINU_TEST_CHANNELS_PORT ?? 58410}`;
 const fixture = `http://127.0.0.1:${process.env.MINU_TEST_FIXTURE_PORT ?? 58413}`;
 
+test("Activity and its badge stay in the selected workspace across switching, paging and tabs", async ({ page, context, request }) => {
+  const { identities } = await (await request.get(`${api}/identities`)).json();
+  const member = identities.find((item: { displayName: string }) => item.displayName === "Workspace Member");
+  const owner = identities.find((item: { displayName: string }) => item.displayName === "David Kennedy");
+  const workspaces: Array<{ id: string }> = [];
+  const conversations: Array<{ id: string }> = [];
+  for (const name of ["Activity workspace A", "Activity workspace B"]) {
+    const created = await request.post(`${api}/workspaces`, { data: { name, slug: name.toLowerCase().replaceAll(" ", "-") } });
+    expect(created.ok()).toBe(true);
+    const { workspace } = await created.json();
+    workspaces.push(workspace);
+    for (const identity of [member, owner]) expect((await request.post(`${api}/workspaces/${workspace.id}/members`, { data: {
+      identityId: identity.id, mentionHandle: identity.id === member.id ? "member" : "owner", accessRole: "owner",
+    } })).ok()).toBe(true);
+    const { conversation } = await (await request.post(`${api}/conversations`, { data: {
+      workspaceId: workspace.id, name, participantIds: [member.id, owner.id],
+    } })).json();
+    conversations.push(conversation);
+  }
+  const messages: Array<Array<{ id: string; sequence: number }>> = [];
+  for (let index = 0; index < 2; index++) {
+    const rows: Array<{ id: string; sequence: number }> = [];
+    for (let count = 0; count < (index === 0 ? 52 : 2); count++) {
+      const { message } = await (await request.post(`${api}/conversations/${conversations[index].id}/messages`, { data: {
+        participantId: owner.id, body: `Workspace ${index} notification ${count}`, to: [member.id],
+      } })).json();
+      rows.push(message);
+    }
+    messages.push(rows);
+  }
+  const activityPath = (index: number) => `/app/workspaces/${workspaces[index].id}/activity`;
+  await page.addInitScript(id => localStorage.setItem("minu-channels:last-workspace", id), workspaces[0].id);
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?actor=member&destination=${encodeURIComponent("/app/activity")}`)).json();
+  const other = await context.newPage();
+  try {
+    await page.goto(launchUrl);
+    await expect(page).toHaveURL(new RegExp(`${activityPath(0)}$`)); // legacy URL resolves to a scoped URL
+    const badge = () => page.getByRole("navigation", { name: "Workspaces and Conversations" }).getByLabel(/unread Activity notification/);
+    const rows = () => page.locator("[data-activity-id]");
+    await expect(badge()).toHaveText("52");
+    await expect(rows()).toHaveCount(50); // filter before pagination, not after a mixed global page
+    await expect(page.locator(`[data-activity-id="${messages[1][0].id}"]`)).toHaveCount(0);
+    await page.getByRole("button", { name: "Load more", exact: true }).click();
+    await expect(rows()).toHaveCount(52);
+    await other.goto(`${new URL(page.url()).origin}${activityPath(0)}`);
+    await expect(other.locator(`[data-activity-id="${messages[0].at(-1)!.id}"]`)).toBeVisible();
+    await page.getByLabel("Selected Workspace", { exact: true }).selectOption(workspaces[1].id);
+    await expect(page).toHaveURL(new RegExp(`${activityPath(1)}$`));
+    await expect(badge()).toHaveText("2");
+    await expect(rows()).toHaveCount(2);
+    await expect(page.locator(`[data-activity-id="${messages[0].at(-1)!.id}"]`)).toHaveCount(0);
+    await expect(other).toHaveURL(new RegExp(`${activityPath(0)}$`));
+    await expect(other.getByLabel("52 unread Activity notifications")).toBeVisible();
+    await page.reload();
+    await expect(page).toHaveURL(new RegExp(`${activityPath(1)}$`));
+    await expect(badge()).toHaveText("2");
+    await page.bringToFront();
+    await page.locator(`[data-activity-id="${messages[1][0].id}"]`).getByRole("link").click();
+    await expect(page.getByRole("log").getByText("Workspace 1 notification 1", { exact: true })).toBeVisible();
+    await expect(badge()).toHaveCount(0);
+    await expect(other.getByLabel("52 unread Activity notifications")).toBeVisible();
+    await page.getByRole("navigation", { name: "Workspaces and Conversations" }).locator(`a[href="${activityPath(1)}"]`).click();
+    await page.getByLabel("Selected Workspace", { exact: true }).selectOption(workspaces[0].id);
+    await expect(page).toHaveURL(new RegExp(`${activityPath(0)}$`));
+    await expect(badge()).toHaveText("52"); // switching/browsing Activity never acknowledged A
+  } finally {
+    await other.close();
+    for (let index = 0; index < 2; index++) expect((await request.post(`${api}/conversations/${conversations[index].id}/read`, {
+      headers: { "x-minu-actor-id": member.id }, data: { sequence: messages[index].at(-1)!.sequence },
+    })).ok()).toBe(true);
+  }
+});
+
 test("Activity receives unsubscribed thread replies, keeps full unread counts, and opens only the exact read scope", async ({ page, context, request }) => {
   const { workspaces } = await (await request.get(`${api}/workspaces`)).json();
   const workspace = workspaces.find((item: { name: string }) => item.name === "Browser Test");
@@ -30,7 +103,7 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
   const { message: reply } = await (await request.post(`${api}/conversations/${thread.id}/messages`, { data: {
     participantId: agent.id, body: "Activity unmentioned thread reply", to: [],
   } })).json();
-  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent("/app/activity")}`)).json();
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(`/app/workspaces/${workspace.id}/activity`)}`)).json();
   await page.goto(launchUrl);
   await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
   const row = page.locator(`[data-activity-id="${reply.id}"]`);
@@ -47,7 +120,7 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
   expect(await count(thread.id)).toBe(1);
   const other = await context.newPage();
   try {
-    await other.goto(`${new URL(page.url()).origin}/app/activity`);
+    await other.goto(`${new URL(page.url()).origin}/app/workspaces/${workspace.id}/activity`);
     await expect(other.locator(`[data-activity-id="${reply.id}"]`)).toBeVisible();
     await expect.poll(async () => (await (await request.get(`${fixture}/stream-metrics`)).json()).topics).toEqual([[]]);
     const { message: update } = await (await request.post(`${api}/conversations/${thread.id}/messages`, { data: {
@@ -109,7 +182,7 @@ test("existing browser read marks migrate monotonically without resetting server
   } });
   const key = `minu-channels:last-read:${human.id}:${conversation.id}`;
   await page.addInitScript(({ key }) => localStorage.setItem(key, "5"), { key });
-  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent("/app/activity")}`)).json();
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(`/app/workspaces/${workspace.id}/activity`)}`)).json();
   await page.goto(launchUrl);
   const summary = () => page.evaluate(async id => {
     const { summaries } = await (await fetch("/identities/me/inbox")).json();
@@ -141,9 +214,9 @@ test("Activity badge counts only unread notifications, works on mobile, and hide
   const { thread } = await (await request.post(`${api}/conversations/${conversation.id}/threads`, { data: {
     actorIdentityId: member.id, rootMessageId: root.id,
   } })).json();
-  const { launchUrl } = await (await request.get(`${fixture}/control-launch?actor=member&destination=${encodeURIComponent("/app/activity")}`)).json();
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?actor=member&destination=${encodeURIComponent(`/app/workspaces/${workspace.id}/activity`)}`)).json();
   await page.goto(launchUrl);
-  const activityLink = () => page.getByRole("navigation", { name: "Workspaces and Conversations" }).locator('a[href="/app/activity"]');
+  const activityLink = () => page.getByRole("navigation", { name: "Workspaces and Conversations" }).locator(`a[href="/app/workspaces/${workspace.id}/activity"]`);
   const badge = () => activityLink().getByLabel(/unread Activity notification/);
   await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
   await expect(badge()).toHaveCount(0);
@@ -198,7 +271,7 @@ test("a side thread opened from a parent Activity link ignores the parent's mess
   await request.post(`${api}/conversations/${thread.id}/messages`, { data: {
     participantId: agent.id, body: "The visible side-thread reply", to: [],
   } });
-  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent("/app/activity")}`)).json();
+  const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(`/app/workspaces/${workspace.id}/activity`)}`)).json();
   await page.goto(launchUrl);
   await page.locator(`[data-activity-id="${mention.id}"]`).getByRole("link").click();
   await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}#message-2$`));
@@ -266,10 +339,11 @@ for (const recovery of ["stream", "polling"] as const) {
       return summaries.find((item: { conversationId: string }) => item.conversationId === id);
     }, conversation.id);
     await expect.poll(async () => (await summary())?.readSequence).toBe(root.sequence);
-    const baseline = await page.evaluate(async () => {
+    const baseline = await page.evaluate(async workspaceId => {
       const { summaries } = await (await fetch("/identities/me/inbox")).json();
-      return summaries.reduce((sum: number, item: { activityCount: number }) => sum + item.activityCount, 0);
-    });
+      return summaries.filter((item: { workspaceId: string }) => item.workspaceId === workspaceId)
+        .reduce((sum: number, item: { activityCount: number }) => sum + item.activityCount, 0);
+    }, workspace.id);
     const readPath = `/conversations/${conversation.id}/read`;
     let attempts = 0;
     await page.route(`**${readPath}`, async route => {
@@ -289,7 +363,7 @@ for (const recovery of ["stream", "polling"] as const) {
     expect((await summary())?.count).toBe(1);
     expect(attempts).toBe(1);
     const badge = page.getByRole("navigation", { name: "Workspaces and Conversations" })
-      .locator('a[href="/app/activity"]').getByLabel(/unread Activity notification/);
+      .locator(`a[href="/app/workspaces/${workspace.id}/activity"]`).getByLabel(/unread Activity notification/);
     if (recovery === "stream") expect((await request.post(`${fixture}/disconnect?createMessage=false`)).ok()).toBe(true);
     // No browser online/focus/scroll event or new message in this scope triggers the retry.
     await expect.poll(async () => (await summary())?.count, { timeout: 15_000 }).toBe(0);

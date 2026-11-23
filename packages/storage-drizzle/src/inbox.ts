@@ -38,17 +38,19 @@ export async function listInbox(client: Client, identityId: string): Promise<Con
     firstUnreadSequence: row.first_unread == null ? undefined : Number(row.first_unread) }));
 }
 
-export async function listActivity(client: Client, identityId: string, before?: string): Promise<ActivityPage> {
+export async function listActivity(client: Client, identityId: string, before?: string, workspaceId?: string): Promise<ActivityPage> {
   const cursor = activityBoundary(before);
   const boundary = cursor ? "AND (m.created_at, m.id) < (:beforeTime, :beforeId)" : "";
-  const args = { identity: identityId, ...(cursor ? { beforeId: cursor.id, beforeTime: cursor.createdAt } : {}) };
+  const workspaceFilter = workspaceId === undefined ? "" : "AND c.workspace_id = :workspaceId";
+  const args = { identity: identityId, ...(workspaceId === undefined ? {} : { workspaceId }),
+    ...(cursor ? { beforeId: cursor.id, beforeTime: cursor.createdAt } : {}) };
   const { rows } = await client.execute({ sql: `SELECT m.id, m.conversation_id, m.sequence, m.created_at,
     substr(m.body, 1, 256) AS preview, c.workspace_id, c.name, coalesce(parent.name, c.name) AS channel_name,
     substr(root.body, 1, 256) AS thread_preview, coalesce(author.display_name, m.participant_id) AS author_name,
     ${notificationMention} AS is_mention, m.sequence > coalesce(r.sequence, 0) AS unread,
     (SELECT min(unseen.sequence) FROM messages unseen WHERE unseen.conversation_id = c.id
       AND unseen.sequence > coalesce(r.sequence, 0) AND unseen.participant_id != :identity) AS first_unread
-    ${activityFrom} WHERE ${relevant} ${boundary} ORDER BY m.created_at DESC, m.id DESC LIMIT 51`, args });
+    ${activityFrom} WHERE ${relevant} ${workspaceFilter} ${boundary} ORDER BY m.created_at DESC, m.id DESC LIMIT 51`, args });
   const items: ActivityItem[] = rows.slice(0, 50).map(row => ({ id: String(row.id), conversationId: String(row.conversation_id),
     workspaceId: String(row.workspace_id), conversationName: String(row.name), channelName: String(row.channel_name),
     threadPreview: row.thread_preview == null ? undefined : String(row.thread_preview), authorName: String(row.author_name),

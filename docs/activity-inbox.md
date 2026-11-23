@@ -4,9 +4,9 @@ The first version is one Activity list, authoritative unread counts, and links t
 
 ## Activity
 
-`/app/activity` lists incoming direct mentions, channel broadcasts, and replies in threads where the human authored the root or had already participated. Own messages are excluded. Participating later does not retroactively turn earlier unmentioned replies into notifications.
+`/app/workspaces/:workspaceId/activity` lists incoming direct mentions, channel broadcasts, and replies in threads where the human authored the root or had already participated, within the selected Workspace only. Switching Workspaces while browsing Activity stays in Activity for the newly selected Workspace. Existing `/app/activity` bookmarks redirect to the remembered accessible Workspace, or the first accessible Workspace. Own messages are excluded. Participating later does not retroactively turn earlier unmentioned replies into notifications.
 
-The Activity navigation badge counts all unread Activity notifications, including those beyond the loaded page—not all unread messages. A reply that is also a mention counts once. The badge appears in desktop and mobile navigation and is hidden at zero; browsing Activity does not clear it.
+The Activity navigation badge counts the selected Workspace's unread Activity notifications, including those beyond the loaded page—not other Workspaces' notifications or all unread messages. A reply that is also a mention counts once. The badge appears in desktop and mobile navigation and is hidden at zero; browsing Activity does not clear it.
 
 Each item shows its author, channel, thread-root preview where applicable, message preview and unread state. Opening it navigates to the exact Conversation/thread and its first unread message. The URL target is focused once, not again on every live update. The list has bounded, 50-item keyset pagination.
 
@@ -29,7 +29,7 @@ The existing principal-scoped SharedWorker/SSE connection carries an optional bo
 Load, readiness, focus, reconnect and a periodic snapshot reconcile Activity/unread state from the server. Hints are coalesced before refreshing; they are not the durable source of truth.
 
 - `GET /identities/me/inbox`: authoritative summaries for the authenticated active human's accessible scopes.
-- `GET /identities/me/activity?before=...`: current-access Activity page; cursor values are ordering boundaries, not access grants.
+- `GET /identities/me/activity?workspaceId=...&before=...`: current-access Activity page filtered by Workspace before pagination; cursor values and Workspace IDs are not access grants. The UI always supplies the selected Workspace. Omitting `workspaceId` retains the actor-wide API projection for existing clients; an empty or inaccessible Workspace yields no items.
 - `POST /conversations/:id/read`, `{ "sequence": n }`: acknowledge only the authenticated human's accessible Conversation.
 - `GET /conversations/events?inbox=1&conversationId=...`: combine inbox hints with up to 100 Conversation IDs; zero IDs is valid with authenticated inbox opt-in.
 

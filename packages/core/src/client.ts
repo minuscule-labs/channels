@@ -357,8 +357,11 @@ export class ConversationClient {
     return ((await (await this.request("/identities/me/inbox")).json()) as { summaries: ConversationUnreadSummary[] }).summaries;
   }
 
-  async listActivity(before?: string): Promise<ActivityPage> {
-    return (await (await this.request(`/identities/me/activity${before ? `?before=${encodeURIComponent(before)}` : ""}`)).json()) as ActivityPage;
+  async listActivity(before?: string, workspaceId?: string): Promise<ActivityPage> {
+    const query = new URLSearchParams();
+    if (before) query.set("before", before);
+    if (workspaceId !== undefined) query.set("workspaceId", workspaceId);
+    return (await (await this.request(`/identities/me/activity${query.size ? `?${query}` : ""}`)).json()) as ActivityPage;
   }
 
   async acknowledgeRead(conversationId: string, sequence: number): Promise<number> {
