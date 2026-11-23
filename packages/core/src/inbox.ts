@@ -17,6 +17,8 @@ export interface ActivityItem {
   id: string;
   conversationId: string;
   workspaceId: string;
+  parentConversationId?: string;
+  rootSequence?: number;
   conversationName: string;
   channelName: string;
   threadPreview?: string;

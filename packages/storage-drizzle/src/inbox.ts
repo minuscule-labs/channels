@@ -46,13 +46,16 @@ export async function listActivity(client: Client, identityId: string, before?: 
     ...(cursor ? { beforeId: cursor.id, beforeTime: cursor.createdAt } : {}) };
   const { rows } = await client.execute({ sql: `SELECT m.id, m.conversation_id, m.sequence, m.created_at,
     substr(m.body, 1, 256) AS preview, c.workspace_id, c.name, coalesce(parent.name, c.name) AS channel_name,
+    c.parent_conversation_id, root.sequence AS root_sequence,
     substr(root.body, 1, 256) AS thread_preview, coalesce(author.display_name, m.participant_id) AS author_name,
     ${notificationMention} AS is_mention, m.sequence > coalesce(r.sequence, 0) AS unread,
     (SELECT min(unseen.sequence) FROM messages unseen WHERE unseen.conversation_id = c.id
       AND unseen.sequence > coalesce(r.sequence, 0) AND unseen.participant_id != :identity) AS first_unread
     ${activityFrom} WHERE ${relevant} ${workspaceFilter} ${boundary} ORDER BY m.created_at DESC, m.id DESC LIMIT 51`, args });
   const items: ActivityItem[] = rows.slice(0, 50).map(row => ({ id: String(row.id), conversationId: String(row.conversation_id),
-    workspaceId: String(row.workspace_id), conversationName: String(row.name), channelName: String(row.channel_name),
+    workspaceId: String(row.workspace_id),
+    parentConversationId: row.parent_conversation_id == null ? undefined : String(row.parent_conversation_id),
+    rootSequence: row.root_sequence == null ? undefined : Number(row.root_sequence), conversationName: String(row.name), channelName: String(row.channel_name),
     threadPreview: row.thread_preview == null ? undefined : String(row.thread_preview), authorName: String(row.author_name),
     preview: String(row.preview), sequence: Number(row.sequence), createdAt: String(row.created_at),
     kind: Number(row.is_mention) ? "mention" : "thread-reply", unread: Boolean(row.unread),

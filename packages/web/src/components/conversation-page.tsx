@@ -2,7 +2,7 @@ import type { LocalBulkAgentLifecycleResult, LocalSessionContextMode, LocalTurnF
 import type { ConversationMessage, ConversationThread, Participant } from "@minu/channels-core/types";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useLocation, useParams } from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { conversations, localControl } from "../lib/api";
@@ -29,21 +29,27 @@ import { ErrorNotice } from "./ui/error-notice";
 
 export function ConversationPage() {
   const { workspaceId, conversationId } = useParams({ from: "/app/workspaces/$workspaceId/conversations/$conversationId" });
+  const { threadId, threadMessage } = useSearch({ from: "/app/workspaces/$workspaceId/conversations/$conversationId" });
   // Route parameters can change without unmounting the page. Keep feedback and
   // in-flight mutation callbacks scoped to the Conversation that created them.
-  return <ConversationPageContent key={`${workspaceId}:${conversationId}`} workspaceId={workspaceId} conversationId={conversationId} />;
+  return <ConversationPageContent key={`${workspaceId}:${conversationId}`} workspaceId={workspaceId} conversationId={conversationId}
+    linkedThreadId={threadId} linkedThreadMessage={threadMessage} />;
 }
 
-function ConversationPageContent({ workspaceId, conversationId, rootMessage, onCloseThread }: {
+function ConversationPageContent({ workspaceId, conversationId, rootMessage, onCloseThread, linkedThreadId, linkedThreadMessage, targetSequence }: {
   workspaceId: string;
   conversationId: string;
   rootMessage?: ConversationMessage;
   onCloseThread?(): void;
+  linkedThreadId?: string | null;
+  linkedThreadMessage?: number;
+  targetSequence?: number;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const location = useLocation();
-  // Nested threads have independent message sequences; only the route's view owns its hash.
-  const viewHash = onCloseThread ? "" : location.hash;
+  // Parent and thread sequences are independent. A nested thread only owns its explicit target.
+  const viewHash = onCloseThread ? (targetSequence === undefined ? "" : `message-${targetSequence}`) : location.hash;
   const [rosterOpen, setRosterOpen] = useState(false);
   const [threadSelection, setThreadSelection] = useState<{ key: string; thread: ConversationThread }>();
   const restoredThreadSelectionKey = useRef<string | undefined>(undefined);
@@ -102,7 +108,12 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   });
   const threadSelectionKey = currentSession.isSuccess && !activeThread
     ? threadSelectionStorageKey(workspaceId, conversationId, currentSession.data.identityId) : undefined;
-  const selectedThread = threadSelection && threadSelection.key === threadSelectionKey ? threadSelection.thread : undefined;
+  const linkedThread = linkedThreadId ? threads.data?.find(candidate => candidate.id === linkedThreadId
+    && candidate.thread.parentConversationId === conversationId) : undefined;
+  const selectedThread = linkedThreadId !== undefined ? linkedThread
+    : threadSelection && threadSelection.key === threadSelectionKey ? threadSelection.thread : undefined;
+  // Block background-parent acknowledgement immediately, including while its linked thread is loading.
+  const readBlocked = !activeThread && Boolean(linkedThreadId || selectedThread);
   const selectThread = (thread?: ConversationThread, identityId = currentSession.data?.identityId) => {
     if (!identityId || activeThread) return;
     const key = threadSelectionStorageKey(workspaceId, conversationId, identityId);
@@ -111,9 +122,22 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       restoredThreadSelectionKey.current = key;
       setThreadSelection(thread ? { key, thread } : undefined);
     }
+    if (linkedThreadId !== undefined) {
+      const root = thread?.thread.context.find(message => message.id === thread.thread.rootMessageId);
+      void navigate({ to: "/app/workspaces/$workspaceId/conversations/$conversationId", params: { workspaceId, conversationId },
+        search: { threadId: thread?.id ?? null }, hash: root ? `message-${root.sequence}` : location.hash,
+        replace: true, resetScroll: false });
+    }
   };
   useEffect(() => {
-    if (!threadSelectionKey || restoredThreadSelectionKey.current === threadSelectionKey
+    if (!threadSelectionKey || linkedThreadId === undefined || (linkedThreadId && !linkedThread)) return;
+    restoredThreadSelectionKey.current = threadSelectionKey;
+    writeThreadSelection(threadSelectionKey, linkedThread?.id);
+    setThreadSelection(current => linkedThread ? (current?.key === threadSelectionKey && current.thread === linkedThread
+      ? current : { key: threadSelectionKey, thread: linkedThread }) : undefined);
+  }, [threadSelectionKey, linkedThreadId, linkedThread]);
+  useEffect(() => {
+    if (linkedThreadId !== undefined || !threadSelectionKey || restoredThreadSelectionKey.current === threadSelectionKey
       || !threads.isSuccess || threads.isFetching) return;
     restoredThreadSelectionKey.current = threadSelectionKey;
     const rememberedId = readThreadSelection(threadSelectionKey);
@@ -121,7 +145,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       && candidate.thread.parentConversationId === conversationId);
     setThreadSelection(thread ? { key: threadSelectionKey, thread } : undefined);
     if (rememberedId && !thread) writeThreadSelection(threadSelectionKey, undefined);
-  }, [threadSelectionKey, threads.data, threads.isSuccess, threads.isFetching, conversationId]);
+  }, [threadSelectionKey, threads.data, threads.isSuccess, threads.isFetching, conversationId, linkedThreadId]);
   const openThread = useMutation({
     mutationFn: async (message: ConversationMessage) => {
       const identityId = currentSession.data!.identityId;
@@ -352,10 +376,10 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       refresh: () => { void refreshParticipant(identityId); },
     };
   };
-  const focusMessage = (sequence: number) => {
+  const focusMessage = (sequence: number, focus = true) => {
     const target = scrollRef.current?.querySelector<HTMLElement>(`[data-message-sequence="${sequence}"]`);
     target?.scrollIntoView({ block: "center" });
-    target?.focus({ preventScroll: true });
+    if (focus) target?.focus({ preventScroll: true });
     return Boolean(target);
   };
   const viewMessage = (sequence: number) => {
@@ -399,7 +423,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     }));
     const identityId = currentSession.data?.identityId;
     const sequence = messages.data?.at(-1)?.sequence;
-    if (!scrollRef.current || !identityId || sequence === undefined || document.visibilityState !== "visible"
+    if (readBlocked || !scrollRef.current || !identityId || sequence === undefined || document.visibilityState !== "visible"
       || !document.hasFocus() || !nearEndRef.current || sequence <= requestedReadSequence.current) return;
     const last = scrollRef.current.querySelector<HTMLElement>(`[data-message-sequence="${sequence}"]`);
     if (!last) return;
@@ -414,7 +438,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       writeReadSequence(localStorage, identityId, conversationId, acknowledged);
       window.dispatchEvent(new Event("minu-read-state"));
     }).catch(() => { if (requestedReadSequence.current === sequence) requestedReadSequence.current = 0; });
-  }, [conversationId, currentSession.data?.identityId, messages.data]);
+  }, [conversationId, currentSession.data?.identityId, messages.data, readBlocked]);
 
   useEffect(() => {
     if (timelineReady && reconciliationVersion > 0) markRead();
@@ -465,7 +489,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     const match = /^message-(\d+)$/.exec(viewHash);
     if (match) {
       nearEndRef.current = false;
-      if (!focusMessage(Number(match[1]))) return;
+      if (!focusMessage(Number(match[1]), !readBlocked)) return;
       focusedHash.current = viewHash;
       if (scrollRef.current) nearEndRef.current = isNearTimelineEnd(scrollRef.current);
       if (nearEndRef.current) setUnseenMessages(0);
@@ -478,7 +502,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
         ?? document.querySelector<HTMLElement>('button[aria-label="Show participants"]');
       trigger?.focus();
     } else focusedHash.current = undefined;
-  }, [viewHash, timelineReady, messages.data, messages.isFetching, markRead]);
+  }, [viewHash, timelineReady, messages.data, messages.isFetching, markRead, readBlocked]);
 
   if (metadata.isLoading || messages.isLoading) {
     return <div className="grid h-full place-items-center text-sm text-[var(--muted)]">Loading Conversation…</div>;
@@ -576,6 +600,8 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
           </div>
         ) : null}
         {openThread.error ? <ErrorNotice className="border-b border-[var(--border)] px-4 py-2" dismissLabel="Dismiss thread error" onDismiss={openThread.reset}>{openThread.error.message}</ErrorNotice> : null}
+        {linkedThreadId && threads.isSuccess && !threads.isFetching && !linkedThread ? <ErrorNotice
+          className="border-b border-[var(--border)] px-4 py-2" dismissLabel="Close thread" onDismiss={() => selectThread()}>Thread is unavailable.</ErrorNotice> : null}
         {threads.error && !activeThread ? <ErrorNotice className="border-b border-[var(--border)] px-4 py-2" dismissLabel="Retry threads" onDismiss={() => { void threads.refetch(); }}>{threads.error.message}</ErrorNotice> : null}
         {bulkActionError ? <ErrorNotice className="border-b border-[var(--danger)]/30 bg-[var(--panel)] px-4 py-2" dismissLabel="Dismiss bulk action error" onDismiss={dismissBulkError}>{bulkActionError}</ErrorNotice> : null}
         {[
@@ -705,6 +731,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
       </div> : null}
       {selectedThread ? <Dialog.Content
         aria-describedby={undefined}
+        onOpenAutoFocus={event => { if (linkedThreadMessage !== undefined) event.preventDefault(); }}
         onInteractOutside={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
@@ -720,6 +747,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
           key={selectedThread.id}
           workspaceId={workspaceId}
           conversationId={selectedThread.id}
+          targetSequence={linkedThreadId === selectedThread.id ? linkedThreadMessage : undefined}
           rootMessage={selectedThread.thread.context.find((message) => message.id === selectedThread.thread.rootMessageId)}
           onCloseThread={() => selectThread()}
         />

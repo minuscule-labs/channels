@@ -121,6 +121,11 @@ const legacyActivityRoute = createRoute({ getParentRoute: () => rootRoute, path:
 const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/app/workspaces/$workspaceId/conversations/$conversationId",
+  validateSearch: (search): { threadId?: string | null; threadMessage?: number } => ({
+    ...(search.threadId === null || typeof search.threadId === "string" ? { threadId: search.threadId || null } : {}),
+    ...(typeof search.threadMessage === "number" && Number.isSafeInteger(search.threadMessage) && search.threadMessage > 0
+      ? { threadMessage: search.threadMessage } : {}),
+  }),
   component: ConversationPage,
 });
 
