@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Open Activity thread notifications inside their parent Conversation, with an explicit thread/reply target, desktop panel or mobile full-screen view. Keep parent read state independent, close back to the root, and restore Activity's Workspace, loaded pages and position on Back, including after reload.
+
 - Scope Activity and its navigation badge to the selected Workspace. Keep Workspace selection in the Activity URL/cache, filter before pagination, retain Activity when switching Workspaces, and redirect existing `/app/activity` bookmarks without changing read acknowledgement or live-connection behavior.
 
 ## 0.0.41

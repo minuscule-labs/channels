@@ -34,7 +34,10 @@ test("workspace Activity applies durable access and scope before the page limit"
     const first = await service.listActivity(human.id, undefined, a!.workspaceId);
     assert.equal(first.items.length, 50);
     assert.ok(first.items.every(item => item.workspaceId === a!.workspaceId));
-    assert.equal(first.items.find(item => item.id === reply.id)?.kind, "thread-reply");
+    const replyItem = first.items.find(item => item.id === reply.id);
+    assert.equal(replyItem?.kind, "thread-reply");
+    assert.equal(replyItem?.parentConversationId, a!.id);
+    assert.equal(replyItem?.rootSequence, root.sequence);
     const second = await service.listActivity(human.id, first.nextCursor, a!.workspaceId);
     assert.equal(second.items.length, 4);
     assert.equal(second.nextCursor, undefined);

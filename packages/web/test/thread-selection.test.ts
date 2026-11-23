@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { readThreadSelection, threadSelectionStorageKey, writeThreadSelection } from "../src/lib/thread-selection";
+import { conversationThreadSearch, readThreadSelection, threadSelectionStorageKey, writeThreadSelection } from "../src/lib/thread-selection";
 
 describe("remembered thread selection", () => {
+  it("keeps explicit thread and parent URLs distinct from remembered selection", () => {
+    expect(conversationThreadSearch({})).toEqual({});
+    expect(conversationThreadSearch({ threadId: null, threadMessage: 9 })).toEqual({ threadId: null });
+    expect(conversationThreadSearch({ threadId: "" })).toEqual({ threadId: null });
+    expect(conversationThreadSearch({ threadId: "thread-a", threadMessage: 3, ignored: true })).toEqual({ threadId: "thread-a", threadMessage: 3 });
+  });
+
+  it("rejects malformed thread intent instead of falling back to a remembered thread", () => {
+    for (const threadId of [123, false, [], {}]) expect(() => conversationThreadSearch({ threadId })).toThrow("Invalid thread link");
+  });
+
+  it("accepts only positive safe message targets attached to an explicit thread", () => {
+    for (const threadMessage of [0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1, "2"]) {
+      expect(conversationThreadSearch({ threadId: "thread", threadMessage })).toEqual({ threadId: "thread" });
+    }
+    expect(conversationThreadSearch({ threadMessage: 2 })).toEqual({});
+  });
   it("scopes a selection to its workspace, channel and human identity", () => {
     const keys = [
       threadSelectionStorageKey("workspace", "channel", "human"),
