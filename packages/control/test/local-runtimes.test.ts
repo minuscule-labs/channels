@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadLocalRuntimes } from "../src/local-runtimes.ts";
+import { loadLocalRuntimes, LOCAL_AGENT_ACCESS, LOCAL_AGENT_ACCESS_OPTIONS } from "../src/local-runtimes.ts";
 import { createLocalProductApp } from "../src/local.ts";
 import { ConversationClient } from "@minu/channels-core";
 import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-relay-storage-drizzle";
@@ -21,13 +21,18 @@ test("local runtime loading exposes all per-agent adapters without starting work
   assert.notEqual(runtimes.codex, runtimes["claude-code"]);
 });
 
-test("Claude Code gets full native tools and Codex workspace-write; Pi keeps its no-argument construction", async () => {
+test("every adapter gets the one shared full access level; Pi keeps its no-argument construction", async () => {
   const recording = (name: string) => `data:text/javascript,${encodeURIComponent(`export class ${name} { constructor(...args) { this.args = args; } ${methods} }`)}`;
   const runtimes = await loadLocalRuntimes({ pi: recording("PiAgentRuntime"), codex: recording("CodexAgentRuntime"), claudeCode: recording("ClaudeCodeAgentRuntime") });
   assert.deepEqual((runtimes["claude-code"] as unknown as { args: unknown[] }).args, [{ permissions: "full" }]);
   assert.deepEqual((runtimes.pi as unknown as { args: unknown[] }).args, []);
-  assert.deepEqual((runtimes.codex as unknown as { args: unknown[] }).args, [{ sandbox: "workspace-write" }]);
+  assert.deepEqual((runtimes.codex as unknown as { args: unknown[] }).args, [{ sandbox: "danger-full-access" }]);
   await assert.rejects(loadLocalRuntimes({ pi: recording("PiAgentRuntime"), codex: recording("CodexAgentRuntime"), claudeCode: recording("PiAgentRuntime") }), /claude-code.*ClaudeCodeAgentRuntime/);
+});
+
+test("the shared access constant is the single source for every adapter's native setting", () => {
+  assert.equal(LOCAL_AGENT_ACCESS, "full");
+  assert.deepEqual(LOCAL_AGENT_ACCESS_OPTIONS, { pi: { full: undefined }, "claude-code": { full: { permissions: "full" } }, codex: { full: { sandbox: "danger-full-access" } } });
 });
 
 test("explicit module overrides stay adapter-specific and never silently fall back", async () => {

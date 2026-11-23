@@ -8,6 +8,18 @@ function moduleSpecifier(value: string): string {
 }
 
 type LocalAdapter = "pi" | "codex" | "claude-code";
+/** The one access level every local agent runs with: whatever the user's own account can do, without asking. Each adapter maps it
+ * to its native setting below, so what an agent can do does not depend on which harness runs it. */
+export const LOCAL_AGENT_ACCESS = "full" as const;
+export type LocalAgentAccess = typeof LOCAL_AGENT_ACCESS;
+/** Pi has no restriction setting (no options); Claude Code bypasses permission prompts with every native tool; Codex runs
+ * unsandboxed with approvals off. */
+export const LOCAL_AGENT_ACCESS_OPTIONS: Record<LocalAdapter, Record<LocalAgentAccess, object | undefined>> = {
+  pi: { full: undefined },
+  "claude-code": { full: { permissions: "full" } },
+  codex: { full: { sandbox: "danger-full-access" } },
+};
+
 const CLASSES: Record<LocalAdapter, string> = { pi: "PiAgentRuntime", codex: "CodexAgentRuntime", "claude-code": "ClaudeCodeAgentRuntime" };
 
 /** Load all installed adapters; selecting one remains an existing per-agent choice. */
@@ -21,12 +33,11 @@ export async function loadLocalRuntimes(overrides: { pi?: string; codex?: string
     const name = CLASSES[adapter];
     const Constructor = loaded[name];
     if (typeof Constructor !== "function") throw new Error(`${adapter} Runtime module does not export ${name}`);
-    // Agents can do real work: Claude Code runs with full native tools (Pi parity); Codex may write inside its workspace under
-    // the sandbox (its adapter deliberately excludes unrestricted execution). Both use the installed CLI, its login and its
-    // default managed root. Pi keeps its own native defaults.
+    // Agents can do real work, and all three harnesses run with the same full access (see LOCAL_AGENT_ACCESS). They use the
+    // installed CLI, its login and its default managed root. Saved sessions keep the policy they were created with.
     const Runtime = Constructor as new (options?: object) => LocalManagedRuntimePort;
-    const runtime = adapter === "claude-code" ? new Runtime({ permissions: "full" })
-      : adapter === "codex" ? new Runtime({ sandbox: "workspace-write" }) : new Runtime();
+    const options = LOCAL_AGENT_ACCESS_OPTIONS[adapter][LOCAL_AGENT_ACCESS];
+    const runtime = options === undefined ? new Runtime() : new Runtime(options);
     for (const method of ["start", "send", "messages", "status", "startManaged", "listManagedSessions", "resume", "suspend", "destroy"] as const) {
       if (typeof runtime[method] !== "function") throw new Error(`${adapter} Runtime module is missing ${method}`);
     }
