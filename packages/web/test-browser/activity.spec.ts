@@ -131,8 +131,9 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
     expect(await count(thread.id)).toBe(2);
     await page.bringToFront();
     await row.getByRole("link").click();
-    await expect(page).toHaveURL(new RegExp(`/conversations/${thread.id}#message-1$`));
-    await expect(page.getByRole("log").locator('[data-message-sequence="1"]')).toBeFocused();
+    await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}\\?.*#message-${root.sequence}$`));
+    expect(new URL(page.url()).searchParams.get("threadId")).toBe(thread.id);
+    await expect(page.getByRole("dialog", { name: "Thread", exact: true }).getByRole("log").locator('[data-message-sequence="1"]')).toBeFocused();
     await expect(page.getByText("Activity arrived without a thread subscription", { exact: true })).toBeVisible();
     await expect.poll(() => count(thread.id)).toBe(0);
     expect(await count(conversation.id)).toBe(101);
@@ -240,7 +241,11 @@ test("Activity badge counts only unread notifications, works on mobile, and hide
   await page.locator(`[data-activity-id="${reply.id}"]`).getByRole("link").click();
   await expect(page.getByText("A mentioned thread reply counts once", { exact: true })).toBeVisible();
   await expect(badge()).toHaveText("1");
-  await page.getByRole("link", { name: /^Badge scope/ }).click();
+  await page.getByRole("dialog", { name: "Thread", exact: true }).getByRole("button", { name: "Close thread", exact: true }).click();
+  await page.getByRole("log").evaluate(log => {
+    const scroll = log.closest<HTMLElement>(".minu-scroll")!;
+    scroll.scrollTop = scroll.scrollHeight;
+  });
   await expect(page.getByRole("log").getByText("Badge mention", { exact: true })).toBeVisible();
   await expect(badge()).toHaveCount(0);
   // The other fixture human still has the member-authored root unread.
@@ -259,6 +264,7 @@ test("a side thread opened from a parent Activity link ignores the parent's mess
   const { conversation } = await (await request.post(`${api}/conversations`, { data: {
     workspaceId: workspace.id, name: "Activity parent hash", participantIds: [human.id, agent.id],
   } })).json();
+  await request.post(`${api}/conversations/${conversation.id}/messages`, { data: { participantId: human.id, body: "Earlier parent context", to: [] } });
   const { message: root } = await (await request.post(`${api}/conversations/${conversation.id}/messages`, { data: {
     participantId: human.id, body: "Root for the side thread", to: [],
   } })).json();
@@ -274,19 +280,19 @@ test("a side thread opened from a parent Activity link ignores the parent's mess
   const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(`/app/workspaces/${workspace.id}/activity`)}`)).json();
   await page.goto(launchUrl);
   await page.locator(`[data-activity-id="${mention.id}"]`).getByRole("link").click();
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}#message-2$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}\\?threadId=null#message-3$`));
   const threadUnread = () => page.evaluate(async id => {
     const { summaries } = await (await fetch("/identities/me/inbox")).json();
     return summaries.find((item: { conversationId: string }) => item.conversationId === id)?.count;
   }, thread.id);
   expect(await threadUnread()).toBe(1);
-  await page.getByRole("button", { name: "Open actions for message 1", exact: true }).click();
+  await page.getByRole("button", { name: `Open actions for message ${root.sequence}`, exact: true }).click();
   await page.getByRole("menuitem", { name: "Open thread", exact: true }).click();
   const panel = page.getByRole("dialog", { name: "Thread", exact: true });
   await expect(panel.getByText("The visible side-thread reply", { exact: true })).toBeInViewport();
   await panel.getByRole("combobox", { name: "Thread reply", exact: true }).focus();
   await expect.poll(threadUnread).toBe(0);
-  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}#message-2$`));
+  await expect(page).toHaveURL(new RegExp(`/conversations/${conversation.id}\\?threadId=${thread.id}#message-${root.sequence}$`));
 });
 
 test("mobile Activity title stays clear of the navigation button", async ({ page, request }) => {

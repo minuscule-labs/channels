@@ -12,6 +12,16 @@ Each item shows its author, channel, thread-root preview where applicable, messa
 
 Activity is projected from already-persisted messages, current membership/roster access and human read cursors. There is no separate notification queue or message fanout store. Reopening the database retains Activity without depending on successful SSE delivery. Revoked membership/roster access removes items at the next authorized read.
 
+## Opening notifications
+
+A thread reply or thread mention opens its parent Conversation with the existing thread panel selected explicitly. Desktop shows the parent alongside the panel; mobile shows the thread full-screen. The parent is positioned at the root, while the thread focuses its own first unread reply (or the linked reply when already read). Parent mentions explicitly open the parent view rather than restoring an unrelated remembered panel.
+
+Thread links use `?threadId=...&threadMessage=...` on the parent Conversation URL; its message hash identifies the parent root, not a thread sequence. `threadId=null` explicitly selects the parent view. Normal remembered-thread navigation and older standalone thread URLs remain supported. A missing/foreign thread never falls back to a different remembered thread.
+
+Closing the thread returns focus to its parent root without inserting another Back step. Back returns to the same Workspace's Activity position and loaded page depth, including after a reload. Per-tab session storage holds only identity/Workspace/history-scoped page counts and scroll coordinates, never notification bodies; if the query cache is gone, pages are fetched again through the current-access API.
+
+A parent serving as thread context is not acknowledged or advertised as viewing its latest messages while the thread is open or its explicit link is loading. The thread retains its existing visible/focused/unoccluded/end-of-timeline guards. Once the thread closes, the parent resumes its own guarded read behavior.
+
 ## Unread correctness
 
 Unread counts are calculated by the server across persisted messages, not from the browser's partial 100-message cache. Own messages are excluded; mention counts retain their existing direct-mention meaning.

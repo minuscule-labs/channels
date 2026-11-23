@@ -197,13 +197,15 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     for (const conversation of this.inboxConversations(identityId)) {
       if (workspaceId !== undefined && conversation.workspaceId !== workspaceId) continue;
       const floor = this.humanReadCursors.get(`${conversation.id}:${identityId}`) ?? 0;
+      const root = conversation.thread?.context.find(message => message.id === conversation.thread!.rootMessageId);
       for (const message of conversation.messages) {
         const kind = activityKind(conversation, message, identityId);
         if (!kind) continue;
         items.push({ id: message.id, conversationId: conversation.id, workspaceId: conversation.workspaceId,
+          parentConversationId: conversation.thread?.parentConversationId, rootSequence: root?.sequence,
           conversationName: conversation.name,
           channelName: this.conversations.get(conversation.thread?.parentConversationId ?? conversation.id)?.name ?? conversation.name,
-          threadPreview: conversation.thread?.context.find(m => m.id === conversation.thread!.rootMessageId)?.body.slice(0, 256),
+          threadPreview: root?.body.slice(0, 256),
           authorName: this.identities.get(message.participantId)?.displayName ?? message.participantId,
           preview: message.body.slice(0, 256), sequence: message.sequence, createdAt: message.createdAt,
           kind, unread: message.sequence > floor,
