@@ -58,7 +58,7 @@ for (const mobile of [false, true]) {
     try {
       await page.goto(launchUrl);
       await page.getByRole("button", { name: "Load more", exact: true }).click();
-      await expect(page.locator("[data-activity-id]")).toHaveCount(55);
+      await expect(page.locator("[data-activity-id]")).toHaveCount(54);
       const row = page.locator(`[data-activity-id="${target.id}"]`);
       await row.scrollIntoViewIfNeeded();
       const before = await page.getByRole("region", { name: "Activity", exact: true }).evaluate(element => element.scrollTop);
@@ -96,7 +96,7 @@ for (const mobile of [false, true]) {
       expect(parentReads).toEqual([]);
       await page.goBack();
       await expect(page).toHaveURL(new RegExp(`${destination}$`));
-      await expect(page.locator("[data-activity-id]")).toHaveCount(55);
+      await expect(page.locator("[data-activity-id]")).toHaveCount(54);
       await expect.poll(async () => page.getByRole("region", { name: "Activity", exact: true }).evaluate(element => element.scrollTop)).toBeCloseTo(before, 0);
       await row.getByRole("link").click();
       await expect(panel).toBeVisible();

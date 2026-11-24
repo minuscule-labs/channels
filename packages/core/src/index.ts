@@ -6,7 +6,7 @@ export {
   type PostMessageOptions,
 } from "./client.ts";
 export { activityCursor, activityBoundary } from "./inbox.ts";
-export type { ActivityItem, ActivityPage, ConversationUnreadSummary } from "./inbox.ts";
+export type { ActivityItem, ActivityPage, ActivityView, ConversationUnreadSummary } from "./inbox.ts";
 export { createResourceId, isResourceId, RESOURCE_ID_PREFIXES, type ResourceIdPrefix } from "./ids.ts";
 export {
   FilesystemAttachmentContentStore,

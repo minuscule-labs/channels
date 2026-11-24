@@ -21,6 +21,7 @@ import { WorkspaceSettingsSidebar } from "./workspace-settings-sidebar";
 
 export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const activityView = useRouterState({ select: state => state.location.search.view });
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -45,9 +46,9 @@ export function AppShell() {
   const selectedWorkspace = (workspaces.data ?? []).find((workspace) => workspace.id === selectedWorkspaceId);
   useEffect(() => {
     if (pathname === "/app/activity" && selectedWorkspace) {
-      void navigate({ to: "/app/workspaces/$workspaceId/activity", params: { workspaceId: selectedWorkspace.id }, replace: true });
+      void navigate({ to: "/app/workspaces/$workspaceId/activity", params: { workspaceId: selectedWorkspace.id }, search: { view: activityView }, replace: true });
     }
-  }, [pathname, selectedWorkspace, navigate]);
+  }, [pathname, selectedWorkspace, navigate, activityView]);
   const selectedConversations = useQuery({
     queryKey: selectedWorkspace ? queryKeys.workspaceConversations(selectedWorkspace.id) : ["workspace", "none", "conversations"],
     queryFn: () => conversations.listWorkspaceConversations(selectedWorkspace!.id),
@@ -201,7 +202,7 @@ export function AppShell() {
     if (!workspace) return;
     localStorage.setItem("minu-channels:last-workspace", workspaceId);
     if (pathname.endsWith("/activity")) {
-      void navigate({ to: "/app/workspaces/$workspaceId/activity", params: { workspaceId } });
+      void navigate({ to: "/app/workspaces/$workspaceId/activity", params: { workspaceId }, search: { view: activityView } });
       return;
     }
     const conversationList = await conversations.listWorkspaceConversations(workspaceId);

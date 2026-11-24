@@ -13,6 +13,8 @@ export interface ConversationUnreadSummary {
   firstUnreadSequence?: number;
 }
 
+export type ActivityView = "all" | "mentions" | "threads";
+
 export interface ActivityItem {
   id: string;
   conversationId: string;
@@ -23,6 +25,9 @@ export interface ActivityItem {
   channelName: string;
   threadPreview?: string;
   authorName: string;
+  /** Grouped views count distinct notification authors and unread notifications, not rows. */
+  authorCount?: number;
+  unreadCount?: number;
   preview: string;
   sequence: number;
   createdAt: string;

@@ -29,7 +29,7 @@ import type {
   UpdateWorkspaceMemberInput,
 } from "./types.ts";
 import type { MessageListOptions } from "./storage.ts";
-import type { ActivityPage, ConversationUnreadSummary } from "./inbox.ts";
+import type { ActivityPage, ActivityView, ConversationUnreadSummary } from "./inbox.ts";
 import { MAX_IMAGE_BYTES } from "./image-validation.ts";
 
 export interface ConversationEventOptions {
@@ -357,10 +357,11 @@ export class ConversationClient {
     return ((await (await this.request("/identities/me/inbox")).json()) as { summaries: ConversationUnreadSummary[] }).summaries;
   }
 
-  async listActivity(before?: string, workspaceId?: string): Promise<ActivityPage> {
+  async listActivity(before?: string, workspaceId?: string, view?: ActivityView): Promise<ActivityPage> {
     const query = new URLSearchParams();
     if (before) query.set("before", before);
     if (workspaceId !== undefined) query.set("workspaceId", workspaceId);
+    if (view !== undefined) query.set("view", view);
     return (await (await this.request(`/identities/me/activity${query.size ? `?${query}` : ""}`)).json()) as ActivityPage;
   }
 
