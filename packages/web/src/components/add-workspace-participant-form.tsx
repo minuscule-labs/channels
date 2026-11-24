@@ -348,7 +348,7 @@ export function AddWorkspaceParticipantForm({
                 ))}
               </div>
             </fieldset>
-          ) : agentMode && activeTab === "skills" && !runtimeOptions.isPending ? (
+          ) : agentMode && activeTab === "skills" && !runtimeOptions.isPending && !runtimeOptions.error ? (
             <p className="text-xs text-[var(--muted)] sm:col-span-2">No skills were discovered for this harness.</p>
           ) : null}
           {runtimeOptions.isPending ? <p className="text-[10px] text-[var(--muted)] sm:col-span-2">Discovering harness providers, models, and skills…</p> : null}
