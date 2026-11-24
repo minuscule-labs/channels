@@ -1705,6 +1705,38 @@ test("typed terminal failure classification is precedence ordered and ignores ra
   ])), "response_delivery_failed");
 });
 
+test("a completed turn with an empty reply is delivered as finished, not failed", async () => {
+  const server = await createConversationHttpServer();
+  const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+  let attempts = 0;
+  const runtime: AgentRuntimePort = {
+    async send() { throw new Error("legacy send must not be used"); }, async messages() { return []; }, async status() { return "idle"; },
+    async turn() { return undefined; },
+    async startTurn(_sessionId, turnId, input) {
+      attempts += 1;
+      const timestamp = new Date().toISOString();
+      return { id: turnId, input, status: "completed", response: { role: "assistant" as const, content: " \n" }, createdAt: timestamp, updatedAt: timestamp };
+    },
+  };
+  const conversation = await client.createConversation({ participants: [
+    { id: "user", type: "human" }, { id: "agent-a", type: "agent" },
+  ] });
+  const recoveryStore = new InMemoryRelayBindingStore();
+  const relay = new ConversationRuntimeRelay({
+    client, conversationId: conversation.id,
+    bindings: [{ participantId: "agent-a", sessionId: "session-a", runtime }],
+    cursorStore: recoveryStore,
+  });
+  try {
+    await relay.start();
+    const trigger = await client.postMessage(conversation.id, { participantId: "user", body: "@agent-a edit the file" });
+    await waitUntil(async () => (await recoveryStore.getCursor(conversation.id, "agent-a")) === trigger.sequence);
+    assert.equal(attempts, 1);
+    assert.equal((await recoveryStore.listTurnFailures(conversation.id, 20)).length, 0);
+    assert.equal((await client.listMessages(conversation.id)).at(-1)?.body, "Finished without a written reply.");
+  } finally { await relay.stop(); await server.close(); }
+});
+
 test("terminal Runtime failure is recorded visibly before the cursor advances", async () => {
   const server = await createConversationHttpServer();
   const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
