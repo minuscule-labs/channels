@@ -1,14 +1,20 @@
 # Activity and unread state
 
-The first version is one Activity list, authoritative unread counts, and links to exact Conversations or threads. A dedicated Threads screen, following controls, grouping, reactions and filters are not included.
+Activity is a Workspace-scoped personal feed with All, Mentions and Threads tabs, authoritative unread counts, and links to exact Conversations or threads. A dedicated Threads screen, following controls, reactions and other notification types are not included.
 
 ## Activity
 
 `/app/workspaces/:workspaceId/activity` lists incoming direct mentions, channel broadcasts, and replies in threads where the human authored the root or had already participated, within the selected Workspace only. Switching Workspaces while browsing Activity stays in Activity for the newly selected Workspace. Existing `/app/activity` bookmarks redirect to the remembered accessible Workspace, or the first accessible Workspace. Own messages are excluded. Participating later does not retroactively turn earlier unmentioned replies into notifications.
 
-The Activity navigation badge counts the selected Workspace's unread Activity notifications, including those beyond the loaded page—not other Workspaces' notifications or all unread messages. A reply that is also a mention counts once. The badge appears in desktop and mobile navigation and is hidden at zero; browsing Activity does not clear it.
+- **All** combines the existing eligible mentions and replies without double-counting a message that matches both rules.
+- **Mentions** includes direct mentions and channel broadcasts addressed to the human, in either a parent Conversation or a thread.
+- **Threads** includes eligible replies and mentions within threads. Creating a thread alone is not participation; a mention does not automatically subscribe the human to future unaddressed replies.
 
-Each item shows its author, channel, thread-root preview where applicable, message preview and unread state. Opening it navigates to the exact Conversation/thread and its first unread message. The URL target is focused once, not again on every live update. The list has bounded, 50-item keyset pagination.
+Replies from multiple authors in the same thread share one row, with the latest matching notification preview, its author plus the number of other notification authors, and an unread-notification count. Distinct threads in one parent remain separate; unthreaded mentions remain individual items. Mentions previews only matching mentions, not a later ordinary reply. Grouping and filtering occur before the 50-row keyset page limit, across the complete eligible thread history rather than only loaded pages.
+
+The Activity navigation badge counts the selected Workspace's unread Activity notifications across **All**, regardless of the selected tab and including those beyond the loaded page—not grouped rows, other Workspaces' notifications or ordinary unread messages. A reply that is also a mention counts once. Three unread replies may occupy one row but contribute three to the badge. Row counts apply to the selected view. The badge appears in desktop and mobile navigation and is hidden at zero; browsing or switching tabs does not clear it.
+
+Each item shows its channel, thread-root preview where applicable, message preview and unread state. Opening it navigates to the exact Conversation/thread and its first unread message. The URL target is focused once, not again on every live update. The selected tab is in `?view=mentions` or `?view=threads` (omitted means All), and remains selected across reload, Back from a thread and Workspace switching. Query caches and restored page/scroll coordinates are scoped by identity, Workspace and view.
 
 Activity is projected from already-persisted messages, current membership/roster access and human read cursors. There is no separate notification queue or message fanout store. Reopening the database retains Activity without depending on successful SSE delivery. Revoked membership/roster access removes items at the next authorized read.
 
@@ -18,7 +24,7 @@ A thread reply or thread mention opens its parent Conversation with the existing
 
 Thread links use `?threadId=...&threadMessage=...` on the parent Conversation URL; its message hash identifies the parent root, not a thread sequence. `threadId=null` explicitly selects the parent view. Normal remembered-thread navigation and older standalone thread URLs remain supported. A missing/foreign thread never falls back to a different remembered thread.
 
-Closing the thread returns focus to its parent root without inserting another Back step. Back returns to the same Workspace's Activity position and loaded page depth, including after a reload. Per-tab session storage holds only identity/Workspace/history-scoped page counts and scroll coordinates, never notification bodies; if the query cache is gone, pages are fetched again through the current-access API.
+Closing the thread returns focus to its parent root without inserting another Back step. Back returns to the same Workspace's Activity position and loaded page depth, including after a reload. Per-tab session storage holds only identity/Workspace/view/history-scoped page counts and scroll coordinates, never notification bodies; if the query cache is gone, pages are fetched again through the current-access API.
 
 A parent serving as thread context is not acknowledged or advertised as viewing its latest messages while the thread is open or its explicit link is loading. The thread retains its existing visible/focused/unoccluded/end-of-timeline guards. Once the thread closes, the parent resumes its own guarded read behavior.
 
@@ -39,7 +45,7 @@ The existing principal-scoped SharedWorker/SSE connection carries an optional bo
 Load, readiness, focus, reconnect and a periodic snapshot reconcile Activity/unread state from the server. Hints are coalesced before refreshing; they are not the durable source of truth.
 
 - `GET /identities/me/inbox`: authoritative summaries for the authenticated active human's accessible scopes.
-- `GET /identities/me/activity?workspaceId=...&before=...`: current-access Activity page filtered by Workspace before pagination; cursor values and Workspace IDs are not access grants. The UI always supplies the selected Workspace. Omitting `workspaceId` retains the actor-wide API projection for existing clients; an empty or inaccessible Workspace yields no items.
+- `GET /identities/me/activity?workspaceId=...&view=all|mentions|threads&before=...`: current-access Activity page filtered/grouped before pagination; cursor values, views and Workspace IDs are not access grants. The UI always supplies its selected Workspace and view. Grouped items add `authorCount` and `unreadCount`. Omitting `view` retains the original flat API; invalid views return 400. Omitting `workspaceId` retains the actor-wide projection for existing clients; an empty or inaccessible Workspace yields no items.
 - `POST /conversations/:id/read`, `{ "sequence": n }`: acknowledge only the authenticated human's accessible Conversation.
 - `GET /conversations/events?inbox=1&conversationId=...`: combine inbox hints with up to 100 Conversation IDs; zero IDs is valid with authenticated inbox opt-in.
 
@@ -48,9 +54,9 @@ The browser cannot select another recipient via request data. Production, develo
 ## Focused verification
 
 - Core HTTP inbox test: mandatory actor, actor isolation, inbox-only delivery and monotonic acknowledgement.
-- libSQL inbox test: more than 100 messages, persistence/reopen, paging, participation timing, channel mentions, revocation, independent thread and agent cursors.
+- libSQL inbox and memory/SQLite Activity-view tests: more than 100 messages, grouped/filter-before-page parity, distinct authors, participation timing, broadcasts, overlap deduplication, Workspace/roster revocation, persistence/reopen and independent thread/agent cursors.
 - Hub/shared-worker tests: inbox-only lifetime, 100 Conversation slots and one physical connection.
-- Activity browser tests: unsubscribed replies across tabs, exact thread navigation, unread preservation, composer-focus retention and legacy read-mark import. The unfocused-document guard is exercised with an explicit focus-state override because Playwright forces focus in headless Chromium; this is not an OS-window-focus acceptance claim.
+- Activity browser tests: All/Mentions/Threads and keyboard navigation, grouped live previews/counts, Workspace isolation, mobile long-author layout, Back/reload restoration, unsubscribed replies across tabs, exact thread navigation, unread preservation, composer-focus retention and legacy read-mark import. The unfocused-document guard is exercised with an explicit focus-state override because Playwright forces focus in headless Chromium; this is not an OS-window-focus acceptance claim.
 - Existing migration, collaboration, folder, shared-event and authored-skill checks cover the affected integration boundaries.
 
 This implementation does not itself publish a release or update an existing installation.

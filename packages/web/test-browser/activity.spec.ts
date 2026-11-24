@@ -106,7 +106,7 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
   const { launchUrl } = await (await request.get(`${fixture}/control-launch?destination=${encodeURIComponent(`/app/workspaces/${workspace.id}/activity`)}`)).json();
   await page.goto(launchUrl);
   await expect(page.getByRole("heading", { name: "Activity", exact: true })).toBeVisible();
-  const row = page.locator(`[data-activity-id="${reply.id}"]`);
+  const row = page.locator(`[data-activity-conversation="${thread.id}"]`);
   await expect(row).toContainText("Activity thread root");
   await expect(row).toContainText("Activity unmentioned thread reply");
   await expect(row.getByLabel("Unread", { exact: true })).toBeVisible();
@@ -137,7 +137,8 @@ test("Activity receives unsubscribed thread replies, keeps full unread counts, a
     await expect(page.getByText("Activity arrived without a thread subscription", { exact: true })).toBeVisible();
     await expect.poll(() => count(thread.id)).toBe(0);
     expect(await count(conversation.id)).toBe(101);
-    await expect(other.locator(`[data-activity-id="${reply.id}"]`).getByLabel("Unread", { exact: true })).toHaveCount(0);
+    await expect(other.locator(`[data-activity-conversation="${thread.id}"]`)).toBeVisible();
+    await expect(other.locator(`[data-activity-conversation="${thread.id}"]`).getByLabel("Unread", { exact: true })).toHaveCount(0);
     const composer = page.getByRole("combobox", { name: "Thread reply", exact: true });
     await composer.focus();
     await request.post(`${api}/conversations/${thread.id}/messages`, { data: {

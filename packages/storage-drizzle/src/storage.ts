@@ -160,7 +160,7 @@ function messageAttachment(attachment: ConversationAttachmentRecord): MessageAtt
 
 export class DrizzleLibSqlConversationStorage implements ConversationStorage, ConversationCursorStore {
   listInbox(identityId: string) { return listInbox(this.client, identityId); }
-  listActivity(identityId: string, before?: string, workspaceId?: string) { return listActivity(this.client, identityId, before, workspaceId); }
+  listActivity(identityId: string, before?: string, workspaceId?: string, view?: import("@minu/channels-core").ActivityView) { return listActivity(this.client, identityId, before, workspaceId, view); }
   async acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number> {
     const rows = await this.database.insert(schema.humanReadCursors).values({ conversationId, identityId, sequence })
       .onConflictDoUpdate({ target: [schema.humanReadCursors.conversationId, schema.humanReadCursors.identityId],

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { activityBoundary } from "./inbox.ts";
+import { activityBoundary, type ActivityView } from "./inbox.ts";
 import {
   InMemoryAttachmentContentStore,
   type AttachmentContentStore,
@@ -243,13 +243,16 @@ export class ConversationService {
     return this.storage.listInbox(identityId);
   }
 
-  async listActivity(identityId: string, before?: string, workspaceId?: string) {
+  async listActivity(identityId: string, before?: string, workspaceId?: string, view?: string) {
     await this.assertInboxHuman(identityId);
     try {
       if (before !== undefined && before.length > 512) throw new Error("Cursor too long");
       activityBoundary(before);
     } catch { throw new ConversationValidationError("Invalid Activity cursor"); }
-    return this.storage.listActivity(identityId, before, workspaceId);
+    if (view !== undefined && view !== "all" && view !== "mentions" && view !== "threads") {
+      throw new ConversationValidationError("Invalid Activity view");
+    }
+    return this.storage.listActivity(identityId, before, workspaceId, view as ActivityView | undefined);
   }
 
   async acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number> {
