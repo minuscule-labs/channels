@@ -50,7 +50,7 @@ Separate directories preserve each adapter's worker-relative URL and avoid worke
 name collisions.
 
 Channels now pins Runtime commit
-`9778f2eb617b43df4c4ea414ddb74f4aeb550ff2`, adding plugin-qualified Codex skill names,
+`98b3eff95feade33a33af3686decdb73735c40ff`, adding plugin-qualified Codex skill names,
 the `danger-full-access` sandbox, pre-turn image capability and named setup errors to the previous
 Pi/Codex/Claude Code baseline. An earlier Channels release may not read sessions created with that sandbox.
 That source pin does not establish installed-artifact acceptance or authorize
