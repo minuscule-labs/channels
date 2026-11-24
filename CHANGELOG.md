@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Run every local agent harness with one shared full access level: new Codex sessions now use the `danger-full-access` sandbox with approvals off, matching Pi and Claude Code, so Codex can change anything the user's account can, without asking. Sessions created earlier keep the sandbox they were created with and are never widened on resume. Pin Runtime `ad45142dec82eb2b22e4052aef67fa53e58ff02a`, which also accepts plugin-qualified Codex skill names and an image in the first Codex message.
+- Show fixed setup instructions in agent setup when Codex or Claude Code is not installed, Codex is not signed in, or the Claude Code version is unsupported, in addition to the existing Claude Code sign-in message. No other native error text is ever displayed.
+- Show "Finished without a written reply." when an agent completes its work with an empty reply, instead of reporting the turn as failed and suggesting a retry.
+- List every Codex skill in agent setup by waiting for Codex to finish loading plugin skills, and stop saying that no skills were discovered when discovery failed.
+
 ## 0.0.42
 
 Release overview: [Workspace Activity, contextual threads and account libraries](docs/releases/v0.0.42.md).

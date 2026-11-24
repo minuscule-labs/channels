@@ -206,6 +206,7 @@ export interface ConversationRuntimeRelayOptions {
   onError?(binding: AgentConversationBinding | undefined, error: Error): void;
 }
 
+const EMPTY_REPLY_NOTICE = "Finished without a written reply.";
 class PermanentTurnError extends Error {}
 export class RuntimeRejectedError extends Error {}
 export class RuntimeOfflineError extends Error {}
@@ -2052,7 +2053,8 @@ export class ConversationRuntimeRelay {
 
     const committed = await this.commitResponse(state, {
       participantId: binding.participantId,
-      body: response.content,
+      // Conversations reject blank messages; a completed turn may still have nothing to say.
+      body: response.content.trim() ? response.content : EMPTY_REPLY_NOTICE,
       triggerMessageId: trigger.id,
       triggerSequence: trigger.sequence,
     }, deadline, false);

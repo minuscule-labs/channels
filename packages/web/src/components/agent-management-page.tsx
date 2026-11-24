@@ -527,7 +527,7 @@ function AgentLaunchProfileForm({
             ))}
           </div>
         </fieldset>
-        ) : <p className="text-xs text-[var(--muted)]">No skills were discovered for this harness.</p>}
+        ) : runtimeOptions.isPending || runtimeOptions.error ? null : <p className="text-xs text-[var(--muted)]">No skills were discovered for this harness.</p>}
         {runtimeOptions.isPending ? <p className="mt-1.5 text-[10px] text-[var(--muted)]">Discovering configured harness skills…</p> : null}
         {runtimeOptions.error ? <p className="mt-1.5 text-[10px] text-[var(--danger)]">{harnessDiscoveryMessage(runtimeOptions.error, "Harness skill discovery unavailable.")}</p> : null}
         </div>

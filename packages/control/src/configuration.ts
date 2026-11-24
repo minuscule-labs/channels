@@ -67,6 +67,15 @@ const MAX_HANDOFF_SUMMARY_TOKENS = 8_000;
 const MAX_RECENT_CONTEXT_TOKENS = 16_000;
 const MAX_RECENT_CONTEXT_MESSAGES = 100;
 
+const HARNESS_SETUP_MESSAGES: Record<string, string | undefined> = Object.freeze({
+  __proto__: null as never,
+  ClaudeCodeAuthRequiredError: "Claude Code is not logged in; run `claude` to sign in",
+  ClaudeCodeNotInstalledError: "Claude Code is not installed; install `claude` and restart Channels",
+  ClaudeCodeUnsupportedVersionError: "This Claude Code version is not supported; update `claude`",
+  CodexNotInstalledError: "Codex is not installed; install `codex` and restart Channels",
+  CodexAuthRequiredError: "Codex is not logged in; run `codex login`",
+});
+
 export class LocalConfigurationRequestError extends Error {
   constructor(
     message: string,
@@ -1886,10 +1895,10 @@ export class LocalAgentHostConfiguration {
       };
     } catch (error) {
       if (error instanceof LocalConfigurationRequestError) throw error;
-      // The one non-generic Runtime error: a harness that needs its own sign-in says so (fixed, non-secret text).
-      if (error instanceof Error && error.name === "ClaudeCodeAuthRequiredError") {
-        throw new LocalConfigurationRequestError("Claude Code is not logged in; run `claude` to sign in", 409, "unavailable");
-      }
+      // The only non-generic Runtime errors: a harness that is missing, signed out or too old says so (fixed, non-secret text,
+      // matched by error name; nothing from the error itself is ever shown). Keep in step with web lib/harness-errors.ts.
+      const setup = error instanceof Error ? HARNESS_SETUP_MESSAGES[error.name] : undefined;
+      if (setup) throw new LocalConfigurationRequestError(setup, 409, "unavailable");
       throw new LocalConfigurationRequestError("Runtime options are unavailable", 409, "unavailable");
     }
   }
