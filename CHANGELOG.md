@@ -2,11 +2,20 @@
 
 ## Unreleased
 
+## 0.0.42
+
+Release overview: [Workspace Activity, contextual threads and account libraries](docs/releases/v0.0.42.md).
+
 - Add Workspace-scoped All, Mentions and Threads tabs to Activity. Group eligible replies across participants within each thread, before pagination, with a latest matching preview, author summary and unread-notification count. Keep distinct discussions separate, retain the full notification-count badge, and preserve tab/navigation state without changing read cursors or subscriptions.
 
 - Open Activity thread notifications inside their parent Conversation, with an explicit thread/reply target, desktop panel or mobile full-screen view. Keep parent read state independent, close back to the root, and restore Activity's Workspace, loaded pages and position on Back, including after reload.
-
 - Scope Activity and its navigation badge to the selected Workspace. Keep Workspace selection in the Activity URL/cache, filter before pagination, retain Activity when switching Workspaces, and redirect existing `/app/activity` bookmarks without changing read acknowledgement or live-connection behavior.
+- Add private, human-owned account libraries for reusable agent templates, skills and Workspace presets, with immutable saved versions, explicit stale-write review and archival instead of deletion. This is not a new login or synchronization service.
+- Add independent Workspace agents from account templates using an allowlisted configuration copy and a new basic membership. Do not copy credentials, elevated access, paths, conversation assignments, sessions or history; later template edits do not update existing agents.
+- Select shared account skills or published Workspace skills for future session instruction snapshots, and explicitly make independent Workspace copies when customization is wanted. Preserve running/same-session snapshots and keep these procedures separate from native harness skills, tool permissions and composer invocations.
+- Review and customize Workspace presets before creating fresh agents, conversation presets and defaults. Start with a human-only General Conversation and no agent sessions. Preserve a durable frozen request identity across uncertain outcomes/reload, with explicit inspection/retry and no silent duplicate creation or overwrite of later local edits.
+- Add private Relay migrations `0025_account_library` through `0028_workspace_compositions`. Preserve public messages, read cursors, existing Runtime sessions, the local-control protocol version, dependency locks and Runtime pin `f111a7981b8788fc101df064e148221caca4f102`.
+- Stabilize the diagnostics polling browser test by installing its clock before mount; production polling behavior is unchanged.
 
 ## 0.0.41
 
