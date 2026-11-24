@@ -6,6 +6,7 @@ import { AppShell } from "./components/app-shell";
 import { ConversationPage } from "./components/conversation-page";
 import { ActivityPage } from "./components/activity-page";
 import { conversationThreadSearch } from "./lib/thread-selection";
+import { activitySearch } from "./lib/activity";
 
 const rootRoute = createRootRoute({ component: AppShell });
 type AgentPageExport = "AgentManagementPage" | "AgentCreatePage" | "AgentDetailPage";
@@ -115,9 +116,9 @@ const participantDiagnosticsRoute = createRoute({
   component: () => <Suspense fallback={<div role="status" className="p-5 text-sm">Loading diagnostics…</div>}><ParticipantDiagnosticsPage /></Suspense>,
 });
 
-const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/activity", component: ActivityPage });
+const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/activity", validateSearch: activitySearch, component: ActivityPage });
 // AppShell resolves old bookmarks using its existing workspace selection.
-const legacyActivityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/activity", component: () => null });
+const legacyActivityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/app/activity", validateSearch: activitySearch, component: () => null });
 
 const conversationRoute = createRoute({
   getParentRoute: () => rootRoute,

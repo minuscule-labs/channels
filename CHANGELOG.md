@@ -6,6 +6,8 @@
 
 Release overview: [Workspace Activity, contextual threads and account libraries](docs/releases/v0.0.42.md).
 
+- Add Workspace-scoped All, Mentions and Threads tabs to Activity. Group eligible replies across participants within each thread, before pagination, with a latest matching preview, author summary and unread-notification count. Keep distinct discussions separate, retain the full notification-count badge, and preserve tab/navigation state without changing read cursors or subscriptions.
+
 - Open Activity thread notifications inside their parent Conversation, with an explicit thread/reply target, desktop panel or mobile full-screen view. Keep parent read state independent, close back to the root, and restore Activity's Workspace, loaded pages and position on Back, including after reload.
 - Scope Activity and its navigation badge to the selected Workspace. Keep Workspace selection in the Activity URL/cache, filter before pagination, retain Activity when switching Workspaces, and redirect existing `/app/activity` bookmarks without changing read acknowledgement or live-connection behavior.
 - Add private, human-owned account libraries for reusable agent templates, skills and Workspace presets, with immutable saved versions, explicit stale-write review and archival instead of deletion. This is not a new login or synchronization service.

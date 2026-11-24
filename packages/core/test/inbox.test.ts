@@ -95,3 +95,62 @@ test("authenticated inbox updates arrive with no conversation topics; read state
     assert.equal((await fetched.json() as { summaries: Array<{ readSequence: number }> }).summaries[0]?.readSequence, message.sequence);
   } finally { controller.abort(); await consuming; await server.close(); }
 });
+
+test("Activity views group threads across authors without changing eligibility, unread counts or read scopes", async () => {
+  const service = new ConversationService();
+  const server = await createConversationHttpServer({ service });
+  try {
+    const human = await service.createIdentity({ type: "human" });
+    const alice = await service.createIdentity({ type: "human", displayName: "Alice" });
+    const bob = await service.createIdentity({ type: "human", displayName: "Bob" });
+    const workspace = await service.createWorkspace({ slug: "views", name: "Views" });
+    for (const [index, person] of [human, alice, bob].entries()) await service.addWorkspaceMember(workspace.id, {
+      identityId: person.id, mentionHandle: `person${index}`, accessRole: "owner",
+    });
+    const parent = await service.createConversation({ workspaceId: workspace.id, participantIds: [human.id, alice.id, bob.id] });
+    const root = await service.createMessage(parent.id, { participantId: human.id, body: "My thread root" });
+    const mention = await service.createMessage(parent.id, { participantId: alice.id, body: "Parent mention", to: [human.id] });
+    await service.createMessage(parent.id, { participantId: bob.id, body: "Ordinary parent message", to: [] });
+    const thread = await service.createThread(parent.id, { actorIdentityId: human.id, rootMessageId: root.id });
+    const read = await service.createMessage(thread.id, { participantId: alice.id, body: "Already read", to: [] });
+    await service.acknowledgeRead(thread.id, human.id, read.sequence);
+    const mentioned = await service.createMessage(thread.id, { participantId: bob.id, body: "Mentioned reply", to: [human.id] });
+    // Keep distinct timestamps so the representative is explicitly the newest eligible reply.
+    await new Promise(resolve => setTimeout(resolve, 2));
+    const reply = await service.createMessage(thread.id, { participantId: alice.id, body: "Latest ordinary reply", to: [] });
+    await service.createMessage(thread.id, { participantId: human.id, body: "Own reply is excluded", to: [] });
+    const headers = { authorization: `Bearer ${server.serviceToken}`, "x-minu-actor-id": human.id };
+    const page = async (view: string) => {
+      const response = await fetch(`${server.endpoint}/identities/me/activity?workspaceId=${workspace.id}&view=${view}`, { headers });
+      assert.equal(response.status, 200);
+      return await response.json() as { items: Array<Record<string, unknown>> };
+    };
+    const before = await service.listInbox(human.id);
+    const all = await page("all");
+    assert.equal(all.items.length, 2, "thread replies consume one row, not one row per participant/message");
+    const grouped = all.items.find(item => item.conversationId === thread.id)!;
+    assert.equal(grouped.id, reply.id);
+    assert.equal(grouped.authorName, "Alice");
+    assert.equal(grouped.authorCount, 2);
+    assert.equal(grouped.unreadCount, 2);
+    assert.equal(grouped.firstUnreadSequence, mentioned.sequence);
+    assert.equal(grouped.parentConversationId, parent.id);
+    assert.equal(grouped.rootSequence, root.sequence);
+    const mentions = await page("mentions");
+    assert.deepEqual(new Set(mentions.items.map(item => item.id)), new Set([mention.id, mentioned.id]));
+    assert.equal(mentions.items.find(item => item.conversationId === thread.id)?.unreadCount, 1);
+    assert.ok(mentions.items.every(item => item.kind === "mention"));
+    const threads = await page("threads");
+    assert.equal(threads.items.length, 1);
+    assert.equal(threads.items[0]?.id, reply.id);
+    assert.deepEqual(await service.listInbox(human.id), before, "viewing/changing tabs never acknowledges messages");
+    assert.equal(before.reduce((sum, item) => sum + item.activityCount, 0), 3, "the badge counts notifications, not grouped rows");
+    const legacy = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken, actorIdentityId: human.id });
+    assert.equal((await legacy.listActivity(undefined, workspace.id)).items.length, 4, "omitted view preserves the flat API");
+    assert.deepEqual(await legacy.listActivity(undefined, workspace.id, "threads"), threads, "typed clients forward the selected view");
+    const invalid = await fetch(`${server.endpoint}/identities/me/activity?view=other`, { headers });
+    assert.equal(invalid.status, 400);
+    await service.updateWorkspaceMember(workspace.id, human.id, { actorIdentityId: alice.id, status: "disabled" });
+    for (const view of ["all", "mentions", "threads"]) assert.deepEqual((await page(view)).items, []);
+  } finally { await server.close(); }
+});

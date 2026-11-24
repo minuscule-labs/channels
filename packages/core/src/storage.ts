@@ -1,4 +1,4 @@
-import { activityBoundary, activityCursor, activityKind, type ActivityPage, type ActivityItem, type ConversationUnreadSummary } from "./inbox.ts";
+import { activityBoundary, activityCursor, activityKind, type ActivityPage, type ActivityItem, type ActivityView, type ConversationUnreadSummary } from "./inbox.ts";
 import { assertConversationLifecycle, normalizeConversationFolderName } from "./types.ts";
 import type {
   Conversation,
@@ -67,7 +67,7 @@ export interface ConversationRosterUpdateResult {
 
 export interface ConversationStorage extends ConversationCursorStore {
   listInbox(identityId: string): Promise<ConversationUnreadSummary[]>;
-  listActivity(identityId: string, before?: string, workspaceId?: string): Promise<ActivityPage>;
+  listActivity(identityId: string, before?: string, workspaceId?: string, view?: ActivityView): Promise<ActivityPage>;
   acknowledgeRead(conversationId: string, identityId: string, sequence: number): Promise<number>;
   createIdentity(identity: Identity): Promise<Identity>;
   updateIdentity(identity: Identity): Promise<IdentityUpdateResult | undefined>;
@@ -192,13 +192,18 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
     });
   }
 
-  async listActivity(identityId: string, before?: string, workspaceId?: string): Promise<ActivityPage> {
+  async listActivity(identityId: string, before?: string, workspaceId?: string, view?: ActivityView): Promise<ActivityPage> {
     const items: ActivityItem[] = [];
     for (const conversation of this.inboxConversations(identityId)) {
       if (workspaceId !== undefined && conversation.workspaceId !== workspaceId) continue;
       const floor = this.humanReadCursors.get(`${conversation.id}:${identityId}`) ?? 0;
       const root = conversation.thread?.context.find(message => message.id === conversation.thread!.rootMessageId);
-      for (const message of conversation.messages) {
+      if (view === "threads" && !conversation.thread) continue;
+      const matching = conversation.messages.filter(message => activityKind(conversation, message, identityId)
+        && (view !== "mentions" || message.to.includes(identityId) || message.to.includes("@conversation")));
+      const grouped = view !== undefined && Boolean(conversation.thread);
+      const representatives = grouped ? [...matching].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 1) : matching;
+      for (const message of representatives) {
         const kind = activityKind(conversation, message, identityId);
         if (!kind) continue;
         items.push({ id: message.id, conversationId: conversation.id, workspaceId: conversation.workspaceId,
@@ -208,7 +213,11 @@ export class InMemoryConversationStorage implements ConversationStorage, Convers
           threadPreview: root?.body.slice(0, 256),
           authorName: this.identities.get(message.participantId)?.displayName ?? message.participantId,
           preview: message.body.slice(0, 256), sequence: message.sequence, createdAt: message.createdAt,
-          kind, unread: message.sequence > floor,
+          kind, unread: grouped ? matching.some(item => item.sequence > floor) : message.sequence > floor,
+          ...(view === undefined ? {} : {
+            authorCount: grouped ? new Set(matching.map(item => item.participantId)).size : 1,
+            unreadCount: grouped ? matching.filter(item => item.sequence > floor).length : Number(message.sequence > floor),
+          }),
           firstUnreadSequence: conversation.messages.find(m => m.sequence > floor && m.participantId !== identityId)?.sequence });
       }
     }
