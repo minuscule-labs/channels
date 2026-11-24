@@ -50,9 +50,9 @@ Separate directories preserve each adapter's worker-relative URL and avoid worke
 name collisions.
 
 Channels now pins Runtime commit
-`f111a7981b8788fc101df064e148221caca4f102`, combining the current Pi/Codex/Claude Code
-baseline with the Pi PID-publication, Claude stream-cancellation, Codex cleanup
-and transient process-group exit-proof fixes.
+`9778f2eb617b43df4c4ea414ddb74f4aeb550ff2`, adding plugin-qualified Codex skill names,
+the `danger-full-access` sandbox, pre-turn image capability and named setup errors to the previous
+Pi/Codex/Claude Code baseline. An earlier Channels release may not read sessions created with that sandbox.
 That source pin does not establish installed-artifact acceptance or authorize
 publication/deployment. Before shipping, satisfy required CI and exact-artifact
 acceptance through the normal release workflow. No pin, clean-tree requirement or
