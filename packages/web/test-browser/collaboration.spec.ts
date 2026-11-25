@@ -1066,6 +1066,93 @@ test("repairs a failed initial agent launch profile without creating a duplicate
   await expect(page.getByRole("cell", { name: /^Repairable Agent @/ })).toHaveCount(1);
 });
 
+test("saves a Codex skill list only when the selection changes", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspace = workspaces[0]!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+
+  await page.route(`**/local/workspaces/${workspace.id}/runtime-options?adapter=codex`, (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      protocolVersion: 25,
+      workspaceId: workspace.id,
+      models: [{ provider: "openai", id: "codex-test", name: "Codex Test", reasoning: true, enabled: true }],
+      reasoningLevels: ["medium"],
+      modelPolicyConfigured: false,
+      skills: [
+        { id: "codex-skill-one", name: "pdf:pdf", description: "Read documents." },
+        { id: "codex-skill-two", name: "handoff", description: "Prepare a handoff." },
+      ],
+    }),
+  }));
+  const saved: Array<{ runtimeAdapter?: string; skillIds?: string[] }> = [];
+  await page.route("**/local/workspaces/*/agents/*/config", async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const identityId = route.request().url().match(/\/agents\/([^/]+)\/config$/)?.[1]!;
+    const input = JSON.parse(route.request().postData() ?? "{}") as { runtimeAdapter?: string; skillIds?: string[] };
+    saved.push(input);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        protocolVersion: 25,
+        workspaceId: workspace.id,
+        rootConfigured: true,
+        notesFolderConfigured: false,
+        agents: [{
+          identityId,
+          configured: true,
+          personaConfigured: false,
+          runtimeConfigured: true,
+          runtimeAdapter: input.runtimeAdapter,
+          modelConfigured: true,
+          reasoningConfigured: true,
+          skillsConfigured: input.skillIds !== undefined,
+          selectedSkillCount: input.skillIds?.length ?? 0,
+          status: "active",
+          boundConversationCount: 0,
+          changesApplyToNewSessions: true,
+        }],
+      }),
+    });
+  });
+  const createAgent = async (name: string, changeSkills?: () => Promise<void>) => {
+    await page.goto(`/app/workspaces/${workspace.id}/agents/new`);
+    await page.getByLabel("Display name").fill(name);
+    await page.getByRole("tab", { name: "Runtime" }).click();
+    await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+    await page.getByRole("tab", { name: "Skills" }).click();
+    await expect(page.getByRole("checkbox", { name: /pdf:pdf/ })).toBeChecked();
+    await changeSkills?.();
+    const response = page.waitForResponse((candidate) => candidate.request().method() === "PATCH"
+      && /\/agents\/[^/]+\/config$/.test(candidate.url()));
+    await page.getByRole("button", { name: "Create agent" }).click();
+    await response;
+  };
+
+  await createAgent("Codex Default Agent");
+  expect(saved.at(-1)?.runtimeAdapter).toBe("codex");
+  expect(saved.at(-1)).not.toHaveProperty("skillIds");
+
+  await createAgent("Codex Chosen Agent", () => page.getByRole("checkbox", { name: /pdf:pdf/ }).uncheck());
+  expect(saved.at(-1)?.skillIds).toEqual(["codex-skill-two"]);
+
+  await page.goto(`/app/workspaces/${workspace.id}/agents`);
+  await openAgentEditor(page, "Codex Chosen Agent");
+  const launchProfile = page.locator("form").filter({ hasText: "Private launch profile" });
+  await launchProfile.getByRole("tab", { name: "Runtime" }).click();
+  await launchProfile.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await launchProfile.getByRole("tab", { name: "Skills" }).click();
+  await expect(launchProfile.getByRole("checkbox", { name: /pdf:pdf/ })).toBeChecked();
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  await expect(launchProfile.getByText("Skills for new sessions: all", { exact: true })).toBeVisible();
+  expect(saved.at(-1)?.runtimeAdapter).toBe("codex");
+  expect(saved.at(-1)).not.toHaveProperty("skillIds");
+});
+
 test("creates and renames a Workspace with a private source path", async ({ page, request }) => {
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Add Workspace" }).click();

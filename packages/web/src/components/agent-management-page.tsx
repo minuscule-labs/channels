@@ -16,6 +16,7 @@ import {
   initialLaunchModel,
   initialLaunchModelForProvider,
   initialLaunchReasoning,
+  launchSkillIds,
 } from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
 import { LocalControlClientError } from "@minu/channels-control/client";
@@ -331,7 +332,8 @@ function AgentLaunchProfileForm({
     if (recentContextTokensChanged) input.recentContextTokens = Number(recentContextTokens);
     if (recentContextMessagesChanged) input.recentContextMessages = Number(recentContextMessages);
     if (runtimeAdapterChanged && runtimeAdapter.trim() && replacementRuntimeOptions.data) {
-      input.skillIds = skillIds ?? replacementRuntimeOptions.data.skills.map(({ id }) => id);
+      const replacementSkillIds = launchSkillIds(runtimeAdapter.trim(), replacementRuntimeOptions.data, skillIds);
+      if (replacementSkillIds) input.skillIds = replacementSkillIds;
     } else if (skillsChanged && skillIds) input.skillIds = skillIds;
     if (statusChanged || agent.status === "unconfigured") input.status = status;
     mutation.mutate(input);
@@ -354,7 +356,9 @@ function AgentLaunchProfileForm({
         </span>
         <ConfigurationValue label="Model" value={selectedModel?.name ?? defaultModelName} />
         <ConfigurationValue label="Reasoning" value={reasoningLevel || runtimeOptions.data?.defaultReasoningLevel} />
-        <ConfigurationState configured={agent.skillsConfigured} label={`Skills configured for new sessions (${agent.selectedSkillCount})`} />
+        {agent.runtimeAdapter === "codex" && !agent.skillsConfigured
+          ? <ConfigurationValue label="Skills for new sessions" value="all" />
+          : <ConfigurationState configured={agent.skillsConfigured} label={`Skills configured for new sessions (${agent.selectedSkillCount})`} />}
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
       <div className="mt-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Launch profile settings">

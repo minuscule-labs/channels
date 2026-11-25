@@ -33,6 +33,8 @@ The Runtime start contract should accept selected skill ids. Each adapter resolv
 
 Selected skill ids are restricted Workspace-agent configuration. Browser reads may return the selected ids and sanitized availability because they are not secrets, but skill source paths, credential-related errors, and private skill contents should not enter collaboration messages or public Conversations metadata.
 
+A Codex agent that keeps every skill stores no selection, so Codex uses its own current skills. Codex skill ids include the plugin version, and a stored full list would stop matching after a plugin update. Choosing specific Codex skills stores exactly those ids. Pi and Claude Code store the full list.
+
 Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the skill set with which they were initialized. If a selected skill is no longer available, launch fails with a sanitized, actionable configuration error instead of silently dropping it.
 
 ## Context behavior

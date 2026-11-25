@@ -6,6 +6,7 @@ import {
   initialLaunchModel,
   initialLaunchModelForProvider,
   initialLaunchReasoning,
+  launchSkillIds,
 } from "../src/lib/launch-profile";
 
 const options: LocalRuntimeOptions = {
@@ -36,5 +37,27 @@ describe("Conversations launch preferences", () => {
     const configured = initialLaunchModel(options, { provider: "opencode-go", id: "glm" });
     expect(configured?.id).toBe("glm");
     expect(initialLaunchReasoning(options, { reasoning: false })).toBe("off");
+  });
+});
+
+describe("launchSkillIds", () => {
+  const skills = ["a", "b"].map((id) => ({ id, name: id, description: "" }));
+
+  it("saves no list for a Codex agent that keeps every skill", () => {
+    expect(launchSkillIds("codex", { skills }, null)).toBeUndefined();
+    expect(launchSkillIds("codex", { skills }, ["b", "a"])).toBeUndefined();
+    expect(launchSkillIds("codex", { skills: [] }, null)).toBeUndefined();
+  });
+
+  it("saves exactly the chosen Codex skills, including none", () => {
+    expect(launchSkillIds("codex", { skills }, ["a"])).toEqual(["a"]);
+    expect(launchSkillIds("codex", { skills }, [])).toEqual([]);
+  });
+
+  it("keeps saving the full list for the other harnesses", () => {
+    for (const adapter of ["pi", "claude-code"]) {
+      expect(launchSkillIds(adapter, { skills }, null)).toEqual(["a", "b"]);
+      expect(launchSkillIds(adapter, { skills }, ["b"])).toEqual(["b"]);
+    }
   });
 });
