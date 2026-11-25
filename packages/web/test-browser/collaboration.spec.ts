@@ -1183,7 +1183,7 @@ test("names a saved skill that is gone and removes it from the selection", async
 
   await page.getByRole("button", { name: "Edit agent" }).click();
   const launchProfile = page.locator("form").filter({ hasText: "Private launch profile" });
-  const notice = launchProfile.getByText("1 saved skill is no longer available: gone. New sessions start without it.", { exact: true });
+  const notice = launchProfile.getByText("1 saved skill was not found in the Workspace source folder: gone. Sessions there start without it.", { exact: true });
   await expect(notice).toBeVisible();
   await launchProfile.getByRole("button", { name: "Remove from selection", exact: true }).click();
   await expect(notice).toHaveCount(0);

@@ -69,8 +69,11 @@ describe("missing skills", () => {
     const skills = [{ id: "skill:review", name: "review", description: "" }];
     expect(missingSkillIds({ skills }, ["skill:review"])).toEqual([]);
     expect(missingSkillIds({ skills }, ["skill:review", "skill:gone"])).toEqual(["skill:gone"]);
-    expect(missingSkillsMessage(["skill:gone"])).toBe("1 saved skill is no longer available: gone. New sessions start without it.");
-    expect(missingSkillsMessage(["skill:gone", "deploy"])).toBe("2 saved skills are no longer available: gone, deploy. New sessions start without them.");
-    expect(missingSkillsMessage([`codex-skill-${"a".repeat(64)}`])).toBe("1 saved skill is no longer available. New sessions start without it.");
+    expect(missingSkillsMessage("pi", ["skill:gone"]))
+      .toBe("1 saved skill was not found in the Workspace source folder: gone. Sessions there start without it.");
+    expect(missingSkillsMessage("claude-code", ["gone", "deploy"]))
+      .toBe("2 saved skills were not found in the Workspace source folder: gone, deploy. Sessions there start without them.");
+    expect(missingSkillsMessage("codex", [`codex-skill-${"a".repeat(64)}`]))
+      .toBe("1 saved skill was not found in the Workspace source folder. Codex sessions may not start until it is removed.");
   });
 });

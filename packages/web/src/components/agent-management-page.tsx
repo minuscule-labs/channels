@@ -368,7 +368,7 @@ function AgentLaunchProfileForm({
       </div>
       {missingSkills.length ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--danger)]">
-          <p>{missingSkillsMessage(missingSkills)}</p>
+          <p>{missingSkillsMessage(runtimeAdapter.trim(), missingSkills)}</p>
           <button
             type="button"
             className="button-secondary"

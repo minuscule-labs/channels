@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Save no skill list for a Codex agent that keeps every skill, when creating the agent or switching one to Codex. Codex then uses its own current skills, so a plugin update no longer stops that agent from starting, and skills turned off in Codex stay off. Choosing specific skills still saves exactly that list. Agents and sessions already saved with a list are unchanged.
-- Start and resume agents without a selected skill that has been deleted or renamed, instead of refusing, for Pi, Codex and Claude Code. Nothing else is enabled in its place. Agent settings name the missing skill and can remove it, Session & context lists saved skills a verified running session lacks, and other settings can be saved while a skill is missing.
+- Start and resume Pi and Claude Code agents without a selected skill that has been deleted or renamed, instead of refusing. Nothing else is enabled in its place. Codex still refuses. Agent settings name saved skills that are not found and can remove them, Session & context lists earlier saved skills a verified running session lacks, and other settings can be saved while a skill is missing or the harness is unavailable.
 
 ## 0.0.43
 
