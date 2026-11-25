@@ -72,8 +72,8 @@ describe("missing skills", () => {
     expect(missingSkillsMessage("pi", ["skill:gone"]))
       .toBe("1 saved skill was not found in the Workspace source folder: gone. Sessions there start without it.");
     expect(missingSkillsMessage("claude-code", ["gone", "deploy"]))
-      .toBe("2 saved skills were not found in the Workspace source folder: gone, deploy. Sessions there start without them.");
+      .toBe("2 saved skills were not found in the Workspace source folder: gone, deploy. Sessions may not start until they are removed.");
     expect(missingSkillsMessage("codex", [`codex-skill-${"a".repeat(64)}`]))
-      .toBe("1 saved skill was not found in the Workspace source folder. Codex sessions may not start until it is removed.");
+      .toBe("1 saved skill was not found in the Workspace source folder. Sessions may not start until it is removed.");
   });
 });

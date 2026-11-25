@@ -235,7 +235,7 @@ function AgentLaunchProfileForm({
     && JSON.stringify([...skillIds].sort()) !== JSON.stringify([...savedSkillIds].sort());
   const missingSkills = runtimeAdapterChanged || !configuredRuntimeOptions.data
     ? []
-    : missingSkillIds(configuredRuntimeOptions.data, skillIds ?? []);
+    : missingSkillIds(configuredRuntimeOptions.data, skillIds ?? savedSkillIds);
   const personaChanged = configurationReady && personaPrompt !== savedPersonaPrompt;
   const handoffSummaryChanged = configurationReady
     && Number(handoffSummaryTokens) !== (savedConfiguration?.handoffSummaryTokens ?? 4_000);
@@ -368,11 +368,11 @@ function AgentLaunchProfileForm({
       </div>
       {missingSkills.length ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--danger)]">
-          <p>{missingSkillsMessage(runtimeAdapter.trim(), missingSkills)}</p>
+          <p>{missingSkillsMessage(agent.runtimeAdapter ?? "", missingSkills)}</p>
           <button
             type="button"
             className="button-secondary"
-            onClick={() => setSkillIds((current) => current?.filter((id) => !missingSkills.includes(id)) ?? null)}
+            onClick={() => setSkillIds((current) => (current ?? savedSkillIds).filter((id) => !missingSkills.includes(id)))}
           >
             Remove from selection
           </button>

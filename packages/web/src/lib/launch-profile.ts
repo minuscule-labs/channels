@@ -67,12 +67,12 @@ export function missingSkillIds(options: Pick<LocalRuntimeOptions, "skills">, se
   return selected.filter((id) => !options.skills.some((skill) => skill.id === id));
 }
 
-/** Codex cannot tell a missing skill from one that loads late, so it refuses to start. The others leave it out. */
+/** Pi leaves a missing skill out. Codex and Claude Code refuse, because one that loads late looks the same. */
 export function missingSkillsMessage(runtimeAdapter: string, ids: readonly string[]): string {
   const names = ids.filter((id) => !/^codex-skill-[a-f0-9]{64}$/.test(id)).map((id) => id.replace(/^skill:/, ""));
   const one = ids.length === 1;
   const found = `${ids.length} saved ${one ? "skill was" : "skills were"} not found in the Workspace source folder${names.length ? `: ${names.join(", ")}` : ""}.`;
-  return runtimeAdapter === "codex"
-    ? `${found} Codex sessions may not start until ${one ? "it is" : "they are"} removed.`
-    : `${found} Sessions there start without ${one ? "it" : "them"}.`;
+  return runtimeAdapter === "pi"
+    ? `${found} Sessions there start without ${one ? "it" : "them"}.`
+    : `${found} Sessions may not start until ${one ? "it is" : "they are"} removed.`;
 }

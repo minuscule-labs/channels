@@ -1792,15 +1792,13 @@ export class LocalAgentHostConfiguration {
         1,
         MAX_RECENT_CONTEXT_MESSAGES,
       );
-      const resolvedSkillIds = skillIds ?? launchDefaults?.skillIds;
-      const authoredSelectionOnly = Object.keys(input).every(key => key === "accountSkillIds" || key === "workspaceSkillIds");
-      if (resolvedSkillIds !== undefined && !authoredSelectionOnly) {
+      if (skillIds !== undefined) {
         if (!resolvedAdapter) {
           throw new LocalConfigurationRequestError("A Runtime is required to configure skills", 409, "unavailable");
         }
         // A skill saved earlier may since have been deleted or renamed; only a newly selected one must exist.
         const saved = new Set(launchDefaults?.skillIds);
-        const added = resolvedSkillIds.filter((id) => !saved.has(id));
+        const added = skillIds.filter((id) => !saved.has(id));
         if (added.length) {
           const options = await this.resolveRuntimeOptions(workspaceId, resolvedAdapter);
           const available = new Set(options.skills.map(({ id }) => id));
