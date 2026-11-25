@@ -4,7 +4,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { AlertCircle, RefreshCw, Users, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import { conversations, localControl } from "../lib/api";
 import { useLiveConversation } from "../lib/live-conversation";
 import { announceLifecycleChange, snoozeRefetchInterval } from "../lib/conversation-lifecycle";
@@ -36,7 +36,7 @@ export function ConversationPage() {
     linkedThreadId={threadId} linkedThreadMessage={threadMessage} />;
 }
 
-function ConversationPageContent({ workspaceId, conversationId, rootMessage, onCloseThread, linkedThreadId, linkedThreadMessage, targetSequence }: {
+function ConversationPageContent({ workspaceId, conversationId, rootMessage, onCloseThread, linkedThreadId, linkedThreadMessage, targetSequence, readActive = true, onReadInteraction }: {
   workspaceId: string;
   conversationId: string;
   rootMessage?: ConversationMessage;
@@ -44,6 +44,8 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   linkedThreadId?: string | null;
   linkedThreadMessage?: number;
   targetSequence?: number;
+  readActive?: boolean;
+  onReadInteraction?(): void;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -52,6 +54,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const viewHash = onCloseThread ? (targetSequence === undefined ? "" : `message-${targetSequence}`) : location.hash;
   const [rosterOpen, setRosterOpen] = useState(false);
   const [threadSelection, setThreadSelection] = useState<{ key: string; thread: ConversationThread }>();
+  const [readingParentThreadId, setReadingParentThreadId] = useState<string>();
   const restoredThreadSelectionKey = useRef<string | undefined>(undefined);
   const threadTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [unseenMessages, setUnseenMessages] = useState(0);
@@ -112,10 +115,18 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
     && candidate.thread.parentConversationId === conversationId) : undefined;
   const selectedThread = linkedThreadId !== undefined ? linkedThread
     : threadSelection && threadSelection.key === threadSelectionKey ? threadSelection.thread : undefined;
-  // Block background-parent acknowledgement immediately, including while its linked thread is loading.
-  const readBlocked = !activeThread && Boolean(linkedThreadId || selectedThread);
+  // Opening/restoring a thread defaults to reading it, not its contextual parent.
+  const readingParent = Boolean(selectedThread && readingParentThreadId === selectedThread.id);
+  const readBlocked = !readActive || (!activeThread && Boolean(linkedThreadId || selectedThread) && !readingParent);
+  const activateReadPane = (event: SyntheticEvent<HTMLElement>) => {
+    if (!event.isTrusted || !event.currentTarget.contains(event.target as Node)
+      || (event.target instanceof Element && event.target.closest("[data-thread-navigation]"))) return;
+    onReadInteraction?.();
+    if (selectedThread) setReadingParentThreadId(selectedThread.id);
+  };
   const selectThread = (thread?: ConversationThread, identityId = currentSession.data?.identityId) => {
     if (!identityId || activeThread) return;
+    setReadingParentThreadId(undefined);
     const key = threadSelectionStorageKey(workspaceId, conversationId, identityId);
     writeThreadSelection(key, thread?.id);
     if (key === threadSelectionKey) {
@@ -523,7 +534,9 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   return (
     <Dialog.Root open={Boolean(selectedThread)} modal={false} onOpenChange={(open) => { if (!open) selectThread(); }}>
     <div className="flex min-h-0 min-w-0 flex-1">
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col"
+        onPointerDownCapture={activateReadPane} onFocusCapture={activateReadPane}
+        onWheelCapture={activateReadPane} onKeyDownCapture={activateReadPane}>
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 pl-14 md:pl-5">
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-sm font-semibold" title={metadata.data.name}>{activeThread ? "Thread" : `#${metadata.data.name}`}</h1>
@@ -748,6 +761,8 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
           workspaceId={workspaceId}
           conversationId={selectedThread.id}
           targetSequence={linkedThreadId === selectedThread.id ? linkedThreadMessage : undefined}
+          readActive={!readingParent}
+          onReadInteraction={() => setReadingParentThreadId(undefined)}
           rootMessage={selectedThread.thread.context.find((message) => message.id === selectedThread.thread.rootMessageId)}
           onCloseThread={() => selectThread()}
         />
