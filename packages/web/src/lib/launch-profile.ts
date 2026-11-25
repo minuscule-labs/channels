@@ -49,7 +49,7 @@ export function initialLaunchReasoning(
   return options.defaultReasoningLevel ?? options.reasoningLevels[0];
 }
 
-/** Codex skill ids change when a plugin updates, so an agent keeping every skill saves no list. Codex then uses its own current skills. */
+/** A saved Codex list goes stale as its skills change, so an agent keeping every skill saves no list. Codex then uses its own current skills. */
 export function launchSkillIds(
   runtimeAdapter: string,
   options: Pick<LocalRuntimeOptions, "skills">,
