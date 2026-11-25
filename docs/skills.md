@@ -29,13 +29,13 @@ The Runtime capability contract should expose a harness-neutral descriptor conta
 - availability or compatibility state; and
 - no credential values or unnecessary host paths.
 
-The Runtime start contract should accept selected skill ids. Each adapter resolves those ids to its native representation and revalidates them at launch. For Pi, that means translating selections to Pi skill inputs while keeping filesystem paths inside Runtime and the private agent host.
+The Runtime start contract should accept selected skill ids. Each adapter resolves those ids to its native representation at launch and resume. For Pi, that means translating selections to Pi skill inputs while keeping filesystem paths inside Runtime and the private agent host.
 
 Selected skill ids are restricted Workspace-agent configuration. Browser reads may return the selected ids and sanitized availability because they are not secrets, but skill source paths, credential-related errors, and private skill contents should not enter collaboration messages or public Conversations metadata.
 
-A Codex agent that keeps every skill stores no selection, so Codex uses its own current skills. Codex skill ids include the plugin version, and a stored full list would stop matching after a plugin update. Choosing specific Codex skills stores exactly those ids. Pi and Claude Code store the full list.
+A Codex agent that keeps every skill when it is created or switched to Codex stores no selection, so Codex uses its own current skills, including ones added later. Choosing specific Codex skills stores exactly those ids. Where Codex reports which plugin a skill belongs to, the id leaves out the plugin version and survives plugin updates. A plugin skill saved by 0.0.43 or earlier may show as not found until it is selected again. Pi and Claude Code store the full list.
 
-Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the skill set with which they were initialized. If a selected skill is no longer available, launch fails with a sanitized, actionable configuration error instead of silently dropping it.
+Configuration changes apply only to newly started sessions and **New session** replacements. Existing sessions retain the skill set with which they were initialized. If a selected skill is no longer available, Pi starts and resumes without it, and nothing else is enabled in its place. Codex and Claude Code refuse with a sanitized, actionable configuration error, because a skill that loads late looks the same as a missing one. Agent settings name saved skills that are not found in the Workspace source folder and can remove them; a Conversation using another folder may see different skills. **Session & context** lists skills saved before a verified running session started that it does not have. A new selection of an unavailable skill is still rejected.
 
 ## Context behavior
 

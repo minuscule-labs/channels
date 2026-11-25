@@ -49,7 +49,7 @@ export function initialLaunchReasoning(
   return options.defaultReasoningLevel ?? options.reasoningLevels[0];
 }
 
-/** Codex skill ids change when a plugin updates, so an agent keeping every skill saves no list. Codex then uses its own current skills. */
+/** A saved Codex list goes stale as its skills change, so an agent keeping every skill saves no list. Codex then uses its own current skills. */
 export function launchSkillIds(
   runtimeAdapter: string,
   options: Pick<LocalRuntimeOptions, "skills">,
@@ -60,4 +60,19 @@ export function launchSkillIds(
     return runtimeAdapter === "codex" ? undefined : selected ?? available;
   }
   return selected;
+}
+
+/** Selected skills this harness no longer reports for the Workspace source folder. */
+export function missingSkillIds(options: Pick<LocalRuntimeOptions, "skills">, selected: readonly string[]): string[] {
+  return selected.filter((id) => !options.skills.some((skill) => skill.id === id));
+}
+
+/** Pi leaves a missing skill out. Codex and Claude Code refuse, because one that loads late looks the same. */
+export function missingSkillsMessage(runtimeAdapter: string, ids: readonly string[]): string {
+  const names = ids.filter((id) => !/^codex-skill-[a-f0-9]{64}$/.test(id)).map((id) => id.replace(/^skill:/, ""));
+  const one = ids.length === 1;
+  const found = `${ids.length} saved ${one ? "skill was" : "skills were"} not found in the Workspace source folder${names.length ? `: ${names.join(", ")}` : ""}.`;
+  return runtimeAdapter === "pi"
+    ? `${found} Sessions there start without ${one ? "it" : "them"}.`
+    : `${found} Sessions may not start until ${one ? "it is" : "they are"} removed.`;
 }

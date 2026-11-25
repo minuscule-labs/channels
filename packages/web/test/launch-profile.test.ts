@@ -7,6 +7,8 @@ import {
   initialLaunchModelForProvider,
   initialLaunchReasoning,
   launchSkillIds,
+  missingSkillIds,
+  missingSkillsMessage,
 } from "../src/lib/launch-profile";
 
 const options: LocalRuntimeOptions = {
@@ -59,5 +61,19 @@ describe("launchSkillIds", () => {
       expect(launchSkillIds(adapter, { skills }, null)).toEqual(["a", "b"]);
       expect(launchSkillIds(adapter, { skills }, ["b"])).toEqual(["b"]);
     }
+  });
+});
+
+describe("missing skills", () => {
+  it("names the selected skills that are gone, without Codex identifiers", () => {
+    const skills = [{ id: "skill:review", name: "review", description: "" }];
+    expect(missingSkillIds({ skills }, ["skill:review"])).toEqual([]);
+    expect(missingSkillIds({ skills }, ["skill:review", "skill:gone"])).toEqual(["skill:gone"]);
+    expect(missingSkillsMessage("pi", ["skill:gone"]))
+      .toBe("1 saved skill was not found in the Workspace source folder: gone. Sessions there start without it.");
+    expect(missingSkillsMessage("claude-code", ["gone", "deploy"]))
+      .toBe("2 saved skills were not found in the Workspace source folder: gone, deploy. Sessions may not start until they are removed.");
+    expect(missingSkillsMessage("codex", [`codex-skill-${"a".repeat(64)}`]))
+      .toBe("1 saved skill was not found in the Workspace source folder. Sessions may not start until it is removed.");
   });
 });
