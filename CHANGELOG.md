@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.44
+
+Release overview: [Agents keep working when skills change](docs/releases/v0.0.44.md).
+
 - Save no skill list for a Codex agent that keeps every skill, when creating the agent or switching one to Codex. Codex then uses its own current skills, so a plugin update no longer stops that agent from starting, and skills turned off in Codex stay off. Choosing specific skills still saves exactly that list. Agents and sessions already saved with a list are unchanged.
 - Start and resume Pi agents without a selected skill that has been deleted or renamed, instead of refusing. Nothing else is enabled in its place. Codex and Claude Code still refuse. Agent settings name saved skills that are not found and can remove them, Session & context lists earlier saved skills a verified running session lacks, and other settings can be saved while a skill is missing or the harness is unavailable.
 - Keep chosen Codex plugin skills selected after a plugin update, where Codex reports which plugin a skill belongs to. A plugin skill saved by 0.0.43 or earlier may show as not found until it is selected again.
