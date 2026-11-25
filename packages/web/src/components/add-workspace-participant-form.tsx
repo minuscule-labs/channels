@@ -10,6 +10,7 @@ import {
   initialLaunchModel,
   initialLaunchModelForProvider,
   initialLaunchReasoning,
+  launchSkillIds,
 } from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
 import { ErrorNotice } from "./ui/error-notice";
@@ -97,12 +98,15 @@ export function AddWorkspaceParticipantForm({
       let configurationWarning: string | undefined;
       if (executionIdentity) {
         try {
+          const skillIds = runtimeOptions.data
+            ? launchSkillIds(runtimeAdapter.trim(), runtimeOptions.data, selectedSkillIds)
+            : undefined;
           await localControl.updateWorkspaceAgentConfiguration(workspaceId, identity.id, {
             runtimeAdapter: runtimeAdapter.trim(),
             ...(selectedModel ? { modelProvider: selectedModel.provider, modelId: selectedModel.id } : {}),
             ...(reasoningLevel ? { reasoningLevel: reasoningLevel as "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" } : {}),
             ...(personaPrompt.trim() ? { personaPrompt: personaPrompt.trim() } : {}),
-            ...(runtimeOptions.data ? { skillIds: selectedSkillIds ?? runtimeOptions.data.skills.map(({ id }) => id) } : {}),
+            ...(skillIds ? { skillIds } : {}),
             status: "active",
           });
         } catch (error) {

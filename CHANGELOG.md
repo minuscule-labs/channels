@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Save no skill list for a Codex agent that keeps every skill, when creating the agent or switching one to Codex. Codex then uses its own current skills, so a plugin update no longer stops that agent from starting, and skills turned off in Codex stay off. Choosing specific skills still saves exactly that list. Agents and sessions already saved with a list are unchanged.
+
 ## 0.0.43
 
 Release overview: [Codex setup and one access level for every harness](docs/releases/v0.0.43.md).
