@@ -1907,6 +1907,39 @@ test("a harness that needs its own sign-in surfaces its fixed instruction; other
   } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test("an agent whose saved skill was deleted can still be configured, but not given a new missing skill", async () => {
+  const server = await createConversationHttpServer();
+  const root = await mkdtemp(join(tmpdir(), "minu-missing-skill-"));
+  try {
+    const client = new ConversationClient(server.endpoint, { serviceToken: server.serviceToken });
+    const [owner, agent] = await Promise.all([client.createIdentity({ type: "human" }), client.createIdentity({ type: "agent" })]);
+    const workspace = await client.createWorkspace({ slug: "missing-skill", name: "Missing skill" });
+    await client.addWorkspaceMember(workspace.id, { identityId: owner.id, mentionHandle: "owner", accessRole: "owner" });
+    await client.addWorkspaceMember(workspace.id, { identityId: agent.id, mentionHandle: "agent" });
+    const store = new InMemoryRelayBindingStore();
+    let ids = ["skill:kept", "skill:deleted"];
+    const runtime = { async capabilities() { return { models: [], reasoningLevels: [], skills: ids.map((id) => ({ id, name: id, description: "" })) }; } };
+    const configuration = new LocalAgentHostConfiguration({ client, store, runtimeOptionsCacheTtlMs: 1, runtimes: { test: runtime, other: runtime } });
+    const update = (input: Record<string, unknown>) => configuration.updateWorkspaceAgentConfiguration(workspace.id, agent.id, owner.id, input);
+    const saved = async () => (await store.getWorkspaceAgentConfig(workspace.id, agent.id))?.skillIds;
+    await configuration.updateWorkspaceConfiguration(workspace.id, owner.id, { rootUri: root });
+    await update({ runtimeAdapter: "test", skillIds: ids });
+    ids = ["skill:kept"];
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await update({ personaPrompt: "Updated" });
+    assert.deepEqual(await saved(), ["skill:kept", "skill:deleted"]);
+    const unavailable = (error: Error & { status?: number }) => error.message === "A selected skill is unavailable for this Runtime" && error.status === 409;
+    await assert.rejects(update({ skillIds: ["skill:kept", "skill:unknown"] }), unavailable);
+    await assert.rejects(update({ runtimeAdapter: "other", skillIds: ["skill:deleted"] }), unavailable);
+    await update({ skillIds: ["skill:kept"] });
+    assert.deepEqual(await saved(), ["skill:kept"]);
+    await assert.rejects(update({ skillIds: ["skill:kept", "skill:deleted"] }), unavailable);
+  } finally {
+    await server.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Runtime discovery is scoped by canonical Workspace source root", async () => {
   const server = await createConversationHttpServer();
   const firstRoot = await mkdtemp(join(tmpdir(), "minu-runtime-root-a-"));

@@ -17,6 +17,8 @@ import {
   initialLaunchModelForProvider,
   initialLaunchReasoning,
   launchSkillIds,
+  missingSkillIds,
+  missingSkillsMessage,
 } from "../lib/launch-profile";
 import { queryKeys } from "../lib/query-keys";
 import { LocalControlClientError } from "@minu/channels-control/client";
@@ -231,6 +233,9 @@ function AgentLaunchProfileForm({
     : configuredRuntimeOptions.data?.skills.map(({ id }) => id) ?? [];
   const skillsChanged = skillIds !== null && configuredRuntimeOptions.data !== undefined
     && JSON.stringify([...skillIds].sort()) !== JSON.stringify([...savedSkillIds].sort());
+  const missingSkills = runtimeAdapterChanged || !configuredRuntimeOptions.data
+    ? []
+    : missingSkillIds(configuredRuntimeOptions.data, skillIds ?? []);
   const personaChanged = configurationReady && personaPrompt !== savedPersonaPrompt;
   const handoffSummaryChanged = configurationReady
     && Number(handoffSummaryTokens) !== (savedConfiguration?.handoffSummaryTokens ?? 4_000);
@@ -361,6 +366,18 @@ function AgentLaunchProfileForm({
           : <ConfigurationState configured={agent.skillsConfigured} label={`Skills configured for new sessions (${agent.selectedSkillCount})`} />}
         <ConfigurationState configured={agent.personaConfigured} label="Agent instructions" />
       </div>
+      {missingSkills.length ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[var(--danger)]">
+          <p>{missingSkillsMessage(missingSkills)}</p>
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => setSkillIds((current) => current?.filter((id) => !missingSkills.includes(id)) ?? null)}
+          >
+            Remove from selection
+          </button>
+        </div>
+      ) : null}
       <div className="mt-4 flex gap-1 border-b border-[var(--border)]" role="tablist" aria-label="Launch profile settings">
         {(["general", "skills", "runtime"] as const).map((tab) => (
           <button

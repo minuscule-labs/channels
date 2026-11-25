@@ -7,6 +7,8 @@ import {
   initialLaunchModelForProvider,
   initialLaunchReasoning,
   launchSkillIds,
+  missingSkillIds,
+  missingSkillsMessage,
 } from "../src/lib/launch-profile";
 
 const options: LocalRuntimeOptions = {
@@ -59,5 +61,16 @@ describe("launchSkillIds", () => {
       expect(launchSkillIds(adapter, { skills }, null)).toEqual(["a", "b"]);
       expect(launchSkillIds(adapter, { skills }, ["b"])).toEqual(["b"]);
     }
+  });
+});
+
+describe("missing skills", () => {
+  it("names the selected skills that are gone, without Codex identifiers", () => {
+    const skills = [{ id: "skill:review", name: "review", description: "" }];
+    expect(missingSkillIds({ skills }, ["skill:review"])).toEqual([]);
+    expect(missingSkillIds({ skills }, ["skill:review", "skill:gone"])).toEqual(["skill:gone"]);
+    expect(missingSkillsMessage(["skill:gone"])).toBe("1 saved skill is no longer available: gone. New sessions start without it.");
+    expect(missingSkillsMessage(["skill:gone", "deploy"])).toBe("2 saved skills are no longer available: gone, deploy. New sessions start without them.");
+    expect(missingSkillsMessage([`codex-skill-${"a".repeat(64)}`])).toBe("1 saved skill is no longer available. New sessions start without it.");
   });
 });

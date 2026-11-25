@@ -1800,7 +1800,9 @@ export class LocalAgentHostConfiguration {
         }
         const options = await this.resolveRuntimeOptions(workspaceId, resolvedAdapter);
         const available = new Set(options.skills.map(({ id }) => id));
-        if (resolvedSkillIds.some((id) => !available.has(id))) {
+        // A skill saved earlier may since have been deleted or renamed; only a newly selected one must exist.
+        const saved = new Set(launchDefaults?.skillIds);
+        if (resolvedSkillIds.some((id) => !available.has(id) && !saved.has(id))) {
           throw new LocalConfigurationRequestError("A selected skill is unavailable for this Runtime", 409, "unavailable");
         }
       }

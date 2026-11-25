@@ -11,6 +11,9 @@ export function SessionContextInspection({ state, surface, loadedSequences, onVi
   const recorded = value?.recorded;
   const live = value?.running.status === "available" ? value.running.profile : undefined;
   const saved = value?.saved.status === "available" ? value.saved.profile : undefined;
+  const liveSkills = live?.skills.status === "verified" && live.skills.complete ? live.skills.commandIds : undefined;
+  const missingSkills = liveSkills && saved?.skills.complete && saved.adapter === recorded?.adapter
+    ? saved.skills.ids.filter((id) => !liveSkills.includes(id)) : [];
   return <section aria-label="Session and context" className="space-y-3 border-t border-[var(--border)] pt-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h3 className="font-semibold">Session &amp; context</h3>
@@ -43,6 +46,7 @@ export function SessionContextInspection({ state, surface, loadedSequences, onVi
         <p>Current model: {live?.model.status === "verified" ? `${live.model.provider}/${live.model.id} (verified)` : "Not verified"}</p>
         <p>Current reasoning: {live?.reasoning.status === "verified" ? `${live.reasoning.level} (verified)` : "Not verified"}</p>
         <p>Available skill commands: {live?.skills.status === "verified" ? `${live.skills.commandIds.join(", ") || (live.skills.complete ? "None" : "No verified identifiers")}${live.skills.complete ? " (verified)" : " (partial evidence)"}` : "Not verified"}</p>
+        {missingSkills.length ? <p className="text-[var(--danger)]">Saved skills not available in this session: {missingSkills.join(", ")}</p> : null}
         <p className="text-[var(--muted)]">Available commands are not evidence that skill instructions were loaded or used in a turn.</p>
       </section>
       <SessionIntegrationInspection snapshot={value.integrations} />

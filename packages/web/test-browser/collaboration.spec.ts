@@ -1153,6 +1153,47 @@ test("saves a Codex skill list only when the selection changes", async ({ page, 
   expect(saved.at(-1)).not.toHaveProperty("skillIds");
 });
 
+test("names a saved skill that is gone and removes it from the selection", async ({ page, request }) => {
+  const { workspaces } = await (await request.get(`${conversationsBase}/workspaces`)).json() as {
+    workspaces: Array<{ id: string }>;
+  };
+  const workspace = workspaces[0]!;
+  await launchAuthenticated(page, request, `/app/workspaces/${workspace.id}/agents`);
+  expect(await page.evaluate(async (id) => (await fetch(`/local/workspaces/${id}/config`, {
+    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ rootUri: "/tmp" }),
+  })).ok, workspace.id)).toBe(true);
+  await page.goto(`/app/workspaces/${workspace.id}/agents/new`);
+  await page.getByLabel("Display name").fill("Missing Skill Agent");
+  await page.getByRole("tab", { name: "Skills" }).click();
+  await expect(page.getByRole("checkbox", { name: /review Review changes/ })).toBeChecked();
+  await page.getByRole("button", { name: "Create agent" }).click();
+  await expect(page.getByRole("status")).toContainText("Agent “Missing Skill Agent” created");
+  await page.route("**/local/workspaces/*/agents/*/runtime-options", async (route) => {
+    const url = new URL(route.request().url());
+    const response = await route.fetch({ url: `${controlBase}${url.pathname}` });
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, skillSelectionConfigured: true, selectedSkillIds: ["skill:review", "skill:gone"] } });
+  });
+  let saved: { skillIds?: string[] } | undefined;
+  await page.route("**/local/workspaces/*/agents/*/config", async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    saved = JSON.parse(route.request().postData() ?? "{}") as { skillIds?: string[] };
+    await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Not saved by this test" }) });
+  });
+
+  await page.getByRole("button", { name: "Edit agent" }).click();
+  const launchProfile = page.locator("form").filter({ hasText: "Private launch profile" });
+  const notice = launchProfile.getByText("1 saved skill is no longer available: gone. New sessions start without it.", { exact: true });
+  await expect(notice).toBeVisible();
+  await launchProfile.getByRole("button", { name: "Remove from selection", exact: true }).click();
+  await expect(notice).toHaveCount(0);
+  await launchProfile.getByRole("tab", { name: "Skills" }).click();
+  await expect(launchProfile.getByRole("checkbox", { name: /review Review changes/ })).toBeChecked();
+  await expect(launchProfile.getByRole("checkbox", { name: /handoff Prepare/ })).not.toBeChecked();
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  await expect.poll(() => saved?.skillIds).toEqual(["skill:review"]);
+});
+
 test("creates and renames a Workspace with a private source path", async ({ page, request }) => {
   await launchAuthenticated(page, request, "/");
   await page.getByRole("button", { name: "Add Workspace" }).click();

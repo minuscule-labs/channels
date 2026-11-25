@@ -61,3 +61,15 @@ export function launchSkillIds(
   }
   return selected;
 }
+
+/** Selected skills this harness no longer reports. New sessions start without them. */
+export function missingSkillIds(options: Pick<LocalRuntimeOptions, "skills">, selected: readonly string[]): string[] {
+  return selected.filter((id) => !options.skills.some((skill) => skill.id === id));
+}
+
+export function missingSkillsMessage(ids: readonly string[]): string {
+  const names = ids.filter((id) => !/^codex-skill-[a-f0-9]{64}$/.test(id)).map((id) => id.replace(/^skill:/, ""));
+  return ids.length === 1
+    ? `1 saved skill is no longer available${names.length ? `: ${names[0]}` : ""}. New sessions start without it.`
+    : `${ids.length} saved skills are no longer available${names.length ? `: ${names.join(", ")}` : ""}. New sessions start without them.`;
+}
