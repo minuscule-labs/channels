@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.45
+
+Release overview: [Unread badges in split view](docs/releases/v0.0.45.md).
+
 - Let the parent Conversation acknowledge visible latest messages while a thread stays open when the human interacts with the parent pane. Keep the other pane's messages unread until it is activated, preserve visibility/focus/occlusion/end guards, and avoid acknowledging the parent merely by opening or navigating threads.
 
 ## 0.0.44
