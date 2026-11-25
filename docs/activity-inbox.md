@@ -26,7 +26,7 @@ Thread links use `?threadId=...&threadMessage=...` on the parent Conversation UR
 
 Closing the thread returns focus to its parent root without inserting another Back step. Back returns to the same Workspace's Activity position and loaded page depth, including after a reload. Per-tab session storage holds only identity/Workspace/view/history-scoped page counts and scroll coordinates, never notification bodies; if the query cache is gone, pages are fetched again through the current-access API.
 
-A parent serving as thread context is not acknowledged or advertised as viewing its latest messages while the thread is open or its explicit link is loading. The thread retains its existing visible/focused/unoccluded/end-of-timeline guards. Once the thread closes, the parent resumes its own guarded read behavior.
+Opening, restoring or loading a thread defaults read ownership to that thread, not its contextual parent. In the desktop split view, a trusted pointer, focus, wheel or keyboard interaction in either pane makes it the active read pane. The parent can therefore acknowledge visible latest messages without closing the thread; new messages in the other pane stay unread. Thread-navigation controls, Tab/Escape and modifier-only key presses do not claim a pane; focus movement can select the destination pane. Closing an inactive thread leaves its pending replies unread. Programmatic scrolling alone never changes ownership. Each pane still requires a visible, focused document, an unoccluded last message and an end-of-timeline position. Closing restores the parent's normal guarded read behavior.
 
 ## Unread correctness
 
@@ -34,7 +34,7 @@ Unread counts are calculated by the server across persisted messages, not from t
 
 Migration 0014 adds a separate `human_read_cursors` table and a chronological message index. Agent processing cursors, message persistence and Runtime lifecycle are unchanged. Existing valid browser read marks are imported monotonically when ahead of server state; they never rewind a server cursor.
 
-A focused, visible timeline at its end acknowledges through its actually visible last message. Covered/hidden/unfocused timelines do not acknowledge. The acknowledgement must identify a persisted sequence, and storage atomically takes the maximum of old/new cursors. A concurrently arriving later message stays unread. Read failures retain unread state and can retry on focus/visibility/reconnect.
+The active read pane's focused, visible timeline at its end acknowledges through its actually visible last message. Covered/hidden/unfocused timelines and the inactive split-view pane do not acknowledge. The acknowledgement must identify a persisted sequence, and storage atomically takes the maximum of old/new cursors. A concurrently arriving later message stays unread. Read failures retain unread state and can retry on focus/visibility/reconnect.
 
 Reading Activity, changing lifecycle or dropping a subscription does not acknowledge messages. Each thread has its own cursor. Parent-channel badges count parent messages; Workspace/document totals include thread unread counts as well. Reading a parent does not clear its threads, or vice versa.
 

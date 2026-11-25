@@ -76,6 +76,7 @@ function MessageRow({
             <MessageImages attachments={message.attachments ?? []} conversationId={message.conversationId} />
           </div>
           {onOpenThread && thread ? <button
+            data-thread-navigation
             type="button"
             className="mt-2 inline-flex items-center gap-1.5 rounded text-xs text-[var(--accent)] hover:underline"
             onClick={(event) => onOpenThread(message, event.currentTarget)}
@@ -89,6 +90,7 @@ function MessageRow({
           <DropdownMenuTrigger asChild>
             <button
               ref={actionsTriggerRef}
+              data-thread-navigation
               type="button"
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center self-start rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
               aria-label={`Open actions for message ${message.sequence}`}
