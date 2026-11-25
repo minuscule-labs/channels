@@ -120,13 +120,14 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
   const readBlocked = !readActive || (!activeThread && Boolean(linkedThreadId || selectedThread) && !readingParent);
   const activateReadPane = (event: SyntheticEvent<HTMLElement>) => {
     if (!event.isTrusted || !event.currentTarget.contains(event.target as Node)
-      || (event.target instanceof Element && event.target.closest("[data-thread-navigation]"))) return;
+      || (event.target instanceof Element && event.target.closest("[data-thread-navigation]"))
+      || (event.nativeEvent instanceof KeyboardEvent && ["Tab", "Escape", "Shift", "Control", "Alt", "Meta"].includes(event.nativeEvent.key))) return;
     onReadInteraction?.();
     if (selectedThread) setReadingParentThreadId(selectedThread.id);
   };
   const selectThread = (thread?: ConversationThread, identityId = currentSession.data?.identityId) => {
     if (!identityId || activeThread) return;
-    setReadingParentThreadId(undefined);
+    if (thread) setReadingParentThreadId(undefined);
     const key = threadSelectionStorageKey(workspaceId, conversationId, identityId);
     writeThreadSelection(key, thread?.id);
     if (key === threadSelectionKey) {
@@ -604,7 +605,7 @@ function ConversationPageContent({ workspaceId, conversationId, rootMessage, onC
               onDismissBulkResults={() => setBulkResults(undefined)}
             />
           </Drawer>
-          {onCloseThread ? <button type="button" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]" aria-label="Close thread" onClick={onCloseThread}><X aria-hidden="true" className="h-4 w-4" /></button> : null}
+          {onCloseThread ? <button data-thread-navigation type="button" className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)] hover:text-[var(--text)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]" aria-label="Close thread" onClick={onCloseThread}><X aria-hidden="true" className="h-4 w-4" /></button> : null}
         </header>
         {connection === "polling" ? <p role="status" className="border-b border-[var(--border)] px-4 py-2 text-xs text-[var(--muted)]">Live updates are unavailable in this browser. Checking periodically; notification sounds are unavailable in this fallback mode.</p> : null}
         {settled ? (
