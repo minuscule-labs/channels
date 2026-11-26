@@ -1088,11 +1088,11 @@ test("saves a Codex skill list only when the selection changes", async ({ page, 
       ],
     }),
   }));
-  const saved: Array<{ runtimeAdapter?: string; skillIds?: string[] }> = [];
+  const saved: Array<{ runtimeAdapter?: string; skillIds?: string[] | null }> = [];
   await page.route("**/local/workspaces/*/agents/*/config", async (route) => {
     if (route.request().method() !== "PATCH") return route.continue();
     const identityId = route.request().url().match(/\/agents\/([^/]+)\/config$/)?.[1]!;
-    const input = JSON.parse(route.request().postData() ?? "{}") as { runtimeAdapter?: string; skillIds?: string[] };
+    const input = JSON.parse(route.request().postData() ?? "{}") as { runtimeAdapter?: string; skillIds?: string[] | null };
     saved.push(input);
     await route.fulfill({
       status: 200,
@@ -1110,7 +1110,7 @@ test("saves a Codex skill list only when the selection changes", async ({ page, 
           runtimeAdapter: input.runtimeAdapter,
           modelConfigured: true,
           reasoningConfigured: true,
-          skillsConfigured: input.skillIds !== undefined,
+          skillsConfigured: input.skillIds != null,
           selectedSkillCount: input.skillIds?.length ?? 0,
           status: "active",
           boundConversationCount: 0,
@@ -1151,6 +1151,58 @@ test("saves a Codex skill list only when the selection changes", async ({ page, 
   await expect(launchProfile.getByText("Skills for new sessions: all", { exact: true })).toBeVisible();
   expect(saved.at(-1)?.runtimeAdapter).toBe("codex");
   expect(saved.at(-1)).not.toHaveProperty("skillIds");
+
+  // An existing Codex agent with a saved list: selecting every skill again removes the list.
+  const codexOptions = {
+    protocolVersion: 25, workspaceId: workspace.id,
+    models: [{ provider: "openai", id: "codex-test", name: "Codex Test", reasoning: true, enabled: true }],
+    reasoningLevels: ["medium"], modelPolicyConfigured: false,
+    skills: [
+      { id: "codex-skill-one", name: "pdf:pdf", description: "Read documents." },
+      { id: "codex-skill-two", name: "handoff", description: "Prepare a handoff." },
+    ],
+  };
+  let existingId = "";
+  await page.route(`**/local/workspaces/${workspace.id}/config`, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    // Node cannot resolve the browser-only .localhost name.
+    const url = new URL(route.request().url());
+    url.hostname = "127.0.0.1";
+    const response = await route.fetch({ url: url.href });
+    const summary = await response.json() as { agents: Array<Record<string, unknown>> };
+    for (const agent of summary.agents) {
+      if (agent.identityId !== existingId) continue;
+      Object.assign(agent, { configured: true, runtimeConfigured: true, runtimeAdapter: "codex", modelConfigured: true,
+        reasoningConfigured: true, skillsConfigured: true, selectedSkillCount: 1, status: "active" });
+    }
+    await route.fulfill({ response, json: summary });
+  });
+  await page.route("**/local/workspaces/*/agents/*/config", async (route) => {
+    if (route.request().method() !== "GET" || !route.request().url().includes(`/agents/${existingId}/config`)) return route.fallback();
+    await route.fulfill({ json: {
+      protocolVersion: 25, workspaceId: workspace.id, identityId: existingId, instructions: { source: "none" },
+      runtimeAdapter: "codex", modelProvider: "openai", modelId: "codex-test", reasoningLevel: "medium",
+      skillIds: ["codex-skill-two"], handoffSummaryTokens: 4000, recentContextTokens: 8000, recentContextMessages: 50,
+      status: "active", changesApplyToNewSessions: true,
+    } });
+  });
+  await page.route(`**/local/workspaces/${workspace.id}/agents/*/runtime-options`, (route) => route.fulfill({ json: {
+    ...codexOptions, identityId: existingId, skillSelectionConfigured: true, selectedSkillIds: ["codex-skill-two"],
+  } }));
+  await createAgent("Codex Existing Agent", () => page.getByRole("checkbox", { name: /pdf:pdf/ }).uncheck());
+  existingId = (await (await request.get(`${conversationsBase}/identities`)).json() as { identities: Array<{ id: string; displayName?: string }> })
+    .identities.find((identity) => identity.displayName === "Codex Existing Agent")!.id;
+  await page.goto(`/app/workspaces/${workspace.id}/agents`);
+  await openAgentEditor(page, "Codex Existing Agent");
+  await launchProfile.getByRole("tab", { name: "Skills" }).click();
+  await expect(launchProfile.getByRole("checkbox", { name: /pdf:pdf/ })).not.toBeChecked();
+  await launchProfile.getByRole("checkbox", { name: /pdf:pdf/ }).check();
+  const reselected = page.waitForResponse((candidate) => candidate.request().method() === "PATCH"
+    && candidate.url().includes(`/agents/${existingId}/config`));
+  await launchProfile.getByRole("button", { name: "Save launch profile" }).click();
+  await reselected;
+  expect(saved.at(-1)).not.toHaveProperty("runtimeAdapter");
+  expect(saved.at(-1)?.skillIds).toBeNull();
 });
 
 test("names a saved skill that is gone and removes it from the selection", async ({ page, request }) => {

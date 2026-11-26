@@ -1260,7 +1260,8 @@ export class LocalRelayDirectory {
     modelProvider?: string | null;
     modelId?: string | null;
     reasoningLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null;
-    skillIds?: string[];
+    /** null removes the saved list, so the harness uses its own current skills. */
+    skillIds?: string[] | null;
     accountSkills?: WorkspaceAgentConfig["accountSkills"] | null;
     workspaceSkillIds?: string[];
     handoffSummaryTokens?: number | null;
@@ -1298,7 +1299,7 @@ export class LocalRelayDirectory {
     const reasoningLevel = input.reasoningLevel === undefined
       ? launchDefaults?.reasoningLevel
       : input.reasoningLevel ?? undefined;
-    const skillIds = input.skillIds === undefined ? launchDefaults?.skillIds : [...input.skillIds];
+    const skillIds = input.skillIds === undefined ? launchDefaults?.skillIds : input.skillIds === null ? undefined : [...input.skillIds];
     const handoffSummaryTokens = input.handoffSummaryTokens === undefined
       ? existing?.handoffSummaryTokens
       : input.handoffSummaryTokens ?? undefined;

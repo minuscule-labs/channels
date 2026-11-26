@@ -1938,6 +1938,15 @@ test("an agent whose saved skill was deleted can still be configured, but not gi
     await update({ skillIds: ["skill:kept"] });
     assert.deepEqual(await saved(), ["skill:kept"]);
     await assert.rejects(update({ skillIds: ["skill:kept", "skill:deleted"] }), unavailable);
+    // Clearing the saved list needs no skill discovery, even while the harness is unavailable.
+    offline = true;
+    await update({ skillIds: null });
+    assert.equal(await saved(), undefined);
+    offline = false;
+    const options = await configuration.getAgentRuntimeOptions(workspace.id, agent.id, owner.id);
+    assert.equal(options.skillSelectionConfigured, false);
+    assert.deepEqual(options.selectedSkillIds, []);
+    await assert.rejects(update({ skillIds: "skill:kept" }), (error: Error & { status?: number }) => error.status === 400);
   } finally {
     await server.close();
     await rm(root, { recursive: true, force: true });
