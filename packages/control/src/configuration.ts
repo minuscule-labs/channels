@@ -1747,8 +1747,9 @@ export class LocalAgentHostConfiguration {
         && !reasoningLevels.includes(String(reasoningLevel))) {
         throw new LocalConfigurationRequestError("reasoningLevel is invalid", 400, "invalid");
       }
-      let skillIds: string[] | undefined;
-      if (input.skillIds !== undefined) {
+      let skillIds: string[] | null | undefined;
+      if (input.skillIds === null) skillIds = null;
+      else if (input.skillIds !== undefined) {
         if (!Array.isArray(input.skillIds) || input.skillIds.length > 100) {
           throw new LocalConfigurationRequestError("skillIds must be an array of at most 100 skills", 400, "invalid");
         }
@@ -1792,7 +1793,7 @@ export class LocalAgentHostConfiguration {
         1,
         MAX_RECENT_CONTEXT_MESSAGES,
       );
-      if (skillIds !== undefined) {
+      if (skillIds) {
         if (!resolvedAdapter) {
           throw new LocalConfigurationRequestError("A Runtime is required to configure skills", 409, "unavailable");
         }

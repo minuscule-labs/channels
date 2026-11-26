@@ -339,7 +339,9 @@ function AgentLaunchProfileForm({
     if (runtimeAdapterChanged && runtimeAdapter.trim() && replacementRuntimeOptions.data) {
       const replacementSkillIds = launchSkillIds(runtimeAdapter.trim(), replacementRuntimeOptions.data, skillIds);
       if (replacementSkillIds) input.skillIds = replacementSkillIds;
-    } else if (skillsChanged && skillIds) input.skillIds = skillIds;
+    } else if (skillsChanged && skillIds) {
+      input.skillIds = launchSkillIds(runtimeAdapter.trim(), configuredRuntimeOptions.data!, skillIds) ?? null;
+    }
     if (statusChanged || agent.status === "unconfigured") input.status = status;
     mutation.mutate(input);
   };

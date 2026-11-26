@@ -312,7 +312,8 @@ export interface UpdateLocalWorkspaceAgentConfigurationInput {
   modelProvider?: string | null;
   modelId?: string | null;
   reasoningLevel?: LocalReasoningLevel | null;
-  skillIds?: string[];
+  /** null removes the saved list, so the harness uses its own current skills. */
+  skillIds?: string[] | null;
   handoffSummaryTokens?: number | null;
   recentContextTokens?: number | null;
   recentContextMessages?: number | null;
