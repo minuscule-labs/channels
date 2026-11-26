@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Check every pull request, main build and release package by installing it and running the real pinned Pi executable against a local stand-in model: replies, selected skills, Stop and Start, restart and new Conversations with a deleted skill, reopening data and clean shutdown. No login or network model is used, and a genuine Pi response remains a release gate.
+
 ## 0.0.45
 
 Release overview: [Unread badges in split view](docs/releases/v0.0.45.md).
