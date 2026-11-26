@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Pin Runtime `8239db9`: stopping or restarting an unresponsive Pi agent on macOS no longer fails with `kill EPERM` while its worker is exiting. Runtime keeps waiting until the exit is proven and never signals a worker it cannot inspect.
 - Check every pull request, main build and release package by installing it and running the real pinned Pi executable against a local stand-in model: replies, selected skills, Stop and Start, restart and new Conversations with a deleted skill, reopening data and clean shutdown. No login or network model is used, and a genuine Pi response remains a release gate.
 
 ## 0.0.45
