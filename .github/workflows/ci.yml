@@ -163,6 +163,11 @@ jobs:
       - name: Smoke-test packaged installation
         working-directory: channels
         run: pnpm release:smoke
+      - name: Verify the packaged installation with the pinned Pi and a local stand-in model
+        working-directory: channels
+        env:
+          MINU_RUNTIME_ROOT: ${{ github.workspace }}/runtime
+        run: pnpm release:smoke:pi
       - name: Verify image delivery through bundled Runtime and controlled Pi RPC
         working-directory: channels
         env:

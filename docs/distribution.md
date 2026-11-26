@@ -134,7 +134,10 @@ Never use the public registry as the first packaging test. Build and smoke-test 
 ```bash
 pnpm release:pack
 pnpm release:smoke
+pnpm release:smoke:pi
 ```
+
+`release:smoke:pi` installs the tarball and runs the real Pi executable from the pinned Runtime checkout (`MINU_RUNTIME_ROOT`, default `../runtime`) or `MINU_SMOKE_PI_COMMAND`. Pi gets a throwaway home and agent directory whose only model is a local stand-in, so no login, credential or network model is used. It checks replies, selected skills, Stop and Start, Pi restart and new Conversations with a selected skill deleted, reopening data and clean shutdown. Set `MINU_SMOKE_PI_SLEEP=1` to add a real idle sleep and wake, which takes about 20 minutes. Pass a downloaded draft tarball to check that exact artifact; a `SHA256SUMS` file beside it is verified. It does not replace a genuine Pi response through a real provider.
 
 The generated tarball and checksum are written beneath the ignored `release/artifacts/` directory. To test the installation manually:
 

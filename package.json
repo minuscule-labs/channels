@@ -28,6 +28,7 @@
     "release:build": "node scripts/release-build.mjs",
     "release:pack": "pnpm release:build && rm -rf release/artifacts && mkdir -p release/artifacts && cd release/package && npm pack --pack-destination ../artifacts && cd ../.. && node scripts/checksum-release.mjs",
     "release:smoke": "node scripts/smoke-release-package.mjs",
+    "release:smoke:pi": "node scripts/smoke-release-pi.mjs",
     "release:check": "pnpm check && pnpm test && pnpm web:test && pnpm release:pack && pnpm release:smoke",
     "release:tag": "node scripts/release.mjs",
     "release:tag:dry-run": "node scripts/release.mjs --dry-run",
