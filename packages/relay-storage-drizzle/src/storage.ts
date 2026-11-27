@@ -40,6 +40,7 @@ import type { SQLiteTransaction } from "drizzle-orm/sqlite-core";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "./schema.ts";
+import { AgentCredentialStorage } from "./agent-credentials.ts";
 
 export interface DrizzleLibSqlRelayStorageOptions {
   /** Private Relay state is local-only and must use a file: libSQL URL. */
@@ -335,10 +336,14 @@ export class DrizzleLibSqlRelayStorage implements RelayBindingStore {
     return (await this.getConversationCreationSetup(setup.workspaceId, setup.conversationId))!;
   }
 
+  readonly agentCredentials: AgentCredentialStorage;
+
   private constructor(
     private readonly client: Client,
     private readonly database: LibSQLDatabase<typeof schema>,
-  ) {}
+  ) {
+    this.agentCredentials = new AgentCredentialStorage(database);
+  }
 
   static async open(options: DrizzleLibSqlRelayStorageOptions): Promise<DrizzleLibSqlRelayStorage> {
     if (!options.url.startsWith("file:")) {

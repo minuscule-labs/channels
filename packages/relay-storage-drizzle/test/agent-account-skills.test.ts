@@ -32,6 +32,7 @@ test("agent account reference migration preserves existing configs, defaults to 
     const before = await store.putAgentConfig(config);
     await store.close();
     const client = createClient({ url });
+    await client.execute("DROP TABLE agent_credentials");
     await client.execute("DROP TABLE workspace_compositions");
     await client.execute("ALTER TABLE workspace_agent_configs DROP COLUMN workspace_skill_ids");
     await client.execute("ALTER TABLE workspace_agent_configs DROP COLUMN account_skills");

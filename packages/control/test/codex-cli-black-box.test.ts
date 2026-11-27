@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 const exec=promisify(execFile),cli=fileURLToPath(new URL("../src/local-cli.js",import.meta.url));
@@ -16,14 +16,45 @@ async function until(predicate:()=>Promise<boolean>|boolean,message:string){cons
 async function freePort():Promise<number>{const server=createServer();server.listen(0,"127.0.0.1");await once(server,"listening");const port=(server.address() as {port:number}).port;await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));return port;}
 async function rows(path:string):Promise<Array<Record<string,any>>>{try{return(await readFile(path,"utf8")).trim().split("\n").filter(Boolean).map(line=>JSON.parse(line));}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return[];throw error;}}
 interface Running {child:ChildProcess;exit:Promise<unknown[]>;endpoint:string;cookie:string;pid:number;}
+function cliEnvironment(runtimeRoot:string,directory:string):NodeJS.ProcessEnv {
+  return {PATH:process.env.PATH??"",HOME:join(directory,"home"),TMPDIR:tmpdir(),LANG:"C.UTF-8",
+    MINU_RUNTIME_ROOT:runtimeRoot,MINU_TEST_RUNTIME_ROOT:runtimeRoot,MINU_TEST_CODEX_ROOT:join(directory,"codex-managed"),
+    MINU_TEST_CODEX_LOG:join(directory,"native.jsonl"),MINU_TEST_ADAPTER_LOG:join(directory,"adapter.jsonl"),
+    MINU_TEST_PI_STATE:join(directory,"pi-state.json"),MINU_RUNTIME_DIR:join(directory,"pi-registry")};
+}
+
+test("CLI fixture forwards its Runtime root to the unoverridden Claude adapter",{timeout:10000},async t=>{
+  const directory=await realpath(await mkdtemp(join(tmpdir(),"channels-cli-runtime-root-")));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const root=join(directory,"selected-runtime"),workspace=join(directory,"workspace"),web=join(directory,"web");
+  const actualRoot=resolve(process.env.MINU_RUNTIME_ROOT??resolve(process.cwd(),"../runtime"));
+  await Promise.all([mkdir(root),mkdir(workspace),mkdir(web),mkdir(join(directory,"home"))]);
+  await writeFile(join(root,"package.json"),'{"type":"module"}');
+  await writeFile(join(web,"index.html"),"<!doctype html><title>Runtime selection fixture</title>");
+  for(const [adapter,name] of [["pi","PiAgentRuntime"],["codex","CodexAgentRuntime"],["claude-code","ClaudeCodeAgentRuntime"]]){
+    const path=join(root,"packages",adapter!,"dist/src");await mkdir(path,{recursive:true});
+    await writeFile(join(path,"index.js"),adapter==="claude-code"
+      ? 'export class ClaudeCodeAgentRuntime { constructor(){ throw new Error("SELECTED_ROOT_CLAUDE_CONSTRUCTOR"); } }'
+      : `export { ${name} } from ${JSON.stringify(pathToFileURL(join(actualRoot,"packages",adapter!,"dist/src/index.js")).href)};`);
+  }
+  // Pi/Codex use explicit fixture overrides; Claude must resolve through the shared child root.
+  // If cliEnvironment drops the root, the sibling Claude loads and this marker is never emitted.
+  const ports=await Promise.all([freePort(),freePort(),freePort()]);
+  await assert.rejects(exec(process.execPath,[cli,"run","--no-open","--data-dir",join(directory,"data"),"--cwd",workspace,
+    "--web-dir",web,"--conversations-port",String(ports[0]),"--control-port",String(ports[1]),"--web-port",String(ports[2]),
+    "--runtime-module",fixture("cli-black-box-pi"),"--codex-runtime-module",fixture("cli-black-box-codex")],
+    {env:cliEnvironment(root,directory),timeout:5000}),
+    (error:unknown)=>typeof error==="object"&&error!==null&&"stderr" in error
+      &&typeof error.stderr==="string"&&error.stderr.includes("SELECTED_ROOT_CLAUDE_CONSTRUCTOR"));
+});
 
 // The driver uses only fresh CLIs, authenticated HTTP, and owned backend logs.
 // It never imports Runtime adapters, stores, agent hosts, or application factories.
 test("Channels CLI black box: per-agent Codex, restart without replay, existing Pi binding",{timeout:60000},async t=>{
-  const directory=await realpath(await mkdtemp(join(tmpdir(),"channels-codex-cli-"))),workspace=join(directory,"workspace"),web=join(directory,"web"),runtimeRoot=resolve(process.cwd(),"../runtime");
+  const directory=await realpath(await mkdtemp(join(tmpdir(),"channels-codex-cli-"))),workspace=join(directory,"workspace"),web=join(directory,"web"),runtimeRoot=resolve(process.env.MINU_RUNTIME_ROOT??resolve(process.cwd(),"../runtime"));
   const adapterLog=join(directory,"adapter.jsonl"),nativeLog=join(directory,"native.jsonl"),managedRoot=join(directory,"codex-managed");
   await Promise.all([mkdir(workspace),mkdir(web),mkdir(join(directory,"home"))]);await writeFile(join(web,"index.html"),"<!doctype html><title>CLI test fixture</title>");
-  const env:NodeJS.ProcessEnv={PATH:process.env.PATH??"",HOME:join(directory,"home"),TMPDIR:tmpdir(),LANG:"C.UTF-8",MINU_TEST_RUNTIME_ROOT:runtimeRoot,MINU_TEST_CODEX_ROOT:managedRoot,MINU_TEST_CODEX_LOG:nativeLog,MINU_TEST_ADAPTER_LOG:adapterLog,MINU_TEST_PI_STATE:join(directory,"pi-state.json"),MINU_RUNTIME_DIR:join(directory,"pi-registry")};
+  const env=cliEnvironment(runtimeRoot,directory);
   let app:Running|undefined;const controllers:number[]=[];
   async function stop(){const running=app;if(!running)return;running.child.kill("SIGINT");const [code]=await running.exit;assert.equal(code,0,"Fixture CLI must close normally");app=undefined;}
   async function start(){
