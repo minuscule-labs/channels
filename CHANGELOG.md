@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.0.48
+
+Release overview: [Scoped API key management UI](docs/releases/v0.0.48.md).
+
+- Add Workspace Settings → Integrations with a Notes-style key list and create/edit access dialog. Human owners/admins manage their own delegated status keys with explicit Conversation/thread grants, optional existing/future-thread inclusion, expiry, rotation and revocation.
+- Show secrets once with copy feedback, retaining them only in transient component state. Require current-metadata review for conflicting or uncertain writes, including authentication denials after persistence; preserve concurrent access reductions when keeping edits and never automatically retry mutations.
+- Load target choices on demand with bounded thread reads and retain unavailable existing grants for review. Show the actual loopback inspection URL using optional authenticated capability metadata derived from the bound listener.
+- Preserve the status-only API, credential authorization, schemas, local-control protocol 25, dependency locks and Runtime pin `8239db90896b5ffdff1150bf781d4fb62e90fade`. Pending mutation intents remain live-page memory only; MCP and additional API capabilities are not included.
+
 ## 0.0.47
 
 Release overview: [Scoped agent status API](docs/releases/v0.0.47.md).
