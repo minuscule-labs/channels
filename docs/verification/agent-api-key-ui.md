@@ -35,6 +35,8 @@ Desktop and mobile key-list screenshots, the selected-access dialog, a masked on
 
 ## Limits
 
+CI follow-up: the first combined run passed both OS verification jobs, packaging and two browser shards. Shard 2 failed one existing `conversation-presets.spec.ts` assertion that still expected six settings links; the Integrations entry makes seven. Updated its count and layout-array expectation to seven. The affected `workspace sidebar, page-scoped` browser case then passed locally (1/1, one worker, isolated ports 59710–59714). No application code changed for this correction; required CI is rerun on the new head.
+
 - Non-secret unresolved mutation intents survive dialog close and route remount only within the live page. Full refresh loses them; current metadata must be reviewed before a new action. Raw secrets are never journaled or replayed.
 - Denied update/revoke orchestration shares the tested classification and review logic, but those two exact browser scenarios were not separately exercised.
 - Older servers or failed capability reads retain an explicit `$CONTROL_ORIGIN` fallback.

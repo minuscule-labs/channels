@@ -42,9 +42,9 @@ test("workspace sidebar, page-scoped Conversation tabs, preset editor and creati
   const content = page.getByRole("main", { name: "Workspace Settings" });
   const navigation = page.getByRole("navigation", { name: "Workspace settings", exact: true });
   await expect(content.getByRole("navigation")).toHaveCount(0);
-  await expect(navigation.getByRole("link")).toHaveCount(6);
+  await expect(navigation.getByRole("link")).toHaveCount(7);
   const bounds = await navigation.getByRole("link").evaluateAll((links) => links.map((link) => { const rect = link.getBoundingClientRect(); return { x: rect.x, y: rect.y }; }));
-  expect(bounds).toHaveLength(6);
+  expect(bounds).toHaveLength(7);
   expect(new Set(bounds.map(({ x }) => x)).size).toBe(1);
   expect(bounds.every(({ y }, index) => !index || y > bounds[index - 1]!.y)).toBe(true);
   await expect(navigation.getByRole("link", { name: /Conversation presets/ })).toHaveAttribute("aria-current", "page");
