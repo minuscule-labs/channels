@@ -1,4 +1,4 @@
-# Agent API credentials — status-only backend
+# Agent API credentials — status inspection
 
 The first adapter is loopback HTTP. These credentials authorize only the separately wired status-inspection API, not legacy collaboration/service-token or human local-control endpoints. MCP, hosted access, message retrieval, management and lifecycle operations are not included.
 
@@ -17,6 +17,14 @@ Grants must name known conversations/threads in the selected Workspace. A PM cli
 Keys contain a public credential ID and a 256-bit random secret. Only a SHA-256 verification digest is stored in the private Relay SQLite database; high-entropy secrets are not passwords. Raw secrets are returned once on creation/rotation, never in lists/reads or errors. Keep the local data directory private. No credential is stored in collaboration metadata or supplied as a model-visible tool argument.
 
 Default expiry is 30 days, maximum 90 days from an explicit create/expiry update. Earlier expiry is supported. Rotation preserves expiry, increments the secret generation and immediately invalidates the previous secret. There is no overlap, grace period, silent renewal, or plaintext recovery. Expired/revoked credentials cannot be rotated/reactivated; issue a new credential after human review. Revocation remains possible after expiry.
+
+## Workspace Settings UI
+
+Open **Workspace Settings → Integrations** in an authenticated owner/admin session. The page lists the current human's keys and supports creation, access edits, rotation and revocation. Choose **Specific targets** for an explicit list, or **Single target** for one Conversation or thread. **Inspect status** is the only available capability. Parent grants can explicitly include existing and future threads; direct thread grants remain exact. Target choices load when an access dialog opens, with bounded thread reads; unavailable existing grants are retained for review.
+
+Creation and rotation display the secret once. Copy it before closing the dialog. The secret stays in transient component state and is excluded from query caches, browser storage and URLs. The Connection example uses the actual loopback inspection URL advertised by the control server's authenticated `/local/capabilities` response. Older servers fall back to a `$CONTROL_ORIGIN` placeholder; use the control origin from the launch URL rather than the web page address.
+
+Conflicts require a current-metadata review and a separate save. Keeping edits applies only fields the human changed; it preserves newer, untouched access settings. Concurrent target conflicts retain current access and identify what needs review. Mutations are never automatically retried. A lost response, timeout, or post-write authentication denial leaves a non-secret pending intent until the outcome is checked. These intents survive dialog close and route remount within the live page, but **do not survive a full page refresh**. After refreshing during an unresolved change, inspect the key list/current metadata before issuing another action. A lost secret cannot be recovered; explicitly revoke or rotate the reviewed key.
 
 ## Non-UI provisioning
 

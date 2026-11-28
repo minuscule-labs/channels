@@ -59,7 +59,7 @@ export {
 } from "./session.ts";
 import type { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
 import { handleAgentCredentialAdmin } from "./agent-credential-http.ts";
-import { handleAgentInspectionHttp } from "./agent-inspection-http.ts";
+import { AGENT_INSPECTION_PATH, handleAgentInspectionHttp } from "./agent-inspection-http.ts";
 import type { AgentStatusInspection } from "./agent-inspection-status.ts";
 import type { AgentCredentialService } from "./agent-credentials.ts";
 import type { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
@@ -1581,11 +1581,18 @@ function isAllowedHost(hostname: string | undefined): boolean {
   return isLocalConversationsHostname(hostname);
 }
 
+/** The bound listener's own origin; request Host/Origin headers are never trusted for advertised URLs. */
+export function listenerOrigin(address: AddressInfo): string {
+  return `http://${address.family === "IPv6" ? `[${address.address}]` : address.address}:${address.port}`;
+}
+
 export async function createLocalControlHttpServer(
   options: LocalControlHttpServerOptions,
 ): Promise<LocalControlHttpServer> {
   const host = options.host ?? "127.0.0.1";
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  // Set once listening; requests cannot arrive earlier.
+  let agentApi: LocalControlCapabilities["agentApi"];
   const server = createServer((request, response) => {
     const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
     if (!isAllowedHost(requestHostname(request))) {
@@ -1692,7 +1699,8 @@ export async function createLocalControlHttpServer(
         return;
       }
       if (path === "/local/capabilities" && request.method === "GET") {
-        json(response, 200, options.service.capabilities(), origin);
+        const capabilities = options.service.capabilities();
+        json(response, 200, agentApi ? { ...capabilities, agentApi } : capabilities, origin);
         return;
       }
       const threadSendMatch = path.match(/^\/local\/conversations\/([^/]+)\/messages$/);
@@ -2240,6 +2248,7 @@ export async function createLocalControlHttpServer(
     });
   });
   const address = server.address() as AddressInfo;
+  if (options.agentInspection) agentApi = { inspectionUrl: `${listenerOrigin(address)}${AGENT_INSPECTION_PATH}` };
   const endpointHost = host === "::1" ? "[::1]" : host;
   return {
     endpoint: `http://${endpointHost}:${address.port}`,

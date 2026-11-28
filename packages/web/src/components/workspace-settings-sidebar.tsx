@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, BookOpen, Bot, Clock, Library, Settings, Users } from "lucide-react";
+import { ArrowLeft, BookOpen, Bot, Clock, KeyRound, Library, Settings, Users } from "lucide-react";
 import { useState } from "react";
 import { DrawerCloseButton } from "./ui/drawer";
 import { ErrorNotice } from "./ui/error-notice";
@@ -12,6 +12,7 @@ export const workspaceSettingsSections = [
   { label: "Defaults & timeouts", icon: Clock, to: "/app/workspaces/$workspaceId/settings/defaults", suffix: "/defaults" },
   { label: "Instructions", icon: BookOpen, to: "/app/workspaces/$workspaceId/settings/instructions", suffix: "/instructions" },
   { label: "Skills", icon: Library, to: "/app/workspaces/$workspaceId/settings/skills", suffix: "/skills" },
+  { label: "Integrations", icon: KeyRound, to: "/app/workspaces/$workspaceId/settings/integrations", suffix: "/integrations" },
 ] as const;
 
 export function WorkspaceSettingsSidebar({ workspaceId, pathname, onBack, mobile = false, onNavigate }: {

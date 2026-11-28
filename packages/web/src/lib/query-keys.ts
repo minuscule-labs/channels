@@ -8,6 +8,10 @@ export const queryKeys = {
   workspaceConversations: (workspaceId: string) => ["workspace", workspaceId, "conversations"] as const,
   workspaceFolders: (workspaceId: string) => ["workspace", workspaceId, "folders"] as const,
   workspaceConfiguration: (workspaceId: string) => ["workspace", workspaceId, "configuration"] as const,
+  /** Metadata only; one-time secrets are never cached. */
+  agentCredentials: (workspaceId: string) => ["local", "workspace", workspaceId, "agent-credentials"] as const,
+  /** Conversations and threads selectable as key targets; loaded only while an access surface is open. */
+  agentCredentialTargets: (workspaceId: string) => ["local", "workspace", workspaceId, "agent-credential-targets"] as const,
   conversationSettings: (conversationId: string) => ["local", "conversation", conversationId, "settings"] as const,
   conversationPresets: (workspaceId: string) => ["workspace", workspaceId, "conversation-presets"] as const,
   conversationCreationSetup: (conversationId: string) => ["local", "conversation", conversationId, "creation-setup"] as const,

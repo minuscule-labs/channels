@@ -84,7 +84,7 @@ for (const mobile of [false, true]) {
     await expect(workspaceSettings.getByRole("navigation")).toHaveCount(0);
     if (mobile) await page.getByRole("button", { name: "Open navigation" }).click();
     const navigation = page.getByRole("navigation", { name: "Workspace settings", exact: true });
-    await expect(navigation.getByRole("link")).toHaveText(["General", "Agents", "Conversation presets", "Defaults & timeouts", "Instructions", "Skills"]);
+    await expect(navigation.getByRole("link")).toHaveText(["General", "Agents", "Conversation presets", "Defaults & timeouts", "Instructions", "Skills", "Integrations"]);
     expect(presetReads).toEqual([]);
     const settingsSidebar = navigation.locator("..");
     await expect(settingsSidebar.getByRole("heading")).toHaveCount(0);
@@ -131,7 +131,7 @@ test("workspace navigation supports all sections, deep links and browser history
   const navigation = page.getByRole("navigation", { name: "Workspace settings", exact: true });
   await expect(navigation.getByRole("link", { name: "Skills", exact: true })).toHaveAttribute("aria-current", "page");
   await expect(navigation.getByRole("link", { name: "People & permissions", exact: true })).toHaveCount(0);
-  for (const [label, target] of [["General", root], ["Agents", `/app/workspaces/${workspace.id}/agents`], ["Conversation presets", `${root}/presets`], ["Defaults & timeouts", `${root}/defaults`], ["Instructions", `${root}/instructions`], ["Skills", `${root}/skills`]]) {
+  for (const [label, target] of [["General", root], ["Agents", `/app/workspaces/${workspace.id}/agents`], ["Conversation presets", `${root}/presets`], ["Defaults & timeouts", `${root}/defaults`], ["Integrations", `${root}/integrations`], ["Instructions", `${root}/instructions`], ["Skills", `${root}/skills`]]) {
     const link = navigation.getByRole("link", { name: label === "Conversation presets" ? /Conversation presets/ : label, exact: true });
     await link.click();
     await expect(page).toHaveURL(new RegExp(`${target}$`));

@@ -17,6 +17,10 @@ import { createConversationHttpServer } from "../../core/dist/src/http-server.js
 import { ConversationService } from "../../core/dist/src/conversation-service.js";
 import { ConversationClient } from "../../core/dist/src/client.js";
 import { InMemoryRelayBindingStore } from "../../relay/dist/src/binding-store.js";
+import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "../../relay-storage-drizzle/dist/src/storage.js";
+import { AgentCredentialService } from "../../control/dist/src/agent-credentials.js";
+import { AgentInspectionAuthorization } from "../../control/dist/src/agent-inspection-authorization.js";
+import { AgentStatusInspection } from "../../control/dist/src/agent-inspection-status.js";
 
 const conversationsPort = Number(process.env.MINU_TEST_CHANNELS_PORT ?? 58410);
 const controlPort = Number(process.env.MINU_TEST_CONTROL_PORT ?? 58411);
@@ -159,123 +163,142 @@ const fixtureRuntimes = {
   pi: fixtureRuntime,
   codex: fixtureRuntime,
 };
+// Disposable credential storage: real admin routes and SQLite persistence, never production data.
+const credentialDirectory = await mkdtemp(join(tmpdir(), "channels-browser-credentials-"));
+const credentialStore = await DrizzleLibSqlRelayStorage.open({ url: localRelayLibSqlUrl(join(credentialDirectory, "relay.db")) });
+const fixtureBindings = {
+  async listConversationBindings(conversationId) {
+    const state = agentBindings.get(`${conversationId}:${agent.id}`);
+    if (!state) return [];
+    return [{
+      agentIdentityId: agent.id,
+      runtimeAdapter: "browser-test",
+      runtimeSessionId: "private-browser-session",
+      state,
+      wakePolicy: "mentions",
+    }];
+  },
+};
+const controlService = new LocalControlService({
+  conversations: {
+    getConversation: service.getConversation.bind(service),
+    listThreads: service.listThreads.bind(service),
+    getConversationLifecycle: service.getConversationLifecycle.bind(service),
+    updateConversationLifecycle: service.updateConversationLifecycle.bind(service),
+    listMessages: service.listMessages.bind(service),
+    postMessage: (id, input, options) => service.createMessage(id, input, options?.idempotencyKey),
+  },
+  withConversationMessageAdmission: service.withConversationMessageAdmission.bind(service),
+  bindings: fixtureBindings,
+  runtimes: fixtureRuntimes,
+  lifecycle: {
+    available: true,
+    async startConversationAgent(conversationId, identityId) {
+      if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+      agentBindings.set(`${conversationId}:${identityId}`, "connected");
+      attachedAgents.add(`${conversationId}:${identityId}`);
+    },
+    async autoStartConversationAgent(conversationId, identityId) {
+      if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+      const key = `${conversationId}:${identityId}`;
+      if (agentBindings.has(key)) return;
+      agentBindings.set(key, "connected");
+      attachedAgents.add(key);
+    },
+    async reconnectConversationAgent(conversationId, identityId) {
+      if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+      attachedAgents.add(`${conversationId}:${identityId}`);
+    },
+    isAttached(conversationId, identityId) {
+      return attachedAgents.has(`${conversationId}:${identityId}`);
+    },
+    agentWorkSnapshot(conversationId, identityId) {
+      if (!attachedAgents.has(`${conversationId}:${identityId}`)) return undefined;
+      const activity = conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
+      return {
+        activeTurns: activity ? 1 : 0,
+        queuedTurns: activity?.queuedTurns ?? 0,
+        queuedTurnsExact: activity?.queuedTurnsExact ?? true,
+      };
+    },
+    async replaceConversationAgent(conversationId, identityId) {
+      if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+      agentBindings.set(`${conversationId}:${identityId}`, "connected");
+      attachedAgents.add(`${conversationId}:${identityId}`);
+    },
+    async stopConversationAgent(conversationId, identityId) {
+      if (identityId !== agent.id) throw new Error("Unknown fixture agent");
+      agentBindings.set(`${conversationId}:${identityId}`, "paused");
+      attachedAgents.delete(`${conversationId}:${identityId}`);
+    },
+    async startAllConversationAgents() {
+      return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
+    },
+    async stopAllConversationAgents() {
+      agentBindings.set(`${conversation.id}:${agent.id}`, "paused");
+      attachedAgents.delete(`${conversation.id}:${agent.id}`);
+      return [{ identityId: agent.id, outcome: "stopped" }];
+    },
+    async cancelCurrentConversationAgent(conversationId, identityId) {
+      if (conversationId !== conversation.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
+      agentActivity = { ...agentActivity, phase: "canceling" };
+    },
+    async listConversationTurnFailures(conversationId) {
+      if (!turnFailuresVisible || conversationId !== conversation.id) {
+        return { protocolVersion: 25, conversationId, notices: [], diagnostics: [] };
+      }
+      return {
+        protocolVersion: 25,
+        conversationId,
+        notices: [{
+          participant: { identityId: agent.id, displayLabel: "Builder Agent" },
+          triggerSequence: initialTrigger.sequence,
+          failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
+        }],
+        diagnostics: [{
+          triggerSequence: initialTrigger.sequence,
+          participant: { identityId: agent.id, displayLabel: "Builder Agent" },
+          causeCategory: "runtime_request_timeout",
+          failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
+          elapsedMs: 2_400,
+          attemptCount: 2,
+          deliveryOutcome: "delivered",
+          remediation: { code: "retry_request", label: "Retry request" },
+        }],
+      };
+    },
+    activity(conversationId, identityId) {
+      return conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
+    },
+  },
+  diagnosticReads: new LocalAgentDiagnosticReads({ client: conversationClient, store: privateStore }),
+  sessionInspections: new LocalAgentSessionInspections({ client: conversationClient, store: privateStore, runtimes: fixtureRuntimes }),
+  configuration: new LocalAgentHostConfiguration({
+    client: conversationClient,
+    store: privateStore,
+    runtimes: fixtureRuntimes,
+  }),
+});
+const agentCredentials = new AgentCredentialService({ client: conversationClient, store: credentialStore.agentCredentials });
 const localControl = await createLocalControlHttpServer({
   port: controlPort,
   selectLocalFolder: async () => "/tmp",
   allowedOrigins: [browserSessions.browserOrigin],
   browserSessions,
-  service: new LocalControlService({
-    conversations: {
-      getConversation: service.getConversation.bind(service),
-      listThreads: service.listThreads.bind(service),
-      getConversationLifecycle: service.getConversationLifecycle.bind(service),
-      updateConversationLifecycle: service.updateConversationLifecycle.bind(service),
-      listMessages: service.listMessages.bind(service),
-      postMessage: (id, input, options) => service.createMessage(id, input, options?.idempotencyKey),
-    },
-    withConversationMessageAdmission: service.withConversationMessageAdmission.bind(service),
-    bindings: {
-      async listConversationBindings(conversationId) {
-        const state = agentBindings.get(`${conversationId}:${agent.id}`);
-        if (!state) return [];
-        return [{
-          agentIdentityId: agent.id,
-          runtimeAdapter: "browser-test",
-          runtimeSessionId: "private-browser-session",
-          state,
-          wakePolicy: "mentions",
-        }];
+  agentCredentials,
+  // The real status-only inspection adapter, so capabilities advertise the bound listener.
+  agentInspection: new AgentStatusInspection({
+    authorization: new AgentInspectionAuthorization({
+      credentials: agentCredentials, conversations: conversationClient,
+      async canInspectTarget(principalIdentityId, target) {
+        await agentCredentials.authorizeAdministrator(target.workspaceId, principalIdentityId);
+        return true;
       },
-    },
-    runtimes: fixtureRuntimes,
-    lifecycle: {
-      available: true,
-      async startConversationAgent(conversationId, identityId) {
-        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${conversationId}:${identityId}`, "connected");
-        attachedAgents.add(`${conversationId}:${identityId}`);
-      },
-      async autoStartConversationAgent(conversationId, identityId) {
-        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        const key = `${conversationId}:${identityId}`;
-        if (agentBindings.has(key)) return;
-        agentBindings.set(key, "connected");
-        attachedAgents.add(key);
-      },
-      async reconnectConversationAgent(conversationId, identityId) {
-        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        attachedAgents.add(`${conversationId}:${identityId}`);
-      },
-      isAttached(conversationId, identityId) {
-        return attachedAgents.has(`${conversationId}:${identityId}`);
-      },
-      agentWorkSnapshot(conversationId, identityId) {
-        if (!attachedAgents.has(`${conversationId}:${identityId}`)) return undefined;
-        const activity = conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
-        return {
-          activeTurns: activity ? 1 : 0,
-          queuedTurns: activity?.queuedTurns ?? 0,
-          queuedTurnsExact: activity?.queuedTurnsExact ?? true,
-        };
-      },
-      async replaceConversationAgent(conversationId, identityId) {
-        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${conversationId}:${identityId}`, "connected");
-        attachedAgents.add(`${conversationId}:${identityId}`);
-      },
-      async stopConversationAgent(conversationId, identityId) {
-        if (identityId !== agent.id) throw new Error("Unknown fixture agent");
-        agentBindings.set(`${conversationId}:${identityId}`, "paused");
-        attachedAgents.delete(`${conversationId}:${identityId}`);
-      },
-      async startAllConversationAgents() {
-        return [{ identityId: agent.id, outcome: "skipped", reason: "already_idle" }];
-      },
-      async stopAllConversationAgents() {
-        agentBindings.set(`${conversation.id}:${agent.id}`, "paused");
-        attachedAgents.delete(`${conversation.id}:${agent.id}`);
-        return [{ identityId: agent.id, outcome: "stopped" }];
-      },
-      async cancelCurrentConversationAgent(conversationId, identityId) {
-        if (conversationId !== conversation.id || identityId !== agent.id || !agentActivity) throw new Error("No active fixture turn");
-        agentActivity = { ...agentActivity, phase: "canceling" };
-      },
-      async listConversationTurnFailures(conversationId) {
-        if (!turnFailuresVisible || conversationId !== conversation.id) {
-          return { protocolVersion: 25, conversationId, notices: [], diagnostics: [] };
-        }
-        return {
-          protocolVersion: 25,
-          conversationId,
-          notices: [{
-            participant: { identityId: agent.id, displayLabel: "Builder Agent" },
-            triggerSequence: initialTrigger.sequence,
-            failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
-          }],
-          diagnostics: [{
-            triggerSequence: initialTrigger.sequence,
-            participant: { identityId: agent.id, displayLabel: "Builder Agent" },
-            causeCategory: "runtime_request_timeout",
-            failedAt: new Date(Date.parse("2026-09-18T13:00:00.000Z") + turnFailureGeneration).toISOString(),
-            elapsedMs: 2_400,
-            attemptCount: 2,
-            deliveryOutcome: "delivered",
-            remediation: { code: "retry_request", label: "Retry request" },
-          }],
-        };
-      },
-      activity(conversationId, identityId) {
-        return conversationId === conversation.id && identityId === agent.id ? agentActivity : undefined;
-      },
-    },
-    diagnosticReads: new LocalAgentDiagnosticReads({ client: conversationClient, store: privateStore }),
-    sessionInspections: new LocalAgentSessionInspections({ client: conversationClient, store: privateStore, runtimes: fixtureRuntimes }),
-    configuration: new LocalAgentHostConfiguration({
-      client: conversationClient,
-      store: privateStore,
-      runtimes: fixtureRuntimes,
     }),
+    bindings: fixtureBindings,
+    status: controlService,
   }),
+  service: controlService,
 });
 
 const gateway = await createLocalWebServer({
@@ -424,8 +447,10 @@ const close = async () => {
   await conversationServer.close().catch(() => undefined);
   await localControl.close().catch(() => undefined);
   await privateStore.close().catch(() => undefined);
+  await credentialStore.close().catch(() => undefined);
   controlServer.close();
   await rm(imageDirectory, { recursive: true, force: true });
+  await rm(credentialDirectory, { recursive: true, force: true });
   process.exit(0);
 };
 process.on("SIGINT", close);
