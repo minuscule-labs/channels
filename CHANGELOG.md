@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.0.47
+
+Release overview: [Scoped agent status API](docs/releases/v0.0.47.md).
+
+- Add a loopback-only HTTP API for read-only Conversation and thread participant status. Scoped keys support explicit generic grants or one locked target, with optional existing/future-thread inclusion. API use needs no browser selection or active agent turn.
+- Let authenticated human Workspace owners/admins manage their own delegated keys through separate administration endpoints. Store only secret digests; provide one-time secrets, revision-checked changes, 30-day default/90-day maximum expiry, immediate rotation and revocation, and current-authority checks before returning status.
+- Bound inspection requests, complete rosters, Runtime probes and responses. Preserve uncertain states when a probe fails; do not return private Runtime data or change messages, agent lifecycle, recipients or read state.
+- Document the seven inspection/administration operations in OpenAPI 3.1 and the provisioning guide. Integrations UI, MCP, hosted access, message retrieval and write/lifecycle operations remain outside this release.
+- Add private Relay migration `0029_agent_credentials`; preserve public collaboration data, local-control protocol 25, dependency locks and Runtime pin `8239db90896b5ffdff1150bf781d4fb62e90fade`. Source development can select the clean pinned Runtime consistently through `MINU_RUNTIME_ROOT`.
+
 ## 0.0.46
 
 Release overview: [Codex skill lists and macOS Pi stops](docs/releases/v0.0.46.md).
