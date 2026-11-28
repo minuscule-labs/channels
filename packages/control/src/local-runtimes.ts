@@ -28,7 +28,15 @@ export async function loadLocalRuntimes(overrides: { pi?: string; codex?: string
   const entries = await Promise.all((["pi", "codex", "claude-code"] as const).map(async adapter => {
     const packaged = resolve(directory, "..", "bin", ...(adapter === "pi" ? [] : [adapter]), `runtime-${adapter}.js`);
     const development = resolve(directory, "../../../../../runtime/packages", adapter, "dist/src/index.js");
-    const specifier = (adapter === "claude-code" ? overrides.claudeCode : overrides[adapter]) ?? (existsSync(packaged) ? packaged : development);
+    const override = adapter === "claude-code" ? overrides.claudeCode : overrides[adapter];
+    const root = process.env.MINU_RUNTIME_ROOT;
+    let specifier: string;
+    if (override !== undefined) specifier = override;
+    else if (root !== undefined) {
+      if (!root.trim()) throw new Error("MINU_RUNTIME_ROOT must name a non-empty built Runtime directory");
+      specifier = resolve(root, "packages", adapter, "dist/src/index.js");
+      if (!existsSync(specifier)) throw new Error(`${adapter} Runtime module missing under MINU_RUNTIME_ROOT: ${specifier}`);
+    } else specifier = existsSync(packaged) ? packaged : development;
     const loaded = await import(moduleSpecifier(specifier)) as Record<string, unknown>;
     const name = CLASSES[adapter];
     const Constructor = loaded[name];

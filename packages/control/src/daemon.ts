@@ -28,6 +28,9 @@ import {
   type LocalControlAuditEvent,
 } from "./session.ts";
 import { loadBrowserSessionKey } from "./session-key.ts";
+import { AgentCredentialService } from "./agent-credentials.ts";
+import { AgentInspectionAuthorization } from "./agent-inspection-authorization.ts";
+import { AgentStatusInspection } from "./agent-inspection-status.ts";
 
 export interface LocalControlDaemonOptions {
   currentHumanIdentityId: string;
@@ -143,12 +146,24 @@ export async function createLocalControlDaemon(
       statusTimeoutMs: options.statusTimeoutMs,
       authoredSkillPublicationEnabled: options.authoredSkillPublicationEnabled ?? true,
     });
+    const agentCredentials = new AgentCredentialService({ client, store: store.agentCredentials, now: options.now });
+    const authorization = new AgentInspectionAuthorization({
+      credentials: agentCredentials, conversations: client, now: options.now,
+      async canInspectTarget(principalIdentityId, target) {
+        // Current resource policy is active Workspace human owner/admin inspection entitlement,
+        // including nonparticipants. Scope/parent checks remain in B3; no separate thread ACL exists.
+        await agentCredentials.authorizeAdministrator(target.workspaceId, principalIdentityId);
+        return true;
+      },
+    });
     server = await createLocalControlHttpServer({
       service,
       host: options.host,
       port: options.port,
       allowedOrigins: [browserSessions.browserOrigin],
       browserSessions,
+      agentCredentials,
+      agentInspection: new AgentStatusInspection({ authorization, bindings: store, status: service, now: options.now }),
     });
     return {
       endpoint: server.endpoint,

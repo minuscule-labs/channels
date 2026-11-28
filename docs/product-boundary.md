@@ -2,6 +2,10 @@
 
 **Status:** Accepted MVP direction
 
+## Approved status API exception
+
+The reviewed Channels Agent API delivery adds a narrow, loopback-only credential-authorized status API and authenticated human credential administration. This is an explicit exception to the older MVP authentication/API deferrals below, not approval for hosted deployment, monitoring, message retrieval, lifecycle control or a generic orchestration framework. See [credential contract and provisioning](agent-api-credentials.md). B2 supplies credentials; B3–B5 complete the separate inspection boundary. New keys must not unlock legacy human/service-token endpoints. Authorization on the new API does not retroactively make unchanged legacy APIs confidential. Preserve the communication-only core and separation of collaboration data, private execution state and secrets.
+
 ## BLUF
 
 MinuChannels ships as one complete product from human UI through agent execution. Relay, private bindings, local control, and Runtime lifecycle are internal modular subsystems until real non-Conversations consumers justify extraction. MinuRuntime remains independently reusable; the public Conversations core remains communication-only and never executes agents directly.

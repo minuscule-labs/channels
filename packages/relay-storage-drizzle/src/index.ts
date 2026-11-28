@@ -1,3 +1,4 @@
+export { AgentCredentialStorage, type AgentCredentialRecord, type AgentCredentialScope } from "./agent-credentials.ts";
 export { DiagnosticJournal, DiagnosticQueryError } from "./diagnostics.ts";
 export {
   defaultRelayMigrationsFolder,

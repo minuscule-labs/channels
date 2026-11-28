@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,6 +12,42 @@ import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-r
 const methods = "start(){} send(){} messages(){} status(){} startManaged(){} listManagedSessions(){} resume(){} suspend(){} destroy(){}";
 const moduleOf = (name: string) => `data:text/javascript,${encodeURIComponent(`export class ${name} { ${methods} }`)}`;
 
+test("explicit Runtime root selects every adapter and per-adapter overrides retain precedence", async t => {
+  const root = await mkdtemp(join(tmpdir(), "channels-explicit-runtime-"));
+  const previous = process.env.MINU_RUNTIME_ROOT;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.MINU_RUNTIME_ROOT; else process.env.MINU_RUNTIME_ROOT = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  await writeFile(join(root, "package.json"), '{"type":"module"}');
+  for (const [adapter, name] of [["pi", "PiAgentRuntime"], ["codex", "CodexAgentRuntime"], ["claude-code", "ClaudeCodeAgentRuntime"]]) {
+    const directory = join(root, "packages", adapter!, "dist/src");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "index.js"), `export class ${name} { constructor() { this.selectedRoot = ${JSON.stringify(root)}; } ${methods} }`);
+  }
+  process.env.MINU_RUNTIME_ROOT = root;
+  const loaded = await loadLocalRuntimes();
+  for (const runtime of Object.values(loaded)) assert.equal((runtime as unknown as { selectedRoot: string }).selectedRoot, root);
+  const overridden = await loadLocalRuntimes({ pi: moduleOf("PiAgentRuntime") });
+  assert.equal((overridden.pi as unknown as { selectedRoot?: string }).selectedRoot, undefined);
+  assert.equal((overridden.codex as unknown as { selectedRoot: string }).selectedRoot, root);
+});
+
+test("invalid explicit Runtime roots fail closed without borrowing a sibling; complete overrides still win", async t => {
+  const root = await mkdtemp(join(tmpdir(), "channels-invalid-runtime-"));
+  const previous = process.env.MINU_RUNTIME_ROOT;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.MINU_RUNTIME_ROOT; else process.env.MINU_RUNTIME_ROOT = previous;
+    await rm(root, { recursive: true, force: true });
+  });
+  process.env.MINU_RUNTIME_ROOT = join(root, "missing");
+  await assert.rejects(loadLocalRuntimes(), /Runtime module missing under MINU_RUNTIME_ROOT/);
+  const overridden = await loadLocalRuntimes({ pi: moduleOf("PiAgentRuntime"), codex: moduleOf("CodexAgentRuntime"), claudeCode: moduleOf("ClaudeCodeAgentRuntime") });
+  assert.equal(overridden.codex.constructor.name, "CodexAgentRuntime");
+  process.env.MINU_RUNTIME_ROOT = "";
+  await assert.rejects(loadLocalRuntimes(), /MINU_RUNTIME_ROOT must name a non-empty/);
+});
+
 test("local runtime loading exposes all per-agent adapters without starting work", async () => {
   const runtimes = await loadLocalRuntimes();
   assert.equal(runtimes.pi.constructor.name, "PiAgentRuntime");
@@ -19,6 +55,12 @@ test("local runtime loading exposes all per-agent adapters without starting work
   assert.equal(runtimes["claude-code"].constructor.name, "ClaudeCodeAgentRuntime");
   assert.notEqual(runtimes.pi, runtimes.codex);
   assert.notEqual(runtimes.codex, runtimes["claude-code"]);
+  if (process.env.MINU_RUNTIME_ROOT) {
+    for (const [adapter, name] of [["pi", "PiAgentRuntime"], ["codex", "CodexAgentRuntime"], ["claude-code", "ClaudeCodeAgentRuntime"]] as const) {
+      const selectedModule: Record<string, unknown> = await import(pathToFileURL(resolve(process.env.MINU_RUNTIME_ROOT, "packages", adapter, "dist/src/index.js")).href);
+      assert.equal(runtimes[adapter].constructor, selectedModule[name], "actual selected artifact must be the explicit root module");
+    }
+  }
 });
 
 test("every adapter gets the one shared full access level; Pi keeps its no-argument construction", async () => {
@@ -45,7 +87,7 @@ test("explicit module overrides stay adapter-specific and never silently fall ba
 
 test("bundled adapters keep isolated worker resources and Codex resumes the same history", { timeout:30000 }, async t => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "channels-runtime-bundle-"))), bin = join(directory, "bin");
-  const runtimeRoot = resolve(process.cwd(), "../runtime"), log = join(directory, "native.log");
+  const runtimeRoot = resolve(process.env.MINU_RUNTIME_ROOT ?? resolve(process.cwd(), "../runtime")), log = join(directory, "native.log");
   const { build } = await import("esbuild");
   await mkdir(join(bin, "codex"), { recursive:true }); await mkdir(join(bin, "claude-code"), { recursive:true });
   const targets = [["pi", "index", "runtime-pi.js"], ["pi", "owned-worker", "owned-worker.js"], ["codex", "index", "codex/runtime-codex.js"], ["codex", "owned-worker", "codex/owned-worker.js"], ["claude-code", "index", "claude-code/runtime-claude-code.js"], ["claude-code", "worker-entry", "claude-code/worker-entry.js"]];
@@ -54,9 +96,22 @@ test("bundled adapters keep isolated worker resources and Codex resumes the same
   const { writeFile } = await import("node:fs/promises"); await writeFile(join(directory,"package.json"), '{"type":"module"}');
   await build({ entryPoints:[resolve(process.cwd(),"packages/control/dist/src/local-runtimes.js")], outfile:join(bin,"runtime-loader.js"), bundle:true, platform:"node", format:"esm", target:"node22" });
   const packagedLoader = await import(pathToFileURL(join(bin,"runtime-loader.js")).href);
-  const loaded = await packagedLoader.loadLocalRuntimes();
+  const selectedRoot = process.env.MINU_RUNTIME_ROOT;
+  let loaded: Awaited<ReturnType<typeof loadLocalRuntimes>>;
+  // No root override: prove the packaged loader uses its bundled resources, not the source tree.
+  delete process.env.MINU_RUNTIME_ROOT;
+  try { loaded = await packagedLoader.loadLocalRuntimes(); }
+  finally { if (selectedRoot === undefined) delete process.env.MINU_RUNTIME_ROOT; else process.env.MINU_RUNTIME_ROOT = selectedRoot; }
   assert.equal(loaded.pi.constructor.name,"PiAgentRuntime");assert.equal(loaded.codex.constructor.name,"CodexAgentRuntime");assert.equal(loaded["claude-code"].constructor.name,"ClaudeCodeAgentRuntime");
   const { CodexAgentRuntime } = await import(pathToFileURL(join(bin,"codex/runtime-codex.js")).href);
+  assert.equal(loaded.codex.constructor, CodexAgentRuntime);
+  process.env.MINU_RUNTIME_ROOT = runtimeRoot;
+  try {
+    const explicit = await packagedLoader.loadLocalRuntimes();
+    const selected = await import(pathToFileURL(join(runtimeRoot, "packages/codex/dist/src/index.js")).href);
+    assert.equal(explicit.codex.constructor, selected.CodexAgentRuntime);
+    assert.notEqual(explicit.codex.constructor, loaded.codex.constructor, "explicit root overrides packaged discovery too");
+  } finally { if (selectedRoot === undefined) delete process.env.MINU_RUNTIME_ROOT; else process.env.MINU_RUNTIME_ROOT = selectedRoot; }
   const options = { managedRoot:join(directory,"managed"), command:process.execPath, args:[join(runtimeRoot,"packages/codex/dist/test/fixtures/app-server.js"),"lifecycle",log] };
   let runtime = new CodexAgentRuntime(options), session: {id:string;ownerId:string}|undefined;
   t.after(async()=>{if(session)await runtime.stop(session.id).catch(()=>{});await rm(directory,{recursive:true,force:true});});
@@ -71,7 +126,7 @@ test("bundled adapters keep isolated worker resources and Codex resumes the same
 });
 
 test("real Codex adapter serves per-agent Conversation turns across product-controller restart",{timeout:30000},async()=>{
-  const directory=await realpath(await mkdtemp(join(tmpdir(),"channels-native-codex-"))),runtimeRoot=resolve(process.cwd(),"../runtime"),log=join(directory,"native.log");
+  const directory=await realpath(await mkdtemp(join(tmpdir(),"channels-native-codex-"))),runtimeRoot=resolve(process.env.MINU_RUNTIME_ROOT??resolve(process.cwd(),"../runtime")),log=join(directory,"native.log");
   const {CodexAgentRuntime}=await import(pathToFileURL(join(runtimeRoot,"packages/codex/dist/src/index.js")).href);
   const nativeOptions={managedRoot:join(directory,"managed"),command:process.execPath,args:[join(runtimeRoot,"packages/codex/dist/test/fixtures/app-server.js"),"lifecycle",log]};
   const pi=(await loadLocalRuntimes()).pi;let codex=new CodexAgentRuntime(nativeOptions),app:Awaited<ReturnType<typeof createLocalProductApp>>|undefined;

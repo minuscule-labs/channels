@@ -1,6 +1,16 @@
 import { sql } from "drizzle-orm";
+import type { AgentCredentialRecord } from "./agent-credentials.ts";
 import type { WorkspaceComposition, WorkspaceAgentConfig, AccountLibraryItem, AuthoredInvocationTarget } from "@minu/channels-relay";
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+export const agentCredentials = sqliteTable("agent_credentials", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  principalIdentityId: text("principal_identity_id").notNull(),
+  requestId: text("request_id").notNull(),
+  revision: integer("revision").notNull(),
+  definition: text("definition", { mode: "json" }).$type<AgentCredentialRecord>().notNull(),
+}, table => [uniqueIndex("agent_credentials_request_idx").on(table.workspaceId, table.principalIdentityId, table.requestId)]);
 
 export const workspaceCompositions = sqliteTable("workspace_compositions", {
   ownerIdentityId: text("owner_identity_id").notNull(),

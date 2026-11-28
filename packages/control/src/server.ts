@@ -58,6 +58,10 @@ export {
   type LocalControlLaunchExchange,
 } from "./session.ts";
 import type { LocalAgentDiagnosticReads } from "./agent-diagnostic-reads.ts";
+import { handleAgentCredentialAdmin } from "./agent-credential-http.ts";
+import { handleAgentInspectionHttp } from "./agent-inspection-http.ts";
+import type { AgentStatusInspection } from "./agent-inspection-status.ts";
+import type { AgentCredentialService } from "./agent-credentials.ts";
 import type { LocalAgentSessionInspections } from "./agent-session-inspection.ts";
 import type { LocalDeliveryReads } from "./delivery-reads.ts";
 import {
@@ -1122,6 +1126,18 @@ export class LocalControlService {
     };
   }
 
+  /** Read-only inspection projection using the same state interpreter, without capability probes. */
+  async inspectionAgentStatus(
+    conversation: ConversationMetadata,
+    identityId: string,
+    membershipStatus: "active" | "disabled" | undefined,
+    records: LocalControlBindingRecord[],
+    probe: (runtime: LocalControlRuntimePort, sessionId: string) => Promise<"idle" | "working" | "offline">,
+  ): Promise<{ state: LocalConversationAgent["state"]; lastVerifiedAt?: string }> {
+    const agent = await this.presentAgentStatus(conversation, identityId, membershipStatus, records, probe);
+    return { state: agent.state, ...(agent.lastVerifiedAt ? { lastVerifiedAt: agent.lastVerifiedAt } : {}) };
+  }
+
   private async presentAgent(
     conversation: ConversationMetadata,
     identityId: string,
@@ -1144,6 +1160,7 @@ export class LocalControlService {
     identityId: string,
     membershipStatus: "active" | "disabled" | undefined,
     records: LocalControlBindingRecord[],
+    inspectionProbe?: (runtime: LocalControlRuntimePort, sessionId: string) => Promise<"idle" | "working" | "offline">,
   ): Promise<LocalConversationAgent> {
     const matches = records.filter(({ agentIdentityId }) => agentIdentityId === identityId);
     const base = { workspaceId: conversation.workspaceId, conversationId: conversation.id, identityId };
@@ -1282,7 +1299,7 @@ export class LocalControlService {
       };
     }
     if (activity) {
-      const liveCapabilities = await this.readRuntimeCapabilities(runtime, binding.runtimeSessionId);
+      const liveCapabilities = inspectionProbe ? undefined : await this.readRuntimeCapabilities(runtime, binding.runtimeSessionId);
       const diagnosticCapabilities = presentLiveCapabilities(liveCapabilities);
       const safeActivity = {
         phase: activity.phase,
@@ -1323,8 +1340,8 @@ export class LocalControlService {
     }
     try {
       const [status, liveCapabilities] = await Promise.all([
-        this.readRuntimeStatus(runtime, binding.runtimeSessionId),
-        this.readRuntimeCapabilities(runtime, binding.runtimeSessionId),
+        inspectionProbe ? inspectionProbe(runtime, binding.runtimeSessionId) : this.readRuntimeStatus(runtime, binding.runtimeSessionId),
+        inspectionProbe ? Promise.resolve(undefined) : this.readRuntimeCapabilities(runtime, binding.runtimeSessionId),
       ]);
       const diagnosticCapabilities = presentLiveCapabilities(liveCapabilities);
       if (attached === false && status !== "offline") {
@@ -1494,6 +1511,8 @@ export interface LocalControlHttpServerOptions {
   /** Required by the real daemon; optional for isolated read-only fixtures. */
   browserSessions?: LocalControlBrowserSessions;
   selectLocalFolder?: () => Promise<string | undefined>;
+  agentCredentials?: AgentCredentialService;
+  agentInspection?: AgentStatusInspection;
 }
 
 export interface LocalControlHttpServer {
@@ -1578,6 +1597,16 @@ export async function createLocalControlHttpServer(
       return;
     }
     const requestPath = new URL(request.url ?? "/", `http://${request.headers.host}`).pathname;
+    if (requestPath === "/api/agent" || requestPath.startsWith("/api/agent/")) {
+      void handleAgentInspectionHttp(request, response, { inspection: options.agentInspection, origin });
+      return;
+    }
+    if (/^\/local\/workspaces\/[^/]+\/agent-credentials(?:\/|$)/.test(requestPath)) {
+      void handleAgentCredentialAdmin(request, response, {
+        service: options.agentCredentials, sessions: options.browserSessions, origin,
+      });
+      return;
+    }
     const catalogMatch = requestPath.match(/^\/local\/conversations\/([^/]+)\/authored-skill-catalog$/);
     if (catalogMatch) {
       response.setHeader("cache-control", "no-store");

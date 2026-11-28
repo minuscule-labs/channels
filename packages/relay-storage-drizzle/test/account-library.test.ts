@@ -83,6 +83,7 @@ test("account library migrates an existing relay database without changing autho
     await store.close();
     // Simulate the exact pre-M1 schema/migration marker before reopening through the migrator.
     const client = createClient({ url });
+    await client.execute("DROP TABLE agent_credentials");
     await client.execute("DROP TABLE workspace_compositions");
     await client.execute("ALTER TABLE workspace_agent_configs DROP COLUMN workspace_skill_ids");
     await client.execute("ALTER TABLE workspace_agent_configs DROP COLUMN account_skills");
