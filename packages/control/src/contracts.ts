@@ -76,6 +76,44 @@ export interface UpdateLocalRuntimeModelPolicyInput {
   enabledModels: LocalRuntimeModelRef[];
 }
 
+/** Browser-facing agent API credential administration contract; summaries never include secrets or digests. */
+export type AgentCredentialCapability = "conversation.inspect";
+export interface AgentCredentialGrant { conversationId: string; includeThreads: boolean }
+export type AgentCredentialScopeInput =
+  | { mode: "generic"; grants: AgentCredentialGrant[] }
+  | ({ mode: "locked" } & AgentCredentialGrant);
+export interface LocalAgentCredentialSummary {
+  id: string;
+  workspaceId: string;
+  principalIdentityId: string;
+  requestId: string;
+  name: string;
+  capabilities: AgentCredentialCapability[];
+  scope: AgentCredentialScopeInput;
+  revision: number;
+  secretGeneration: number;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+}
+/** The raw secret is returned once; callers must keep it out of caches, URLs, storage and logs. */
+export interface LocalAgentCredentialIssue { credential: LocalAgentCredentialSummary; secret: string }
+export interface CreateLocalAgentCredentialInput {
+  requestId: string;
+  name: string;
+  capabilities: AgentCredentialCapability[];
+  scope: AgentCredentialScopeInput;
+  expiresAt?: string;
+}
+export interface UpdateLocalAgentCredentialInput {
+  expectedRevision: number;
+  name?: string;
+  capabilities?: AgentCredentialCapability[];
+  scope?: AgentCredentialScopeInput;
+  expiresAt?: string;
+}
+
 export interface LocalCurrentSession {
   protocolVersion: typeof LOCAL_CONTROL_PROTOCOL_VERSION;
   identityId: string;
@@ -342,6 +380,8 @@ export interface LocalControlCapabilities {
     interrupt: boolean;
     reconnect: boolean;
   };
+  /** Present only when this control listener serves the agent API; derived from its bound loopback address. */
+  agentApi?: { inspectionUrl: string };
 }
 
 export type LocalConversationAgentState =

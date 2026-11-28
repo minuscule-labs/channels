@@ -148,6 +148,7 @@ const legacyConversationRoute = createRoute({
 
 const AccountLibraryPage = lazy(() => import("./components/account-library-page").then(module => ({ default: module.AccountLibraryPage })));
 const WorkspaceSettingsPage = lazy(() => import("./components/workspace-settings-page").then((module) => ({ default: module.WorkspaceSettingsPage })));
+const IntegrationsPage = lazy(() => import("./components/integrations-page").then(module => ({ default: module.IntegrationsPage })));
 const WorkspaceSkillPage = lazy(() => import("./components/workspace-skill-page").then(module => ({ default: module.WorkspaceSkillPage })));
 const ConversationPresetsPage = lazy(() => import("./components/conversation-presets-page").then((module) => ({ default: module.ConversationPresetsPage })));
 const ConversationPresetPage = lazy(() => import("./components/conversation-presets-page").then((module) => ({ default: module.ConversationPresetPage })));
@@ -172,6 +173,7 @@ const settingsRoutes = [
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/skills", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSettingsPage section="skills" /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/skills/new", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSkillPage /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/skills/$skillId", component: () => <Suspense fallback={<ContentRoutePending />}><WorkspaceSkillPage /></Suspense> }),
+  createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/integrations", component: () => <Suspense fallback={<ContentRoutePending />}><IntegrationsPage /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/presets", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationPresetsPage /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/presets/new", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationPresetPage /></Suspense> }),
   createRoute({ getParentRoute: () => rootRoute, path: "/app/workspaces/$workspaceId/settings/presets/$presetId", component: () => <Suspense fallback={<ContentRoutePending />}><ConversationPresetPage /></Suspense> }),

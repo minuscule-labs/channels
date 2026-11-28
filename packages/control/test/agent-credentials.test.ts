@@ -9,6 +9,8 @@ import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-r
 import { AgentCredentialError, AgentCredentialService, type AgentCredentialIssue } from "../src/agent-credentials.ts";
 import { createLocalControlHttpServer, LocalControlService } from "../src/server.ts";
 import { LocalControlBrowserSessions } from "../src/session.ts";
+import { LocalControlClient, LocalControlClientError } from "../src/client.ts";
+import type { CreateLocalAgentCredentialInput, LocalAgentCredentialSummary } from "../src/contracts.ts";
 
 async function fixture(t: test.TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "channels-agent-keys-"));
@@ -297,4 +299,50 @@ test("credentials: actual admin HTTP denies keys/CSRF/nonadmins and returns sani
   assert.deepEqual(await memberResponse.json(), { error: "forbidden" });
   // Existing endpoints still cannot authenticate with an agent key.
   assert.equal((await fetch(`${server.endpoint}/local/session`, { headers: { authorization: `Bearer ${issued.secret}` } })).status, 401);
+});
+
+test("credentials: browser client round-trips the admin contract without retries", async t => {
+  const f = await fixture(t);
+  const sessions = new LocalControlBrowserSessions({ browserUrl: "http://127.0.0.1:5174", currentHumanIdentityId: f.owner.id });
+  const server = await createLocalControlHttpServer({ port: 0, browserSessions: sessions, agentCredentials: f.service(),
+    service: new LocalControlService({ conversations: f.client, bindings: f.store, runtimes: {} }) });
+  t.after(() => server.close());
+  const bootstrap = await fetch(sessions.issueLaunchUrl(server.endpoint), { redirect: "manual" });
+  const cookie = bootstrap.headers.get("set-cookie")!.split(";", 1)[0]!;
+  const original = globalThis.fetch;
+  const requests: string[] = [];
+  // Node has no browser cookie jar; inject the session cookie the browser would send.
+  globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    requests.push(`${init?.method ?? "GET"} ${String(url).slice(server.endpoint.length)}`);
+    return original(url, { ...init, headers: { ...init?.headers as Record<string, string>, cookie } });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const client = new LocalControlClient(server.endpoint);
+  const input: CreateLocalAgentCredentialInput = { ...f.input, capabilities: ["conversation.inspect"],
+    scope: { mode: "generic", grants: [{ conversationId: f.conversation.id, includeThreads: false }] } };
+  const issued = await client.createAgentCredential(f.workspace.id, input);
+  const summary: LocalAgentCredentialSummary = (await f.service().get(f.workspace.id, f.owner.id, issued.credential.id));
+  assert.deepEqual(issued.credential, summary);
+  assert.match(issued.secret, /^chak_/);
+  assert.deepEqual(await client.listAgentCredentials(f.workspace.id), [summary]);
+  assert.deepEqual(await client.getAgentCredential(f.workspace.id, summary.id), summary);
+  await assert.rejects(client.createAgentCredential(f.workspace.id, input),
+    (cause: unknown) => cause instanceof LocalControlClientError && cause.status === 409 && cause.message === "request_already_recorded");
+  const updated = await client.updateAgentCredential(f.workspace.id, summary.id, { expectedRevision: 1, capabilities: [] });
+  assert.deepEqual(updated.capabilities, []);
+  assert.equal(updated.expiresAt, summary.expiresAt, "omitted expiry is preserved");
+  await assert.rejects(client.updateAgentCredential(f.workspace.id, summary.id, { expectedRevision: 1, name: "Stale" }),
+    (cause: unknown) => cause instanceof LocalControlClientError && cause.status === 409 && cause.message === "revision_conflict");
+  const rotated = await client.rotateAgentCredential(f.workspace.id, summary.id, 2);
+  assert.equal(rotated.credential.secretGeneration, 2);
+  assert.notEqual(rotated.secret, issued.secret);
+  assert.equal(rotated.credential.expiresAt, summary.expiresAt);
+  const revoked = await client.revokeAgentCredential(f.workspace.id, summary.id, 3);
+  assert.ok(revoked.revokedAt);
+  assert.ok(!JSON.stringify(await client.listAgentCredentials(f.workspace.id)).includes("chak_"));
+  assert.deepEqual(requests.filter(request => !request.startsWith("GET")), [
+    `POST /local/workspaces/${f.workspace.id}/agent-credentials`, `POST /local/workspaces/${f.workspace.id}/agent-credentials`,
+    `PATCH /local/workspaces/${f.workspace.id}/agent-credentials/${summary.id}`, `PATCH /local/workspaces/${f.workspace.id}/agent-credentials/${summary.id}`,
+    `POST /local/workspaces/${f.workspace.id}/agent-credentials/${summary.id}/rotate`, `POST /local/workspaces/${f.workspace.id}/agent-credentials/${summary.id}/revoke`,
+  ]);
 });

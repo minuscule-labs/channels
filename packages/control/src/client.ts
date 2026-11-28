@@ -51,6 +51,10 @@ import type {
   ConversationPreset,
   SaveConversationPresetInput,
   CreateLocalConversationInput,
+  CreateLocalAgentCredentialInput,
+  LocalAgentCredentialIssue,
+  LocalAgentCredentialSummary,
+  UpdateLocalAgentCredentialInput,
 } from "./contracts.ts";
 
 export class LocalControlClientError extends Error {
@@ -475,6 +479,43 @@ export class LocalControlClient {
       `/local/workspaces/${encodeURIComponent(workspaceId)}/agents/${encodeURIComponent(agentIdentityId)}/config`,
       { method: "PATCH", body: JSON.stringify(input) },
     );
+  }
+
+  async listAgentCredentials(workspaceId: string): Promise<LocalAgentCredentialSummary[]> {
+    const result = await this.get<{ credentials: LocalAgentCredentialSummary[] }>(this.agentCredentialPath(workspaceId));
+    return result.credentials;
+  }
+
+  async getAgentCredential(workspaceId: string, credentialId: string): Promise<LocalAgentCredentialSummary> {
+    const result = await this.get<{ credential: LocalAgentCredentialSummary }>(this.agentCredentialPath(workspaceId, credentialId));
+    return result.credential;
+  }
+
+  /** Mutations are never retried: a lost response must be resolved by reading metadata. */
+  async createAgentCredential(workspaceId: string, input: CreateLocalAgentCredentialInput): Promise<LocalAgentCredentialIssue> {
+    return this.request(this.agentCredentialPath(workspaceId), { method: "POST", body: JSON.stringify(input) });
+  }
+
+  async updateAgentCredential(workspaceId: string, credentialId: string, input: UpdateLocalAgentCredentialInput): Promise<LocalAgentCredentialSummary> {
+    const result = await this.request<{ credential: LocalAgentCredentialSummary }>(this.agentCredentialPath(workspaceId, credentialId),
+      { method: "PATCH", body: JSON.stringify(input) });
+    return result.credential;
+  }
+
+  async rotateAgentCredential(workspaceId: string, credentialId: string, expectedRevision: number): Promise<LocalAgentCredentialIssue> {
+    return this.request(`${this.agentCredentialPath(workspaceId, credentialId)}/rotate`,
+      { method: "POST", body: JSON.stringify({ expectedRevision }) });
+  }
+
+  async revokeAgentCredential(workspaceId: string, credentialId: string, expectedRevision: number): Promise<LocalAgentCredentialSummary> {
+    const result = await this.request<{ credential: LocalAgentCredentialSummary }>(`${this.agentCredentialPath(workspaceId, credentialId)}/revoke`,
+      { method: "POST", body: JSON.stringify({ expectedRevision }) });
+    return result.credential;
+  }
+
+  private agentCredentialPath(workspaceId: string, credentialId?: string): string {
+    const collection = `/local/workspaces/${encodeURIComponent(workspaceId)}/agent-credentials`;
+    return credentialId ? `${collection}/${encodeURIComponent(credentialId)}` : collection;
   }
 
   private async get<T>(path: string): Promise<T> {

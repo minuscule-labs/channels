@@ -10,8 +10,10 @@ import { DrizzleLibSqlRelayStorage, localRelayLibSqlUrl } from "@minu/channels-r
 import { createLocalControlDaemon } from "../src/daemon.ts";
 import type { AgentCredentialIssue } from "../src/agent-credentials.ts";
 import { AGENT_INSPECTION_PATH } from "../src/agent-inspection-http.ts";
-import type { AgentConversationInspection } from "../src/agent-inspection-status.ts";
+import type { AgentConversationInspection, AgentStatusInspection } from "../src/agent-inspection-status.ts";
 import type { LocalManagedRuntimePort } from "../src/agent-host.ts";
+import type { LocalControlCapabilities } from "../src/contracts.ts";
+import { createLocalControlHttpServer, type LocalControlService } from "../src/server.ts";
 
 function latch() {
   let resolve!: () => void;
@@ -63,6 +65,8 @@ async function fixture(t: test.TestContext, runtime: LocalManagedRuntimePort = {
 
 test("inspection HTTP: production daemon round trip without cookies/Runtime caller binding and no public side effects", async t => {
   const f = await fixture(t);
+  const advertised = await (await fetch(`${f.daemon.endpoint}/local/capabilities`, { headers: { cookie: f.cookie } })).json() as LocalControlCapabilities;
+  assert.deepEqual(advertised.agentApi, { inspectionUrl: f.url });
   assert.ok(!f.parent.participants.some(item => item.id === f.principal.id));
   const before = await f.client.getConversation(f.parent.id);
   const response = await f.call();
@@ -186,4 +190,37 @@ test("inspection HTTP: slow request body shares the five-second operation deadli
   });
   assert.equal(response.status, 503);
   assert.deepEqual(JSON.parse(response.body), { error: "inspection_unavailable" });
+});
+
+test("inspection HTTP: capabilities advertise the bound listener, never the request Host, and only when inspection is served", async t => {
+  const service = { capabilities: () => ({ protocolVersion: 1, features: {} }) } as unknown as LocalControlService;
+  const inspection = {} as AgentStatusInspection;
+  // fetch cannot override Host, so node:http sends a spoofed but allowed loopback host and port.
+  const capabilities = (endpoint: string, host?: string) => new Promise<LocalControlCapabilities>((resolve, reject) => {
+    const request = httpRequest(`${endpoint}/local/capabilities`, { headers: host ? { host } : {} }, response => {
+      let body = "";
+      response.setEncoding("utf8").on("data", chunk => { body += chunk; }).on("end", () => resolve(JSON.parse(body) as LocalControlCapabilities));
+    });
+    request.on("error", reject).end();
+  });
+  const served = await createLocalControlHttpServer({ service, port: 0, agentInspection: inspection });
+  t.after(() => served.close());
+  const port = Number(new URL(served.endpoint).port);
+  assert.ok(port > 0);
+  assert.deepEqual((await capabilities(served.endpoint, "localhost:47411")).agentApi, { inspectionUrl: `http://127.0.0.1:${port}${AGENT_INSPECTION_PATH}` });
+
+  const withoutInspection = await createLocalControlHttpServer({ service, port: 0 });
+  t.after(() => withoutInspection.close());
+  assert.equal("agentApi" in await capabilities(withoutInspection.endpoint), false);
+
+  let ipv6: Awaited<ReturnType<typeof createLocalControlHttpServer>>;
+  try {
+    ipv6 = await createLocalControlHttpServer({ service, host: "::1", port: 0, agentInspection: inspection });
+  } catch (error) {
+    if (["EADDRNOTAVAIL", "EAFNOSUPPORT"].includes((error as NodeJS.ErrnoException).code ?? "")) { t.diagnostic("IPv6 loopback unavailable"); return; }
+    throw error;
+  }
+  t.after(() => ipv6.close());
+  const ipv6Port = Number(new URL(ipv6.endpoint).port);
+  assert.deepEqual((await capabilities(ipv6.endpoint, "127.0.0.1:1")).agentApi, { inspectionUrl: `http://[::1]:${ipv6Port}${AGENT_INSPECTION_PATH}` });
 });
