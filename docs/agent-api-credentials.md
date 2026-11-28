@@ -4,6 +4,10 @@ The first adapter is loopback HTTP. These credentials authorize only the separat
 
 B2 provides credential administration/persistence; B3/B4 provide shared authorization/bounded projection; B5 wires the loopback HTTP route below. Independent integrated acceptance remains a separate Q2 gate.
 
+## OpenAPI
+
+The [OpenAPI 3.1 specification (`openapi.json`)](openapi.json) describes the inspection endpoint and the six separate human-session credential-administration operations, including authentication, schemas, errors and limits. Import it into an OpenAPI-compatible viewer or client generator. It documents existing routes only; no hosted Swagger UI or documentation endpoint is added.
+
 ## Authority and storage
 
 An active human Workspace owner/admin may create and manage their own delegated keys. Administration uses the existing authenticated human browser-session boundary, including Host/Origin validation. There is no bearer-key administration or API-key-to-browser-session exchange. A principal cannot transfer a key to another identity or Workspace; other administrators cannot read/rotate that principal's keys. Disabling/demoting the principal removes their inspection entitlement, even if the credential remains recorded.

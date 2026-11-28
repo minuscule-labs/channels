@@ -1,0 +1,1723 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Channels Agent API",
+    "version": "1.0.0",
+    "description": "Status-only loopback HTTP contract: one bearer-authorized inspection operation, plus separate human-session credential provisioning/administration. It does not expose the rest of local control, messages, lifecycle operations, discovery, MCP, hosted access or OAuth.\n\nUse the product's loopback control origin, not its web SPA or internal collaboration origin. Host validation and configured Origin validation apply to every operation. Query strings are rejected and all responses use Cache-Control: no-store. This is a portable specification file, not a newly hosted Swagger UI or endpoint. Browser-based API explorers must still satisfy existing session/Origin rules.\n\nSee docs/agent-api-credentials.md for human session bootstrap, private-file curl examples and uncertain-outcome recovery. No actual credentials or production resource IDs are included here.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "Local product control origin; use the control port from the human launch URL if different.",
+      "variables": {
+        "port": {
+          "default": "47411",
+          "description": "Configured loopback control port, not the web SPA/service port."
+        }
+      }
+    }
+  ],
+  "security": [],
+  "tags": [
+    {
+      "name": "Inspection",
+      "description": "Read-only bearer-key operation; no human browser session required."
+    },
+    {
+      "name": "Credential administration",
+      "description": "Human Workspace owner/admin session only; API keys cannot administer credentials."
+    }
+  ],
+  "paths": {
+    "/api/agent/v1/conversation/inspect": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/Origin"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Inspection"
+        ],
+        "operationId": "inspectConversation",
+        "summary": "Inspect one explicitly permitted Conversation or thread",
+        "description": "The sole agent operation: read-only conversation/agent status. Supply exactly one Authorization header with the case-sensitive value 'Bearer <key>'; cookies and legacy service tokens do not authorize inspection. No query string or extra JSON fields. The delegating principal must remain an active human Workspace owner/admin; participation in the target is not required. Capability, scope, current target/parent policy, credential revision/generation and expiry are rechecked before release.\n\nThe five-second request budget includes body parsing, authorization, roster/status work and final checks. At most eight inspections and four actual inspection Runtime calls may be outstanding process-wide. Each probe has a two-second result budget; new probes stop at four seconds. A timed-out call retains its slot until actual settlement. Failures may yield uncertain participants in a complete 200 snapshot; incomplete rosters fail 503. No agent start/resume/reconnect, messages, cursors, browser selection or recipient changes occur.",
+        "security": [
+          {
+            "AgentApiKey": []
+          }
+        ],
+        "x-max-request-bytes": 1024,
+        "x-max-response-bytes": 131072,
+        "x-request-deadline-ms": 5000,
+        "requestBody": {
+          "required": true,
+          "description": "Entire raw JSON body, including whitespace, must not exceed 1,024 UTF-8 bytes.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectionRequest"
+              },
+              "example": {
+                "conversationId": "conversation_example"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Complete allowlisted snapshot; individual uncertain states do not make the roster incomplete.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectionSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/LoopbackForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/TargetUnavailable"
+          },
+          "405": {
+            "$ref": "#/components/responses/InspectionMethodNotAllowed"
+          },
+          "503": {
+            "$ref": "#/components/responses/InspectionUnavailable"
+          }
+        }
+      }
+    },
+    "/local/workspaces/{workspaceId}/agent-credentials": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceId"
+        },
+        {
+          "$ref": "#/components/parameters/Origin"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Credential administration"
+        ],
+        "operationId": "listAgentCredentials",
+        "summary": "List this human's credential metadata",
+        "description": "Lists only the current human's keys in this Workspace, including expired/revoked records. No secrets or pagination/query parameters.\n\nRequires the delegating human's active Workspace owner/admin session, not an API key. Any Authorization header is rejected. No query string is allowed. Mutating JSON bodies are limited to 65,536 raw bytes.",
+        "security": [
+          {
+            "HumanBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Own credential metadata only.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionRenewal"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/AdministratorForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/AdminNotConfigured"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "503": {
+            "$ref": "#/components/responses/CredentialAdminUnavailable"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Credential administration"
+        ],
+        "operationId": "createAgentCredential",
+        "summary": "Create a scoped delegated credential",
+        "description": "Create one credential with reviewed explicit capabilities and grants. The default expiry is 30 days; an explicit expiry is at most 90 days from now. The raw secret is returned once only. On a lost response, list metadata by requestId; never replay for plaintext recovery.\n\nRequires the delegating human's active Workspace owner/admin session, not an API key. Any Authorization header is rejected. No query string is allowed. Mutating JSON bodies are limited to 65,536 raw bytes. Do not automatically retry a mutation; resolve unknown outcomes from metadata.",
+        "security": [
+          {
+            "HumanBrowserSession": []
+          }
+        ],
+        "x-max-request-bytes": 65536,
+        "requestBody": {
+          "required": true,
+          "description": "Strict creation body; no principal/Workspace override or secret input.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCredentialRequest"
+              },
+              "examples": {
+                "locked": {
+                  "value": {
+                    "requestId": "openapi_example_request_0001",
+                    "name": "Conversation inspector",
+                    "capabilities": [
+                      "conversation.inspect"
+                    ],
+                    "scope": {
+                      "mode": "locked",
+                      "conversationId": "conversation_example",
+                      "includeThreads": true
+                    }
+                  }
+                },
+                "generic": {
+                  "value": {
+                    "requestId": "openapi_example_request_0002",
+                    "name": "Selected conversations",
+                    "capabilities": [
+                      "conversation.inspect"
+                    ],
+                    "scope": {
+                      "mode": "generic",
+                      "grants": [
+                        {
+                          "conversationId": "conversation_example",
+                          "includeThreads": false
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Credential metadata and its one-time secret. Keep the response private.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionRenewal"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialIssue"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/AdministratorForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/AdminTargetUnavailable"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/CreationConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/CredentialAdminUnavailable"
+          }
+        }
+      }
+    },
+    "/local/workspaces/{workspaceId}/agent-credentials/{credentialId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceId"
+        },
+        {
+          "$ref": "#/components/parameters/Origin"
+        },
+        {
+          "$ref": "#/components/parameters/CredentialId"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Credential administration"
+        ],
+        "operationId": "getAgentCredential",
+        "summary": "Read one owned credential's metadata",
+        "description": "Read current revision, secret generation, scope and timestamps to review conflicts or uncertain outcomes. Never returns the raw secret or digest.\n\nRequires the delegating human's active Workspace owner/admin session, not an API key. Any Authorization header is rejected. No query string is allowed. Mutating JSON bodies are limited to 65,536 raw bytes.",
+        "security": [
+          {
+            "HumanBrowserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owned credential metadata, including expired/revoked records.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionRenewal"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/AdministratorForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/CredentialUnavailable"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "503": {
+            "$ref": "#/components/responses/CredentialAdminUnavailable"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Credential administration"
+        ],
+        "operationId": "updateAgentCredential",
+        "summary": "Update a currently active owned credential",
+        "description": "Change one or more of name, capabilities, scope or expiry using the reviewed expectedRevision. Omitted properties are unchanged. Successful updates increment revision and invalidate admitted reads of the prior revision; identity/Workspace cannot change. Expired/revoked credentials cannot be reactivated.\n\nRequires the delegating human's active Workspace owner/admin session, not an API key. Any Authorization header is rejected. No query string is allowed. Mutating JSON bodies are limited to 65,536 raw bytes. Do not automatically retry a mutation; resolve unknown outcomes from metadata.",
+        "security": [
+          {
+            "HumanBrowserSession": []
+          }
+        ],
+        "x-max-request-bytes": 65536,
+        "requestBody": {
+          "required": true,
+          "description": "expectedRevision plus at least one editable field; extra fields are rejected.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCredentialRequest"
+              },
+              "example": {
+                "expectedRevision": 1,
+                "name": "Renamed inspector"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated metadata, without any secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionRenewal"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/AdministratorForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/CredentialOrTargetUnavailable"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/CredentialAdminUnavailable"
+          }
+        }
+      }
+    },
+    "/local/workspaces/{workspaceId}/agent-credentials/{credentialId}/rotate": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceId"
+        },
+        {
+          "$ref": "#/components/parameters/Origin"
+        },
+        {
+          "$ref": "#/components/parameters/CredentialId"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Credential administration"
+        ],
+        "operationId": "rotateAgentCredential",
+        "summary": "Rotate an active credential with zero overlap",
+        "description": "Atomically replace the secret, increment revision and secretGeneration, preserve grants and expiry, and immediately invalidate the old secret/in-flight reads. No grace period or plaintext replay. If the response is lost, review current metadata and explicitly decide a new rotation or revocation; a changed revision alone does not prove which competing action won.\n\nRequires the delegating human's active Workspace owner/admin session, not an API key. Any Authorization header is rejected. No query string is allowed. Mutating JSON bodies are limited to 65,536 raw bytes. Do not automatically retry a mutation; resolve unknown outcomes from metadata.",
+        "security": [
+          {
+            "HumanBrowserSession": []
+          }
+        ],
+        "x-max-request-bytes": 65536,
+        "requestBody": {
+          "required": true,
+          "description": "Only expectedRevision is accepted.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialRevisionRequest"
+              },
+              "example": {
+                "expectedRevision": 2
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Metadata and the new one-time secret. The old secret is already invalid.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionRenewal"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialIssue"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/AdministratorForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/CredentialOrTargetUnavailable"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/CredentialAdminUnavailable"
+          }
+        }
+      }
+    },
+    "/local/workspaces/{workspaceId}/agent-credentials/{credentialId}/revoke": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/WorkspaceId"
+        },
+        {
+          "$ref": "#/components/parameters/Origin"
+        },
+        {
+          "$ref": "#/components/parameters/CredentialId"
+        }
+      ],
+      "post": {
+        "tags": [
+          "Credential administration"
+        ],
+        "operationId": "revokeAgentCredential",
+        "summary": "Revoke an owned credential",
+        "description": "Explicit POST, not DELETE. Increments revision, records revokedAt and invalidates the key/in-flight reads. An expired but not-yet-revoked credential may still be revoked. Repeated revocation of an already revoked credential returns a conflict.\n\nRequires the delegating human's active Workspace owner/admin session, not an API key. Any Authorization header is rejected. No query string is allowed. Mutating JSON bodies are limited to 65,536 raw bytes. Do not automatically retry a mutation; resolve unknown outcomes from metadata.",
+        "security": [
+          {
+            "HumanBrowserSession": []
+          }
+        ],
+        "x-max-request-bytes": 65536,
+        "requestBody": {
+          "required": true,
+          "description": "Only expectedRevision is accepted.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialRevisionRequest"
+              },
+              "example": {
+                "expectedRevision": 3
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoked metadata, without any secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionRenewal"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/AdministratorForbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/CredentialUnavailable"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "409": {
+            "$ref": "#/components/responses/CredentialConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/CredentialAdminUnavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "AgentApiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "chak_<32 lowercase hex credential ID>_<43 base64url characters>",
+        "description": "One-time delegated key issued by a human owner/admin. Exactly one case-sensitive 'Bearer <key>' header. Requires conversation.inspect plus current scope/principal/resource authorization; never authorizes credential administration or legacy local-control/service endpoints."
+      },
+      "HumanBrowserSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "minu_local_session",
+        "description": "Existing HttpOnly, SameSite=Strict human local-control session obtained by redeeming the product's human launch URL. Must be an active human Workspace owner/admin and may manage only their own keys. Any Authorization header is rejected on these routes, even with this cookie. No bearer-key/browser-session exchange."
+      }
+    },
+    "parameters": {
+      "WorkspaceId": {
+        "name": "workspaceId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/WorkspaceId"
+        }
+      },
+      "CredentialId": {
+        "name": "credentialId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/CredentialId"
+        }
+      },
+      "Origin": {
+        "name": "Origin",
+        "in": "header",
+        "required": false,
+        "description": "Optional for non-browser clients. If supplied, must be in the product's configured allowed-origin set; otherwise 403 Forbidden origin. This does not grant cross-origin access or replace authentication.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "headers": {
+      "NoStore": {
+        "description": "Response must not be cached.",
+        "schema": {
+          "type": "string",
+          "const": "no-store"
+        }
+      },
+      "NoSniff": {
+        "schema": {
+          "type": "string",
+          "const": "nosniff"
+        }
+      },
+      "SessionRenewal": {
+        "description": "Optional renewal of the existing HttpOnly human session (SameSite=Strict, Path=/). Not a bearer credential or API-key exchange.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "InvalidRequest": {
+        "description": "invalid_request: malformed/extra input, disallowed query string, wrong Content-Type, invalid fields or body over the operation's raw-byte limit. Size/media-type failures are 400, not 413/415.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "invalid_request"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "invalid_request"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "unauthenticated: missing, invalid, expired or revoked bearer key; or missing/expired/wrong-scope human session for administration. Administration also rejects any Authorization header, even with a valid cookie.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "unauthenticated"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "unauthenticated"
+            }
+          }
+        }
+      },
+      "LoopbackForbidden": {
+        "description": "The existing control server rejected the Host or supplied Origin before endpoint authentication. Use the loopback control origin; a supplied Origin must be configured as allowed.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "Forbidden host",
+                        "Forbidden origin"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "Forbidden host"
+            }
+          }
+        }
+      },
+      "AdministratorForbidden": {
+        "description": "forbidden: current active human Workspace owner/admin authority is required. The outer Host/Origin gate can instead return its fixed strings.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "forbidden",
+                        "Forbidden host",
+                        "Forbidden origin"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "forbidden"
+            }
+          }
+        }
+      },
+      "TargetUnavailable": {
+        "description": "target_unavailable: absent, inaccessible, wrong-Workspace, out-of-scope or policy-denied targets and lost principal entitlement are indistinguishable. In-flight authorization/roster changes can also prevent release.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "target_unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "target_unavailable"
+            }
+          }
+        }
+      },
+      "AdminNotConfigured": {
+        "description": "unavailable: credential administration is not configured.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "unavailable"
+            }
+          }
+        }
+      },
+      "AdminTargetUnavailable": {
+        "description": "target_unavailable: a requested grant cannot resolve within this Workspace; unavailable if credential administration is not configured.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "target_unavailable",
+                        "unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "target_unavailable"
+            }
+          }
+        }
+      },
+      "CredentialUnavailable": {
+        "description": "credential_unavailable: absent or not owned by this human/Workspace. Other administrators cannot read this principal's credential. unavailable if administration is not configured.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "credential_unavailable",
+                        "unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "credential_unavailable"
+            }
+          }
+        }
+      },
+      "CredentialOrTargetUnavailable": {
+        "description": "credential_unavailable for an absent/other-principal credential; target_unavailable for an invalid grant target; unavailable if administration is not configured.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "credential_unavailable",
+                        "target_unavailable",
+                        "unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "credential_unavailable"
+            }
+          }
+        }
+      },
+      "CreationConflict": {
+        "description": "request_already_recorded: this Workspace/principal already used the creation request ID, even with a different payload. List metadata to resolve uncertainty; no secret is replayed.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "request_already_recorded"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "request_already_recorded"
+            }
+          }
+        }
+      },
+      "CredentialConflict": {
+        "description": "revision_conflict: stale/concurrent expectedRevision. credential_inactive: already revoked, or expired for update/rotate. Expired credentials may still be revoked. Re-read and review; do not automatically retry.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "revision_conflict",
+                        "credential_inactive"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "revision_conflict"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "method_not_allowed: this path does not support the supplied HTTP method.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "method_not_allowed"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "method_not_allowed"
+            }
+          }
+        }
+      },
+      "InspectionMethodNotAllowed": {
+        "description": "method_not_allowed: inspection supports POST only.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          },
+          "Allow": {
+            "schema": {
+              "type": "string",
+              "const": "POST"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "method_not_allowed"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "method_not_allowed"
+            }
+          }
+        }
+      },
+      "InspectionUnavailable": {
+        "description": "inspection_unavailable: overload, five-second deadline, incomplete/invalid/over-128 roster, oversized response, missing inspection service or dependency/inspection failure. No partial/truncated snapshot is returned.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "inspection_unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "inspection_unavailable"
+            }
+          }
+        }
+      },
+      "CredentialAdminUnavailable": {
+        "description": "credential_admin_unavailable: unexpected administrative failure. A generic failure, timeout or lost response does not prove that a mutation was not persisted; inspect metadata before deciding a new action.",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/NoStore"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/NoSniff"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                {
+                  "properties": {
+                    "error": {
+                      "enum": [
+                        "credential_admin_unavailable"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "example": {
+              "error": "credential_admin_unavailable"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ConversationSelector": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[A-Za-z0-9_-]{1,200}$",
+        "description": "One explicit public Conversation or thread ID. Opaque legacy/custom IDs are supported if safe single-path selectors; no paths, URLs, wildcards or query selectors.",
+        "example": "conversation_example"
+      },
+      "ScopedConversationId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200,
+        "pattern": "^[^\\s\\u0000-\\u001f\\u007f](?:[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f])?$",
+        "description": "Known public Conversation/thread ID in the selected Workspace. Must be trimmed, nonblank and contain no control characters. Maximum 200 UTF-16 code units; inspection additionally requires a safe ConversationSelector."
+      },
+      "WorkspaceId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Public Workspace ID. URL-encode it as one path segment; it is not a Runtime identifier.",
+        "example": "workspace_example"
+      },
+      "CredentialId": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{32}$",
+        "description": "Public credential ID; not the bearer secret."
+      },
+      "CreationRequestId": {
+        "type": "string",
+        "minLength": 16,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9_-]{16,128}$",
+        "description": "Client-generated ID unique per Workspace/principal. Repeated creation returns 409, never replays the one-time secret."
+      },
+      "CredentialName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "pattern": "^[^\\s\\u0000-\\u001f\\u007f](?:[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f])?$",
+        "description": "Trimmed, nonblank name without control characters; at most 100 UTF-16 code units."
+      },
+      "Capabilities": {
+        "type": "array",
+        "maxItems": 1,
+        "items": {
+          "type": "string",
+          "enum": [
+            "conversation.inspect"
+          ]
+        },
+        "description": "Explicit capability ceiling. The empty array disables operations without changing scope. No other capability is implemented."
+      },
+      "ConversationGrant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conversationId",
+          "includeThreads"
+        ],
+        "properties": {
+          "conversationId": {
+            "$ref": "#/components/schemas/ScopedConversationId"
+          },
+          "includeThreads": {
+            "type": "boolean",
+            "description": "Required explicitly. True includes existing/future direct threads of a parent Conversation, subject to current authorization. A direct thread grant requires false and does not authorize its parent or siblings."
+          }
+        }
+      },
+      "LockedScope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "conversationId",
+          "includeThreads"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "locked"
+          },
+          "conversationId": {
+            "$ref": "#/components/schemas/ScopedConversationId"
+          },
+          "includeThreads": {
+            "type": "boolean",
+            "description": "Required explicitly. True includes existing/future direct threads of a parent Conversation, subject to current authorization. A direct thread grant requires false and does not authorize its parent or siblings."
+          }
+        }
+      },
+      "GenericScope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "grants"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "generic"
+          },
+          "grants": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 128,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ConversationGrant"
+            },
+            "description": "Explicit grants only. conversationId must be unique across grants, even if includeThreads differs. No wildcard/discovery grant."
+          }
+        }
+      },
+      "CredentialScope": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LockedScope"
+          },
+          {
+            "$ref": "#/components/schemas/GenericScope"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "mode",
+          "mapping": {
+            "locked": "#/components/schemas/LockedScope",
+            "generic": "#/components/schemas/GenericScope"
+          }
+        },
+        "description": "Where inspection is permitted. Capability, current principal entitlement and target/parent policy must independently authorize every read. Scope is a ceiling, not a stored restricted-thread ACL."
+      },
+      "ExpiresAt": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$",
+        "description": "UTC timestamp ending in Z, with no fraction or exactly three fractional digits. On create or an explicit expiry update it must be future and at most 90 days from that operation. Responses normalize to millisecond UTC ISO timestamps."
+      },
+      "ExpectedRevision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740990,
+        "description": "Revision read from current metadata. Re-read/review a 409; do not silently rebase or automatically retry a mutation."
+      },
+      "CreateCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "name",
+          "capabilities",
+          "scope"
+        ],
+        "properties": {
+          "requestId": {
+            "$ref": "#/components/schemas/CreationRequestId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/CredentialName"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CredentialScope"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/ExpiresAt",
+            "description": "Optional on creation; omission selects 30 days from creation. Explicit expiry follows ExpiresAt's 90-day maximum."
+          }
+        }
+      },
+      "UpdateCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/ExpectedRevision"
+          },
+          "name": {
+            "$ref": "#/components/schemas/CredentialName"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CredentialScope"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/ExpiresAt",
+            "description": "Optional; omission leaves expiry unchanged. An active credential may receive a reviewed future expiry up to 90 days from this update. Expired/revoked credentials cannot be reactivated."
+          }
+        },
+        "minProperties": 2,
+        "description": "At least one editable property must accompany expectedRevision. Identity, Workspace, request ID and secret are not editable."
+      },
+      "CredentialRevisionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedRevision"
+        ],
+        "properties": {
+          "expectedRevision": {
+            "$ref": "#/components/schemas/ExpectedRevision"
+          }
+        }
+      },
+      "CredentialSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "workspaceId",
+          "principalIdentityId",
+          "requestId",
+          "name",
+          "capabilities",
+          "scope",
+          "expiresAt",
+          "revision",
+          "secretGeneration",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CredentialId"
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/WorkspaceId"
+          },
+          "principalIdentityId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Public identity ID of the delegating human. Immutable; credentials cannot be transferred to another principal or Workspace."
+          },
+          "requestId": {
+            "$ref": "#/components/schemas/CreationRequestId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/CredentialName"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CredentialScope"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/ExpiresAt"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Increments after every successful update, rotation or revocation."
+          },
+          "secretGeneration": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Starts at 1 and increments on rotation. This is metadata, not a secret or verification digest."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revokedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present only after revocation; not null."
+          }
+        },
+        "description": "Allowlisted metadata only. Never includes secretHash or a raw secret. GET/list can include expired or revoked credentials."
+      },
+      "CredentialResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential"
+        ],
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/CredentialSummary"
+          }
+        }
+      },
+      "CredentialListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credentials"
+        ],
+        "properties": {
+          "credentials": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CredentialSummary"
+            }
+          }
+        }
+      },
+      "CredentialIssue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "credential",
+          "secret"
+        ],
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/CredentialSummary"
+          },
+          "secret": {
+            "type": "string",
+            "pattern": "^chak_[a-f0-9]{32}_[A-Za-z0-9_-]{43}$",
+            "readOnly": true,
+            "description": "256-bit random bearer secret, returned exactly once on successful create/rotate. Store privately; never place in queries, JSON inspection inputs, model arguments, source control or logs. Only its verification digest is persisted."
+          }
+        }
+      },
+      "InspectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conversationId"
+        ],
+        "properties": {
+          "conversationId": {
+            "$ref": "#/components/schemas/ConversationSelector"
+          }
+        }
+      },
+      "RuntimeStatus": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "unbound",
+              "starting",
+              "idle",
+              "running",
+              "disconnected",
+              "offline",
+              "stopped",
+              "disabled",
+              "uncertain"
+            ],
+            "description": "Existing local-control state vocabulary. Probe failures, missing verification, malformed results or saturated probes produce uncertain, never an invented healthy state."
+          },
+          "lastVerifiedAt": {
+            "type": "string",
+            "description": "Optional source verification timestamp, preserved verbatim if Date.parse accepts it. It is not replaced by sampledAt; RFC 3339 normalization is not enforced on this source field.",
+            "example": "2026-11-27T12:00:00.000Z"
+          }
+        }
+      },
+      "HumanParticipant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "handle",
+          "type",
+          "membershipStatus"
+        ],
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Public identity ID, not a Runtime/session/configuration identifier."
+          },
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "membershipStatus": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "const": "human"
+          }
+        },
+        "description": "Humans omit runtime entirely."
+      },
+      "RuntimeParticipant": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "identityId",
+          "handle",
+          "type",
+          "membershipStatus",
+          "runtime"
+        ],
+        "properties": {
+          "identityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Public identity ID, not a Runtime/session/configuration identifier."
+          },
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "membershipStatus": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "service"
+            ]
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeStatus"
+          }
+        },
+        "description": "Every agent/service has an explicit runtime state, including uncertain."
+      },
+      "InspectionParticipant": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HumanParticipant"
+          },
+          {
+            "$ref": "#/components/schemas/RuntimeParticipant"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "human": "#/components/schemas/HumanParticipant",
+            "agent": "#/components/schemas/RuntimeParticipant",
+            "service": "#/components/schemas/RuntimeParticipant"
+          }
+        }
+      },
+      "InspectionSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "conversationId",
+          "sampledAt",
+          "participants"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1
+          },
+          "conversationId": {
+            "$ref": "#/components/schemas/ConversationSelector"
+          },
+          "sampledAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Snapshot assembly time, not proof that every participant was freshly verified."
+          },
+          "participants": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "$ref": "#/components/schemas/InspectionParticipant"
+            },
+            "description": "Complete current active/disabled roster; removed members and orphan bindings are excluded. No silent truncation. Identity IDs are unique."
+          }
+        },
+        "description": "Status-only allowlist. No messages, private Runtime/session/config IDs, diagnostics, capabilities, activity payloads or lifecycle flags.",
+        "example": {
+          "version": 1,
+          "conversationId": "conversation_example",
+          "sampledAt": "2026-11-27T12:00:01.000Z",
+          "participants": [
+            {
+              "identityId": "identity_human_example",
+              "handle": "you",
+              "type": "human",
+              "membershipStatus": "active"
+            },
+            {
+              "identityId": "identity_agent_example",
+              "handle": "agent",
+              "type": "agent",
+              "membershipStatus": "active",
+              "runtime": {
+                "state": "idle",
+                "lastVerifiedAt": "2026-11-27T12:00:00.000Z"
+              }
+            }
+          ]
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "Fixed code only, except the control gate's fixed 'Forbidden host'/'Forbidden origin' strings. Never contains secrets or diagnostic details."
+          }
+        }
+      }
+    }
+  }
+}
